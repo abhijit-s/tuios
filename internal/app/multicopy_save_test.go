@@ -75,6 +75,12 @@ func TestMultiCopySaveFailureLeavesNoFile(t *testing.T) {
 
 func TestMultiCopySavePathMessages(t *testing.T) {
 	m, home := saveOS(t)
+	// liveWindow's default is 80 columns. On macOS t.TempDir() nests under
+	// /var/folders/<hash>/T/<test name><random>/<NNN>, long enough that the
+	// "shows the full path" case below truncates at that width regardless of
+	// what the path actually is. Widened so the assertion is about the prompt,
+	// not about how long this machine's TMPDIR happens to be.
+	m.Windows[0].Width = 400
 
 	// A relative path is taken from the focused pane's directory, not from
 	// wherever tuios was started.

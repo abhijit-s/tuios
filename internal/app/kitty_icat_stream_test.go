@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
 	"testing"
 
@@ -115,7 +116,14 @@ func TestIcatFileModeForwardsThePath(t *testing.T) {
 	for _, name := range []string{"a.png", "ab.png", "abc.png"} {
 		t.Run(name, func(t *testing.T) {
 			em, host := icatHarness(t)
-			path := t.TempDir() + "/" + name
+			// production resolves symlinks before forwarding a file path (see
+			// kittyMediumPath), so the expected path must match post-resolution
+			// too: on macOS t.TempDir() sits under /var, a symlink to /private/var.
+			dir, err := filepath.EvalSymlinks(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := dir + "/" + name
 			if err := os.WriteFile(path, []byte("png"), 0o600); err != nil {
 				t.Fatal(err)
 			}
