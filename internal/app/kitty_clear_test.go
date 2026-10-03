@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -61,6 +62,11 @@ func TestKittyClearOnED2(t *testing.T) {
 	_, _ = tmpFile.Write(bytes.Repeat([]byte{0x00}, 100))
 	tmpFile.Close()
 	defer os.Remove(tmpFile.Name())
+	// The package's TestMain (see main_test.go) redirects HOME under TMPDIR,
+	// which makes kittyTempDirs ignore TMPDIR itself (it would otherwise treat
+	// the whole home directory as temporary). Naming this file's own directory
+	// keeps it recognized as temporary regardless.
+	useKittyTempDirs(t, filepath.Dir(tmpFile.Name()))
 	encodedPath := base64.StdEncoding.EncodeToString([]byte(tmpFile.Name()))
 
 	frame := func() []byte {
@@ -147,6 +153,9 @@ func TestKittyNoStaleAccumulation(t *testing.T) {
 	_, _ = tmpFile.Write(bytes.Repeat([]byte{0x00}, 100))
 	tmpFile.Close()
 	defer os.Remove(tmpFile.Name())
+	// See the matching comment in TestKittyClearOnED2: TestMain puts HOME
+	// under TMPDIR, so kittyTempDirs ignores TMPDIR unless told otherwise.
+	useKittyTempDirs(t, filepath.Dir(tmpFile.Name()))
 	encodedPath := base64.StdEncoding.EncodeToString([]byte(tmpFile.Name()))
 
 	frame := func() []byte {

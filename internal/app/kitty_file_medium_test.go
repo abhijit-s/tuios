@@ -134,6 +134,11 @@ func TestKittyTempFileAsIcatWritesItIsSent(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	// TestMain puts HOME under TMPDIR (see xdgisolate.go), which makes
+	// kittyTempDirs ignore TMPDIR itself rather than treat the whole home
+	// directory as temporary. Naming this test's own directory keeps the
+	// positive control meaningful regardless.
+	useKittyTempDirs(t, dir)
 	path := secretFile(t, dir, "tty-graphics-protocol-frame.rgba")
 
 	sendKitty(kp, kittyFileCmd(vt.KittyMediumTempFile, path))
