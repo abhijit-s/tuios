@@ -126,9 +126,9 @@ echo "==> swapped (inode $OLD_INODE -> $NEW_INODE)"
 if [ "$OS" = "Darwin" ]; then
   codesign --force --sign - --timestamp=none "$TARGET"
   signed=0
-  for _ in 1 2 3 4 5; do
+  for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do
     if codesign -dv "$TARGET" 2>&1 | grep -q 'flags=0x2(adhoc)'; then signed=1; break; fi
-    sleep 0.3
+    sleep 0.5
   done
   if [ "$signed" = 1 ]; then
     echo "==> adhoc-signed (flags=0x2)"
