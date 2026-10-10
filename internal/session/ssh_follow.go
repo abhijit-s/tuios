@@ -128,9 +128,14 @@ func ownedSocket(path string) bool {
 }
 
 // safeFolder reports whether dir is a real folder, owned by me or by root,
-// that no other user can write to unless it is sticky.
+// that no other user can write to unless it is sticky. A symlink ancestor
+// (macOS's /var, a symlink to /private/var, sits in every standard temp
+// path there) is followed rather than rejected outright: the directory
+// holding the symlink is checked in its own turn as the walk continues
+// outward, so this only grants trust to whatever that symlink resolves to,
+// not to the symlink's own meaningless permission bits.
 func safeFolder(dir string, me int) bool {
-	fi, err := os.Lstat(dir)
+	fi, err := os.Stat(dir)
 	if err != nil || !fi.IsDir() {
 		return false
 	}
