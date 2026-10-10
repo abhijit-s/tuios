@@ -790,7 +790,25 @@ func (m *OS) CycleTilingScheme() string {
 	tree := m.GetOrCreateBSPTree()
 	idx := slices.Index(tilingSchemeCycle, tree.AutoScheme)
 	tree.AutoScheme = tilingSchemeCycle[(idx+1)%len(tilingSchemeCycle)]
+	m.syncTilingScheme()
 	return tree.AutoScheme.String()
+}
+
+// syncTilingScheme tells the daemon about a scheme the user just chose.
+//
+// The scheme rides on the tree, so it travels with the next layout-tree op
+// whenever one happens to follow. That is not the same as being sent: nothing
+// else need follow. Until one did, a peer client kept inserting by the old
+// scheme, the state file on disk named the old scheme, and the only record of
+// the choice was a toast that had already faded. A layout mutation reports
+// itself, the way setMasterLayout does for the master-stack shape.
+//
+// It stays out of the hooks: after-layout-change names the mode in force, one
+// of bsp, master-stack, scrolling or floating, and a scheme change leaves that
+// word exactly as it was. Firing it here would announce a change the payload
+// cannot describe.
+func (m *OS) syncTilingScheme() {
+	m.SyncStateToDaemon()
 }
 
 // SetTilingScheme sets the current workspace's insertion scheme directly. It
@@ -800,6 +818,7 @@ func (m *OS) SetTilingScheme(scheme layout.AutoScheme) bool {
 		return false
 	}
 	m.GetOrCreateBSPTree().AutoScheme = scheme
+	m.syncTilingScheme()
 	return true
 }
 

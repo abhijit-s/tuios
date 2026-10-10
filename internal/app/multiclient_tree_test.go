@@ -67,11 +67,16 @@ func TestAPeerKeepsItsOwnTreeAgainstADaemonEcho(t *testing.T) {
 	}
 }
 
-// TestCycleTilingSchemeSyncsToAPeer: the scheme lives on the tree
-// (layout.BSPTree.AutoScheme), which already travels with every layout-tree op
-// (see session.SerializedBSPTree and session.TreeKey). Cycling it on one
-// client is exactly that kind of tree change, so it reaches a peer the same
-// way a split or a drag does, with no code of its own to send it.
+// TestCycleTilingSchemeSyncsToAPeer: cycling the scheme on one client reaches
+// a peer on its own, with no later layout op to carry it.
+//
+// The scheme lives on the tree (layout.BSPTree.AutoScheme), which travels with
+// every layout-tree op (see session.SerializedBSPTree and session.TreeKey). It
+// is tempting to read that as the scheme needing no code of its own, and this
+// test asserted exactly that while calling SyncStateToDaemon by hand to make it
+// pass -- proving the mechanism rather than the behaviour. Nothing obliges a
+// split to follow a cycle, and until one did the peer inserted by the old
+// scheme. The sync is deliberately absent here: that is the regression.
 func TestCycleTilingSchemeSyncsToAPeer(t *testing.T) {
 	r, p, ex := geometryRig(t, clientGlobals{}, clientGlobals{})
 
@@ -84,7 +89,6 @@ func TestCycleTilingSchemeSyncsToAPeer(t *testing.T) {
 	if after == before {
 		t.Fatalf("CycleTilingScheme left the scheme at %v", before)
 	}
-	r.m.SyncStateToDaemon()
 	settleTrees(t, r, p, ex, "after cycling the tiling scheme")
 
 	peerTree := p.m.WorkspaceTrees[p.m.CurrentWorkspace]
