@@ -62,10 +62,11 @@ func TestOwnedSocket(t *testing.T) {
 
 // A symlink ancestor sits in every standard macOS temp path (/var, a symlink
 // to /private/var), so rejecting any path that passes through one would
-// refuse the socket in the common case, not just the suspicious one. What
-// matters is what the symlink resolves to, not the symlink's own (otherwise
-// meaningless) permission bits — this follows it and checks the target, the
-// same as a real directory at that position would be checked.
+// refuse the socket in the common case, not just the suspicious one.
+// ownedSocket resolves the socket's folder once up front, so the walk itself
+// never sees the symlink — it checks whatever the symlink resolves to, the
+// same as a real directory at that position would be checked, and still
+// rejects a resolved target that is not actually safe.
 func TestOwnedSocketFollowsASafeSymlinkAncestor(t *testing.T) {
 	listen := func(dir string) string {
 		path := filepath.Join(dir, "s")
