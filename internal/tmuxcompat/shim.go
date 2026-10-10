@@ -46,6 +46,9 @@ type Shim struct {
 	// HolderEnv is extra KEY=VALUE for the processes of new panes, beyond
 	// what the holder sets itself. The launcher passes the log settings here.
 	HolderEnv []string
+	// Environ is the caller's environment, the base of the global
+	// environment show-environment -g lists.
+	Environ []string
 	// Shell is the panes' shell ($SHELL). Its base name is
 	// pane_current_command when nothing else runs in a pane.
 	Shell string
@@ -63,13 +66,34 @@ type Shim struct {
 
 	// respawn delivers a respawn-pane request. Nil means RequestRespawn.
 	respawn func(dir, windowID string, req RespawnRequest) error
-	// memBuffers are the paste buffers of a shim with no runtime directory.
+	// memBuffers are the paste buffers of a shim with no runtime directory,
+	// and memNext the number of its next buffer name.
 	memBuffers []buffer
+	memNext    int
+	// bufMode says where the paste buffers are: in the daemon or the shim's
+	// own (buffers_daemon.go). It is found on first use.
+	bufMode int8
+	// readVersion is the version of the daemon buffer read last, so
+	// paste-buffer -d deletes only the content it pasted.
+	readVersion uint64
+	// memEnv is the set-environment state of a shim with no runtime
+	// directory, by scope (see envScope).
+	memEnv map[string][]envVar
 	// control is set while the shim answers a control-mode client.
 	control bool
 	// created is the session new-session made last, for control mode to
 	// attach to.
 	created string
+	// daemonPID is the daemon's pid, read once (pidRead) when a format
+	// asks for #{pid}.
+	daemonPID int
+	pidRead   bool
+	// attached finds the session a control client attached to in a view,
+	// nil outside control mode.
+	attached func(*view) *sessionView
+	// depth counts the command lines run inside one another by if-shell
+	// and run-shell -C.
+	depth int
 }
 
 // handler runs one command. It returns the outcome to log, detail for the
@@ -98,9 +122,25 @@ var commands = map[string]handler{
 	"paste-buffer":        (*Shim).pasteBuffer,
 	"delete-buffer":       (*Shim).deleteBuffer,
 	"list-clients":        (*Shim).listClients,
+	"detach-client":       (*Shim).detachClient,
 	"show-options":        (*Shim).showOptions,
 	"show-window-options": (*Shim).showOptions,
 	"new-session":         (*Shim).newSession,
+	"last-pane":           (*Shim).lastPane,
+	"next-window":         (*Shim).nextWindow,
+	"previous-window":     (*Shim).previousWindow,
+	"break-pane":          (*Shim).breakPane,
+	"join-pane":           (*Shim).joinPane,
+	"move-pane":           (*Shim).joinPane,
+	"swap-pane":           (*Shim).swapPane,
+	"rename-session":      (*Shim).renameSession,
+	"show-buffer":         (*Shim).showBuffer,
+	"save-buffer":         (*Shim).saveBuffer,
+	"list-buffers":        (*Shim).listBuffers,
+	"show-environment":    (*Shim).showEnvironment,
+	"set-environment":     (*Shim).setEnvironment,
+	"wait-for":            (*Shim).waitFor,
+	"display-popup":       (*Shim).displayPopup,
 }
 
 // specs are the flags each command accepts. A tmux flag missing here is
@@ -128,17 +168,36 @@ var specs = map[string]spec{
 	"paste-buffer":        {bools: "dpr", values: "bst"},
 	"delete-buffer":       {values: "b"},
 	"list-clients":        {values: "Ft"},
+	"detach-client":       {bools: "a", values: "st"},
 	"show-options":        {bools: "AgHpqsvw", values: "t"},
 	"show-window-options": {bools: "gv", values: "t"},
 	"set-option":          {bools: "aFgopqsuUw", values: "t"},
 	"set-window-option":   {bools: "aFgoqu", values: "t"},
 	"new-session":         {bools: "AdDEPX", values: "cefFnstxy"},
+	"last-pane":           {bools: "Z", values: "t"},
+	"next-window":         {values: "t"},
+	"previous-window":     {values: "t"},
+	"break-pane":          {bools: "dP", values: "Fnst"},
+	"join-pane":           {bools: "bdfhv", values: "lst"},
+	"move-pane":           {bools: "bdfhv", values: "lst"},
+	"swap-pane":           {bools: "dDUZ", values: "st"},
+	"rename-session":      {values: "t"},
+	"show-buffer":         {values: "b"},
+	"save-buffer":         {bools: "a", values: "b"},
+	"list-buffers":        {values: "Ff"},
+	"show-environment":    {bools: "ghs", values: "t"},
+	"set-environment":     {bools: "Fghru", values: "t"},
+	"run-shell":           {bools: "bC", values: "cdt"},
+	"if-shell":            {bools: "bF", values: "t"},
+	"wait-for":            {bools: "LSU"},
+	"display-popup":       {bools: "BCE", values: "bcdehsStTwxy"},
 }
 
 // textCommands carry text as their positional arguments: keys to type or a
 // command line to run. The log records how many there were, not what they
 // said, since they can hold secrets.
-var textCommands = []string{"send-keys", "split-window", "new-window", "respawn-pane", "set-buffer", "new-session"}
+var textCommands = []string{"send-keys", "split-window", "new-window", "respawn-pane", "set-buffer", "new-session",
+	"run-shell", "if-shell", "display-popup", "set-environment"}
 
 // redact returns argv (starting "tmux") as the log records it. Only what the
 // shim can name is kept: the global flags, the name of a known tmux command,
@@ -168,13 +227,10 @@ func redact(argv []string) []string {
 		if i > 0 {
 			out = append(out, ";")
 		}
-		name := cmd[0]
-		if full, ok := aliases[name]; ok {
-			name = full
-		}
+		name, lookupErr := lookupCommand(cmd[0])
 		_, answered := commands[name]
 		switch {
-		case !knownCommand(name):
+		case lookupErr != nil:
 			out = append(out, "<unknown command>")
 			if len(cmd) > 1 {
 				out = append(out, fmt.Sprintf("<%d redacted>", len(cmd)-1))
@@ -211,25 +267,6 @@ func redact(argv []string) []string {
 	return out
 }
 
-// knownCommand reports whether name (an alias already resolved) is a tmux
-// command the shim knows of: one it answers, ignores or refuses, or the full
-// name behind one of tmux's aliases. Only such a name reaches the log, since
-// any other word in command position may be text a split left there.
-func knownCommand(name string) bool {
-	if _, ok := commands[name]; ok {
-		return true
-	}
-	if slices.Contains(ignoredCommands, name) || slices.Contains(refusedCommands, name) {
-		return true
-	}
-	for _, full := range aliases {
-		if full == name {
-			return true
-		}
-	}
-	return false
-}
-
 // ignoredCommands are known and do nothing here, by design: tuios owns the
 // layout, the styling and the options, so a tool setting them loses nothing
 // it needs. They succeed with any arguments.
@@ -243,69 +280,10 @@ var ignoredCommands = []string{
 	"start-server",
 }
 
-// aliases are tmux's short command names.
-var aliases = map[string]string{
-	"splitw":    "split-window",
-	"neww":      "new-window",
-	"send":      "send-keys",
-	"capturep":  "capture-pane",
-	"display":   "display-message",
-	"lsp":       "list-panes",
-	"lsw":       "list-windows",
-	"ls":        "list-sessions",
-	"has":       "has-session",
-	"killp":     "kill-pane",
-	"killw":     "kill-window",
-	"selectp":   "select-pane",
-	"selectw":   "select-window",
-	"renamew":   "rename-window",
-	"respawnp":  "respawn-pane",
-	"set":       "set-option",
-	"setw":      "set-window-option",
-	"refresh":   "refresh-client",
-	"selectl":   "select-layout",
-	"resizep":   "resize-pane",
-	"start":     "start-server",
-	"killses":   "kill-session",
-	"kill-ses":  "kill-session",
-	"new":       "new-session",
-	"attach":    "attach-session",
-	"a":         "attach-session",
-	"at":        "attach-session",
-	"showw":     "show-window-options",
-	"show":      "show-options",
-	"lsc":       "list-clients",
-	"breakp":    "break-pane",
-	"joinp":     "join-pane",
-	"swapp":     "swap-pane",
-	"lastp":     "last-pane",
-	"pasteb":    "paste-buffer",
-	"loadb":     "load-buffer",
-	"deleteb":   "delete-buffer",
-	"setb":      "set-buffer",
-	"showb":     "show-buffer",
-	"run":       "run-shell",
-	"if":        "if-shell",
-	"source":    "source-file",
-	"bind":      "bind-key",
-	"unbind":    "unbind-key",
-	"wait":      "wait-for",
-	"respawnw":  "respawn-window",
-	"linkw":     "link-window",
-	"movew":     "move-window",
-	"swapw":     "swap-window",
-	"lastw":     "last-window",
-	"next":      "next-window",
-	"prev":      "previous-window",
-	"rotatew":   "rotate-window",
-	"pipep":     "pipe-pane",
-	"clearhist": "clear-history",
-}
-
 // refusedCommands end or replace tuios sessions, which the shim never does:
 // the caller's session is not the shim's to end, and another session is out
 // of its reach.
-var refusedCommands = []string{"kill-session", "kill-server", "attach-session", "switch-client", "detach-client"}
+var refusedCommands = []string{"kill-session", "kill-server", "attach-session", "switch-client"}
 
 // Run answers one tmux invocation. args is argv without the program name. It
 // returns the exit status tmux would.
@@ -343,6 +321,11 @@ func (s *Shim) Run(args []string) int {
 		o, d, err := s.runOne(c[0], c[1:])
 		detail = append(detail, d...)
 		outcome = worse(outcome, o)
+		if se, ok := errors.AsType[statusError](err); ok {
+			// The command's own status, already reported on stdout.
+			s.Log.Record(full, worse(outcome, OutcomeError), detail)
+			return se.code
+		}
 		if err != nil {
 			return s.fail(full, o, detail, err)
 		}
@@ -368,9 +351,15 @@ func worse(a, b string) string {
 	return a
 }
 
-func (s *Shim) runOne(name string, args []string) (string, []string, error) {
-	if full, ok := aliases[name]; ok {
-		name = full
+func (s *Shim) runOne(word string, args []string) (string, []string, error) {
+	name, err := lookupCommand(word)
+	if err != nil {
+		if strings.HasPrefix(err.Error(), "unknown command") {
+			// The word may be text a split left in command position: stderr
+			// names it, the log does not.
+			err = logAs{err: err, log: "unknown command"}
+		}
+		return OutcomeUnsupported, nil, err
 	}
 	if h, ok := commands[name]; ok {
 		o, d, err := h(s, name, args)
@@ -393,13 +382,8 @@ func (s *Shim) runOne(name string, args []string) (string, []string, error) {
 	if slices.Contains(refusedCommands, name) {
 		return OutcomeUnsupported, nil, fmt.Errorf("%s: refused, the tuios tmux shim does not start, attach or end sessions", name)
 	}
-	err := fmt.Errorf("unknown command: %s", name)
-	if !knownCommand(name) {
-		// The word may be text a split left in command position: stderr
-		// names it, the log does not.
-		err = logAs{err: err, log: "unknown command"}
-	}
-	return OutcomeUnsupported, nil, err
+	// A tmux command the shim does not answer, named in full.
+	return OutcomeUnsupported, nil, fmt.Errorf("unknown command: %s", name)
 }
 
 // logAs is an error printed as err and logged as log, for an error whose
@@ -425,6 +409,19 @@ func (s *Shim) println(line string) { fmt.Fprintln(s.Stdout, line) }
 // callerPane is the pane an empty target means: TMUX_PANE, then the caller's
 // tuios window, then the focused pane of the default session.
 func (s *Shim) callerPane(v *view) *pane {
+	// A control client that attached to a session works in that session,
+	// as tmux's commands from an attached client do, whatever pane the
+	// client itself runs in.
+	if s.attached != nil {
+		if sv := s.attached(v); sv != nil {
+			if p := sv.byWindowID(sv.focused); p != nil && p.Workspace == sv.current {
+				return p
+			}
+			if p := sv.active(sv.current); p != nil {
+				return p
+			}
+		}
+	}
 	if strings.HasPrefix(s.TmuxPane, "%") {
 		if p, err := v.paneByID(s.TmuxPane[1:]); err == nil {
 			return p
@@ -443,8 +440,8 @@ func (s *Shim) callerPane(v *view) *pane {
 }
 
 // expand expands a format and turns missing variables into log detail.
-func expand(format string, vars map[string]string) (string, []string) {
-	out, missing := Expand(format, vars)
+func (s *Shim) expand(format string, vars map[string]string) (string, []string) {
+	out, missing := expandWith(format, vars, s.serverVar)
 	var detail []string
 	for _, m := range missing {
 		detail = append(detail, "format: no value for "+m)
@@ -476,7 +473,9 @@ func (s *Shim) paneCommand(cmd, env []string) []string {
 	}
 	argv := []string{s.Exe, "tmux-pane", "--dir", s.Dir}
 	for _, e := range append(slices.Clone(s.HolderEnv), env...) {
-		argv = append(argv, "--env", e)
+		// One word, so an entry that removes a variable (-NAME) is not
+		// read as a flag.
+		argv = append(argv, "--env="+e)
 	}
 	argv = append(argv, "--")
 	return append(argv, cmd...)
@@ -530,7 +529,7 @@ func (s *Shim) printNew(id, format, cwd string) []string {
 	if vars["pane_current_path"] == "" {
 		vars["pane_current_path"] = cmpOr(cwd, s.Cwd)
 	}
-	out, detail := expand(format, vars)
+	out, detail := s.expand(format, vars)
 	s.println(out)
 	return detail
 }
@@ -553,7 +552,7 @@ func (s *Shim) splitWindow(name string, args []string) (string, []string, error)
 		return OutcomeError, nil, err
 	}
 	cwd, _ := p.Value('c')
-	id, err := s.newPane(target.sess.name, target.Workspace, !p.Has('d'), cwd, p.Args, p.Values('e'))
+	id, err := s.newPane(target.sess.name, target.Workspace, !p.Has('d'), cwd, p.Args, append(s.paneEnvFor(target.sess), p.Values('e')...))
 	if err != nil {
 		return OutcomeError, nil, err
 	}
@@ -618,7 +617,7 @@ func (s *Shim) newWindow(name string, args []string) (string, []string, error) {
 		}
 	}
 	cwd, _ := p.Value('c')
-	id, err := s.newPane(sv.name, ws, !p.Has('d'), cwd, p.Args, p.Values('e'))
+	id, err := s.newPane(sv.name, ws, !p.Has('d'), cwd, p.Args, append(s.paneEnvFor(sv), p.Values('e')...))
 	if err != nil {
 		return OutcomeError, nil, err
 	}
@@ -812,7 +811,7 @@ func (s *Shim) displayMessage(name string, args []string) (string, []string, err
 	}
 	out, detail := format, []string(nil)
 	if !p.Has('l') {
-		out, detail = expand(format, vars)
+		out, detail = s.expand(format, vars)
 	}
 	if !p.Has('p') {
 		return OutcomeIgnored, detail, nil
@@ -865,7 +864,7 @@ func (s *Shim) listPanes(name string, args []string) (string, []string, error) {
 	}
 	var detail []string
 	for _, pn := range list {
-		out, d := expand(format, s.paneVars(pn))
+		out, d := s.expand(format, s.paneVars(pn))
 		detail = mergeDetail(detail, d)
 		s.println(out)
 	}
@@ -916,7 +915,7 @@ func (s *Shim) listWindows(name string, args []string) (string, []string, error)
 			if a := sv.active(ws); a != nil {
 				vars = s.paneVars(a)
 			}
-			out, d := expand(format, vars)
+			out, d := s.expand(format, vars)
 			detail = mergeDetail(detail, d)
 			s.println(out)
 		}
@@ -940,7 +939,7 @@ func (s *Shim) listSessions(name string, args []string) (string, []string, error
 	}
 	var detail []string
 	for _, sv := range v.sessions {
-		out, d := expand(format, s.sessionVars(sv))
+		out, d := s.expand(format, s.sessionVars(sv))
 		detail = mergeDetail(detail, d)
 		s.println(out)
 	}
@@ -1045,10 +1044,9 @@ func (s *Shim) selectPane(name string, args []string) (string, []string, error) 
 	if _, ok := p.Value('P'); ok {
 		return OutcomeIgnored, nil, nil
 	}
-	dirs := map[byte]string{'L': "left", 'R': "right", 'U': "up", 'D': "down"}
 	for _, c := range []byte("LRUD") {
 		if p.Has(c) {
-			if _, err := s.Caller.Call("focus-window", map[string]any{"session": sess, "direction": dirs[c]}); err != nil {
+			if err := s.selectDirection(target, c); err != nil {
 				return OutcomeError, nil, err
 			}
 			return OutcomeOK, nil, nil
@@ -1129,7 +1127,7 @@ func (s *Shim) respawnPane(name string, args []string) (string, []string, error)
 		return OutcomeError, nil, fmt.Errorf("respawn pane failed: %w", err)
 	}
 	cwd, _ := p.Value('c')
-	req := RespawnRequest{Command: p.Args, Cwd: cwd, Env: p.Values('e')}
+	req := RespawnRequest{Command: p.Args, Cwd: cwd, Env: append(s.paneEnvFor(target.sess), p.Values('e')...)}
 	send := s.respawn
 	if send == nil {
 		send = RequestRespawn

@@ -1,6 +1,9 @@
 package app
 
 import (
+	"slices"
+	"time"
+
 	"github.com/Gaurav-Gosain/tuios/internal/hooks"
 	"github.com/Gaurav-Gosain/tuios/internal/session"
 	"github.com/Gaurav-Gosain/tuios/internal/tape"
@@ -11,8 +14,129 @@ import (
 
 // SwitchToWorkspace switches to the specified workspace, picking a default focus
 // (the workspace's saved window, else its first visible one).
+//
+// It is the switch a person makes: a key, a click, the palette, the
+// switcher. With workspaces.new_window_when_empty on, a switch to a workspace
+// with no panes opens one there. Scripts and tapes switch with
+// switchToWorkspace, because they bring their own panes. A move that follows
+// its pane comes here with the pane already on the workspace, so it opens
+// nothing. Another client following this switch, and a switch the daemon
+// makes (tuios select-workspace, tuios xpanes, return_when_empty), apply the
+// session state without coming here, so only the client that made the
+// switch opens the pane, and the session gets one.
 func (m *OS) SwitchToWorkspace(workspace int) {
+	from := m.CurrentWorkspace
+	var fromPane *terminal.Window
+	if fw := m.GetFocusedWindow(); fw != nil && fw.Workspace == from && !fw.IsScratch {
+		fromPane = fw
+	}
 	m.switchToWorkspace(workspace, -1)
+	m.openPaneOnEmptyWorkspace(from, workspace, fromPane)
+}
+
+// openPaneOnEmptyWorkspace opens a pane on workspace when the switch from
+// from landed there, the workspace is an ordinary one with no panes, and
+// workspaces.new_window_when_empty is on. The pane starts in fromPane's
+// directory, else in the session's start directory. A minimized pane counts
+// as a pane: the workspace is not empty, only its panes are out of view.
+func (m *OS) openPaneOnEmptyWorkspace(from, workspace int, fromPane *terminal.Window) {
+	if m.UserConfig == nil || !m.UserConfig.Workspaces.NewWindowWhenEmpty {
+		return
+	}
+	if from == workspace || m.CurrentWorkspace != workspace || session.IsScratchWorkspace(workspace) {
+		return
+	}
+	for _, w := range m.Windows {
+		if w.Workspace == workspace && !w.IsScratch {
+			return
+		}
+	}
+	if m.IsDaemonSession && m.DaemonClient != nil {
+		// A daemon too old for the request would open the pane on the
+		// workspace the person left, or pull the session over to it.
+		if !m.DaemonClient.EmptyWorkspacePanes() {
+			return
+		}
+		// A pane already asked for and not yet here: a switch back and
+		// forth asks for nothing more. This only saves a shell. The daemon
+		// opens one pane per workspace whatever reaches it (see
+		// ErrWorkspaceHasPane), which covers a request slower than the
+		// timeout and a second client.
+		if at, ok := m.paneRequests[workspace]; ok && time.Since(at) < paneRequestTimeout {
+			return
+		}
+		cwdFrom, sshFrom := "", ""
+		if fromPane != nil {
+			cwdFrom = fromPane.ID
+			// As the new-window key does with
+			// appearance.new_window_follow_ssh: a pane that runs ssh gives a
+			// pane that runs the same ssh.
+			if m.FollowSSHOnNewWindow() {
+				sshFrom = fromPane.ID
+			}
+		}
+		// The switch's state push went out in switchToWorkspace, before this.
+		// The request names the workspace and asks for no focus move, so the
+		// pane cannot pull the session back to it after a later switch. It
+		// does not hold back this client's pushes the way addDaemonWindow's
+		// intent does: a push that leaves the pane out is reconciled by the
+		// daemon, and holding one back would lose the next switch.
+		if err := m.DaemonClient.SendNewWindowFrom(workspace, cwdFrom, sshFrom); err != nil {
+			m.LogError("Failed to ask the daemon for a pane on workspace %d: %v", workspace, err)
+			return
+		}
+		if m.paneRequests == nil {
+			m.paneRequests = make(map[int]time.Time)
+		}
+		m.paneRequests[workspace] = time.Now()
+		return
+	}
+	dir := ""
+	if fromPane != nil {
+		dir = fromPane.CWD()
+	}
+	m.addLocalWindow(dir, "", nil)
+}
+
+// paneRequestTimeout is how long a request for a pane on an empty workspace
+// counts as in flight. A daemon answers in milliseconds, so an entry this old
+// is one whose answer was lost, and the next switch may ask again.
+const paneRequestTimeout = 5 * time.Second
+
+// settlePaneRequests clears the request for each workspace a sync shows a
+// window on. When that workspace is on screen with nothing focused, which is
+// where a push this client sent before the pane arrived leaves it, the pane
+// takes the focus, as the daemon gives it when the workspace is still shown.
+func (m *OS) settlePaneRequests() {
+	for ws := range m.paneRequests {
+		idx := -1
+		for i, w := range m.Windows {
+			if w.Workspace == ws && !w.IsScratch {
+				idx = i
+				break
+			}
+		}
+		if idx < 0 {
+			continue
+		}
+		delete(m.paneRequests, ws)
+		if ws == m.CurrentWorkspace && m.FocusedWindow < 0 {
+			m.FocusWindow(idx)
+		}
+	}
+}
+
+// PaneRequestsInFlight lists the workspaces this client asked a pane for that
+// has not arrived, for GetSessionInfo.
+func (m *OS) PaneRequestsInFlight() []int {
+	out := []int{}
+	for ws, at := range m.paneRequests {
+		if time.Since(at) < paneRequestTimeout {
+			out = append(out, ws)
+		}
+	}
+	slices.Sort(out)
+	return out
 }
 
 // switchToWorkspace switches to the workspace and resolves focus. A focusTarget
@@ -35,6 +159,7 @@ func (m *OS) switchToWorkspaceHeld(workspace, focusTarget int) {
 	}
 	// The labels are on a pane of the workspace being left.
 	m.CloseHints()
+	m.ClosePaneLabels()
 
 	// Record workspace switch for tape recording
 	if m.TapeRecorder != nil && m.TapeRecorder.IsRecording() {
@@ -149,8 +274,14 @@ func (m *OS) switchToWorkspaceHeld(workspace, focusTarget int) {
 		}
 	}
 
-	// Retile if in tiling mode and no custom layout
-	if m.AutoTiling && !m.WorkspaceHasCustom[workspace] {
+	// Retile if in tiling mode, unless the workspace holds a custom layout
+	// that still fills the box. The box moves while a workspace is off
+	// screen: a client resizes, another attaches or leaves, the rail moves.
+	// Rectangles kept from before that fill some other box, and the shells
+	// behind them keep a size no client draws. The tiler keeps the user's
+	// splits (the BSP tree, the master-stack ratios and splits), so the
+	// retile lays the custom layout out again in the new box.
+	if m.AutoTiling && (!m.WorkspaceHasCustom[workspace] || m.tiledLayoutStale()) {
 		m.LogInfo("Auto-tiling workspace %d (no custom layout)", workspace)
 		m.TileVisibleWorkspaceWindows()
 	} else {

@@ -10,6 +10,8 @@ import (
 	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/charmbracelet/x/ansi"
 	gh "go.mitchellh.com/libghostty"
+
+	"github.com/Gaurav-Gosain/tuios/internal/progstatus"
 )
 
 // This file holds the scanner hooks: the sequences tuios observes or owns on
@@ -56,17 +58,31 @@ func (t *GhosttyTerminal) observeESC(inter, final byte) {
 		t.charsetIDs[2] = final
 	case '+':
 		t.charsetIDs[3] = final
+	case '#':
+		if final == '8' {
+			// DECALN resets every margin, in the library as in the pure
+			// emulator, and turns origin mode off.
+			t.scrollRegion = uv.Rect(0, 0, t.width, t.height)
+		}
 	case 0:
 		switch final {
 		case 'c': // RIS resets to the main screen among everything else.
 			t.cachedAltScreen.Store(false)
 			t.resetShadowState()
-		case '7': // DECSC saves the charset selection with the cursor
-			t.savedCharsets = t.charsetIDs
-			t.savedGL, t.savedGR = t.gl, t.gr
+			// A full reset removes every OSC 7501 record.
+			t.queue(func(cb Callbacks) {
+				if cb.ProgramStatus != nil {
+					cb.ProgramStatus(progstatus.Event{Reset: true})
+				}
+			})
+		case '7': // DECSC
+			t.saveCursorShadowLocked()
 		case '8': // DECRC
-			t.charsetIDs = t.savedCharsets
-			t.gl, t.gr = t.savedGL, t.savedGR
+			t.restoreCursorShadowLocked(t.liveScreenLocked())
+		case 'V': // SPA protects what is printed next, as DECSCA 1 does
+			t.penProtected = true
+		case 'W': // EPA
+			t.penProtected = false
 		case 'n': // LS2
 			t.gl = 2
 		case 'o': // LS3
@@ -86,18 +102,25 @@ func (t *GhosttyTerminal) observeESC(inter, final byte) {
 // expose.
 func (t *GhosttyTerminal) resetShadowState() {
 	t.charsetIDs = defaultCharsetIDs
-	t.savedCharsets = defaultCharsetIDs
 	t.gl, t.gr = 0, 0
-	t.savedGL, t.savedGR = 0, 0
+	t.savedCur = [2]SavedCursor{{Charsets: defaultCharsetIDs}, {Charsets: defaultCharsetIDs}}
+	t.penProtected = false
+	t.scanner.lastPrint = 0
 	t.scrollRegion = uv.Rect(0, 0, t.width, t.height)
+	t.savedLRMM = false // a full reset clears the saved modes too
 	t.kittyKbd.Reset()
+	t.modifyOtherKeys.Store(0)
 	t.semanticMarkers.Clear()
 }
 
 func (t *GhosttyTerminal) observeCSI(prefix, inter, final byte, params []byte) {
 	switch {
 	case final == 'r' && prefix == 0 && inter == 0:
-		// DECSTBM. Empty params reset to the full screen.
+		// DECSTBM. Empty params reset to the full screen. The library
+		// ignores one with more than two parameters.
+		if csiParamCount(params) > 2 {
+			return
+		}
 		top, bottom := csiTwoParams(params, 1, t.height)
 		if top < 1 {
 			top = 1
@@ -114,7 +137,13 @@ func (t *GhosttyTerminal) observeCSI(prefix, inter, final byte, params []byte) {
 			return
 		}
 		t.scanner.flushOut()
-		if on, _ := t.term.Mode(gh.ModeLeftRightMargin); on {
+		on, _ := t.term.Mode(gh.ModeLeftRightMargin)
+		if !on {
+			// SCOSC saves the cursor as DECSC does.
+			t.saveCursorShadowLocked()
+		}
+		if on && csiParamCount(params) <= 2 {
+			// The library ignores a DECSLRM with more than two parameters.
 			left, right := csiTwoParams(params, 1, t.width)
 			if left < 1 {
 				left = 1
@@ -125,6 +154,18 @@ func (t *GhosttyTerminal) observeCSI(prefix, inter, final byte, params []byte) {
 			if left < right {
 				t.scrollRegion = uv.Rect(left-1, t.scrollRegion.Min.Y, right-left+1, t.scrollRegion.Dy())
 			}
+		}
+	case final == 's' && prefix == '?' && inter == 0:
+		// XTSAVE. Only DECLRMM matters to the margin copy.
+		if csiHasParam(params, 69) && !t.closed.Load() {
+			t.scanner.flushOut()
+			t.savedLRMM, _ = t.term.Mode(gh.ModeLeftRightMargin)
+		}
+	case final == 'r' && prefix == '?' && inter == 0:
+		// XTRESTORE. The library sets each mode through its mode handler,
+		// so DECLRMM restored to off gives the columns back as ?69l does.
+		if csiHasParam(params, 69) && !t.savedLRMM {
+			t.scrollRegion = uv.Rect(0, t.scrollRegion.Min.Y, t.width, t.scrollRegion.Dy())
 		}
 	case final == 'q' && inter == ' ' && prefix == 0:
 		// DECSCUSR, mapped exactly as the pure emulator maps it.
@@ -138,6 +179,17 @@ func (t *GhosttyTerminal) observeCSI(prefix, inter, final byte, params []byte) {
 			style--
 		}
 		t.cursorStyle, t.cursorSteady = CursorStyle(style), !blink
+	case final == 'u' && prefix == 0 && inter == 0 && len(params) == 0:
+		// SCORC restores the cursor as DECRC does.
+		t.restoreCursorShadowLocked(t.liveScreenLocked())
+	case final == 'q' && inter == '"' && prefix == 0:
+		// DECSCA. 1 protects; 0 and 2 stop; anything else changes nothing.
+		switch v, _ := csiFirstParam(params); v {
+		case 1:
+			t.penProtected = true
+		case 0, 2:
+			t.penProtected = false
+		}
 	case final == 'u' && prefix == '>':
 		flags := 0
 		if v, ok := csiFirstParam(params); ok {
@@ -153,11 +205,15 @@ func (t *GhosttyTerminal) observeCSI(prefix, inter, final byte, params []byte) {
 	case final == 'u' && prefix == '=':
 		flags, mode := csiTwoParams(params, 0, 1)
 		t.kittyKbd.Set(flags, mode)
+	case (final == 'm' || final == 'n') && prefix == '>' && inter == 0:
+		t.observeModifyOtherKeys(final, params)
 	case final == 'p' && inter == '!':
-		// DECSTR resets margins and charsets among its soft-reset set.
-		t.scrollRegion = uv.Rect(0, 0, t.width, t.height)
-		t.charsetIDs = defaultCharsetIDs
-		t.gl, t.gr = 0, 0
+		// DECSTR. libghostty does not implement it: its parser logs the
+		// sequence as unimplemented and leaves the margins and the charsets
+		// where they were. The copy follows the library, not the pure
+		// emulator, because the reattach snapshot carries the copy, and a
+		// client must restore the state the guest's terminal really has.
+		// Pinned by TestGhosttyDivergence_DECSTRIgnored.
 	case final == 'J' && prefix == 0 && inter == 0:
 		t.observeEraseDisplay(params)
 	case final == 'h' && prefix == '?', final == 'l' && prefix == '?':
@@ -166,6 +222,29 @@ func (t *GhosttyTerminal) observeCSI(prefix, inter, final byte, params []byte) {
 		t.answerSixelGraphics(params)
 	case final == 'n' && prefix == '?' && inter == 0:
 		t.answerDecStatusReport(params)
+	}
+}
+
+// observeModifyOtherKeys follows XTMODKEYS for the input path, as the pure
+// emulator reads it: CSI > 4 ; n m sets the level, CSI > 4 m and CSI > 4 n
+// turn it off, and CSI > m resets every resource. The library sees the same
+// bytes and keeps its own copy.
+func (t *GhosttyTerminal) observeModifyOtherKeys(final byte, params []byte) {
+	if len(params) == 0 {
+		if final == 'm' {
+			t.modifyOtherKeys.Store(0)
+		}
+		return
+	}
+	res, level := csiTwoParams(params, -1, 0)
+	if res != modifyOtherKeysResource {
+		return
+	}
+	if final == 'n' {
+		level = 0
+	}
+	if level >= 0 && level <= 2 {
+		t.modifyOtherKeys.Store(int32(level)) //nolint:gosec // bounded above
 	}
 }
 
@@ -207,8 +286,9 @@ func (t *GhosttyTerminal) answerDecStatusReport(params []byte) {
 
 // observeDecMode watches DEC mode flips the shadow layer acts on: the
 // alt-screen callback and the kitty/sixel state pairs follow modes
-// 47/1047/1049, exactly where the pure emulator fires cb.AltScreen, and the
-// synchronized-output cache follows 2026.
+// 47/1047/1049, exactly where the pure emulator fires cb.AltScreen, the copy
+// of the left and right margins follows 69, and the synchronized-output cache
+// follows 2026.
 func (t *GhosttyTerminal) observeDecMode(params []byte, set bool) {
 	for _, part := range bytes.Split(params, []byte{';'}) {
 		n, ok := atoiBytes(part)
@@ -217,6 +297,15 @@ func (t *GhosttyTerminal) observeDecMode(params []byte, set bool) {
 		}
 		switch n {
 		case 47, 1047, 1049:
+			// 1049 saves the cursor on the screen it leaves, even when that
+			// is the alternate one, and leaving puts back the main screen's.
+			if n == 1049 {
+				if set {
+					t.saveCursorShadowLocked()
+				} else {
+					t.restoreCursorShadowLocked(0)
+				}
+			}
 			// The cache must flip here, mid-write: a guest that enters the
 			// alternate screen and draws in the same chunk (yazi's image
 			// preview) has its kitty placement computed through
@@ -247,11 +336,27 @@ func (t *GhosttyTerminal) observeDecMode(params []byte, set bool) {
 				}
 			}
 			t.cachedAltScreen.Store(set)
+			// Each screen has its own kitty keyboard stack, as in the
+			// pure emulator and in libghostty itself.
+			t.kittyKbd.SetAltScreen(set)
 			t.queue(func(cb Callbacks) {
 				if cb.AltScreen != nil {
 					cb.AltScreen(set)
 				}
 			})
+		case 1048:
+			if set {
+				t.saveCursorShadowLocked()
+			} else {
+				t.restoreCursorShadowLocked(t.liveScreenLocked())
+			}
+		case 69:
+			// Resetting DECLRMM gives the columns back, in the library as in
+			// the pure emulator (csi_mode.go). The copy kept them, and the
+			// reattach snapshot carried margins the guest no longer had.
+			if !set {
+				t.scrollRegion = uv.Rect(0, t.scrollRegion.Min.Y, t.width, t.scrollRegion.Dy())
+			}
 		case 2026:
 			// Flipped mid-write for the same reason: the kitty passthrough
 			// asks whether a command belongs to an open update while this
@@ -358,6 +463,22 @@ func (t *GhosttyTerminal) handleOSC(number int, payload []byte) bool {
 			})
 		}
 		return false
+	case progstatus.Command:
+		// libghostty-vt has no OSC 7501, so the Program Status Protocol is
+		// read here the way the pure emulator reads it, and never forwarded.
+		bel := t.scanner.oscBEL
+		r, query, ok := parseProgramStatusOSC(payload, bel)
+		switch {
+		case query:
+			_, _ = t.pipe.Write([]byte(programStatusReply(bel)))
+		case ok:
+			t.queue(func(cb Callbacks) {
+				if cb.ProgramStatus != nil {
+					cb.ProgramStatus(progstatus.Event{Report: r})
+				}
+			})
+		}
+		return false
 	case 4, 104, 10, 11, 12, 110, 111, 112:
 		// Color set/query is owned here so the library does not answer
 		// queries a second time.
@@ -384,7 +505,7 @@ func (t *GhosttyTerminal) handleClipboardOSC(payload []byte) {
 				content = q(selection)
 			}
 			encoded := base64.StdEncoding.EncodeToString([]byte(content))
-			_, _ = t.pipe.Write([]byte("\x1b]52;" + selection + ";" + encoded + "\x1b\\"))
+			_, _ = t.pipe.Write([]byte("\x1b]52;" + selection + ";" + encoded + oscReplyEnd(t.scanner.oscBEL)))
 		})
 		return
 	}
@@ -503,11 +624,10 @@ func (t *GhosttyTerminal) handleSemanticZoneOSC(payload []byte) {
 // sequence never reaches libghostty: the passthrough pipeline is its only
 // consumer, exactly as in the pure emulator when a passthrough func is set.
 func (t *GhosttyTerminal) handleKittyAPC(payload []byte) {
-	cmd, err := parseKittyCommand(payload[1:], t.kittyHeaderOnly)
+	cmd, rawData, err := parseKittyAPC(payload, t.kittyHeaderOnly)
 	if err != nil || cmd == nil {
 		return
 	}
-	rawData := kittyRawAPC(payload, t.kittyHeaderOnly)
 
 	// The same rule as the pure emulator: an undecodable payload is answered
 	// here, and a query is finished by that answer.
@@ -578,6 +698,25 @@ func csiFirstParam(params []byte) (int, bool) {
 }
 
 // csiTwoParams parses the first two numeric CSI parameters with defaults.
+// csiParamCount is how many parameters a CSI carries, as the library counts
+// them: none for an empty list, and one more than the separators otherwise.
+func csiParamCount(params []byte) int {
+	if len(params) == 0 {
+		return 0
+	}
+	return bytes.Count(params, []byte{';'}) + 1
+}
+
+// csiHasParam reports whether n is one of a CSI's parameters.
+func csiHasParam(params []byte, n int) bool {
+	for _, part := range bytes.Split(params, []byte{';'}) {
+		if v, ok := atoiBytes(part); ok && v == n {
+			return true
+		}
+	}
+	return false
+}
+
 func csiTwoParams(params []byte, def1, def2 int) (int, int) {
 	a, b := def1, def2
 	parts := bytes.SplitN(params, []byte{';'}, 3)

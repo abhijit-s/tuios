@@ -43,7 +43,7 @@ func HandleInput(msg tea.Msg, o *app.OS) (tea.Model, tea.Cmd) {
 		}
 		// Hints mode owns the keyboard, releases included: the release of a
 		// label letter is not the pane's to see.
-		if o.HintsOpen() {
+		if o.HintsOpen() || o.PaneLabelsOpen() {
 			return o, nil
 		}
 		forwardKeyReleaseToFocused(msg, o)
@@ -56,6 +56,8 @@ func HandleInput(msg tea.Msg, o *app.OS) (tea.Model, tea.Cmd) {
 		// A click ends hints mode. The labels name the screen as it was when
 		// they were drawn, and a click is about to change it.
 		o.CloseHints()
+		// And the pane labels: a click picks a pane itself.
+		o.ClosePaneLabels()
 		// Capture mode is a gesture over the whole screen, the review
 		// included, so it is asked first.
 		if o.CaptureActive() {
@@ -74,7 +76,7 @@ func HandleInput(msg tea.Msg, o *app.OS) (tea.Model, tea.Cmd) {
 		}
 	case tea.MouseMotionMsg:
 		// The labels cover the pane, so motion over it is not the pane's.
-		if o.HintsOpen() {
+		if o.HintsOpen() || o.PaneLabelsOpen() {
 			return o, nil
 		}
 		if o.CaptureActive() {
@@ -107,8 +109,9 @@ func HandleInput(msg tea.Msg, o *app.OS) (tea.Model, tea.Cmd) {
 		o.ReleaseGestureAnnouncements()
 	case tea.MouseWheelMsg:
 		// A wheel scrolls the pane out from under the labels, so it ends
-		// hints mode and then scrolls as usual.
+		// hints mode and then scrolls as usual. The pane labels the same.
 		o.CloseHints()
+		o.ClosePaneLabels()
 		if o.ReviewOpen() {
 			switch msg.Button {
 			case tea.MouseWheelUp:
@@ -205,6 +208,22 @@ func pasteTakenByOverlay(o *app.OS, content string) bool {
 	// method's commit that arrives as one, is not a label, and nothing
 	// typed while the labels are up may reach the pane.
 	if o.HintsOpen() {
+		return true
+	}
+	// The pane labels the same: a paste is not a label, and with multifocus
+	// on it would reach every pane of the set.
+	if o.PaneLabelsOpen() {
+		return true
+	}
+	// The pane navigator covers the screen, so a paste is never the pane's.
+	// In the search line it is search text, on one line. In the list it is
+	// dropped.
+	if o.NavigatorOpen() {
+		if o.NavigatorSearching() {
+			if text := strings.Join(strings.Fields(content), " "); text != "" {
+				o.NavigatorSetQuery(o.NavigatorQuery() + text)
+			}
+		}
 		return true
 	}
 	// The multi copy save prompt takes a paste as its path, with line
@@ -327,9 +346,15 @@ func HandleKeyPress(msg tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
 	}
 
 	// A chord that only resolved because tuios recognised the character macOS
-	// composed out of it is proof the Option key is not being sent as Alt.
-	if chord, ok := macOptionChord(msg); ok && chord != msg.Keystroke() {
-		o.NoteComposedOptionChord(chord)
+	// composed out of it is proof the Option key is not being sent as Alt. With
+	// option_glyphs = "type" the user composes on purpose (issue #566), and with
+	// keyboard_layout = "other" the US table is off: the character went to the
+	// pane, and there is nothing to say.
+	if optionGlyphsApply(o.Settings.KeyboardLayout, o.Settings.OptionGlyphs) {
+		chords := composedChords(msg, o.HostBaseCode(msg))
+		if len(chords) > 0 && chords[len(chords)-1] != msg.Keystroke() {
+			o.NoteComposedOptionChord(chords[len(chords)-1])
+		}
 	}
 	// The other way a macOS terminal loses an Option chord, and the one that
 	// used to pass in silence: Option+Left and Option+Right arriving as the
@@ -390,6 +415,10 @@ func routeKey(msg tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
 	// a binding. See hints_input.go.
 	if o.HintsOpen() {
 		return handleHintsKey(msg, o)
+	}
+	// The pane labels own the keyboard the same way. See pane_labels_input.go.
+	if o.PaneLabelsOpen() {
+		return handlePaneLabelsKey(msg, o)
 	}
 
 	// Handle the quit menu (highest priority, works in any mode)
@@ -453,7 +482,7 @@ func routeKey(msg tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
 	// The message view and the log viewer are the last two: ctrl+b N opens the
 	// view over the rail, and its scroll and close keys must reach it.
 	if o.SidebarFocused && !o.ShowHelp && !o.ShowCommandPalette && !o.ShowAgentMail && !o.ShowInbox &&
-		!o.MessageViewOpen() && !o.ShowLogs && !o.PrefixActive && !isLeaderKey(msg, &o.Settings) {
+		!o.MessageViewOpen() && !o.ShowLogs && !o.PrefixActive && !isLeaderKey(msg, &o.Settings, o.HostBaseCode(msg)) {
 		return HandleSidebarKey(msg, o)
 	}
 
@@ -525,7 +554,7 @@ func routeKey(msg tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
 	}
 
 	// Check for prefix key activation in window management mode
-	if isLeaderKey(msg, &o.Settings) {
+	if isLeaderKey(msg, &o.Settings, o.HostBaseCode(msg)) {
 		return handlePrefixKey(msg, o)
 	}
 
@@ -606,12 +635,30 @@ func handleRenameMode(msg tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
 // and reading it by position took an editor's C-x for the leader. The US key
 // at the same position only counts for a non-Latin key (see usesBaseLayout),
 // so Ctrl+и on a Ukrainian layout is still Ctrl+B.
-func isLeaderKey(msg tea.KeyPressMsg, s *config.Settings) bool {
+//
+// A leader spelled with Option (opt+1, alt+a) also fires on the character
+// Option composes for it, by the rules the binding tables follow (see
+// composedChords and optionGlyphsApply). The input path has already taken the
+// base-layout key off msg, so base hands it back; zero when there is none.
+func isLeaderKey(msg tea.KeyPressMsg, s *config.Settings, base rune) bool {
 	if config.IsLeaderPress(producedKey(msg).String(), s.LeaderKey) {
 		return true
 	}
-	base, ok := baseLayoutKey(msg)
-	return ok && config.IsLeaderPress(base, s.LeaderKey)
+	if pos, ok := baseLayoutKey(msg); ok && config.IsLeaderPress(pos, s.LeaderKey) {
+		return true
+	}
+	if !optionGlyphsApply(s.KeyboardLayout, s.OptionGlyphs) {
+		return false
+	}
+	if base == 0 {
+		base = msg.BaseCode
+	}
+	for _, chord := range composedChords(msg, base) {
+		if config.IsLeaderPress(chord, s.LeaderKey) {
+			return true
+		}
+	}
+	return false
 }
 
 // handlePrefixKey handles Ctrl+B prefix key activation
@@ -663,7 +710,7 @@ func handleLogViewerKey(msg tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
 // key. The leader and the chord after it are let through, so a prefix command
 // works over the viewer the way it does over the rail.
 func viewerTakesKey(msg tea.KeyPressMsg, o *app.OS) bool {
-	return !isLeaderKey(msg, &o.Settings) && !o.PrefixActive && !o.WorkspacePrefixActive &&
+	return !isLeaderKey(msg, &o.Settings, o.HostBaseCode(msg)) && !o.PrefixActive && !o.WorkspacePrefixActive &&
 		!o.MinimizePrefixActive && !o.TilingPrefixActive && !o.DebugPrefixActive &&
 		!o.TapePrefixActive && !o.LayoutPrefixActive
 }

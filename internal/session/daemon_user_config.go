@@ -45,6 +45,8 @@ func DaemonConfigFromUser(uc *config.UserConfig) *DaemonConfig {
 	cfg.RespondFromShell = uc.Daemon.RespondFromShell
 	cfg.ResumeAgents = uc.Daemon.ResumeAgents
 	cfg.WindowSize = uc.Daemon.WindowSize
+	cfg.SingleClient = uc.Daemon.SingleClient
+	cfg.SSHAgent = uc.Daemon.SSHAgent
 	cfg.History = ResolveHistoryPolicy(uc.Daemon.PersistScrollback, uc.Daemon.PersistScrollbackLines, uc.Daemon.PersistScrollbackKB)
 	cfg.Hosts = HostsFromConfig(uc)
 	// The same table says what each machine linked to this one may do here.
@@ -68,6 +70,12 @@ func DaemonConfigFromUser(uc *config.UserConfig) *DaemonConfig {
 	// The daemon spawns every pane, so the shell the user asked for has to
 	// reach it: only standalone panes used to honour it.
 	cfg.PreferredShell = uc.Appearance.PreferredShell
+	// The daemon owns the window set, so it sees the workspace on screen
+	// lose its last pane, with or without a client attached.
+	cfg.StayOnEmptyWorkspace = !uc.Workspaces.ReturnsWhenEmpty()
+	// The daemon holds the paste buffers every client shares.
+	cfg.PasteBufferLimit, cfg.PasteBufferMaxBytes = uc.PasteBuffers.Resolved()
+	cfg.PasteBuffersOff = cfg.PasteBufferLimit == 0
 	// The daemon runs the hooks for the facts it owns, so a session with
 	// nobody attached still runs them. The client keeps the hooks that need a
 	// terminal.
@@ -83,9 +91,16 @@ func DaemonConfigFromUser(uc *config.UserConfig) *DaemonConfig {
 	cfg.RecapTestPatterns = uc.Agents.Recap.Resolved().TestPatterns
 	// The daemon holds every pane's delivery queue, so it bounds them.
 	cfg.QueueMax = uc.Agents.Queue.MaxEntries()
+	// The daemon takes every checkpoint, so it reads whether to.
+	cfg.Checkpoints = uc.Agents.Checkpoints
+	// The daemon runs the herdr plugins, so it reads which ones.
+	cfg.Plugins = uc.Plugins
 	// The daemon spawns every pane, so it decides which are told about the
 	// herdr protocol socket.
 	cfg.HerdrProtocol = uc.Agents.HerdrProtocol
+	// The daemon runs when nobody is attached, which is when a phone is the
+	// way to reach the person, so it sends the push notifications.
+	cfg.Notify = uc.Notify
 	return cfg
 }
 
@@ -110,6 +125,7 @@ func HostsFromConfig(cfg *config.UserConfig) []federation.Host {
 			ConnectTimeout: time.Duration(h.ConnectTimeout) * time.Second,
 			Command:        h.Command,
 			SSHOptions:     h.SSHOptions,
+			TailscaleLogin: h.TailscaleLogin,
 		})
 	}
 	return out

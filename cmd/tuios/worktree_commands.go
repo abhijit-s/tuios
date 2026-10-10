@@ -11,7 +11,9 @@ import (
 
 	"charm.land/lipgloss/v2"
 	"charm.land/lipgloss/v2/table"
+	"github.com/Gaurav-Gosain/tuios/internal/ghpr"
 	"github.com/Gaurav-Gosain/tuios/internal/harness"
+	"github.com/Gaurav-Gosain/tuios/internal/plural"
 	"github.com/Gaurav-Gosain/tuios/internal/session"
 	"github.com/Gaurav-Gosain/tuios/internal/worktree"
 	"github.com/spf13/cobra"
@@ -26,25 +28,26 @@ import (
 
 // worktreeRow is one entry of list-worktrees as the CLI reads it.
 type worktreeRow struct {
-	Session      string `json:"session"`
-	Repo         string `json:"repo"`
-	RepoRoot     string `json:"repo_root"`
-	Branch       string `json:"branch"`
-	Path         string `json:"path"`
-	Base         string `json:"base"`
-	Group        string `json:"group"`
-	Managed      bool   `json:"managed"`
-	Gone         bool   `json:"gone"`
-	State        string `json:"state"`
-	Harness      string `json:"harness"`
-	Windows      int    `json:"windows"`
-	Attached     bool   `json:"attached"`
-	PromptStatus string `json:"prompt_status"`
-	PromptNote   string `json:"prompt_note"`
-	ReadyBy      string `json:"prompt_ready_by"`
-	Agent        string `json:"agent"`
-	Changes      *int   `json:"changes"`
-	Ahead        *int   `json:"ahead"`
+	Session      string   `json:"session"`
+	Repo         string   `json:"repo"`
+	RepoRoot     string   `json:"repo_root"`
+	Branch       string   `json:"branch"`
+	Path         string   `json:"path"`
+	Base         string   `json:"base"`
+	Group        string   `json:"group"`
+	Managed      bool     `json:"managed"`
+	Gone         bool     `json:"gone"`
+	State        string   `json:"state"`
+	Harness      string   `json:"harness"`
+	Windows      int      `json:"windows"`
+	Attached     bool     `json:"attached"`
+	PromptStatus string   `json:"prompt_status"`
+	PromptNote   string   `json:"prompt_note"`
+	ReadyBy      string   `json:"prompt_ready_by"`
+	Agent        string   `json:"agent"`
+	Changes      *int     `json:"changes"`
+	Ahead        *int     `json:"ahead"`
+	PR           *ghpr.PR `json:"pr,omitempty"`
 }
 
 // newWorktreeCommand builds `tuios worktree` and its subcommands.
@@ -259,7 +262,7 @@ is looked up on your PATH, which the command sends, and --env passes more of
 your environment (--env NAME for your value, --env NAME=VALUE to set one).
 
 --prompt, given once per session, gives each session its own prompt instead
-of one for all; the count is then how many there are.
+of one for all. The count is then how many there are.
 
 An agent that has not shown it is at its prompt after 30 seconds is marked
 held, and the Inbox asks you to look at its pane: most often it shows a
@@ -271,7 +274,7 @@ and the first words of the prompt, or --name.
 
 --grants says what every agent may do through tuios: read, write, fan,
 respond, admin, or none. Without it they hold the default of
-[agents.permissions]; a fan run from a pane without admin gives them that
+[agents.permissions]. A fan run from a pane without admin gives them that
 pane's own grants.
 
 'tuios fan compare <session>' shows the attempts side by side, with what each
@@ -350,7 +353,8 @@ pull HOST:SESSION' brings its work here.`,
 	_ = fanCmd.RegisterFlagCompletionFunc("grants", completeGrantNames)
 	_ = fanCmd.MarkFlagRequired("agent")
 
-	var keepStash, keepForce, keepJSON bool
+	var keepStash, keepForce, keepJSON, keepMerge, keepSquash, keepFFOnly bool
+	var keepInto string
 	keepCmd := &cobra.Command{
 		Use:   "keep <session>",
 		Short: "Keep one session of a fan-out and remove the others",
@@ -362,20 +366,37 @@ The session you name is not touched. Each sibling is removed the way
 in place unless --stash keeps its changes in git stash or --force discards
 them. Branches are never deleted.
 
+--merge first merges the kept session's branch into its base in the main
+checkout, as 'tuios ship merge' does. --squash and --ff-only choose how.
+When the merge conflicts or is refused, it is undone and no sibling is
+removed. Uncommitted changes in the kept worktree are not merged.
+
 HOST:SESSION keeps a session of a fan-out on another machine and removes
 its siblings there.`,
 		Example: `  tuios fan keep api-fan-add-a-retry-with-2
   tuios fan keep api-fan-add-a-retry-with-2 --stash
+  tuios fan keep api-fan-add-a-retry-with-2 --merge --squash
   tuios fan keep build:api-fan-add-a-retry-with-2`,
 		Args:              cobra.ExactArgs(1),
 		ValidArgsFunction: completeWorktreeSessions,
 		RunE: func(_ *cobra.Command, args []string) error {
-			return runFanKeep(args[0], keepStash, keepForce, keepJSON)
+			mode, err := mergeMode(keepSquash, keepFFOnly)
+			if err != nil {
+				return err
+			}
+			if !keepMerge && (mode != "" || keepInto != "") {
+				return errors.New("--squash, --ff-only and --into apply only with --merge. Add --merge")
+			}
+			return runFanKeep(args[0], keepStash, keepForce, keepJSON, fanKeepMerge{on: keepMerge, mode: mode, into: keepInto})
 		},
 	}
 	keepCmd.Flags().BoolVar(&keepStash, "stash", false, "Keep every sibling's uncommitted changes in git stash before removing it")
 	keepCmd.Flags().BoolVar(&keepForce, "force", false, "Discard every sibling's uncommitted changes")
 	keepCmd.Flags().BoolVar(&keepJSON, "json", false, "Output result as JSON")
+	keepCmd.Flags().BoolVar(&keepMerge, "merge", false, "First merge the kept session's branch into its base in the main checkout")
+	keepCmd.Flags().BoolVar(&keepSquash, "squash", false, "With --merge: make one commit with the branch's change")
+	keepCmd.Flags().BoolVar(&keepFFOnly, "ff-only", false, "With --merge: only fast-forward")
+	keepCmd.Flags().StringVar(&keepInto, "into", "", "With --merge: the branch to merge into (default: the base the session was made from)")
 
 	fanCmd.AddCommand(keepCmd, newFanCompareCommand(), newFanDiffCommand(), newFanVerifyCommand())
 	return fanCmd
@@ -521,7 +542,7 @@ func runWorktreeList(host, repo, group string, jsonOutput bool) error {
 		return nil
 	}
 	fmt.Println(renderWorktreeTable(rows))
-	fmt.Printf("\n%d worktree session(s)\n", len(rows))
+	fmt.Printf("\n%s\n", plural.Count(len(rows), "worktree session"))
 	return nil
 }
 
@@ -557,9 +578,13 @@ func renderWorktreeTable(rows []worktreeRow) string {
 		case session.PromptHeld:
 			prompt = "held: look at the pane"
 		}
-		cells = append(cells, []string{r.Session, r.Repo, r.Branch, orNone(r.State), changes, prompt, status})
+		pr := "-"
+		if badge := r.PR.Badge(); badge != "" {
+			pr = plainLine(strings.TrimPrefix(badge, "PR "))
+		}
+		cells = append(cells, []string{r.Session, r.Repo, r.Branch, orNone(r.State), changes, prompt, pr, status})
 	}
-	return renderTable([]string{"SESSION", "REPO", "BRANCH", "AGENT", "CHANGES", "PROMPT", "STATUS"}, cells)
+	return renderTable([]string{"SESSION", "REPO", "BRANCH", "AGENT", "CHANGES", "PROMPT", "PR", "STATUS"}, cells)
 }
 
 // renderTable draws a listing with the border and colours of the session
@@ -633,9 +658,9 @@ func (r removedWorktree) sentences() string {
 	}
 	switch {
 	case r.Stashed:
-		fmt.Fprintf(&b, "%d uncommitted %s %s in git stash as '%s'.\n", r.Changes, pluralWord(r.Changes, "change", "changes"), pluralWord(r.Changes, "is", "are"), r.StashMessage)
+		fmt.Fprintf(&b, "%d uncommitted %s %s in git stash as '%s'.\n", r.Changes, plural.Word(r.Changes, "change", "changes"), plural.Word(r.Changes, "is", "are"), r.StashMessage)
 	case r.Discarded:
-		fmt.Fprintf(&b, "%d uncommitted %s %s discarded.\n", r.Changes, pluralWord(r.Changes, "change", "changes"), pluralWord(r.Changes, "was", "were"))
+		fmt.Fprintf(&b, "%d uncommitted %s %s discarded.\n", r.Changes, plural.Word(r.Changes, "change", "changes"), plural.Word(r.Changes, "was", "were"))
 	}
 	if r.SessionKilled {
 		fmt.Fprintf(&b, "Killed session '%s'.", r.Session)
@@ -643,13 +668,6 @@ func (r removedWorktree) sentences() string {
 		fmt.Fprintf(&b, "Session '%s' is still running.", r.Session)
 	}
 	return b.String()
-}
-
-func pluralWord(n int, one, many string) string {
-	if n == 1 {
-		return one
-	}
-	return many
 }
 
 func runWorktreeDiff(name string, stat bool) error {
@@ -830,7 +848,7 @@ func runFan(o fanOptions, wait, jsonOutput bool) error {
 		return fmt.Errorf("failed to parse response: %w", err)
 	}
 	if !jsonOutput {
-		fmt.Printf("Started %d %s on %s%s. Each prompt is sent when its agent is ready.\n", len(res.Sessions), pluralWord(len(res.Sessions), "agent", "agents"), res.Group, t.on())
+		fmt.Printf("Started %d %s on %s%s. Each prompt is sent when its agent is ready.\n", len(res.Sessions), plural.Word(len(res.Sessions), "agent", "agents"), res.Group, t.on())
 		for _, s := range res.Sessions {
 			line := fmt.Sprintf("  %s  %s  %s", s.Session, s.Branch, s.Path)
 			if len(o.agents) > 1 && s.Command != "" {
@@ -899,22 +917,41 @@ type fanKeepOutcome struct {
 	Note    string `json:"note"`
 }
 
+// fanKeepMerge is the --merge of fan keep.
+type fanKeepMerge struct {
+	on         bool
+	mode, into string
+}
+
 // runFanKeep keeps one session of a fan with the daemon's keep-fan. A daemon
 // from before the verb gets the loop the CLI ran before it, with the same
 // output.
-func runFanKeep(target string, stash, force, jsonOutput bool) error {
+func runFanKeep(target string, stash, force, jsonOutput bool, merge fanKeepMerge) error {
 	host, winner := splitHostSession(target)
 	t, err := dialHost(host)
 	if err != nil {
 		return err
 	}
-	raw, err := t.client.CallWithTimeout("keep-fan", map[string]any{"session": winner, "stash": stash, "force": force}, 5*time.Minute)
+	params := map[string]any{"session": winner, "stash": stash, "force": force}
+	if merge.on {
+		params["merge"] = true
+		if merge.mode != "" {
+			params["merge_mode"] = merge.mode
+		}
+		if merge.into != "" {
+			params["into"] = merge.into
+		}
+	}
+	raw, err := t.client.CallWithTimeout("keep-fan", params, 5*time.Minute)
 	t.Close()
 	var call *session.VerbCallError
-	if err != nil && errors.As(err, &call) && call.Code == session.ErrVerbUnknownVerb {
+	if err != nil && errors.As(err, &call) && call.Code == session.ErrVerbUnknownVerb && !merge.on {
 		return runFanKeepLoop(host, winner, stash, force, jsonOutput)
 	}
 	if err != nil {
+		if merge.on {
+			return shipFailed(t, "keep-fan", err, jsonOutput)
+		}
 		return reportVerbError(t.explain("keep-fan", err), jsonOutput)
 	}
 	var res struct {
@@ -923,6 +960,7 @@ func runFanKeep(target string, stash, force, jsonOutput bool) error {
 		Group   string            `json:"group"`
 		Left    int               `json:"left"`
 		Removed []json.RawMessage `json:"removed"`
+		Merge   *shipMergeResult  `json:"merge"`
 	}
 	if err := json.Unmarshal(raw, &res); err != nil {
 		return fmt.Errorf("failed to parse response: %w", err)
@@ -952,20 +990,26 @@ func runFanKeep(target string, stash, force, jsonOutput bool) error {
 		}
 		outcomes = append(outcomes, fanKeepOutcome{Session: head.Session, Removed: true, Note: removed.sentences()})
 	}
-	return reportFanKeep(t, res.Kept, res.Branch, res.Group, outcomes, res.Left, jsonOutput)
+	return reportFanKeep(t, res.Kept, res.Branch, res.Group, outcomes, res.Left, res.Merge, jsonOutput)
 }
 
 // reportFanKeep prints what a fan keep did, and exits 1 when a sibling was
 // left in place.
-func reportFanKeep(t *verbTarget, winner, branch, group string, outcomes []fanKeepOutcome, left int, jsonOutput bool) error {
+func reportFanKeep(t *verbTarget, winner, branch, group string, outcomes []fanKeepOutcome, left int, merge *shipMergeResult, jsonOutput bool) error {
 	if jsonOutput {
 		out := map[string]any{"kept": winner, "group": group, "siblings": outcomes, "left": left}
 		if t.host != "" {
 			out["host"] = t.host
 		}
+		if merge != nil {
+			out["merge"] = merge
+		}
 		return printJSON(out)
 	}
 	fmt.Printf("Kept %s on %s%s.\n", winner, branch, t.on())
+	if merge != nil {
+		fmt.Print(merge.sentences())
+	}
 	for _, o := range outcomes {
 		fmt.Println(strings.TrimRight(o.Note, "\n"))
 	}
@@ -1030,7 +1074,7 @@ func runFanKeepLoop(host, winner string, stash, force, jsonOutput bool) error {
 		}
 		outcomes = append(outcomes, fanKeepOutcome{Session: r.Session, Removed: true, Note: res.sentences()})
 	}
-	return reportFanKeep(t, winner, kept.Branch, kept.Group, outcomes, left, jsonOutput)
+	return reportFanKeep(t, winner, kept.Branch, kept.Group, outcomes, left, nil, jsonOutput)
 }
 
 // completeWorktreeSessions offers the worktree session names to the shell.

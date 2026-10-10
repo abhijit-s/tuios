@@ -7,8 +7,9 @@ An agent **running inside a TUIOS pane** wants the other document. Run
 `tuios --skill` for the core that drives a running session: addressing panes,
 reading and writing them, running work and waiting on it, reporting agent
 state, and talking to other agents safely. `tuios --skill TOPIC` prints the
-rest (panes and state in depth, fleets, the Inbox, mail, hosts, events, MCP,
-the tmux shim, grants, config, errors, recipes). The source is [skills/tuios/SKILL.md](skills/tuios/SKILL.md)
+rest (panes and state in depth, fleets, checkpoints, ship, the Inbox, notify, pair,
+mail, hosts, clients, events, MCP, the tmux shim, grants, config, agents-off,
+errors, recipes). The source is [skills/tuios/SKILL.md](skills/tuios/SKILL.md)
 and the other files in `skills/tuios/`, embedded in the binary so the printed
 copy always matches the build. `cmd/tuios` tests resolve every command the
 skill shows against the command tree.
@@ -134,6 +135,7 @@ tuios/
 │   │   ├── screen.go       # Screen buffer management
 │   │   └── scrollback.go   # History ring (10,000 lines unless configured)
 │   ├── session/            # The daemon: sessions, PTYs (session.go), wire protocol, JSON verbs
+│   ├── transcriptview/     # Decodes an agent's transcript into a conversation, for agent-transcript only
 │   ├── federation/         # The link layer between this daemon and the daemons on other machines
 │   ├── worktree/           # Git worktrees: detect, create, and remove without losing uncommitted work
 │   ├── gitstate/           # Branch and upstream drift for the sidebar
@@ -144,16 +146,20 @@ tuios/
 │   ├── shot/               # Renders a cell grid to SVG, PNG, ANSI, HTML or text
 │   ├── release/            # Finds published releases and verifies a downloaded binary (tuios update)
 │   ├── netutil/            # Small network helpers the servers share
+│   ├── memtrim/            # Gives the heap a burst left behind back to the OS once the process settles
 │   ├── harness/            # Agent harness manifests and detection
+│   ├── herdrplugin/        # herdr plugins: manifest, discovery, the command runner (the host is internal/session/plugin_host.go)
 │   ├── integration/        # Wires harness hooks, plugins and MCP entries (tuios integration)
 │   ├── mcp/                # The MCP server behind tuios mcp
 │   ├── risk/               # Marks an approval risky by the shipped and configured rules
 │   ├── agentproto/         # Headless agents over ACP and the Codex app-server: the pane program of start-agent --protocol
 │   ├── learn/              # Learn tuios: tour model, event contract, page commands
 │   ├── webshell/           # In-memory pty and fake shell for the browser build
+│   ├── progstatus/         # OSC 7501, the Program Status Protocol: parser, record store, encoder (docs/PROGRAM_STATUS.md)
 │   ├── hooks/              # Shell hooks on window/session/agent events
 │   ├── tmuxcompat/         # The opt-in tmux shim (tuios tmux-shim) and its pane holder; see docs/TMUX_SHIM.md
 │   ├── shimlink/           # The tmux and herdr links that run tuios as another program
+│   ├── stopevent/          # The Windows event tuios kill-server sets to stop a daemon
 │   ├── scrollback/         # OSC 133 scrollback browser
 │   ├── overlay/            # Panel and dialog primitives for chrome
 │   ├── sessiontree/        # Sidebar session tree model

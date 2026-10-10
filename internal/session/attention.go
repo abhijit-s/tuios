@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -14,6 +13,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/Gaurav-Gosain/tuios/internal/lazyre"
 	"github.com/Gaurav-Gosain/tuios/internal/risk"
 )
 
@@ -614,6 +614,9 @@ func (a *attentionStore) noteAgentState(sessionName string, ev SessionEvent) {
 		Harness:   ev.hookHarness,
 		Name:      attentionText(ev.hookTitle, attentionMaxSummary),
 	}
+	if ev.hookProgram {
+		base.Name += " [" + shortWindowID(ev.Window) + "]"
+	}
 
 	if state != AgentStateNeedsInput.Name() {
 		a.closeKeyLocked(attentionKey(AttentionApproval, sessionName, ev.Window, 0), AttentionClosedResolved)
@@ -1190,7 +1193,7 @@ func (a *attentionStore) load(path string, live func(session, window string) boo
 // a key=value or key: value whose key names a secret, and an Authorization
 // bearer token. It is a net for the common case, not a guarantee, which is why
 // the summary is also kept short.
-var attentionSecret = regexp.MustCompile(`(?i)\b((?:[a-z0-9_]*(?:token|secret|password|passwd|api[_-]?key|access[_-]?key|private[_-]?key|credential)s?)\s*[=:]\s*|bearer\s+)("[^"]*"|'[^']*'|[^\s"']+)`)
+var attentionSecret = lazyre.New(`(?i)\b((?:[a-z0-9_]*(?:token|secret|password|passwd|api[_-]?key|access[_-]?key|private[_-]?key|credential)s?)\s*[=:]\s*|bearer\s+)("[^"]*"|'[^']*'|[^\s"']+)`)
 
 // attentionSecretWords are the words attentionSecret keys on, lower case. A
 // summary with none of them cannot match, and most summaries have none, so the
@@ -1233,7 +1236,7 @@ func attentionText(s string, limit int) string {
 	}
 	out := b.String()
 	if attentionMaySecret(out) {
-		out = attentionSecret.ReplaceAllString(out, "${1}[redacted]")
+		out = attentionSecret().ReplaceAllString(out, "${1}[redacted]")
 	}
 	if len(out) <= limit {
 		return out

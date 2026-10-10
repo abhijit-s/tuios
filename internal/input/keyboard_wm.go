@@ -82,9 +82,19 @@ func HandleWindowManagementModeKey(msg tea.KeyPressMsg, o *app.OS) (*app.OS, tea
 		return handleInboxInput(msg, o)
 	}
 
+	// The pane navigator owns the keyboard while it is up.
+	if o.NavigatorOpen() {
+		return handleNavigatorInput(msg, o)
+	}
+
 	// Handle workspace switcher overlay
 	if o.ShowWorkspaceSwitcher {
 		return handleWorkspaceSwitcherInput(msg, o)
+	}
+
+	// The paste buffer chooser, the same way.
+	if o.BufferChooserOpen() {
+		return handleBufferChooserInput(msg, o)
 	}
 
 	// Handle aggregate view overlay
@@ -134,7 +144,7 @@ func HandleWindowManagementModeKey(msg tea.KeyPressMsg, o *app.OS) (*app.OS, tea
 	if key == "esc" && o.FocusedPopup() != nil {
 		action := ""
 		if o.KeybindRegistry != nil {
-			action = lookupAction(msg, o.KeybindRegistry.GetAction)
+			action = lookupAction(o, msg, o.KeybindRegistry.GetAction)
 		}
 		if action == "" || action == "enter_window_mode" {
 			o.CloseFocusedPopup()
@@ -142,9 +152,25 @@ func HandleWindowManagementModeKey(msg tea.KeyPressMsg, o *app.OS) (*app.OS, tea
 		}
 	}
 
+	// Esc turns the spotlight off. It comes after every overlay and the popup
+	// above, so an open dialog, menu or popup closes first, and it is claimed
+	// on the same terms as the popup's: only while esc still means
+	// enter_window_mode, which does nothing here. See
+	// internal/app/spotlight_exit.go.
+	if key == "esc" && o.SpotlightOn() {
+		action := ""
+		if o.KeybindRegistry != nil {
+			action = lookupAction(o, msg, o.KeybindRegistry.GetAction)
+		}
+		if action == "" || action == "enter_window_mode" {
+			save, _ := o.TurnOffSpotlight()
+			return o, save
+		}
+	}
+
 	// Try config-based dispatch first (if registry is available)
 	if o.KeybindRegistry != nil {
-		action := lookupAction(msg, o.KeybindRegistry.GetAction)
+		action := lookupAction(o, msg, o.KeybindRegistry.GetAction)
 		if action != "" {
 			dispatcher := GetDispatcher()
 			if dispatcher.HasAction(action) {

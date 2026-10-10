@@ -32,6 +32,10 @@ type Options struct {
 	// InitialBackoff and MaxBackoff bound the redial cycle.
 	InitialBackoff time.Duration
 	MaxBackoff     time.Duration
+	// ApprovalWait is how long one dial waits for the person to approve a
+	// Tailscale SSH check before it gives up and dials again. Zero means
+	// DefaultApprovalWait.
+	ApprovalWait time.Duration
 	// Log receives one line whenever a link drops, is kept through a failed
 	// listing, or drops a stream for a reader that stopped reading. It is how
 	// a person finds out which of those happened, which is the difference
@@ -59,6 +63,12 @@ type Options struct {
 	linkQuietLimit time.Duration
 }
 
+// DefaultApprovalWait is how long a dial holds a connection that waits for a
+// Tailscale SSH approval. The connection itself is the wait: when the person
+// approves, the same ssh goes on, so the URL shown stays the one that works.
+// A dial that gives up shows a new URL on the next one.
+const DefaultApprovalWait = 10 * time.Minute
+
 // defaultLinkQuietLimit is the silence that makes a link dead rather than slow.
 //
 // It is set above KeepaliveWindow on purpose. ssh's own keepalives end a
@@ -80,6 +90,9 @@ func (o Options) withDefaults() Options {
 	}
 	if o.MaxBackoff <= 0 {
 		o.MaxBackoff = 60 * time.Second
+	}
+	if o.ApprovalWait <= 0 {
+		o.ApprovalWait = DefaultApprovalWait
 	}
 	if o.now == nil {
 		o.now = time.Now
@@ -107,11 +120,18 @@ type HostReport struct {
 	Reason string `json:"reason,omitempty"`
 	// Detail is the underlying message, usually ssh's own. It comes from
 	// another machine, so it is bounded and it is data, never an instruction.
-	Detail        string `json:"detail,omitempty"`
-	DaemonVersion string `json:"daemon_version,omitempty"`
-	Protocol      int    `json:"protocol,omitempty"`
-	MinProtocol   int    `json:"min_protocol,omitempty"`
-	PID           int    `json:"pid,omitempty"`
+	Detail string `json:"detail,omitempty"`
+	// ApprovalURL is where the person approves a Tailscale SSH check that
+	// the link waits on. It is set only while Status is StatusApproval.
+	ApprovalURL string `json:"approval_url,omitempty"`
+	// ApprovalRefused says the link waits for a sign-in and the banner named
+	// an address that is not a Tailscale login origin, so ApprovalURL is
+	// empty. See SignInURLAllowed.
+	ApprovalRefused bool   `json:"approval_refused,omitempty"`
+	DaemonVersion   string `json:"daemon_version,omitempty"`
+	Protocol        int    `json:"protocol,omitempty"`
+	MinProtocol     int    `json:"min_protocol,omitempty"`
+	PID             int    `json:"pid,omitempty"`
 	// Instance is the far daemon's run, as its hello named it. Two reports
 	// with one instance are one daemon, whatever each table calls it. Empty
 	// for a daemon too old to say, and while the link has not come up.
@@ -399,6 +419,20 @@ func (m *Manager) link(name string) *link {
 		return nil
 	}
 	return s.link
+}
+
+// Retry asks a host's link to dial again now instead of at the end of its
+// backoff, and to keep its redial quick for a while if it waits for a
+// Tailscale sign-in. It is what a person asks for when they open the sign-in
+// page. A dial in progress is not cut short. ok is false for a name the
+// manager has no link for.
+func (m *Manager) Retry(host string) bool {
+	l := m.link(host)
+	if l == nil {
+		return false
+	}
+	l.retry()
+	return true
 }
 
 // Reports snapshots every host. It waits, bounded by ctx, for hosts whose first

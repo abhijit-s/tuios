@@ -1,7 +1,6 @@
 package vt
 
 import (
-	"io"
 	"time"
 
 	"github.com/charmbracelet/x/ansi"
@@ -20,13 +19,18 @@ func (e *Emulator) handleMode(params ansi.Params, set, isAnsi bool) {
 			mode = ansi.ANSIMode(param)
 		}
 
-		setting := e.modeSetting(mode)
-		if setting == ansi.ModePermanentlyReset || setting == ansi.ModePermanentlySet {
-			// Permanently set modes are ignored.
+		// A mode the emulator does not implement is not stored. Storing it
+		// made DECRQM report it set, and a guest that probes before it
+		// enables a feature believed a mode nothing acts on.
+		if !modeRecognised(mode) {
+			e.logf("unhandled sequence: mode %d (ansi=%v, set=%v)", param, isAnsi, set)
+			continue
+		}
+		if modePermanent(mode) {
 			continue
 		}
 
-		setting = ansi.ModeReset
+		setting := ansi.ModeReset
 		if set {
 			setting = ansi.ModeSet
 		}
@@ -61,6 +65,11 @@ func (e *Emulator) setAltScreenMode(on bool) {
 	// window is never left holding a stale frame (e.g. when an app exits without
 	// closing its synchronized update).
 	e.cachedSyncOutput.Store(false)
+	// Each screen has its own kitty keyboard stack.
+	if e.kittyKbd != nil {
+		e.kittyKbd.SetAltScreen(on)
+		e.updateKittyKeyboardCache()
+	}
 	if e.cb.AltScreen != nil {
 		e.cb.AltScreen(on)
 	}
@@ -76,10 +85,8 @@ func (e *Emulator) setAltScreenMode(on bool) {
 func (e *Emulator) saveCursor() {
 	e.scr.SaveCursor()
 	e.saveCharsets()
-	e.scr.savedExtra = savedExtras{
-		phantom: e.atPhantom,
-		origin:  e.isModeSet(ansi.ModeOrigin),
-	}
+	e.scr.savedExtra.phantom = e.atPhantom
+	e.scr.savedExtra.origin = e.isModeSet(ansi.ModeOrigin)
 }
 
 // restoreCursor is the DECRC half of saveCursor.
@@ -94,6 +101,7 @@ func (e *Emulator) restoreCursor() {
 	e.modesMu.Lock()
 	e.modes[ansi.ModeOrigin] = setting
 	e.modesMu.Unlock()
+	e.cachedOrigin.Store(e.scr.savedExtra.origin)
 
 	e.scr.RestoreCursor()
 	e.restoreCharsets()
@@ -105,6 +113,11 @@ func (e *Emulator) setMode(mode ansi.Mode, setting ansi.ModeSetting) {
 	e.modesMu.Lock()
 	e.modes[mode] = setting
 	e.modesMu.Unlock()
+	// Before the side effects below: setting DECOM homes the cursor through
+	// setCursorPosition, which has to see the new value.
+	if mode == ansi.ModeOrigin {
+		e.cachedOrigin.Store(setting.IsSet())
+	}
 	switch mode {
 	case ansi.ModeTextCursorEnable:
 		e.scr.setCursorHidden(!setting.IsSet())
@@ -140,6 +153,16 @@ func (e *Emulator) setMode(mode ansi.Mode, setting ansi.ModeSetting) {
 			e.saveCursor()
 		}
 		e.setAltScreenMode(setting.IsSet())
+		// Leaving restores the primary screen's cursor as DECRC does: the
+		// position, the pen, the character sets and origin mode the guest
+		// had when it entered. xterm and ghostty both do. Keeping the
+		// primary screen's own cursor instead gave back the position but
+		// left the alternate screen's character sets in force, and a client
+		// restored from a snapshot, whose primary cursor is the one it was
+		// sent, came back to the wrong place.
+		if setting.IsReset() {
+			e.restoreCursor()
+		}
 	case ansi.ModeOrigin:
 		// DECOM changes what a cursor address means, so DEC has it home the
 		// cursor on the way in and on the way out. Leaving the cursor where it
@@ -157,7 +180,7 @@ func (e *Emulator) setMode(mode ansi.Mode, setting ansi.ModeSetting) {
 		}
 	case ansi.ModeInBandResize:
 		if setting.IsSet() {
-			_, _ = io.WriteString(e.pipe, ansi.InBandResize(e.Height(), e.Width(), 0, 0))
+			e.sendInBandResize()
 		}
 	}
 	if setting.IsSet() {
@@ -207,6 +230,12 @@ func (e *Emulator) autoWrapMode() bool {
 // same reason autoWrapMode exists: the print path asks once per character.
 func (e *Emulator) insertMode() bool {
 	return e.cachedInsertMode.Load()
+}
+
+// originMode reports DECOM (?6) without touching the modes map, for the same
+// reason autoWrapMode exists: every carriage return asks.
+func (e *Emulator) originMode() bool {
+	return e.cachedOrigin.Load()
 }
 
 // isModeSet returns true if the mode is set.

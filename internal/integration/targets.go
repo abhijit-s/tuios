@@ -19,6 +19,12 @@ import (
 //go:embed assets/opencode/tuios-agent-state.js
 var openCodePluginTemplate string
 
+//go:embed assets/opencode/index.js
+var openCodeV2IndexTemplate string
+
+//go:embed assets/opencode/tui.js
+var openCodeV2TuiTemplate string
+
 //go:embed assets/amp/tuios-agent-state.ts
 var ampPluginTemplate string
 
@@ -157,6 +163,20 @@ func renderTemplate(tmpl string) func(t *Target, tuios string) []byte {
 	}
 }
 
+// renderOpenCodePlugin keeps the legacy entrypoint at its installed path. V1
+// calls server; V2 accepts the definition but reports only from the CLI plugin,
+// since a shared server's environment does not identify the caller's pane.
+func renderOpenCodePlugin(t *Target, tuios string) []byte {
+	out := renderTemplate(openCodePluginTemplate)(t, tuios)
+	return append(out, []byte(`
+export default {
+  id: "tuios-agent-state-v1",
+  server: TuiosAgentState,
+  setup() {},
+};
+`)...)
+}
+
 // renderJSON renders a hook file tuios owns whole, from its events. build
 // makes the object for one event.
 func renderJSON(top map[string]any, build func(command string, ev HookEvent) any) func(t *Target, tuios string) []byte {
@@ -242,12 +262,18 @@ var targets = []*Target{
 		// person's reply back to opencode. Version 3 feeds the model and the
 		// session's cost to the pane's agent metadata. Version 4 ends a turn
 		// on session.status idle, which replaces the deprecated session.idle,
-		// and says why a retry is waiting.
-		ID: OpenCode, Name: "opencode", Binary: "opencode", Version: 4, Reports: ReportsState,
-		Source:    "https://opencode.ai/docs/plugins/ (global plugins load from ~/.config/opencode/plugins)",
+		// and says why a retry is waiting. Version 5 supports OpenCode V2 with
+		// a client plugin, where the environment identifies the correct pane.
+		ID: OpenCode, Name: "opencode", Binary: "opencode", Version: 5, Reports: ReportsState,
+		Source:    "https://opencode.ai/v2/docs/cli/plugins (V2 CLI plugin; V1 server entrypoint requires 1.18.29+)",
 		ConfigDir: func(e Env) string { return e.xdgConfig("opencode") },
 		File:      filepath.Join("plugins", "tuios-agent-state.js"),
-		format:    ownedFile{render: renderTemplate(openCodePluginTemplate)},
+		format:    ownedFile{render: renderOpenCodePlugin},
+		extra: []extraFile{
+			{file: filepath.Join("plugins", "tuios-agent-state", "index.js"), format: ownedFile{render: renderTemplate(openCodeV2IndexTemplate)}},
+			{file: filepath.Join("plugins", "tuios-agent-state", "tui.js"), format: ownedFile{render: renderTemplate(openCodeV2TuiTemplate)}},
+		},
+		ownedDir: filepath.Join("plugins", "tuios-agent-state"),
 	},
 	{
 		// Version 2 reports a question asked with ask_user_choice as
@@ -366,8 +392,9 @@ var targets = []*Target{
 	{
 		// Version 2: the opencode plugin it shares offers permission requests
 		// to the Inbox. Version 3: it feeds the model and cost. Version 4: it
-		// ends a turn on session.status idle.
-		ID: Kilo, Name: "Kilo", Binary: "kilo", Version: 4, Reports: ReportsState,
+		// ends a turn on session.status idle. Version 5 updates the shared
+		// template with optional cancellation for the OpenCode V2 client.
+		ID: Kilo, Name: "Kilo", Binary: "kilo", Version: 5, Reports: ReportsState,
 		Source:    "herdr src/integration/assets/kilo (Kilo Code CLI is an opencode fork; plugins load from ~/.config/kilo/plugin)",
 		ConfigDir: func(e Env) string { return e.xdgConfig("kilo") },
 		File:      filepath.Join("plugin", "tuios-agent-state.js"),
@@ -502,6 +529,9 @@ type Result struct {
 	// was rewritten or there was no file.
 	Backup string   `json:"backup,omitempty"`
 	Notes  []string `json:"notes,omitempty"`
+	// notWritten lists the files a failed install or uninstall did not get
+	// to, for the error that says what it did change.
+	notWritten []string
 }
 
 // ErrNoConfigDir is returned by Install when the harness has never run here.
@@ -543,15 +573,22 @@ func (t *Target) plan(env Env, tuios string, install bool) ([]filePlan, error) {
 // carryOut writes or removes each changed file, in order. removing says this is
 // an uninstall, which also removes the owned directory once it is empty.
 func (t *Target) carryOut(env Env, res *Result, plans []filePlan, removing bool) error {
-	for _, p := range plans {
+	for i, p := range plans {
 		if !p.changed {
 			continue
 		}
+		var err error
 		if p.remove {
-			if err := os.Remove(p.path); err != nil {
-				return err
+			err = os.Remove(p.path)
+		} else {
+			err = writeAtomic(p.path, p.have, p.out)
+		}
+		if err != nil {
+			for _, rest := range plans[i:] {
+				if rest.changed {
+					res.notWritten = append(res.notWritten, rest.path)
+				}
 			}
-		} else if err := writeAtomic(p.path, p.out); err != nil {
 			return err
 		}
 		res.Changed = true
@@ -571,6 +608,10 @@ func (t *Target) carryOut(env Env, res *Result, plans []filePlan, removing bool)
 // install with nothing changed writes nothing. Entries from an older version
 // are replaced, and nothing that tuios did not write is touched.
 func (t *Target) Install(env Env, tuios string) (Result, error) {
+	return retryChanged(func() (Result, error) { return t.install(env, tuios) })
+}
+
+func (t *Target) install(env Env, tuios string) (Result, error) {
 	dir := t.ConfigDir(env)
 	res := Result{Harness: t.ID, Path: t.Path(env)}
 	if st, err := os.Stat(dir); err != nil || !st.IsDir() {
@@ -610,6 +651,10 @@ func (t *Target) Install(env Env, tuios string) (Result, error) {
 // Uninstall removes what Install wrote and nothing else. A harness with
 // nothing of tuios's installed is not an error.
 func (t *Target) Uninstall(env Env) (Result, error) {
+	return retryChanged(func() (Result, error) { return t.uninstall(env) })
+}
+
+func (t *Target) uninstall(env Env) (Result, error) {
 	res := Result{Harness: t.ID, Path: t.Path(env)}
 	plans, err := t.plan(env, "", false)
 	if err != nil {
@@ -630,16 +675,27 @@ type Status struct {
 	Path    string `json:"path"`
 	// Reports is what the integration reports: state, or session for one
 	// that names the conversation and leaves the state to the screen rules.
-	Reports         string   `json:"reports"`
-	ConfigDirExists bool     `json:"config_dir_exists"`
-	Installed       bool     `json:"installed"`
-	Current         bool     `json:"current"`
-	Version         int      `json:"version,omitempty"`
-	WantVersion     int      `json:"want_version"`
-	Binary          string   `json:"binary"`
-	BinaryPath      string   `json:"binary_path,omitempty"`
-	TuiosOnPath     bool     `json:"tuios_on_path"`
-	Notes           []string `json:"notes,omitempty"`
+	Reports         string `json:"reports"`
+	ConfigDirExists bool   `json:"config_dir_exists"`
+	Installed       bool   `json:"installed"`
+	Current         bool   `json:"current"`
+	Version         int    `json:"version,omitempty"`
+	WantVersion     int    `json:"want_version"`
+	Binary          string `json:"binary"`
+	BinaryPath      string `json:"binary_path,omitempty"`
+	// Program is the program the installed hooks run, as the file names it,
+	// "" when nothing is installed or no program could be read from it.
+	Program string `json:"program,omitempty"`
+	// OtherProgram says the install is this build's version and is exactly
+	// what tuios would write, except that it runs Program rather than the
+	// program status was asked about: an install made with --command. It is
+	// not out of date.
+	OtherProgram bool `json:"other_program,omitempty"`
+	// Unreadable says a file of the integration could not be read or parsed,
+	// so the rest of the status is not known. Notes says which file.
+	Unreadable  bool     `json:"unreadable,omitempty"`
+	TuiosOnPath bool     `json:"tuios_on_path"`
+	Notes       []string `json:"notes,omitempty"`
 	// MCP is the MCP server registration, for a harness tuios can register
 	// one with. See mcp.go.
 	MCP *MCPStatus `json:"mcp,omitempty"`
@@ -681,28 +737,104 @@ func (t *Target) Status(env Env, tuios string) Status {
 		_, err := env.LookPath("tuios")
 		st.TuiosOnPath = err == nil
 	}
-	allCurrent := true
-	for i, f := range t.files(env) {
+	files := make([][]byte, 0, len(t.files(env)))
+	for _, f := range t.files(env) {
 		path := filepath.Join(t.ConfigDir(env), f.file)
 		have, err := readOptional(path)
 		if err != nil {
 			st.Notes = append(st.Notes, "cannot read "+path+": "+err.Error())
+			st.Unreadable = true
 			return st
 		}
-		installed, current, version, err := f.format.state(t, have, tuios)
-		if err != nil {
-			st.Notes = append(st.Notes, "cannot parse "+path+": "+err.Error())
-			return st
-		}
-		if i == 0 {
-			st.Version = version
-		}
-		st.Installed = st.Installed || installed
-		allCurrent = allCurrent && current
+		files = append(files, have)
 	}
-	st.Current = st.Installed && allCurrent
+	installed, current, version, err := t.stateOf(env, files, tuios)
+	if err != nil {
+		st.Notes = append(st.Notes, err.Error())
+		st.Unreadable = true
+		return st
+	}
+	st.Installed, st.Current, st.Version = installed, current, version
+	if st.Current {
+		st.Program = tuios
+	} else if st.Installed {
+		// An install that is not exactly this build's may still be this
+		// build's version, made with --command: then it is the program that
+		// differs, and the install is as current as it can be.
+		for _, prog := range installedPrograms(t, files) {
+			if st.Program == "" {
+				st.Program = prog
+			}
+			if _, cur, _, err := t.stateOf(env, files, prog); err == nil && cur {
+				st.Program, st.OtherProgram = prog, true
+				break
+			}
+		}
+	}
 	st.Notes = append(st.Notes, t.notes(env)...)
 	return st
+}
+
+// stateOf reads the integration's files, as read in files order, against the
+// program tuios: whether any of it is installed, whether all of it is what
+// tuios would install, and the main file's version.
+func (t *Target) stateOf(env Env, files [][]byte, tuios string) (installed, current bool, version int, err error) {
+	allCurrent := true
+	for i, f := range t.files(env) {
+		ins, cur, v, err := f.format.state(t, files[i], tuios)
+		if err != nil {
+			return false, false, 0, fmt.Errorf("cannot parse %s: %w", filepath.Join(t.ConfigDir(env), f.file), err)
+		}
+		if i == 0 {
+			version = v
+		}
+		installed = installed || ins
+		allCurrent = allCurrent && cur
+	}
+	return installed, installed && allCurrent, version, nil
+}
+
+// installedPrograms lists the programs the integration's files name for its
+// hooks, in the order found: the program word before "agent-hook <id>
+// --integration" in a hook command, and the TUIOS constant a plugin sets.
+func installedPrograms(t *Target, files [][]byte) []string {
+	hook := regexp.MustCompile(`"((?:[^"\\]|\\.)*?) agent-hook ` + regexp.QuoteMeta(t.ID) + ` ` + managedMarker + ` \d+"`)
+	var out []string
+	add := func(p string) {
+		p = unshellWord(strings.TrimPrefix(p, "& "))
+		if p != "" && !slices.Contains(out, p) {
+			out = append(out, p)
+		}
+	}
+	for _, data := range files {
+		for _, m := range pluginProgramRe.FindAllSubmatch(data, -1) {
+			var p string
+			if json.Unmarshal(m[1], &p) == nil {
+				add(p)
+			}
+		}
+		for _, m := range hook.FindAllSubmatch(data, -1) {
+			var p string
+			if json.Unmarshal([]byte(`"`+string(m[1])+`"`), &p) == nil {
+				add(p)
+			}
+		}
+	}
+	return out
+}
+
+// pluginProgramRe finds the program a plugin template was rendered with.
+var pluginProgramRe = regexp.MustCompile(`(?:const TUIOS|_TUIOS) = ("(?:[^"\\]|\\.)*")`)
+
+// unshellWord undoes shellWord: a word quoted for the shell back to the path.
+func unshellWord(s string) string {
+	switch {
+	case len(s) >= 2 && s[0] == '\'' && s[len(s)-1] == '\'':
+		return strings.ReplaceAll(s[1:len(s)-1], `'\''`, `'`)
+	case len(s) >= 2 && s[0] == '"' && s[len(s)-1] == '"':
+		return strings.ReplaceAll(s[1:len(s)-1], `\"`, `"`)
+	}
+	return s
 }
 
 // managedCurrent reports whether the managed entries are exactly one command

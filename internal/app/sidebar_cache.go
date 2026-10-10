@@ -204,6 +204,10 @@ func (m *OS) sidebarSignature() uint64 {
 	mixB(m.filesView.Loading)
 	mixI(m.SidebarScrollF)
 	mixU(m.filesView.Gen)
+	// The custom section: its rows change when its command's output does,
+	// which is the generation, and the section scrolls like the others.
+	mixU(m.railCustom.gen)
+	mixI(m.SidebarScrollC)
 
 	// The agents section's two controls decide which rows it holds and in what
 	// order, so both are drawn state and both are folded. The tokens themselves
@@ -226,6 +230,9 @@ func (m *OS) sidebarSignature() uint64 {
 	// depend on it, so a focus change or a cursor move must rebuild.
 	mixB(m.SidebarFocused)
 	mixI(m.SidebarCursor)
+
+	// The switch numbers are drawn state, on while show_numbers is set.
+	mixB(m.Settings.SidebarShowNumbers)
 
 	// Which terminal rows carry a workspace tag turns on which workspace is
 	// current; the per-window workspaces themselves are folded in below. The
@@ -318,6 +325,7 @@ func (m *OS) sidebarSignature() uint64 {
 		mixS(m.SessionWorktree.Repo)
 		mixS(m.SessionWorktree.Branch)
 		mixB(m.SessionWorktree.Gone)
+		mixS(m.SessionWorktree.PR.Badge())
 	} else {
 		mixI(-1)
 	}
@@ -400,6 +408,18 @@ func (m *OS) sidebarSignature() uint64 {
 		}
 		if w.AgentSubagents > 0 {
 			mixI(w.AgentSubagents)
+		}
+		// The OSC 7501 records draw the app and the progress on the row.
+		if n := len(w.ProgramStatus); n > 0 {
+			mixI(n)
+			for _, r := range w.ProgramStatus {
+				mixS(r.ID)
+				mixS(r.State)
+				mixS(r.App)
+				mixI(r.Progress)
+				mixS(r.Title)
+				mixS(r.Msg)
+			}
 		}
 		// The agents section prints the age of the state, so the row changes on a
 		// minute boundary with no other input moving. Folding the whole timestamp

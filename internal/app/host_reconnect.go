@@ -191,9 +191,17 @@ func (m *OS) handleHostReconnectTick(msg hostReconnectTickMsg) tea.Cmd {
 	version := m.clientVersionForReconnect()
 	caps := m.clientCapabilities()
 	reserve := m.ownLayoutReserveForReconnect()
+	agent := ""
+	if m.DaemonClient != nil {
+		agent = m.DaemonClient.SSHAuthSock
+	}
 	return func() tea.Msg {
 		client := session.NewTUIClient()
 		client.SetOwnLayoutReserve(reserve)
+		// Getting the session back is not the person attaching, so it must
+		// not detach the other clients under single_client.
+		client.Reconnect = true
+		client.SSHAuthSock = agent
 		if _, err := client.ConnectThroughHost(host, version, width, height, caps); err != nil {
 			_ = client.Close()
 			return hostReconnectResultMsg{gen: gen, err: err}
@@ -276,6 +284,8 @@ func (m *OS) resumeOnHost(client *session.TUIClient, state *session.SessionState
 		// not what coming back means.
 		was := m.SubscribedPTYs
 		m.SubscribedPTYs = make(map[string]bool)
+		// A request in flight when the link went may be lost with it.
+		m.paneRequests = nil
 		for _, w := range m.Windows {
 			if w.DaemonMode && w.PTYID != "" && was[w.PTYID] {
 				m.primePaneFromDaemon(w)

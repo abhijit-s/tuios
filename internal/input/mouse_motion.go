@@ -140,6 +140,13 @@ func handleMouseMotion(msg tea.MouseMotionMsg, o *app.OS) (*app.OS, tea.Cmd) {
 	if o.CtrlDragPending {
 		if mouse.Mod&tea.ModCtrl == 0 {
 			o.CtrlDragPending = false
+			// Ctrl let go on a link: the press was a ctrl+click on it, and
+			// the release that would open it may now arrive without the
+			// grab pending.
+			if url := o.CtrlClickLink; url != "" {
+				o.CtrlClickLink = ""
+				return o, o.OpenLink(url)
+			}
 			if o.CtrlDragIndex >= 0 && o.CtrlDragIndex < len(o.Windows) {
 				o.ToggleMultifocus(o.CtrlDragIndex)
 			}
@@ -147,6 +154,7 @@ func handleMouseMotion(msg tea.MouseMotionMsg, o *app.OS) (*app.OS, tea.Cmd) {
 		}
 		if abs(mouse.X-o.DragStartX)+abs(mouse.Y-o.DragStartY) >= ctrlDragThreshold {
 			o.CtrlDragPending = false
+			o.CtrlClickLink = ""
 			o.CtrlDragging = true
 			// beginWindowDrag leaves window management on, which is right for a
 			// title-bar grab but not here: a ctrl-drag from a pane the user is
@@ -505,51 +513,15 @@ func handleMouseMotion(msg tea.MouseMotionMsg, o *app.OS) (*app.OS, tea.Cmd) {
 			// Scrolling mode: compute width from horizontal drag delta. All
 			// strip math runs against the content width beside the sidebar band,
 			// matching ScrollingSetPositions.
-			viewW := o.ScrollingViewWidth()
 			switch o.ResizeCorner {
 			case app.TopLeft, app.BottomLeft:
 				newWidth = o.PreResizeState.Width - xOffset
 			case app.TopRight, app.BottomRight:
 				newWidth = o.PreResizeState.Width + xOffset
 			}
-			maxWidth := viewW * 9 / 10
-			newWidth = max(min(newWidth, maxWidth), config.DefaultWindowWidth)
-
-			// Update column width and reposition all windows visually.
-			sl := o.GetOrCreateScrollingLayout()
-			intID := o.GetWindowIntID(focusedWindow.ID)
-			oldWidth := 0
-			for ci := range sl.Columns {
-				for _, wid := range sl.Columns[ci].WindowIDs {
-					if wid == intID {
-						oldWidth = sl.ResolveColumnWidth(ci, viewW)
-						sl.Columns[ci].FixedWidth = newWidth
-						sl.Columns[ci].Proportion = 0
-					}
-				}
-			}
-			// For left-edge resize, shift viewport so the right edge stays fixed
-			if (o.ResizeCorner == app.TopLeft || o.ResizeCorner == app.BottomLeft) && oldWidth > 0 {
-				sl.ViewportX += newWidth - oldWidth
-			}
-			sl.ClampViewport(viewW)
-			layouts := sl.ComputePositions(viewW, o.PaneHeight(), o.PaneTop())
-			stripLeft := o.PaneLeft()
-			for winID, rect := range layouts {
-				win := o.GetWindowByIntID(winID)
-				if win == nil {
-					continue
-				}
-				win.X = stripLeft + rect.X
-				win.Y = rect.Y
-				win.Width = rect.W
-				// Don't call ResizeVisual or Resize, just set visual width.
-				// Terminal emulator keeps old dimensions until release.
-				win.MarkPositionDirty()
-				win.InvalidateCache()
-			}
-			// Defer PTY resize to mouse release
-			o.PendingResizes[focusedWindow.ID] = [2]int{newWidth, focusedWindow.Height}
+			// For a left-edge resize the right edge stays where it is.
+			keepRight := o.ResizeCorner == app.TopLeft || o.ResizeCorner == app.BottomLeft
+			o.ScrollingResizeColumnVisual(focusedWindow, newWidth, keepRight)
 		} else {
 			// In floating mode, apply visual resize only (defer PTY resize until drag completes)
 			focusedWindow.X = newX

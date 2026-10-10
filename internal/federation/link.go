@@ -48,6 +48,11 @@ const (
 	// called, so a reconnecting host fails a call at once, exactly as an
 	// unreachable one does.
 	StatusReconnecting Status = "reconnecting"
+	// StatusApproval means ssh reached the machine and Tailscale SSH holds the
+	// login until the person approves it in a browser. The report carries
+	// the URL. The dial keeps the connection open, so the link comes up as
+	// soon as the person approves. See sshgate.go.
+	StatusApproval Status = GateTailscaleCheck
 )
 
 // Handshake is what a remote daemon reported about itself. The field names
@@ -72,11 +77,17 @@ type link struct {
 	status Status
 	// reason is the short sentence shown to a user. It is plain English on
 	// purpose: it lands in `tuios hosts` and in the sidebar.
-	reason  string
-	detail  string
-	shake   Handshake
-	lastOK  time.Time
-	lastTry time.Time
+	reason string
+	detail string
+	// approvalURL is the Tailscale SSH check URL while status is
+	// StatusApproval.
+	approvalURL string
+	// approvalRefused says the banner named a sign-in address tuios does not
+	// trust. See SignInURLAllowed.
+	approvalRefused bool
+	shake           Handshake
+	lastOK          time.Time
+	lastTry         time.Time
 
 	// drops counts the times a link that was up went down, and dropReason is
 	// the plain sentence for the last of them. They are reported so a person
@@ -114,6 +125,14 @@ type link struct {
 	// can wait for first contact instead of reporting "connecting" forever.
 	settled     chan struct{}
 	settledOnce sync.Once
+
+	// wake cuts the wait between two dials short. Retry sends on it.
+	wake chan struct{}
+	// eagerUntil is when the quick redial that Retry asked for ends. Until
+	// then a link that waits for a Tailscale sign-in dials again after
+	// approvalRetry at most, so the new sign-in page shows up in seconds and
+	// a link whose sign-in went through comes up without anyone asking.
+	eagerUntil time.Time
 }
 
 func newLink(h Host, opts Options) *link {
@@ -123,6 +142,7 @@ func newLink(h Host, opts Options) *link {
 		status:  StatusConnecting,
 		reason:  "The link is starting.",
 		settled: make(chan struct{}),
+		wake:    make(chan struct{}, 1),
 	}
 }
 
@@ -141,6 +161,10 @@ func (l *link) set(status Status, reason, detail string) {
 	l.status = status
 	l.reason = reason
 	l.detail = detail
+	if status != StatusApproval {
+		l.approvalURL = ""
+		l.approvalRefused = false
+	}
 	if status == StatusUp {
 		l.lastOK = l.opts.now()
 	}
@@ -161,21 +185,23 @@ func (l *link) report() HostReport {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	r := HostReport{
-		Host:          l.host.Name,
-		Addr:          l.host.Addr,
-		Status:        l.status,
-		Reason:        l.reason,
-		Detail:        l.detail,
-		DaemonVersion: l.shake.DaemonVersion,
-		Protocol:      l.shake.Protocol,
-		MinProtocol:   l.shake.MinProtocol,
-		PID:           l.shake.PID,
-		Instance:      l.shake.Instance,
-		Sessions:      l.shake.Sessions,
-		Command:       l.command,
-		Drops:         l.drops,
-		DropReason:    l.dropReason,
-		Stalls:        l.stalls,
+		Host:            l.host.Name,
+		Addr:            l.host.Addr,
+		Status:          l.status,
+		Reason:          l.reason,
+		Detail:          l.detail,
+		ApprovalURL:     l.approvalURL,
+		ApprovalRefused: l.approvalRefused,
+		DaemonVersion:   l.shake.DaemonVersion,
+		Protocol:        l.shake.Protocol,
+		MinProtocol:     l.shake.MinProtocol,
+		PID:             l.shake.PID,
+		Instance:        l.shake.Instance,
+		Sessions:        l.shake.Sessions,
+		Command:         l.command,
+		Drops:           l.drops,
+		DropReason:      l.dropReason,
+		Stalls:          l.stalls,
 	}
 	if !l.lastOK.IsZero() {
 		r.LastOK = l.lastOK.Unix()
@@ -203,12 +229,60 @@ func (l *link) supervise(ctx context.Context) {
 		} else if backoff < l.opts.MaxBackoff {
 			backoff = min(backoff*2, l.opts.MaxBackoff)
 		}
+		wait := backoff
+		if l.eager() {
+			// The person just opened the sign-in page. A minute of backoff
+			// here would leave them looking at a host that is still not up
+			// after they signed in.
+			wait = min(wait, approvalRetry)
+		}
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(backoff):
+		case <-time.After(wait):
+		case <-l.wake:
 		}
 	}
+}
+
+// approvalRetry is the longest wait between two dials while a Retry is fresh
+// and the link waits for a Tailscale sign-in.
+const approvalRetry = 5 * time.Second
+
+// retryWindow is how long a Retry keeps the redial quick.
+const retryWindow = 2 * time.Minute
+
+// retryMinGap is the least time between the start of a dial and a dial that
+// Retry wakes.
+const retryMinGap = 2 * time.Second
+
+// retry ends the wait before the next dial, and keeps the redial quick for
+// retryWindow while the link waits for a sign-in. A dial in progress is left
+// alone: a dial that holds a Tailscale check open is the one that goes on when
+// the person signs in.
+//
+// A wake within retryMinGap of the last dial's start is dropped, so a caller
+// that calls in a loop cannot make the link spawn ssh in a loop.
+func (l *link) retry() {
+	l.mu.Lock()
+	now := l.opts.now()
+	l.eagerUntil = now.Add(retryWindow)
+	recent := !l.lastTry.IsZero() && now.Sub(l.lastTry) < retryMinGap
+	l.mu.Unlock()
+	if recent {
+		return
+	}
+	select {
+	case l.wake <- struct{}{}:
+	default:
+	}
+}
+
+// eager reports whether a fresh Retry keeps the redial quick.
+func (l *link) eager() bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.status == StatusApproval && l.opts.now().Before(l.eagerUntil)
 }
 
 // attempt dials once, handshakes, and then blocks until the link dies. It
@@ -256,37 +330,69 @@ func (l *link) attempt(ctx context.Context) bool {
 		preambleDone <- preambleResult{note, err}
 	}()
 	var note preambleNote
-	select {
-	case res := <-preambleDone:
-		note = res.note
-		if res.err != nil {
-			exited, code := awaitChildExit(tr)
-			switch {
-			case note.missing:
-				// The machine answered, ran the probe, and the probe found
-				// nothing. That is a state of the machine, not of the link,
-				// and it is reported as its own status so the listing says
-				// where the problem is.
-				l.set(StatusNoBinary, "The link cannot find tuios on the host.", trimDetail(tr.Diagnostic()))
-			case exited:
-				l.set(StatusUnreachable, "The host did not answer.", trimDetail(tr.Diagnostic()))
-			default:
-				l.set(StatusUnreachable, "The host did not answer as a tuios link.", trimDetail(tr.Diagnostic()))
+	// The dial's deadline holds until Tailscale asks for an approval. Then the
+	// approval wait replaces it: the connection is held open, and the same ssh
+	// goes on when the person approves. See sshgate.go.
+	waitCtx := dialCtx
+	gateTick := time.NewTicker(gatePoll)
+	defer gateTick.Stop()
+	var waitedGate *SSHGate
+preamble:
+	for {
+		select {
+		case res := <-preambleDone:
+			note = res.note
+			if res.err != nil {
+				exited, code := awaitChildExit(tr)
+				gate := ParseSSHGate(tr.Diagnostic(), l.host.TailscaleLogin)
+				switch {
+				case gate != nil && gate.Kind == GateTailscalePolicy:
+					l.set(StatusUnreachable, gate.Sentence(), trimDetail(tr.Diagnostic()))
+				case gate != nil && gate.Kind == GateTailscaleCheck && !gate.Approved:
+					l.setApproval("", false, "Tailscale ended the sign-in before you finished it. tuios asks again and shows a new sign-in page.")
+				case note.missing:
+					// The machine answered, ran the probe, and the probe found
+					// nothing. That is a state of the machine, not of the link,
+					// and it is reported as its own status so the listing says
+					// where the problem is.
+					l.set(StatusNoBinary, "The link cannot find tuios on the host.", trimDetail(tr.Diagnostic()))
+				case exited:
+					l.set(StatusUnreachable, "The host did not answer.", trimDetail(tr.Diagnostic()))
+				default:
+					l.set(StatusUnreachable, "The host did not answer as a tuios link.", trimDetail(tr.Diagnostic()))
+				}
+				// A cached path that reached the machine and ran nothing is
+				// stale: the binary moved or was removed. The next dial probes
+				// again. 255 is ssh's own code and means the machine was never
+				// reached, so the path it knows is kept for when it is.
+				if fromCache && exited && code != sshExitCode {
+					l.mu.Lock()
+					l.resolved = ""
+					l.mu.Unlock()
+				}
+				return false
 			}
-			// A cached path that reached the machine and ran nothing is
-			// stale: the binary moved or was removed. The next dial probes
-			// again. 255 is ssh's own code and means the machine was never
-			// reached, so the path it knows is kept for when it is.
-			if fromCache && exited && code != sshExitCode {
-				l.mu.Lock()
-				l.resolved = ""
-				l.mu.Unlock()
+			break preamble
+		case <-gateTick.C:
+			if waitedGate != nil {
+				continue
 			}
+			if g := ParseSSHGate(tr.Diagnostic(), l.host.TailscaleLogin); g != nil && g.Kind == GateTailscaleCheck && !g.Approved {
+				waitedGate = g
+				l.setApproval(g.URL, g.Refused, g.WaitSentence())
+				var cancelWait context.CancelFunc
+				waitCtx, cancelWait = context.WithTimeout(ctx, l.opts.ApprovalWait)
+				defer cancelWait()
+				l.logf("host %s: Tailscale SSH waits for an approval at %s", l.host.Name, g.URL)
+			}
+		case <-waitCtx.Done():
+			if waitedGate != nil {
+				l.setApproval("", false, "The Tailscale sign-in page expired. tuios asks again and shows a new sign-in page.")
+				return false
+			}
+			l.set(StatusUnreachable, "The host did not answer in time.", trimDetail(tr.Diagnostic()))
 			return false
 		}
-	case <-dialCtx.Done():
-		l.set(StatusUnreachable, "The host did not answer in time.", trimDetail(tr.Diagnostic()))
-		return false
 	}
 
 	// What the far side runs is known now: the path the probe announced, or
@@ -382,6 +488,29 @@ func (l *link) attempt(ctx context.Context) bool {
 	// would be reporting a failure that has not happened yet.
 	l.set(StatusReconnecting, reason, detail)
 	return true
+}
+
+// gatePoll is how often a dial that waits for its preamble reads ssh's stderr
+// for a Tailscale gate.
+const gatePoll = 100 * time.Millisecond
+
+// setApproval records a Tailscale SSH check the link waits on, with the URL
+// that approves it. The URL is stored first, so a listing never sees the state
+// without it.
+//
+// A new URL under the same status is reported to OnStatus as well. A client
+// that opens the sign-in page for the person waits for that URL, and set only
+// reports a change of status.
+func (l *link) setApproval(url string, refused bool, reason string) {
+	l.mu.Lock()
+	moved := l.status == StatusApproval && (l.approvalURL != url || l.approvalRefused != refused)
+	l.approvalURL = url
+	l.approvalRefused = refused
+	l.mu.Unlock()
+	l.set(StatusApproval, reason, "")
+	if moved && l.opts.OnStatus != nil {
+		l.opts.OnStatus(l.host.Name, StatusApproval)
+	}
 }
 
 // lossCause turns a dead link into the sentence its report carries.

@@ -8,6 +8,8 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/Gaurav-Gosain/tuios/internal/config"
+	"github.com/Gaurav-Gosain/tuios/internal/overlay"
+	"github.com/Gaurav-Gosain/tuios/internal/plural"
 	"github.com/Gaurav-Gosain/tuios/internal/theme"
 )
 
@@ -23,6 +25,10 @@ const (
 	// no stepper: there is no next colour to step to, and typing a hex into a
 	// text field was never the way to choose one.
 	controlColor
+	// controlStatus is a word that says how something stands, with no stepper.
+	// Enter or a click anywhere on the row runs its activate hook. The Agents
+	// tab's rows are these.
+	controlStatus
 )
 
 // settingItem is one row on the settings page. adjust changes the value by dir
@@ -33,8 +39,11 @@ type settingItem struct {
 	// not one (the daemon log level's own spelling, a section header). The
 	// coverage test reads it to tell an option with no way to reach it from one
 	// that is deliberately absent.
-	Path    string
-	Label   string
+	Path  string
+	Label string
+	// Aside is a short note drawn quietly after the label, such as whether
+	// an agent is on PATH.
+	Aside   string
 	Desc    string
 	Control settingControl
 	Options []string
@@ -54,6 +63,8 @@ type settingItem struct {
 	// painted on. It is the colour in force rather than the value stored, so an
 	// unset row still shows what it is inheriting.
 	swatch func(ground color.Color, s *config.Settings) color.Color
+	// ink is the colour a controlStatus row writes its value in.
+	ink func(pal overlay.Palette) color.Color
 	// activate, when set, runs on Enter/click instead of adjusting the value
 	// (e.g. the Theme row opens the theme picker). It returns a command so a
 	// row can open something that has to start running: the effect picker's
@@ -138,8 +149,13 @@ func clampInt(v, lo, hi int) int {
 // immediately; when retile is set it also reflows the tiling layout for
 // changes that affect window geometry (dock position, borders, title bars).
 func (m *OS) applyAppearanceLive(retile bool) {
+	// max_fps may have moved, and auto may have just been chosen with no rate
+	// found yet.
+	m.applyFrameRate()
+	m.detectDisplayRate(false)
 	m.adoptConfigPaneGeometry()
 	m.refreshKittyPlaceholderMode()
+	m.refreshImageSymbols()
 	m.MarkAllDirty()
 	if retile && m.AutoTiling {
 		m.TileAllWindows()
@@ -248,8 +264,19 @@ func (m *OS) persistSettings() tea.Cmd {
 	// file this writes. See agents_off.go.
 	agents := m.applyAgentsSwitch()
 	save := func() tea.Msg {
-		if err := write(); err != nil {
+		note, err := write()
+		if err != nil {
 			return settingsSaveFailedMsg{err: err}
+		}
+		if !note.Empty() {
+			// The change is saved, in config.toml rather than the read-only
+			// file that holds the key. That is said, and a changed host still
+			// applies.
+			said := func() tea.Msg { return settingsSaveRedirectedMsg{note: note} }
+			if apply != nil {
+				return tea.Batch(said, apply)()
+			}
+			return said()
 		}
 		// A host the person changed here applies now. The daemon's own
 		// reload of the file waits for the person on a new host.
@@ -267,6 +294,10 @@ func (m *OS) persistSettings() tea.Cmd {
 // settingsSaveFailedMsg carries a failed config write back to the Update
 // goroutine, which is the only place a notification can be raised from.
 type settingsSaveFailedMsg struct{ err error }
+
+// settingsSaveRedirectedMsg says a save went to config.toml because the file
+// that holds the key is read-only, such as a file a Nix store link provides.
+type settingsSaveRedirectedMsg struct{ note config.WriteNote }
 
 // setAppearance runs fn against the held config's appearance section when a
 // config is present, so live changes can be persisted.
@@ -305,10 +336,13 @@ func (m *OS) ToggleFocusFollowsMouse() tea.Cmd {
 
 const themeNone = "none"
 
-// fpsOptions are the frame caps the settings row offers. 144 is gone: it is
-// above the renderer's ceiling, so offering it was offering a number that could
-// not be honoured. See config.MaxFPSCap.
-var fpsOptions = []string{"30", "60", "90", "120", "unlimited"}
+// fpsOptions are the frame caps the settings row offers: auto, then the rates
+// displays are sold at. A rate configured in the file that is not here (75,
+// say) still shows as itself, and the next step goes to the first entry.
+var fpsOptions = []string{fpsAutoLabel, "30", "60", "90", "120", "144", "165", "240"}
+
+// fpsAutoLabel is how the row spells max_fps = "auto".
+const fpsAutoLabel = "Auto"
 
 // boolPtr returns a pointer to b, for the *bool config fields.
 func boolPtr(b bool) *bool { return &b }
@@ -392,6 +426,8 @@ func (m *OS) settingsCategories() []settingsCategory {
 			opt("appearance.panel_padding"),
 			opt("appearance.zen_mode"),
 			opt("appearance.links"),
+			opt("appearance.link_click"),
+			opt("appearance.link_opener"),
 			opt("appearance.session_colors"),
 			opt("appearance.session_border"),
 		}),
@@ -428,6 +464,7 @@ func (m *OS) settingsCategories() []settingsCategory {
 			custom("appearance.sidebar.sections", m.sectionLayoutItem()),
 			opt("appearance.sidebar.show_glyphs"),
 			opt("appearance.sidebar.show_counts"),
+			opt("appearance.sidebar.show_numbers"),
 			opt("appearance.sidebar.file_icons"),
 			opt("appearance.sidebar.file_icon_colors"),
 			opt("appearance.sidebar.folder_click"),
@@ -485,11 +522,15 @@ func (m *OS) settingsCategories() []settingsCategory {
 			opt("appearance.selection.multi_format"),
 			opt("appearance.selection.copy_entry"),
 			opt("appearance.selection.osc52_write"),
+			opt("paste_buffers.limit"),
+			opt("paste_buffers.max_kb"),
 			opt("hints.builtins"),
 			opt("hints.alphabet"),
 			opt("hints.open"),
 			opt("hints.dim"),
 			opt("hints.all_panes"),
+			opt("panes.label_keys"),
+			opt("panes.navigator_layout"),
 		}),
 	}
 
@@ -506,7 +547,12 @@ func (m *OS) settingsCategories() []settingsCategory {
 			opt("appearance.dock_workspace_tabs"),
 			opt("appearance.dock_workspace_tab_format"),
 			opt("appearance.dock_workspace_tooltip"),
+			opt("appearance.dock_workspace_label_max"),
 			opt("appearance.dock_pill_caps"),
+			opt("appearance.dock_mode_icon_window"),
+			opt("appearance.dock_mode_icon_terminal"),
+			opt("appearance.dock_mode_icon_tiling"),
+			opt("appearance.dock_compact"),
 		}),
 	}
 
@@ -525,6 +571,7 @@ func (m *OS) settingsCategories() []settingsCategory {
 			opt("appearance.alt_drag"),
 			opt("appearance.right_click_opens_menu"),
 			opt("appearance.new_window_inherit_cwd"),
+			opt("appearance.new_window_follow_ssh"),
 			opt("appearance.niri_reverse_scroll"),
 			opt("appearance.niri_scroll_cells"),
 			opt("appearance.niri_click_reveals"),
@@ -584,11 +631,13 @@ func (m *OS) settingsCategories() []settingsCategory {
 			opt("appearance.copy_on_select"),
 			opt("appearance.word_characters"),
 			opt("appearance.zoom_size"),
+			opt("appearance.zoom_borderless"),
 			opt("appearance.zoom_animation"),
 			opt("appearance.zoom_follows_focus"),
 			opt("appearance.window_button_zoom"),
 			opt("appearance.zoom_max_width"),
 			opt("appearance.kitty_placeholders"),
+			opt("appearance.image_symbols"),
 			custom("debug.show_key_events", m.showKeysItem()),
 		}),
 	}
@@ -616,6 +665,8 @@ func (m *OS) settingsCategories() []settingsCategory {
 			opt("scratch.width"),
 			opt("scratch.height"),
 			opt("launcher.gui_command"),
+			opt("workspaces.return_when_empty"),
+			opt("workspaces.new_window_when_empty"),
 		}),
 	}
 
@@ -668,11 +719,18 @@ func (m *OS) settingsCategories() []settingsCategory {
 		}),
 	}
 
-	return []settingsCategory{
+	cats := []settingsCategory{
 		appearance, backgrounds, sidebar, selection, dock, behavior,
 		notifications, startup, screenshot, screensaver, spotlight, advanced, daemon,
-		m.hostsCategory(), tape,
+		m.hostsCategory(),
 	}
+	// The Agents tab goes with the agent features. See settings_agents.go.
+	m.agentsPage.tab = -1
+	if m.agentsPageAvailable() {
+		m.agentsPage.tab = len(cats)
+		cats = append(cats, m.agentsCategory())
+	}
+	return append(cats, tape)
 }
 
 // themeItem is the theme row. Hand-written because the value is a name from an
@@ -801,9 +859,9 @@ func (m *OS) agentRowItem() settingItem {
 			if !spec.Custom() {
 				return "default"
 			}
-			tokens := strconv.Itoa(len(spec.Tokens)) + " " + plural("token", len(spec.Tokens))
+			tokens := plural.Count(len(spec.Tokens), "token")
 			if n := spec.RuleCount(); n > 0 {
-				return tokens + ", " + strconv.Itoa(n) + " " + plural("rule", n)
+				return tokens + ", " + plural.Count(n, "rule")
 			}
 			return tokens
 		},
@@ -818,26 +876,34 @@ func (m *OS) agentRowItem() settingItem {
 	}
 }
 
-// maxFPSItem is the frame-rate cap. Hand-written because the row says
-// "unlimited" for a number: the config holds an int, and a stepper walking to
-// the cap one frame at a time is not how anyone sets this.
+// maxFPSItem is the frame-rate cap. Hand-written for two reasons: the config
+// holds a number or "auto", and a stepper walking to 240 one frame at a time is
+// not how anyone sets this; and auto shows the rate it picked, "Auto (144)",
+// which is not a value the config holds.
 func (m *OS) maxFPSItem() settingItem {
-	item := enumItem("Max FPS", "Highest frame rate tuios draws at. A higher value applies at the next start.", fpsOptions,
-		func() string {
-			if m.Settings.NormalFPS >= config.MaxFPSCap {
-				return "unlimited"
-			}
-			return strconv.Itoa(m.Settings.NormalFPS)
-		},
+	// A number shows the rate in force, so 0 reads as 60 and a value past
+	// the cap reads as the cap.
+	current := func(m *OS) string {
+		if strings.EqualFold(m.optionValue("appearance.max_fps"), config.FPSAuto) {
+			return fpsAutoLabel
+		}
+		return strconv.Itoa(m.Settings.NormalFPS)
+	}
+	item := enumItem("Max FPS", "Highest frame rate tuios draws at. Your terminal and monitor can show fewer frames. A value above that is not smoother.", fpsOptions,
+		func() string { return current(m) },
 		func(m *OS, v string) {
-			fps := config.MaxFPSCap
-			if v != "unlimited" {
-				if n, err := strconv.Atoi(v); err == nil {
-					fps = n
-				}
+			if v == fpsAutoLabel {
+				v = config.FPSAuto
 			}
-			m.setOption("appearance.max_fps", strconv.Itoa(fps))
+			m.setOption("appearance.max_fps", v)
 		})
+	item.value = func(m *OS) string {
+		v := current(m)
+		if v == fpsAutoLabel {
+			return fpsAutoLabel + " (" + strconv.Itoa(m.Settings.NormalFPS) + ")"
+		}
+		return v
+	}
 	item.differs = differsFromDefault("appearance.max_fps", func(m *OS) string { return m.optionValue("appearance.max_fps") })
 	return item
 }

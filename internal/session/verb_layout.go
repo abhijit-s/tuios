@@ -207,6 +207,7 @@ func (d *Daemon) verbSelectWorkspace(_ *connState, params json.RawMessage) (any,
 	var p struct {
 		Session   string `json:"session"`
 		Workspace int    `json:"workspace"`
+		ReturnTo  int    `json:"return_to"`
 	}
 	if verr := decodeParams(params, &p); verr != nil {
 		return nil, verr
@@ -218,8 +219,14 @@ func (d *Daemon) verbSelectWorkspace(_ *connState, params json.RawMessage) (any,
 	if verr != nil {
 		return nil, verr
 	}
+	if p.ReturnTo != 0 && !sess.GetState().workspaceAccepts(p.ReturnTo) {
+		return nil, invalidParam("return_to", fmt.Sprintf("workspace %d does not exist", p.ReturnTo))
+	}
 	if err := sess.SwitchDaemonWorkspace(p.Workspace); err != nil {
 		return nil, moveErr(err, sess, p.Workspace)
+	}
+	if p.ReturnTo != 0 {
+		sess.SetReturnTo(p.Workspace, p.ReturnTo)
 	}
 
 	state := sess.GetState()
@@ -323,6 +330,11 @@ func (d *Daemon) verbListWorkspaces(_ *connState, params json.RawMessage) (any, 
 		}
 		if state.WorkspaceFocus != nil {
 			entry["focused_window_id"] = state.WorkspaceFocus[ws]
+		}
+		// The windows focused there, newest first, so a caller can name the
+		// one before the current (tmux's last-pane).
+		if history := state.FocusHistory[ws]; len(history) > 0 {
+			entry["focus_history"] = history
 		}
 		spaces = append(spaces, entry)
 	}
@@ -574,11 +586,11 @@ func (d *Daemon) verbRunCommand(cs *connState, params json.RawMessage) (any, *ve
 	// The keymap's name for an action reaches the same command as the tape's
 	// name, and a name that is neither is an error here rather than a success
 	// the client reports for running nothing. See resolveCommandName.
-	canonical, ok := resolveCommandName(p.Command)
+	canonical, args, ok := resolveCommandName(p.Command, p.Args)
 	if !ok {
 		return nil, invalidParam("command", unknownCommandMessage(p.Command))
 	}
-	p.Command = canonical
+	p.Command, p.Args = canonical, args
 	// The client runs the command in whatever pane is focused, as the
 	// person. A pane without respond may not type or press keys that way:
 	// see refuseTapeTyping, which the client protocol's run-command has too.

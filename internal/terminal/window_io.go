@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Gaurav-Gosain/tuios/internal/debuglog"
+	"github.com/Gaurav-Gosain/tuios/internal/memtrim"
 	"github.com/Gaurav-Gosain/tuios/internal/pool"
 	"github.com/Gaurav-Gosain/tuios/internal/vt"
 )
@@ -127,6 +128,25 @@ func (w *Window) applyStreamResize(chunk outputChunk) {
 	// something arrived, and MarkTerminalsWithNewContent does the rest.
 	w.noteOutput()
 }
+
+// noteGraphicsOutput is noteOutput for a write graphicsOnly accepted: the
+// render signal goes out, so the passthrough's queued commands are drawn, but
+// the pane is not marked as having new cells.
+func (w *Window) noteGraphicsOutput() {
+	w.HasGraphicsOutput.Store(true)
+	w.coalesceSignal.Store(true)
+	if w.coalesceWake != nil {
+		select {
+		case w.coalesceWake <- struct{}{}:
+		default:
+		}
+	}
+}
+
+// NoteRedraw asks for the pane to be drawn again although the program wrote
+// nothing: something drawn from its cells, a picture shown as glyphs that
+// waited for its drawing budget, is ready now. Safe from any goroutine.
+func (w *Window) NoteRedraw() { w.noteOutput() }
 
 // noteOutput records that the pane has produced something worth drawing and
 // wakes the coalescer.
@@ -248,6 +268,10 @@ func (w *Window) outputWriter() {
 		// chunking hands the renderer a turn between chunks and bounds the
 		// stall at one chunk's parse instead of one batch's.
 		var t vt.Terminal
+		// Whether the parser was between sequences before this batch, for
+		// graphicsOnly. Only this goroutine writes, so it holds until the
+		// batch is written.
+		ground := w.parserAtGround()
 		for off := 0; off < len(batch); off += maxVTChunk {
 			end := min(off+maxVTChunk, len(batch))
 			w.ioMu.Lock()
@@ -286,14 +310,43 @@ func (w *Window) outputWriter() {
 			// Don't signal PTYDataChan here. The renderCoalescer
 			// goroutine holds the rate cap and signals on its own,
 			// which is what prevents partial-frame renders.
-			w.noteOutput()
+			if !resize.isResize() && graphicsOnly(ground, batch) && w.cursorHidden() {
+				w.noteGraphicsOutput()
+			} else {
+				w.noteOutput()
+			}
 		}
 	}
 }
 
+// SetFrameInterval sets the shortest interval between two render signals from
+// this pane: one frame at the frame rate of the client that owns it. A value
+// of zero or less restores the default, minCoalesceInterval.
+//
+// It used to be the constant 8 ms, about 120 frames a second, whatever
+// max_fps said. A pane could then never be drawn more than 125 times a
+// second, so max_fps 240 drew 125 frames of an animating pane, and a guest
+// that drew at exactly 120 raced a floor 0.33 ms shorter than its own period.
+// It is kept per pane because a server holds one client per connection, each
+// with its own panes and its own max_fps.
+func (w *Window) SetFrameInterval(d time.Duration) {
+	if d <= 0 {
+		d = minCoalesceInterval
+	}
+	w.frameInterval.Store(int64(d))
+}
+
+// minFrameInterval is the coalescer's floor now.
+func (w *Window) minFrameInterval() time.Duration {
+	if d := w.frameInterval.Load(); d > 0 {
+		return time.Duration(d)
+	}
+	return minCoalesceInterval
+}
+
 const (
-	// minCoalesceInterval is the floor: ~120fps, the rate the coalescer used
-	// unconditionally before it learned what a frame costs.
+	// minCoalesceInterval is the default floor: ~120fps, the rate the
+	// coalescer used unconditionally before it learned what a frame costs.
 	minCoalesceInterval = 8 * time.Millisecond
 
 	// maxCoalesceInterval is the ceiling, so one pathological frame cannot
@@ -307,10 +360,9 @@ const (
 	// pane the client has genuinely stopped keeping up with trips it.
 	catchUpBacklog = 4 << 20
 
-	// catchUpCoalesceInterval is the interval a pane that far behind is paced
-	// at: slow enough that the renderer stops taking the pane's read lock out
-	// from under its own output writer, fast enough to stay visibly alive.
-	catchUpCoalesceInterval = 250 * time.Millisecond
+	// catchUpFrames is the interval a pane that far behind is paced at, in
+	// frames. See catchUpCoalesceInterval.
+	catchUpFrames = 2
 
 	// coalescePaceFactor is how much host capacity a flooding pane may take.
 	// At 2 a frame that costs the client 20ms buys a 40ms interval, so the UI
@@ -318,6 +370,19 @@ const (
 	// available to whatever else needs it, which in practice is the keyboard.
 	coalescePaceFactor = 2
 )
+
+// catchUpCoalesceInterval is the shortest interval a pane far behind is paced
+// at: two frames, slow enough that the renderer does not take the pane's read
+// lock from its own output writer at every frame, fast enough that the flood
+// scrolls rather than jumps. A frame that costs more keeps its own, longer
+// interval (see coalesceInterval).
+//
+// It was 250 ms, four frames a second. A pane printing as fast as the client
+// can parse falls behind within seconds and stayed there, so a long flood was
+// drawn at 10 to 15 frames a second. At two frames it is drawn at about 68 a
+// second, and the guest wrote as many lines in the same time (1.28 million in
+// 5 s either way), so the writer did not lose to the renderer.
+func (w *Window) catchUpCoalesceInterval() time.Duration { return catchUpFrames * w.minFrameInterval() }
 
 // coalesceInterval is how long this pane must wait between render signals,
 // derived from what the client's last frame actually cost.
@@ -346,11 +411,12 @@ const (
 // back to is exactly what it would have been. What stops is the drawing of
 // frames that were never going to be looked at.
 func (w *Window) coalesceInterval() time.Duration {
-	if w.queuedBytes.Load() >= catchUpBacklog {
-		return catchUpCoalesceInterval
-	}
 	cost := time.Duration(w.renderCostNanos.Load()) * coalescePaceFactor
-	return min(max(cost, minCoalesceInterval), maxCoalesceInterval)
+	interval := min(max(cost, w.minFrameInterval()), maxCoalesceInterval)
+	if w.queuedBytes.Load() >= catchUpBacklog {
+		return max(interval, w.catchUpCoalesceInterval())
+	}
+	return interval
 }
 
 // ChargeRenderCost records what the client's last composed frame cost, so the
@@ -382,25 +448,38 @@ func (w *Window) ChargeRenderCost(d time.Duration) {
 // bursts instead of ticking also means an idle pane costs no wakeups at all,
 // where before every open pane woke 125 times a second forever.
 func (w *Window) renderCoalescer() {
-	timer := time.NewTimer(minCoalesceInterval)
+	timer := time.NewTimer(w.minFrameInterval())
 	if !timer.Stop() {
 		<-timer.C
 	}
 	defer timer.Stop()
 
 	// armed says the timer is holding the tail of an interval that has already
-	// emitted. last is when that emit happened; its zero value is what makes
-	// the very first output take the leading edge.
+	// emitted. last is the time the last emit stands for; its zero value is
+	// what makes the very first output take the leading edge.
 	var armed bool
 	var last time.Time
 
 	// emit consumes the coalescer's own flag, not HasNewOutput, so the latter
 	// survives for the UI goroutine's MarkTerminalsWithNewContent.
-	emit := func() {
+	//
+	// An emit before the end of the interval stands for the end of the
+	// interval, and the next interval is counted from there; one after it
+	// stands for itself. A signal up to FrameSlack before the end is emitted
+	// at once, and the timer of one that came earlier fires FrameSlack before
+	// the end.
+	//
+	// Counted from the moment of the emit, every timer that fired late (Go's
+	// timers are often a fraction of a millisecond late) started the next
+	// interval late: the intervals of a pane drawing at the frame rate came
+	// out 9 ms long at 120 frames a second, and a 120 Hz guest showed 111 of
+	// its frames. Counted from the end, the slack absorbs the lateness, and
+	// the emits still come no faster than one an interval on average.
+	emit := func(now time.Time, interval time.Duration) {
 		if !w.coalesceSignal.CompareAndSwap(true, false) {
 			return
 		}
-		last = time.Now()
+		last = NextFrameTime(last, interval, now)
 		if w.PTYDataChan != nil {
 			select {
 			case w.PTYDataChan <- struct{}{}:
@@ -420,18 +499,60 @@ func (w *Window) renderCoalescer() {
 			if armed {
 				continue
 			}
-			if wait := w.coalesceInterval() - time.Since(last); wait > 0 {
-				timer.Reset(wait)
+			now := time.Now()
+			interval := w.coalesceInterval()
+			if wait := last.Add(interval).Sub(now); wait > FrameSlack(interval) {
+				timer.Reset(wait - FrameSlack(interval))
 				armed = true
 				continue
 			}
-			emit()
+			emit(now, interval)
 
 		case <-timer.C:
 			armed = false
-			emit()
+			emit(time.Now(), w.coalesceInterval())
 		}
 	}
+}
+
+// FrameSlack is how long before the end of an interval a frame may be drawn:
+// a quarter of the interval. See renderCoalescer and NextFrameTime.
+//
+// A quarter is wide enough that a guest drawing at the frame rate, whose
+// frames arrive with a jitter of a millisecond or so, is never held back, and
+// that a timer firing late still lands inside it. Two frames can then be as
+// little as three quarters of an interval apart, but never more of them than
+// the frame rate allows over time.
+func FrameSlack(interval time.Duration) time.Duration { return interval / 4 }
+
+// NextFrameTime is the time a frame drawn at now stands for, when the last one
+// stood for last and frames are spaced interval apart: the end of the
+// interval for a frame drawn before it, and now for one drawn after. This is
+// the generic cell rate algorithm with FrameSlack as its tolerance: frames
+// keep to the interval on average, an early one does not move the frames after
+// it earlier, and a late one moves them later, so they follow a guest that
+// draws at the frame rate whatever its phase.
+func NextFrameTime(last time.Time, interval time.Duration, now time.Time) time.Time {
+	if end := last.Add(interval); now.Before(end) {
+		return end
+	}
+	return now
+}
+
+// parserAtGround reports whether the emulator's parser is between sequences.
+// A backend that cannot tell answers false.
+func (w *Window) parserAtGround() bool {
+	w.ioMu.RLock()
+	defer w.ioMu.RUnlock()
+	g, ok := w.Terminal.(interface{ AtGround() bool })
+	return ok && g.AtGround()
+}
+
+// cursorHidden reports whether the guest has hidden its cursor.
+func (w *Window) cursorHidden() bool {
+	w.ioMu.RLock()
+	defer w.ioMu.RUnlock()
+	return w.Terminal != nil && w.Terminal.IsCursorHidden()
 }
 
 // terminalRef returns the emulator, or nil once Close() has taken it away.
@@ -455,7 +576,7 @@ func (w *Window) terminalRef() vt.Terminal {
 // FocusReportingOn reports whether the guest requested DECSET 1004.
 func (w *Window) FocusReportingOn() bool {
 	term := w.terminalRef()
-	return term != nil && term.GetModes()[1004]
+	return term != nil && term.FocusReportingEnabled()
 }
 
 // StartDaemonResponseReader starts a goroutine to read and DRAIN responses from
@@ -1005,4 +1126,8 @@ func (w *Window) Close() {
 		w.CopyMode.SearchCache.Matches = nil
 		w.CopyMode = nil
 	}
+
+	// Give the window's memory back once the client settles. A burst of
+	// closes is one trim. See memtrim.
+	memtrim.Request()
 }

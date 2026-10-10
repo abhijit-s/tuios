@@ -3,6 +3,11 @@
 // background, one whose palette is not the xterm default, and one that
 // switches between light and dark while tuios runs.
 //
+// With -xtversion it also answers XTVERSION (CSI > q) with the name given,
+// so a test can play a terminal that names itself, such as xterm.js. With -da1
+// it answers DA1 itself. -xtversion-delay and -da1-delay hold those answers
+// back, to play a terminal that answers after tuios's startup probe gives up.
+//
 // It has two modes.
 //
 // hostterm run [flags] -- argv... runs argv in a PTY of its own and sits
@@ -16,6 +21,11 @@
 // 2031 it is told with a DSR 997 notification, the way ghostty and kitty tell
 // a program the system appearance changed. With -mute every colour question
 // is swallowed and none is answered, which is what mosh does.
+//
+// Every OSC 7501 (the Program Status Protocol) is taken out too and written
+// to the log as "7501 <body>". With -program-status the feature detection
+// query is answered, as ghostty and Rex answer it; without it the query goes
+// unanswered, as on a terminal that does not support the protocol.
 //
 // hostterm query SPEC asks the terminal it runs in one colour question (SPEC
 // is 10, 11 or 4;N), waits for the answer and prints it as
@@ -78,7 +88,19 @@ type host struct {
 	// mute answers no colour question at all. The questions are still taken
 	// out, so the outer terminal cannot answer them either.
 	mute bool
-	log  io.Writer
+	// programStatus answers the OSC 7501 query.
+	programStatus bool
+	// xtversion, when set, is the name and version XTVERSION is answered
+	// with. tuitest's emulator does not answer XTVERSION, and an answer typed
+	// by a test arrives after the DA1 that ends tuios's probe, so a test that
+	// needs the host to name itself puts the answer here.
+	xtversion string
+	// da1, when set, is the DA1 answer, given here so tuitest's own cannot
+	// race it. The delays hold an answer back, for a terminal that answers
+	// after tuios's startup probe has given up.
+	da1                      string
+	xtversionDelay, da1Delay time.Duration
+	log                      io.Writer
 }
 
 func (h *host) now() scheme {
@@ -114,6 +136,11 @@ func run(args []string) int {
 	ansiSpec := fs.String("ansi", "", "palette slots, as N=#rrggbb,N=#rrggbb")
 	logPath := fs.String("log", "", "append every answered question here")
 	mute := fs.Bool("mute", false, "swallow every colour question and answer none, as mosh does")
+	programStatus := fs.Bool("program-status", false, "answer the OSC 7501 query, as a terminal that supports the protocol does")
+	xtversion := fs.String("xtversion", "", "answer XTVERSION (CSI > q) with this name and version, as in \"xterm.js(6.1.0)\"")
+	xtversionDelay := fs.Duration("xtversion-delay", 0, "wait this long before the XTVERSION answer")
+	da1 := fs.String("da1", "", "answer DA1 (CSI c) with these attributes, as in \"?62;4;9;22c\"")
+	da1Delay := fs.Duration("da1-delay", 0, "wait this long before the DA1 answer")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -123,7 +150,11 @@ func run(args []string) int {
 		return 2
 	}
 
-	h := &host{ansi: map[int]string{}, mute: *mute}
+	h := &host{
+		ansi: map[int]string{}, mute: *mute, programStatus: *programStatus,
+		xtversion: *xtversion, xtversionDelay: *xtversionDelay,
+		da1: *da1, da1Delay: *da1Delay,
+	}
 	h.schemes = append(h.schemes, scheme{fg: *fg, bg: *bg, light: isLight(*bg)})
 	fgs, bgs := strings.Split(*altFg, ","), strings.Split(*altBg, ",")
 	if len(fgs) != len(bgs) {
@@ -191,7 +222,26 @@ func run(args []string) int {
 
 	go func() { _, _ = io.Copy(ptmx, os.Stdin) }()
 
-	f := &filter{h: h, answer: func(b string) { _, _ = ptmx.Write([]byte(b)) }}
+	// Held-back answers go out in the order they were asked for, each after
+	// its own delay, the way a slow terminal answers.
+	type late struct {
+		at   time.Time
+		text string
+	}
+	lateQ := make(chan late, 16)
+	go func() {
+		for a := range lateQ {
+			time.Sleep(time.Until(a.at))
+			_, _ = ptmx.Write([]byte(a.text))
+		}
+	}()
+	f := &filter{h: h, answer: func(b string) { _, _ = ptmx.Write([]byte(b)) }, answerAfter: func(d time.Duration, b string) {
+		if d <= 0 {
+			_, _ = ptmx.Write([]byte(b))
+			return
+		}
+		lateQ <- late{time.Now().Add(d), b}
+	}}
 	buf := make([]byte, 64*1024)
 	for {
 		n, err := ptmx.Read(buf)
@@ -236,9 +286,10 @@ func isLight(hex string) bool {
 // filter passes the program's output through, taking out the questions it
 // answers. A sequence split across two reads is held until it is whole.
 type filter struct {
-	h      *host
-	answer func(string)
-	held   []byte
+	h           *host
+	answer      func(string)
+	answerAfter func(time.Duration, string)
+	held        []byte
 }
 
 // maxHeld bounds how much of an unfinished sequence is held back. A colour
@@ -337,6 +388,18 @@ func csiEnd(b []byte) int {
 
 // oscQuery answers a colour question and reports whether it did.
 func (f *filter) oscQuery(body string) bool {
+	if strings.HasPrefix(body, "9;") && !strings.HasPrefix(body, "9;4;") {
+		// A desktop notification: logged, and passed on.
+		f.h.note("notify %s", strings.TrimPrefix(body, "9;"))
+		return false
+	}
+	if strings.HasPrefix(body, "7501;") {
+		f.h.note("7501 %s", strings.TrimPrefix(body, "7501;"))
+		if body == "7501;?" && f.h.programStatus {
+			f.answer("\x1b]7501;?\x1b\\")
+		}
+		return true
+	}
 	s := f.h.now()
 	if f.h.mute {
 		if body == "10;?" || body == "11;?" || (strings.HasPrefix(body, "4;") && strings.HasSuffix(body, ";?")) {
@@ -379,6 +442,14 @@ func (f *filter) oscQuery(body string) bool {
 // whether the sequence was consumed.
 func (f *filter) csi(params string, final byte) bool {
 	switch {
+	case (params == ">" || params == ">0") && final == 'q' && f.h.xtversion != "":
+		f.h.note("answer xtversion %s after %s", f.h.xtversion, f.h.xtversionDelay)
+		f.answerAfter(f.h.xtversionDelay, "\x1bP>|"+f.h.xtversion+"\x1b\\")
+		return true
+	case (params == "" || params == "0") && final == 'c' && f.h.da1 != "":
+		f.h.note("answer da1 %s after %s", f.h.da1, f.h.da1Delay)
+		f.answerAfter(f.h.da1Delay, "\x1b["+f.h.da1)
+		return true
 	case params == "?996" && final == 'n':
 		if f.h.mute {
 			f.h.note("unanswered 996")

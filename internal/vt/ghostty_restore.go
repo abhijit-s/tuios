@@ -5,8 +5,10 @@ package vt
 import (
 	"bytes"
 	"fmt"
+	"unicode/utf8"
 
 	uv "github.com/charmbracelet/ultraviolet"
+	"github.com/charmbracelet/x/ansi"
 	gh "go.mitchellh.com/libghostty"
 )
 
@@ -34,16 +36,44 @@ type ghosttyRestore struct {
 	hasAltScreen     bool
 	cursorX, cursorY int
 	hasCursor        bool
-	pen              uv.Style
-	penLink          uv.Link
-	hasPen           bool
-	kittyKbdStack    []int
+	// pendingWrap arms a wrap at the restored cursor. The library takes no
+	// sequence that sets the flag, so the synthesis prints the cell under the
+	// cursor again, which leaves the cursor and the flag where the guest's
+	// own print of it did.
+	pendingWrap   bool
+	pen           uv.Style
+	penLink       uv.Link
+	hasPen        bool
+	kittyKbdStack []int
+	// kittyKbdMainStack is the main screen's stack, carried while the
+	// alternate screen is in use.
+	kittyKbdMainStack []int
+	// modifyOtherKeys is the XTMODKEYS level, when hasModifyOtherKeys says
+	// the snapshot carried one.
+	modifyOtherKeys    int
+	hasModifyOtherKeys bool
 	// screenWraps and historyWraps are the soft-wrap flags the snapshot
 	// carries (see RestoreSoftWraps). The library keeps a wrap flag only for
 	// a row it wrapped itself, so the synthesis reproduces each one by
 	// typing the row out to the edge and letting the next row carry on.
 	screenWraps  []bool
 	historyWraps []bool
+	// penProtected is DECSCA on the pen, when hasPenProtected says the
+	// snapshot carried it.
+	penProtected    bool
+	hasPenProtected bool
+	// prot is each screen's protected cells, main first. The painter sends
+	// DECSCA around them.
+	prot [2][]CellRun
+	// lastPrinted is the character REP repeats, when hasLastPrinted says
+	// the snapshot carried it. The library sets it only by printing, so the
+	// synthesis prints it and erases it again.
+	lastPrinted    string
+	hasLastPrinted bool
+	// saved is each screen's saved cursor, main first, when the snapshot
+	// carried it. The library takes one only by saving the live cursor, so
+	// the synthesis puts the live cursor into that state and saves it.
+	saved [2]*SavedCursor
 }
 
 func (t *GhosttyTerminal) pendingRestore() *ghosttyRestore {
@@ -116,7 +146,7 @@ func (t *GhosttyTerminal) flushRestoreLocked() {
 		if t.activeAltLiveLocked() {
 			seq.WriteString("\x1b[?1049l\x1b[?1047l")
 		}
-		seq.WriteString("\x1b[?69l\x1b[r\x1b[?6l\x1b(B\x1b)B\x1b*B\x1b+B\x0f\x1b[0m\x1b]8;;\x1b\\\x1b[2J\x1b[H")
+		seq.WriteString("\x1b[?69l\x1b[r\x1b[?6l\x1b(B\x1b)B\x1b*B\x1b+B\x0f\x1b[0m\x1b[0\"q\x1b]8;;\x1b\\\x1b[2J\x1b[H")
 	} else {
 		seq.WriteString("\x1bc")
 	}
@@ -153,7 +183,8 @@ func (t *GhosttyTerminal) flushRestoreLocked() {
 	if !altActive {
 		mainWraps = r.screenWraps
 	}
-	appendGridPaint(&seq, r.grids[0], t.width, t.height, mainWraps)
+	mainProt := protRows(r.prot[0], t.width, t.height)
+	appendGridPaint(&seq, r.grids[0], mainProt, t.width, t.height, mainWraps)
 
 	// The alternate screen switches on before its cells paint, so region,
 	// pen and cursor below land on the screen the snapshot took them from.
@@ -169,48 +200,54 @@ func (t *GhosttyTerminal) flushRestoreLocked() {
 		if n, err := t.term.ScrollbackRows(); err == nil {
 			t.mainSbLen = int(n)
 		}
-		seq.WriteString("\x1b[?1049h\x1b[2J\x1b[H")
-		appendGridPaint(&seq, r.grids[1], t.width, t.height, r.screenWraps)
-	}
-
-	// Charsets.
-	if r.hasCharsets {
-		inters := [4]byte{'(', ')', '*', '+'}
-		for i, id := range r.charsets {
-			switch id {
-			case 'A', '0':
-			default:
-				id = 'B'
+		// The switch uses the mode the guest used. Leaving answers to the
+		// mode: a guest that entered with 1047 leaves with 1047, and the
+		// library keeps a screen entered with 1049 marked as the alternate
+		// one after 1047 is reset.
+		altMode := 1049
+		switch {
+		case r.modes[1049]:
+		case r.modes[1047]:
+			altMode = 1047
+		case r.modes[47]:
+			altMode = 47
+		}
+		// The main screen's saved cursor is put into the live one first and
+		// saved: entering with 1049 saves it, and the other two modes are
+		// sent a DECSC. The scroll region is not set yet, so origin mode
+		// addresses the whole screen.
+		if sc := r.saved[0]; sc != nil {
+			appendSavedCursor(&seq, *sc, r.grids[0], mainProt, 0, 0)
+			if altMode != 1049 {
+				seq.WriteString("\x1b7")
 			}
-			seq.WriteByte(0x1b)
-			seq.WriteByte(inters[i])
-			seq.WriteByte(id)
 		}
-		switch r.gl {
-		case 1:
-			seq.WriteByte(0x0e)
-		case 2:
-			seq.WriteString("\x1bn")
-		case 3:
-			seq.WriteString("\x1bo")
-		default:
-			seq.WriteByte(0x0f)
-		}
-		switch r.gr {
-		case 1:
-			seq.WriteString("\x1b~")
-		case 2:
-			seq.WriteString("\x1b}")
-		case 3:
-			seq.WriteString("\x1b|")
-		}
+		fmt.Fprintf(&seq, "\x1b[?%dh\x1b[?6l\x1b[0m\x1b[0\"q\x1b[2J\x1b[H", altMode)
+		appendGridPaint(&seq, r.grids[1], protRows(r.prot[1], t.width, t.height), t.width, t.height, r.screenWraps)
 	}
+	active := 0
+	if altActive {
+		active = 1
+	}
+	activeProt := protRows(r.prot[active], t.width, t.height)
+
+	// Charsets, kept aside as well so a pending wrap can put them back after it
+	// prints with ASCII selected.
+	var charsets bytes.Buffer
+	if r.hasCharsets {
+		appendCharsets(&charsets, r.charsets, r.gl, r.gr)
+	}
+	seq.Write(charsets.Bytes())
 
 	// Kitty keyboard: the library only needs the effective flags for its
 	// query answers; the full stack lives in the shadow.
 	if len(r.kittyKbdStack) > 0 {
 		top := r.kittyKbdStack[len(r.kittyKbdStack)-1]
 		fmt.Fprintf(&seq, "\x1b[=%d;1u", top)
+	}
+
+	if r.hasModifyOtherKeys {
+		fmt.Fprintf(&seq, "\x1b[>4;%dm", r.modifyOtherKeys)
 	}
 
 	// Modes. Origin mode last: enabling it homes the cursor, and the
@@ -226,6 +263,12 @@ func (t *GhosttyTerminal) flushRestoreLocked() {
 			case 47, 1047, 1049:
 				// Screen selection already synthesized.
 				continue
+			case 1048:
+				// Setting it saves the cursor and resetting it restores one,
+				// pen, character sets and origin mode with it, which would
+				// change the state being restored halfway through. The saved
+				// cursor is synthesized below.
+				continue
 			case 6:
 				decom = v
 				continue
@@ -240,12 +283,51 @@ func (t *GhosttyTerminal) flushRestoreLocked() {
 
 	// Scroll region. DECSTBM homes the cursor; restore order puts the
 	// cursor after it.
-	regionTop := 0
+	regionTop, regionLeft := 0, 0
 	if r.hasScrollRegion {
 		reg := r.scrollRegion.Intersect(uv.Rect(0, 0, t.width, t.height))
 		if !reg.Empty() && (reg.Min.Y > 0 || reg.Max.Y < t.height) {
 			fmt.Fprintf(&seq, "\x1b[%d;%dr", reg.Min.Y+1, reg.Max.Y)
 			regionTop = reg.Min.Y
+		}
+		// The left and right margins, after the mode loop above set
+		// DECLRMM: the library takes DECSLRM only with the mode on. Sending
+		// only DECSTBM left the library at the full width while the copy
+		// below said otherwise, so the client wrapped where the guest did
+		// not.
+		if lrmm := r.modes[69]; lrmm && !reg.Empty() && (reg.Min.X > 0 || reg.Max.X < t.width) {
+			fmt.Fprintf(&seq, "\x1b[%d;%ds", reg.Min.X+1, reg.Max.X)
+			regionLeft = reg.Min.X
+		}
+	}
+
+	// The active screen's saved cursor: the live cursor is put into its
+	// state and saved, and the live state follows below.
+	if sc := r.saved[active]; sc != nil {
+		appendSavedCursor(&seq, *sc, r.grids[active], activeProt, regionTop, regionLeft)
+		seq.WriteString("\x1b7\x1b[?6l\x1b[0m\x1b[0\"q")
+		seq.Write(charsets.Bytes())
+	}
+
+	// The character REP repeats, which only a print sets. A pending wrap
+	// below prints the cell under the cursor again, and when that cell is
+	// the character, the reprint sets it and this is not needed.
+	reprintAs := ""
+	if r.hasLastPrinted && r.lastPrinted != "" {
+		if cell := cursorCell(r.grids[active], r.cursorX, r.cursorY); r.hasCursor && r.pendingWrap && cell != nil {
+			switch {
+			case cell.Content == r.lastPrinted:
+				reprintAs = cell.Content
+			case mapThroughCharset(r.lastPrinted, r.charsets, r.gl) == cell.Content:
+				reprintAs = r.lastPrinted
+			}
+		}
+		if reprintAs == "" {
+			cols := max(cellWidthOf(r.lastPrinted), 1)
+			if y, ok := lastPrintedRow(r.grids[active], activeProt, r.screenWraps, t.width, t.height, cols); ok {
+				appendLastPrinted(&seq, r.lastPrinted, y, cols)
+				seq.Write(charsets.Bytes())
+			}
 		}
 	}
 
@@ -253,22 +335,55 @@ func (t *GhosttyTerminal) flushRestoreLocked() {
 		seq.WriteString("\x1b[?6h")
 	}
 
-	// Pen.
-	if r.hasPen {
-		seq.WriteString("\x1b[0m")
-		seq.WriteString(penStyleSequence(&r.pen))
-	}
-
 	// Cursor. With origin mode on, addressing is region-relative.
 	if r.hasCursor {
-		y := r.cursorY
+		y, x := r.cursorY, r.cursorX
 		if decom {
 			y -= regionTop
+			x -= regionLeft
 		}
 		if y < 0 {
 			y = 0
 		}
-		fmt.Fprintf(&seq, "\x1b[%d;%dH", y+1, r.cursorX+1)
+		fmt.Fprintf(&seq, "\x1b[%d;%dH", y+1, x+1)
+		if r.pendingWrap {
+			if reprintAs != "" && reprintAs != cursorCell(r.grids[active], r.cursorX, r.cursorY).Content {
+				// The cell holds the character as the charset in force
+				// maps it, so it is printed as the guest sent it, with
+				// that charset, and REP's character comes out right.
+				lead, _ := cursorLead(r.grids[active], r.cursorX, r.cursorY)
+				fmt.Fprintf(&seq, "\x1b[%d;%dH", y+1, lead+(x-r.cursorX)+1)
+				seq.Write(charsets.Bytes())
+				cell := *cursorCell(r.grids[active], r.cursorX, r.cursorY)
+				cell.Content = reprintAs
+				var p []bool
+				if row := activeProt[r.cursorY]; row != nil {
+					p = row[lead : lead+1]
+				}
+				appendStyledLineProt(&seq, uv.Line{cell}, p)
+				seq.WriteString("\x1b[0m")
+			} else {
+				appendReprint(&seq, r.grids[active], activeProt, r.cursorX, r.cursorY, y, x-r.cursorX)
+				seq.Write(charsets.Bytes())
+			}
+		}
+	}
+
+	// The pen, last, because everything above prints with a pen of its own:
+	// the rendition, the hyperlink and DECSCA.
+	if r.hasPen {
+		seq.WriteString("\x1b[0m")
+		seq.WriteString(penStyleSequence(&r.pen))
+		if r.penLink.URL != "" {
+			seq.WriteString("\x1b]8;" + r.penLink.Params + ";" + r.penLink.URL + "\x1b\\")
+		}
+	}
+	if r.hasPenProtected {
+		if r.penProtected {
+			seq.WriteString("\x1b[1\"q")
+		} else {
+			seq.WriteString("\x1b[0\"q")
+		}
 	}
 
 	// Shadow state follows the synthesized stream, which bypassed the
@@ -278,8 +393,30 @@ func (t *GhosttyTerminal) flushRestoreLocked() {
 	t.charsetIDs = defaultCharsetIDs
 	t.gl = 0
 	if !extend {
-		t.savedCharsets = defaultCharsetIDs
+		t.savedCur = [2]SavedCursor{{Charsets: defaultCharsetIDs}, {Charsets: defaultCharsetIDs}}
+		t.penProtected = false
+		t.scanner.lastPrint = 0
 		t.gr = 0
+	}
+	for i, sc := range r.saved {
+		if sc != nil {
+			c := *sc
+			for k, id := range c.Charsets {
+				if id != 'A' && id != '0' {
+					c.Charsets[k] = 'B'
+				}
+			}
+			t.savedCur[i] = c
+		}
+	}
+	if r.hasPenProtected {
+		t.penProtected = r.penProtected
+	}
+	if r.hasLastPrinted {
+		t.scanner.lastPrint = 0
+		if ch, _ := utf8.DecodeRuneInString(r.lastPrinted); r.lastPrinted != "" && ch != utf8.RuneError {
+			t.scanner.lastPrint = ch
+		}
 	}
 	if r.hasCharsets {
 		for i, id := range r.charsets {
@@ -305,11 +442,21 @@ func (t *GhosttyTerminal) flushRestoreLocked() {
 	// emulator's flags alone, on both backends: the library was sent nothing
 	// for them, and the pure emulator's RestoreKittyKeyboardState returns
 	// early on an empty stack.
+	if r.hasModifyOtherKeys {
+		t.modifyOtherKeys.Store(int32(r.modifyOtherKeys)) //nolint:gosec // bounded by RestoreModifyOtherKeys
+	} else if !extend {
+		t.modifyOtherKeys.Store(0)
+	}
 	if len(r.kittyKbdStack) > 0 {
 		t.kittyKbd.Reset()
-		t.kittyKbd.stack = append([]int(nil), r.kittyKbdStack...)
+		t.kittyKbd.SelectScreen(altActive)
+		t.kittyKbd.SetStack(r.kittyKbdStack)
 	} else if !extend {
 		t.kittyKbd.Reset()
+		t.kittyKbd.SelectScreen(altActive)
+	}
+	if len(r.kittyKbdMainStack) > 0 {
+		t.kittyKbd.SetMainStack(r.kittyKbdMainStack)
 	}
 
 	t.term.VTWrite(seq.Bytes())
@@ -323,7 +470,7 @@ func (t *GhosttyTerminal) flushRestoreLocked() {
 // A row wraps says wrapped is typed out to the edge, and the row after it is
 // typed straight on without a cursor move, so the library wraps it and keeps
 // the flag. The last row cannot wrap, since that would scroll the screen.
-func appendGridPaint(seq *bytes.Buffer, grid map[[2]int]*uv.Cell, width, height int, wraps []bool) {
+func appendGridPaint(seq *bytes.Buffer, grid map[[2]int]*uv.Cell, prot map[int][]bool, width, height int, wraps []bool) {
 	if len(grid) == 0 {
 		return
 	}
@@ -350,11 +497,14 @@ func appendGridPaint(seq *bytes.Buffer, grid map[[2]int]*uv.Cell, width, height 
 				line[x] = uv.Cell{Content: " ", Width: 1}
 			}
 		}
-		if wrapped {
-			appendStyledLine(seq, line)
-		} else {
-			appendStyledLine(seq, trimTrailingBlanks(line))
+		if !wrapped {
+			line = trimTrailingBlanks(line)
 		}
+		var p []bool
+		if row := prot[y]; row != nil {
+			p = row[:len(line)]
+		}
+		appendStyledLineProt(seq, line, p)
 		seq.WriteString("\x1b[0m")
 		carrying = wrapped
 	}
@@ -378,6 +528,30 @@ func padLine(line uv.Line, width int) uv.Line {
 // boundaries. Zero-width cells (wide-cell tails) emit nothing; the leading
 // cell advanced the cursor for them.
 func appendStyledLine(seq *bytes.Buffer, line uv.Line) {
+	appendStyledLineProt(seq, line, nil)
+}
+
+// appendStyledLineProt is appendStyledLine with DECSCA around the cells prot
+// marks, cell by cell, and off again at the end. A nil prot protects none.
+func appendStyledLineProt(seq *bytes.Buffer, line uv.Line, prot []bool) {
+	protecting := false
+	setProt := func(x int) {
+		on := x < len(prot) && prot[x]
+		if on == protecting {
+			return
+		}
+		protecting = on
+		if on {
+			seq.WriteString("\x1b[1\"q")
+		} else {
+			seq.WriteString("\x1b[0\"q")
+		}
+	}
+	defer func() {
+		if protecting {
+			seq.WriteString("\x1b[0\"q")
+		}
+	}()
 	var cur uv.Style
 	curSet := false
 	link := ""
@@ -393,6 +567,7 @@ func appendStyledLine(seq *bytes.Buffer, line uv.Line) {
 		if c.Width == 2 {
 			skipNext = true
 		}
+		setProt(x)
 		if c.Width == 0 {
 			// A zero-width cell with no preceding wide glyph still holds a
 			// column.
@@ -468,4 +643,52 @@ func trimTrailingBlanks(line uv.Line) uv.Line {
 		break
 	}
 	return line[:end]
+}
+
+// cursorLead is the column of the cell under the cursor at x, y, moved to the
+// lead of a wide glyph when the cursor stands on its second half, and that
+// cell.
+func cursorLead(grid map[[2]int]*uv.Cell, x, y int) (int, *uv.Cell) {
+	cell := grid[[2]int{x, y}]
+	if x > 0 && (cell == nil || cell.Width == 0) {
+		if lead := grid[[2]int{x - 1, y}]; lead != nil && lead.Width == 2 {
+			return x - 1, lead
+		}
+	}
+	return x, cell
+}
+
+// cursorCell is the cell cursorLead finds, as a blank when the grid holds
+// none there.
+func cursorCell(grid map[[2]int]*uv.Cell, x, y int) *uv.Cell {
+	_, cell := cursorLead(grid, x, y)
+	if cell == nil || cell.Content == "" {
+		return &uv.Cell{Content: " ", Width: 1}
+	}
+	return cell
+}
+
+// mapThroughCharset is ch as the set in GL draws it, for a single byte the
+// set maps. Anything else draws as itself.
+func mapThroughCharset(ch string, ids [4]byte, gl int) string {
+	if len(ch) != 1 || gl < 0 || gl > 3 {
+		return ch
+	}
+	var set CharSet
+	switch ids[gl] {
+	case '0':
+		set = SpecialDrawing
+	case 'A':
+		set = UK
+	}
+	if m, ok := set[ch[0]]; ok {
+		return m
+	}
+	return ch
+}
+
+// cellWidthOf is how many columns ch takes.
+func cellWidthOf(ch string) int {
+	_, w := ansi.FirstGraphemeCluster(ch, ansi.GraphemeWidth)
+	return w
 }

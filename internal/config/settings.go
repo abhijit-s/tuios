@@ -45,6 +45,15 @@ type Settings struct {
 	// Set via appearance.max_fps config (default 60, up to MaxFPSCap).
 	NormalFPS int
 
+	// MaxFPSAuto is set when appearance.max_fps is "auto": NormalFPS then
+	// follows DisplayFPS.
+	MaxFPSAuto bool
+
+	// DisplayFPS is the refresh rate the client found for this machine's
+	// displays, or 0 before it has looked or when it cannot tell. It is not
+	// read from the config, so a reload keeps it.
+	DisplayFPS int
+
 	// UseASCIIOnly controls whether to use ASCII fallback characters instead
 	// of Nerd Fonts. It is the effective answer: set by --ascii-only
 	// (ASCIIRequested), or by a terminal whose locale is not UTF-8 when no
@@ -131,6 +140,14 @@ type Settings struct {
 	// via appearance.links.
 	Links string
 
+	// LinkClick is the click that opens a link: one of the LinkClick*
+	// constants. Set via appearance.link_click.
+	LinkClick string
+
+	// LinkOpener is the command that opens a web link. Empty uses $BROWSER,
+	// then the system opener. Set via appearance.link_opener.
+	LinkOpener string
+
 	// DockbarPosition controls the position of the dockbar
 	// Set via --dockbar-position flag or appearance.dockbar_position config
 	DockbarPosition string
@@ -151,6 +168,11 @@ type Settings struct {
 
 	// SidebarShowCounts draws the window count on each session row.
 	SidebarShowCounts bool
+
+	// SidebarShowNumbers draws the switch number ahead of each session name.
+	// Off by default: the quiet rail is the default, and the people who want
+	// the numbers set show_numbers in [appearance.sidebar].
+	SidebarShowNumbers bool
 
 	// SidebarMarquee scrolls a hovered row's title when it overflows its columns.
 	SidebarMarquee bool
@@ -276,11 +298,26 @@ type Settings struct {
 	// it short. Off, a long name stays truncated with no way to read the rest.
 	DockWorkspaceTooltip bool
 
-	// DockPillCaps puts powerline half-circle caps back on the dock's mode pill,
-	// workspace tabs and minimized-window pills. Off, each is a flat filled cell:
-	// the caps repeated on every one of them, so a status line read as a row of
-	// beads. The capped look is one key away for anyone who wants it.
+	// DockWorkspaceLabelMax caps a workspace pill's label in cells. 0 draws the
+	// whole name and lets the strip's scroll arithmetic handle the width.
+	DockWorkspaceLabelMax int
+
+	// DockPillCaps puts powerline half-circle caps on the dock's mode chip,
+	// workspace tabs and minimized-window pills. On by default. Off, each is a
+	// flat filled cell, for anyone who reads a row of caps as a row of beads.
 	DockPillCaps bool
+
+	// DockModeIconWindow, DockModeIconTerminal and DockModeIconTiling are the
+	// mode pill's icons from appearance.dock_mode_icon_*. Nil is unset, which
+	// draws the built-in for the glyph set. An empty string draws no icon.
+	// Read them through GetDockModeIconWindow and its siblings.
+	DockModeIconWindow   *string
+	DockModeIconTerminal *string
+	DockModeIconTiling   *string
+
+	// DockCompact draws the dock as one row: the pills without the rule above
+	// or below them. The panes get the row back. Off by default.
+	DockCompact bool
 
 	// HideWindowButtons controls whether to hide window control buttons
 	// Set via --hide-window-buttons flag or appearance.hide_window_buttons config
@@ -464,6 +501,16 @@ type Settings struct {
 	// Set via appearance.kitty_placeholders config.
 	KittyPlaceholders string
 
+	// ImageSymbols decides how a pane's sixel image is shown on a host
+	// terminal that draws no graphics, such as kmscon or the Linux console.
+	// A glyph set name draws the picture as block glyphs of that set:
+	// octant (Unicode 16), sextant (Unicode 13), quadrant, half. "auto"
+	// picks by TERM: octant on kmscon, half on the Linux console, quadrant
+	// elsewhere (see imageSymbolKind in internal/app). "off" draws a box and
+	// tells the pane there is no sixel, so programs use their own text.
+	// Set via appearance.image_symbols config.
+	ImageSymbols string
+
 	// NewWindowInheritCwd starts a new window in the working directory of the
 	// pane that was focused when it was asked for, rather than in the
 	// directory the daemon itself was started in.
@@ -476,6 +523,13 @@ type Settings struct {
 	// behaviour rather than failing to open a window.
 	// Set via appearance.new_window_inherit_cwd config.
 	NewWindowInheritCwd bool
+
+	// NewWindowFollowSSH makes the ordinary split and new-window actions
+	// behave like their ssh versions: when the focused pane runs ssh, the new
+	// pane runs the same ssh. Off by default, so a split is a local shell
+	// unless the person asks for the ssh version by its own key.
+	// Set via appearance.new_window_follow_ssh config.
+	NewWindowFollowSSH bool
 
 	// WordCharacters lists the punctuation that counts as part of a word when a
 	// double-click selects one, on top of letters and digits, which always do.
@@ -507,6 +561,11 @@ type Settings struct {
 	// LeaderKey is the prefix key for commands (default: ctrl+b)
 	// Set via appearance.leader_key config
 	LeaderKey string
+	// KeyboardLayout and OptionGlyphs are keybindings.keyboard_layout and
+	// keybindings.option_glyphs, for the leader check, which reads Settings
+	// rather than the binding tables. Empty is the default of each.
+	KeyboardLayout string
+	OptionGlyphs   string
 
 	// PaneGap is the cells of empty space the tiler keeps between two neighbouring
 	// panes: i3's inner gap, and about the only spacing a terminal window manager
@@ -599,6 +658,12 @@ type Settings struct {
 	// another, where two panes change at once and neither says so.
 	ZoomAnimation bool
 
+	// ZoomBorderless makes a zoom the whole pane region with no chrome: the
+	// zoomed pane drops its border and title bar, and its guest is told the
+	// full size of the region. zoom_size and zoom_max_width do not apply while
+	// it is on, since a pane with no border has nothing to show around it.
+	ZoomBorderless bool
+
 	// DimUnfocused is how far an unfocused pane's content is carried toward the
 	// pane's own ground, as a percentage. Zero, the default, draws every pane's
 	// content the same.
@@ -665,13 +730,20 @@ const (
 // KittyPlaceholderModes is what appearance.kitty_placeholders accepts.
 var KittyPlaceholderModes = []string{KittyPlaceholdersAuto, KittyPlaceholdersOn, KittyPlaceholdersOff}
 
+// ImageSymbolsAuto is the default of appearance.image_symbols.
+const ImageSymbolsAuto = "auto"
+
+// ImageSymbolModes is what appearance.image_symbols accepts. The names other
+// than auto are mosaic.Kind names.
+var ImageSymbolModes = []string{ImageSymbolsAuto, "octant", "sextant", "quadrant", "half", "off"}
+
 func DefaultSettings() Settings {
 	return Settings{
 		NotificationDuration:        6 * time.Second,
 		NotificationWarningDuration: 8 * time.Second,
 		NotificationErrorDuration:   15 * time.Second,
 		NotificationErrorSticky:     true,
-		NormalFPS:                   60,
+		NormalFPS:                   DefaultFPS,
 		UseASCIIOnly:                false,
 		Motion:                      MotionFull,
 		ModalDim:                    ModalDimDefault,
@@ -685,12 +757,14 @@ func DefaultSettings() Settings {
 		TilingScheme:                TilingSchemeSpiral,
 		ZenMode:                     ZenModeDisabled,
 		Links:                       LinksAll,
+		LinkClick:                   LinkClickBoth,
 		DockbarPosition:             DefaultDockbarPosition,
 		SidebarEnabled:              true,
 		SidebarPosition:             DefaultSidebarPosition,
 		SidebarWidth:                SidebarDefaultWidth,
 		SidebarShowGlyphs:           true,
 		SidebarShowCounts:           true,
+		SidebarShowNumbers:          false,
 		SidebarMarquee:              true,
 		SidebarSections:             SidebarDefaultSections,
 		SidebarFileIcons:            true,
@@ -710,7 +784,8 @@ func DefaultSettings() Settings {
 		DockWorkspaceTabs:           true,
 		DockWorkspaceTabFormat:      "",
 		DockWorkspaceTooltip:        true,
-		DockPillCaps:                false,
+		DockWorkspaceLabelMax:       12,
+		DockPillCaps:                true,
 		HideWindowButtons:           false,
 		WindowButtonStyle:           WindowButtonStyleDots,
 		WindowButtonPosition:        WindowButtonPositionLeft,
@@ -750,6 +825,7 @@ func DefaultSettings() Settings {
 		ClickToType:                 ClickToTypeDouble,
 		NewWindowInheritCwd:         true,
 		KittyPlaceholders:           KittyPlaceholdersAuto,
+		ImageSymbols:                ImageSymbolsAuto,
 		RightClickOpensMenu:         false,
 		AutoEnterTerminalOnFocus:    AutoEnterTerminalOff,
 		WordCharacters:              `@-./_~?&=%+#`,

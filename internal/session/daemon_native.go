@@ -42,18 +42,15 @@ func focusedWindowID(state *SessionState) (string, error) {
 // (for read verbs and NewWindow) or an error. Rendering-dependent verbs return
 // errNeedsClient.
 func (d *Daemon) executeDaemonCommand(sess *Session, commandType string, args []string, onExit func(ptyID string)) (map[string]any, error) {
-	return d.executeDaemonCommandIn(sess, commandType, args, "", onExit)
+	return d.executeDaemonCommandEnv(sess, commandType, args, "", 0, nil, onExit)
 }
 
-// executeDaemonCommandIn is executeDaemonCommand with the directory a
-// NewWindow starts in. Other commands ignore cwd.
-func (d *Daemon) executeDaemonCommandIn(sess *Session, commandType string, args []string, cwd string, onExit func(ptyID string)) (map[string]any, error) {
-	return d.executeDaemonCommandAt(sess, commandType, args, cwd, 0, onExit)
-}
-
-// executeDaemonCommandAt is executeDaemonCommandIn with the workspace a
-// NewWindow goes on. Zero is the session's current one.
-func (d *Daemon) executeDaemonCommandAt(sess *Session, commandType string, args []string, cwd string, workspace int, onExit func(ptyID string)) (map[string]any, error) {
+// executeDaemonCommandEnv is executeDaemonCommand with what a NewWindow takes
+// on top: the directory it starts in, the workspace it goes on (zero is the
+// session's current one), and environment entries its process gets on top of
+// an ordinary pane's. An ssh split uses env for the agent socket; see
+// SSHFollowArgv. Other commands ignore all three.
+func (d *Daemon) executeDaemonCommandEnv(sess *Session, commandType string, args []string, cwd string, workspace int, env []string, onExit func(ptyID string)) (map[string]any, error) {
 	switch commandType {
 	case "NewWindow":
 		name := ""
@@ -69,7 +66,7 @@ func (d *Daemon) executeDaemonCommandAt(sess *Session, commandType string, args 
 			command = args[1:]
 		}
 		win, err := sess.AddDaemonWindowWith(
-			NewWindowOptions{Focus: true, Command: command, Name: name, Cwd: cwd, Workspace: workspace}, onExit)
+			NewWindowOptions{Focus: true, Command: command, Name: name, Cwd: cwd, Workspace: workspace, Env: env}, onExit)
 		if err != nil {
 			return nil, err
 		}
@@ -211,7 +208,7 @@ func keysToBytes(keys string, literal, raw bool) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	return sendKeysBytes(parsed, false)
+	return sendKeysBytes(parsed, paneKeyModes{})
 }
 
 // resolvePTYForTarget resolves a window target (name/ID, or empty for the
@@ -245,7 +242,8 @@ func (d *Daemon) resolvePTYForTarget(sess *Session, target string) (*PTY, error)
 // wrote to. parsed is the sequence parseSendKeys made of keys, or nil to parse
 // it here; literal and raw write keys as they are. Named keys are encoded for
 // the pane's current modes, so an arrow reaches an application that turned on
-// application cursor keys as the SS3 form it asked for.
+// application cursor keys as the SS3 form it asked for, and ctrl+h reaches one
+// that asked for the kitty keyboard protocol as CSI 104;5u.
 func (d *Daemon) writeKeysToWindow(sess *Session, target, keys string, literal, raw bool, parsed []sendKey) (WindowState, error) {
 	state := sess.GetState()
 	resolved := target
@@ -275,7 +273,7 @@ func (d *Daemon) writeKeysToWindow(sess *Session, target, keys string, literal, 
 				return win, err
 			}
 		}
-		if data, err = sendKeysBytes(parsed, pty.ApplicationCursorKeysOn()); err != nil {
+		if data, err = sendKeysBytes(parsed, pty.keyModes()); err != nil {
 			return win, err
 		}
 	}
@@ -340,6 +338,10 @@ func windowStateToData(state *SessionState, idx int) map[string]any {
 	}
 	if w.CustomName != "" {
 		info["custom_name"] = w.CustomName
+	}
+	// A zoomed window fills its workspace. Omitted when it is not.
+	if w.Zoomed {
+		info["zoomed"] = true
 	}
 	// The scratch terminal is listed, marked, so a script can tell it from
 	// the panes the user placed. minimized true on it means hidden.

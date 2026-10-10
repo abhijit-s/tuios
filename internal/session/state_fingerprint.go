@@ -122,6 +122,17 @@ func StateFingerprint(s *SessionState) uint64 {
 		}
 		num(w.AgentQueued)
 		num(w.AgentSubagents)
+		num(len(w.ProgramStatus))
+		for _, r := range w.ProgramStatus {
+			str(r.ID)
+			str(r.State)
+			str(r.Kind)
+			num(r.Progress)
+			str(r.App)
+			str(r.Title)
+			str(r.Msg)
+			num(int(r.At))
+		}
 		flag(w.Popup)
 		str(w.PopupWidth)
 		str(w.PopupHeight)
@@ -166,6 +177,17 @@ func StateFingerprint(s *SessionState) uint64 {
 	for _, k := range sortedIntKeys(s.WorkspaceStackRatio) {
 		num(k)
 		f64(s.WorkspaceStackRatio[k])
+	}
+	num(len(s.WorkspaceMasterSplits))
+	for _, k := range sortedIntKeys(s.WorkspaceMasterSplits) {
+		num(k)
+		sp := s.WorkspaceMasterSplits[k]
+		for _, list := range [][]float64{sp.Masters, sp.Stack, sp.Rows, sp.Cells} {
+			num(len(list))
+			for _, v := range list {
+				f64(v)
+			}
+		}
 	}
 	num(len(s.WorkspaceMasterLayout))
 	for _, k := range sortedIntKeys(s.WorkspaceMasterLayout) {

@@ -205,7 +205,7 @@ func TestLogRedactsFailedCalls(t *testing.T) {
 		{[]string{"-S"}, []string{"tmux", "-S"}, "option requires an argument"},
 		{[]string{"send-keys", "-t", PaneID("leader-0001"), "a;", "hunter2", "x"},
 			[]string{"tmux", "send-keys", "-t", PaneID("leader-0001"), "<1 redacted>", ";", "<unknown command>", "<1 redacted>"}, "unknown command"},
-		{[]string{"wait-for", "-S", "hunter2"}, []string{"tmux", "wait-for", "<2 redacted>"}, "unknown command: wait-for"},
+		{[]string{"bind-key", "-n", "hunter2"}, []string{"tmux", "bind-key", "<2 redacted>"}, "unknown command: bind-key"},
 		{[]string{"kill-server", "hunter2"}, []string{"tmux", "kill-server", "<1 redacted>"}, "kill-server: refused"},
 		{[]string{"send-keys", "-H", "-t", PaneID("leader-0001"), "hunter2"},
 			[]string{"tmux", "send-keys", "-H", "-t", PaneID("leader-0001"), "<1 redacted>"}, "invalid hex key"},
@@ -331,7 +331,9 @@ func TestSelectPaneAndWindow(t *testing.T) {
 		t.Errorf("focus-window = %v", fw)
 	}
 	h.run("select-pane", "-L")
-	if fw := h.fake.last("focus-window"); fw["direction"] != "left" {
+	// The neighbour is found from the panes' positions, so the daemon is
+	// asked to focus a window, not a direction it answers only with a client.
+	if fw := h.fake.last("focus-window"); fw["direction"] != nil || fw["window"] == nil {
 		t.Errorf("select-pane -L sent %v", fw)
 	}
 	h.run("rename-window", "-t", "@1", "team")

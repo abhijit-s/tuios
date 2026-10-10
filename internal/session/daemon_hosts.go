@@ -71,7 +71,9 @@ func (d *Daemon) stopHostsWatch() {
 }
 
 // onConfigReload runs on the watcher goroutine. It applies the [hosts] table,
-// appearance.preferred_shell, [agents] enabled and herdr_protocol, the
+// [notify], appearance.preferred_shell, workspaces.return_when_empty,
+// [paste_buffers], [agents] enabled and herdr_protocol, [daemon]
+// single_client and ssh_agent, the
 // [agents.approvals], [agents.permissions] and [agents.queue] tables and
 // [agents.recap] test_patterns, and reads nothing else out of the file. A new
 // approval policy applies to the next request; a hold already running keeps
@@ -100,12 +102,33 @@ func (d *Daemon) applyUserConfig(cfg *config.UserConfig, byPerson bool) {
 	// every daemon runs in by default, so neither widens what a pane may do
 	// beyond what the shipped daemon allows.
 	d.SetAgentsEnabled(cfg.Agents.On())
+	// It narrows who is attached and widens nothing, so a file change
+	// applies it at once.
+	d.singleClient.Store(cfg.Daemon.SingleClient)
+	// The link only ever names a socket of the person's own client, so
+	// following it widens nothing a pane may do, and a file change applies.
+	d.SetSSHAgent(cfg.Daemon.SSHAgent)
+	// [hosts] or ~/.ssh/config may forward the agent differently now, and a
+	// host that left the table leaves no agent link behind.
+	d.forgetHostForwards()
+	d.agentPruneHosts(HostsFromConfig(cfg))
 	d.manager.SetPreferredShell(cfg.Appearance.PreferredShell)
 	d.manager.SetHerdrProtocol(cfg.Agents.HerdrProtocol)
+	d.manager.SetReturnWhenEmpty(cfg.Workspaces.ReturnsWhenEmpty())
+	if d.buffers != nil {
+		d.buffers.SetLimits(cfg.PasteBuffers.Resolved())
+	}
 	d.SetApprovalPolicy(ApprovalPolicyFromConfig(cfg.Agents.Approvals))
 	d.SetRecapTestPatterns(cfg.Agents.Recap.Resolved().TestPatterns)
 	d.SetQueueMax(cfg.Agents.Queue.MaxEntries())
+	d.SetCheckpoints(cfg.Agents.Checkpoints)
+	// A new notification destination waits like a new host does.
+	d.notify.reload(cfg.Notify, byPerson)
 	perms := PanePermissionsFromConfig(cfg.Agents.Permissions)
+	// A plugin put on the enabled list waits for the person, like a new
+	// host. One taken off stops now. See plugin_host.go.
+	pluginsWait := d.plugins != nil && d.plugins.apply(cfg.Plugins, byPerson)
+	d.pluginsWaiting.Store(pluginsWait)
 	if byPerson {
 		d.manager.SetPanePermissions(perms)
 		// A policy change applies to the next call on every link, including
@@ -137,7 +160,7 @@ func (d *Daemon) noteConfigWaiting() {
 // configWaiting reports whether config.toml holds a change that widens what
 // panes or links may do and waits for tuios config apply or a restart.
 func (d *Daemon) configWaiting() bool {
-	return d.manager.grants.restartNeeded.Load() || d.hostsWaiting.Load()
+	return d.manager.grants.restartNeeded.Load() || d.hostsWaiting.Load() || d.notify.waitingApply() || d.pluginsWaiting.Load()
 }
 
 // reloadHosts applies a changed host table only where it dials less: a host

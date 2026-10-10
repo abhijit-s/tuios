@@ -14,6 +14,13 @@ tuios new --detach scratch
 tuios new-window -s scratch build --cwd /src/api
 ```
 
+`tuios new` starts the session's windows in the directory you run it from.
+`--cwd DIR` names another one:
+
+```sh
+tuios new --detach api --cwd /src/api
+```
+
 Over the control protocol this is the `new-session` verb, which does both in one
 call and returns the ids:
 
@@ -65,7 +72,23 @@ Close what you open. On a detached session a window whose shell has exited
 stays in the list until something closes it:
 
 ```sh
-tuios run-command -s work CloseWindow "$id"
+tuios close-window -s work "$id"
+```
+
+## A pane on the machine a pane is ssh'd into
+
+The actions `split_ssh_vertical`, `split_ssh_horizontal` and `new_window_ssh`
+open a pane that runs the focused pane's ssh again, to the same host as the
+same user. The new line keeps only the connection options, with no remote
+command. A pane that does not run ssh gets an ordinary pane. So does an ssh
+line with an `-o` option outside a fixed list (`ProxyCommand`,
+`XAuthLocation` and similar), with `-F` or `-E`, or ssh that `scp` or `git`
+started. They are keybinding actions, so `run-command` runs them, and the
+same grant rules apply as for any other `run-command`:
+
+```sh
+tuios focus-window -s work build
+tuios run-command -s work split_ssh_vertical
 ```
 
 ## Many panes at once
@@ -85,7 +108,8 @@ its item. Without `-s`, `-c` is typed into the pane's shell, which stays.
 `-s` runs it with no shell and holds the pane until Enter; `-ss` closes the
 pane when it exits. `--interval` spaces the panes. `--session` names the
 session (`-s` is speedy mode, as in tmux-xpanes). `tuios close-workspace N`
-closes them all, like tmux kill-window. `--json` prints the window ids. The layout and
+closes them all, like tmux kill-window. When the last of them closes, the
+session goes back to the workspace that ran `xpanes`. `--json` prints the window ids. The layout and
 multifocus need an attached client; without one the panes open and a warning
 says so. More than 64 panes needs `--force`. For work you drive yourself, open
 panes with `new-window` and keep the ids; xpanes is for a person who wants to
@@ -93,7 +117,12 @@ type into all of them.
 
 ## Text from many panes
 
-For a script, loop over the panes and use `capture-pane`:
+`tuios list-windows --all --text 20 --json` lists every pane of every session
+with its folder, command and last 20 lines. `--all-hosts` adds the other
+machines. It reads with `capture-pane`, under the same grants: without `admin`
+you get your own session and an `errors` entry for the rest.
+
+To read one session's panes in a loop, use `capture-pane`:
 
 ```sh
 tuios list-windows --json | jq -r '.windows[] | "\(.index)\t\(.window_id)"' |
@@ -170,7 +199,10 @@ mode. With no client attached they go to the focused window.
 
 Names are case-insensitive. Arrows, `Home` and `End` are sent in the form the
 program asked for: `less` and `vim` turn on application cursor keys and get
-`ESC O A`, a shell gets `ESC [ A`. A word that looks like a key but is not one
+`ESC O A`, a shell gets `ESC [ A`. A named key or a key with modifiers is
+sent the way the client sends it for a person. A program that asked for the
+kitty keyboard protocol gets `ctrl+h` as `ESC [ 104;5u`, a shell gets `0x08`.
+A word that looks like a key but is not one
 (`Dwon`, `KEY_FOO`, `F13`) fails with `invalid_params`, the names above, and
 the closest one; nothing is sent. A plain lower-case word such as `ls` is still
 typed as its letters.
@@ -318,6 +350,11 @@ tuios set-layout -s work --master-position center --masters 1
 tuios focus-window -s work --direction left
 ```
 
+`--equalize` gives every tiled pane an equal share. In the master-stack layout
+it puts the master back at its configured ratio and shares the rest equally.
+`tuios list-clients` says whether a client shows the session
+(`tuios --skill clients`).
+
 Reading, writing, waiting, creating and moving never need a client, and neither
 does anything to do with agents.
 
@@ -369,16 +406,44 @@ other window-manager verbs. Do not pin a pane the person did not ask about.
 
 ### The escape hatch
 
-A keybinding with no verb of its own is reachable by name:
+A keybinding with no verb of its own is reachable by name. Every action
+`tuios keybinds list` prints runs this way:
 
 ```sh
 tuios run-command -s work ToggleZoom
+tuios run-command -s work toggle_spotlight
+tuios run-command -s work Press "ctrl+b ?"
 tuios run-command --list
 ```
 
-A name that is not a command is an error. `run-command` reports that the command
-ran and nothing about what it changed, and from a pane it needs `admin`. Prefer
-a verb where one exists.
+`Press` sends keys through the window manager, as the person would: the
+leader, a prefix, copy mode or an open dialog gets them. An action and
+`Press` need a client attached.
+
+A name that is not a command or an action is an error. `run-command` reports
+that the command ran and nothing about what it changed, and from a pane it
+needs `admin`. Prefer a verb where one exists.
+
+### A tape of steps
+
+For several steps in a row, write them in a tape and run it with
+`tuios tape exec`. It returns when the tape ends, and exits non-zero at the
+first step that fails, with the line:
+
+```sh
+cat > steps.tape <<'TAPE'
+Run "make build"
+WaitFor text "BUILD (OK|FAILED)" 120s
+Expect text "BUILD OK"
+Action equalize_splits
+TAPE
+tuios tape exec -s work steps.tape
+```
+
+`WaitFor` holds until a condition holds: `text "re"`, `pane "name"`,
+`gone "name"`, `focus "name"`, `panes N`, `agent "state"`, `workspace N` or
+`mode window`. Add `in "pane"` to read a pane other than the focused one.
+`Expect` checks once. Prefer these to `Sleep`.
 
 ## Naming things for the person watching
 

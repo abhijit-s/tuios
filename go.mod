@@ -2,13 +2,15 @@ module github.com/Gaurav-Gosain/tuios
 
 go 1.26.6
 
+toolchain go1.26.9
+
 require (
 	charm.land/bubbletea/v2 v2.0.8
 	charm.land/lipgloss/v2 v2.0.6
 	charm.land/ssh v0.4.3
 	charm.land/wish/v2 v2.0.3
-	github.com/Gaurav-Gosain/sip v0.8.3
-	github.com/Gaurav-Gosain/tuiffects v0.7.0
+	github.com/Gaurav-Gosain/sip v0.9.1
+	github.com/Gaurav-Gosain/tuiffects v0.7.1
 	github.com/adrg/xdg v0.5.3
 	github.com/alecthomas/chroma/v2 v2.27.0
 	github.com/charmbracelet/colorprofile v0.4.3
@@ -26,8 +28,9 @@ require (
 	github.com/spf13/pflag v1.0.10
 	go.mitchellh.com/libghostty v0.0.0-20260920220152-31b65cdc24cf
 	golang.org/x/image v0.45.0
-	golang.org/x/sys v0.47.0
-	golang.org/x/term v0.45.0
+	golang.org/x/sys v0.48.0
+	golang.org/x/term v0.46.0
+	rsc.io/qr v0.2.0
 )
 
 require (
@@ -73,9 +76,9 @@ require (
 	github.com/tklauser/numcpus v0.12.0 // indirect
 	github.com/xo/terminfo v1.0.0 // indirect
 	github.com/yusufpapurcu/wmi v1.2.4 // indirect
-	golang.org/x/crypto v0.56.0
+	golang.org/x/crypto v0.57.0
 	golang.org/x/exp v0.0.0-20260611194520-c48552f49976 // indirect
-	golang.org/x/net v0.58.0 // indirect
-	golang.org/x/sync v0.22.0 // indirect
-	golang.org/x/text v0.41.0 // indirect
+	golang.org/x/net v0.60.0 // indirect
+	golang.org/x/sync v0.23.0
+	golang.org/x/text v0.42.0 // indirect
 )

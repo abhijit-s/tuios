@@ -62,6 +62,176 @@ type grid struct {
 	// moves takes its tail with it, and one that goes into the history takes
 	// it there.
 	tail []uv.Line
+	// prot holds, for each row, which of its cells DECSCA protected from a
+	// selective erase. Protection is not part of a uv.Cell, so it is kept
+	// beside the cells and moves wherever they move. It is nil until a guest
+	// first prints a protected cell, which most never do, and a row's entry
+	// is nil while the row has none. A write through SetCell leaves the cell
+	// unprotected; the print path marks it again when the pen protects it.
+	// A reflow drops it: a reflowed row is a new row.
+	prot [][]bool
+	// The windows a whole-screen scroll slides rows, ext, wrap, tail and
+	// prot through. See scrollWindow.
+	rowsWin rowWindow[uv.Line]
+	extWin  rowWindow[int]
+	wrapWin rowWindow[rowFlag]
+	tailWin rowWindow[uv.Line]
+	protWin rowWindow[[]bool]
+}
+
+// rowWindow keeps a table indexed by row (the row headers, extents, wrap
+// flags, tails) as a window into a backing array twice its length, so that a
+// scroll of the whole screen moves the window instead of every entry.
+//
+// Sliding the table up one row was a copy of every entry but the first, and
+// for the row headers a copy with a write barrier per pointer: a pane printing
+// as fast as it can scrolls once per line, and those copies were 11% of the
+// daemon in a `yes` flood. Here the rows leaving the top are written once into
+// the free slots past the window's end, the window starts n slots later, and
+// only when it reaches the end of the backing array is it copied back to the
+// start, once every len(table) scrolls.
+//
+// The table the window hands out has its capacity cut at its length, so an
+// append reallocates rather than writing into the free slots. Every other
+// change to the table (a resize, a reflow, cutting rows off the bottom) either
+// keeps its start, which the window recognises, or gives it a new one, which
+// the window adopts at the next scroll.
+type rowWindow[T any] struct {
+	base []T
+	off  int
+}
+
+// scroll returns cur with its first n entries moved to its end, the rest
+// moved up n places, as slices.Concat(cur[n:], cur[:n]) would but in place
+// when it can.
+func (w *rowWindow[T]) scroll(cur []T, n int) []T {
+	h := len(cur)
+	if n <= 0 || n >= h {
+		return cur
+	}
+	if w.off+h > len(w.base) || &w.base[w.off] != &cur[0] {
+		// A table the window did not hand out: start a backing array for it.
+		w.base = make([]T, 2*h)
+		copy(w.base, cur)
+		w.off = 0
+	} else if w.off+h+n > len(w.base) {
+		// No room past the end: move the window back to the start, and
+		// clear what it leaves behind so no row header is held twice.
+		copy(w.base, w.base[w.off:w.off+h])
+		clear(w.base[h:])
+		w.off = 0
+	}
+	copy(w.base[w.off+h:w.off+h+n], w.base[w.off:w.off+n])
+	clear(w.base[w.off : w.off+n])
+	w.off += n
+	return w.base[w.off : w.off+h : w.off+h]
+}
+
+// scrollWindow scrolls every row of the grid up n rows, the rows leaving the
+// top coming back at the bottom with their extents, wrap flags and tails
+// unchanged, for the caller to blank.
+func (g *grid) scrollWindow(n int) {
+	g.rows = g.rowsWin.scroll(g.rows, n)
+	g.ext = g.extWin.scroll(g.ext, n)
+	g.wrap = g.wrapWin.scroll(g.wrap, n)
+	if g.tail != nil {
+		g.tail = g.tailWin.scroll(g.tail, n)
+	}
+	if g.prot != nil {
+		g.prot = g.protWin.scroll(g.prot, n)
+	}
+}
+
+// Protected reports whether DECSCA protected the cell at x, y.
+func (g *grid) Protected(x, y int) bool {
+	if y < 0 || y >= len(g.prot) || x < 0 {
+		return false
+	}
+	row := g.prot[y]
+	return x < len(row) && row[x]
+}
+
+// setProtected marks n cells of row y from column x protected or not.
+func (g *grid) setProtected(x, y, n int, on bool) {
+	if y < 0 || y >= len(g.rows) {
+		return
+	}
+	x0, x1 := max(x, 0), min(x+n, g.width)
+	if x0 >= x1 {
+		return
+	}
+	if !on {
+		g.clearProtected(y, x0, x1)
+		return
+	}
+	if g.prot == nil {
+		g.prot = make([][]bool, len(g.rows))
+	}
+	if g.prot[y] == nil {
+		g.prot[y] = make([]bool, g.width)
+	}
+	for i := x0; i < x1; i++ {
+		g.prot[y][i] = true
+	}
+}
+
+// clearProtected unprotects columns x0 to x1-1 of row y.
+func (g *grid) clearProtected(y, x0, x1 int) {
+	if y < 0 || y >= len(g.prot) || g.prot[y] == nil {
+		return
+	}
+	row := g.prot[y]
+	for i := max(x0, 0); i < x1 && i < len(row); i++ {
+		row[i] = false
+	}
+}
+
+// clearProtectedRows unprotects every cell of rows y to end-1.
+func (g *grid) clearProtectedRows(y, end int) {
+	if g.prot == nil {
+		return
+	}
+	clear(g.prot[max(y, 0):min(end, len(g.prot))])
+}
+
+// shiftProtected moves the protection of n columns of row y from column src
+// to column dst, as ICH and DCH move the cells. The caller clears the
+// columns the shift blanked.
+func (g *grid) shiftProtected(y, dst, src, n int) {
+	if y < 0 || y >= len(g.prot) || g.prot[y] == nil || n <= 0 {
+		return
+	}
+	copy(g.prot[y][dst:dst+n], g.prot[y][src:src+n])
+}
+
+// protectedRuns lists the protected cells as runs along each row.
+func (g *grid) protectedRuns() []CellRun {
+	var runs []CellRun
+	for y, row := range g.prot {
+		for x := 0; x < len(row); {
+			if !row[x] {
+				x++
+				continue
+			}
+			start := x
+			for x < len(row) && row[x] {
+				x++
+			}
+			runs = append(runs, CellRun{X: start, Y: y, N: x - start})
+		}
+	}
+	return runs
+}
+
+// restoreProtected replaces every cell's protection with the runs given,
+// clipped to the grid.
+func (g *grid) restoreProtected(runs []CellRun) {
+	g.prot = nil
+	for _, r := range runs {
+		if r.N > 0 {
+			g.setProtected(r.X, r.Y, min(r.N, g.width), true)
+		}
+	}
 }
 
 // rowFlag is what a row records about where its text ends.
@@ -218,6 +388,13 @@ func (g *grid) SetCell(x, y int, c *uv.Cell) {
 		g.rows[y] = newBlankLine(g.width)
 	}
 	g.rows[y].Set(x, c)
+	if g.prot != nil {
+		w := 1
+		if c != nil {
+			w = max(c.Width, 1)
+		}
+		g.clearProtected(y, x, x+w)
+	}
 	// A blank written over a wide character leaves its other half as a
 	// styled space, but that half was already inside the extent the wide
 	// character raised it to, so only a non-blank write can move it.
@@ -251,12 +428,25 @@ func (g *grid) Resize(width, height int) {
 		// the old width does not wrap at the new one.
 		clear(g.wrap)
 		g.tail = nil
+		for y, row := range g.prot {
+			if row == nil {
+				continue
+			}
+			if width > len(row) {
+				g.prot[y] = append(row, make([]bool, width-len(row))...)
+			} else {
+				g.prot[y] = row[:width]
+			}
+		}
 	}
 	if height > len(g.rows) {
 		g.ext = append(g.ext, make([]int, height-len(g.rows))...)
 		g.wrap = append(g.wrap, make([]rowFlag, height-len(g.rows))...)
 		if g.tail != nil {
 			g.tail = append(g.tail, make([]uv.Line, height-len(g.rows))...)
+		}
+		if g.prot != nil {
+			g.prot = append(g.prot, make([][]bool, height-len(g.rows))...)
 		}
 		g.rows = append(g.rows, make([]uv.Line, height-len(g.rows))...)
 	} else if height < len(g.rows) {
@@ -267,6 +457,10 @@ func (g *grid) Resize(width, height int) {
 		if g.tail != nil {
 			clear(g.tail[height:])
 			g.tail = g.tail[:height]
+		}
+		if g.prot != nil {
+			clear(g.prot[height:])
+			g.prot = g.prot[:height]
 		}
 	}
 }
@@ -282,6 +476,7 @@ func (g *grid) Clear() {
 	}
 	clear(g.wrap)
 	clear(g.tail)
+	g.prot = nil
 }
 
 // SoftWrapped reports whether row y carries on to row y+1 by autowrap.
@@ -332,6 +527,9 @@ func (g *grid) FillArea(c *uv.Cell, area uv.Rectangle) {
 	}
 	for y := max(area.Min.Y, 0); y < area.Max.Y && y < len(g.tail); y++ {
 		g.tail[y] = nil
+	}
+	for y := max(area.Min.Y, 0); y < area.Max.Y && y < len(g.prot); y++ {
+		g.clearProtected(y, area.Min.X, area.Max.X)
 	}
 	blank := isBlankFill(c)
 	if c != nil && c.Width > 1 {
@@ -394,6 +592,7 @@ func (g *grid) blankRows(y, end int, c *uv.Cell) {
 	if g.tail != nil {
 		clear(g.tail[y:end])
 	}
+	g.clearProtectedRows(y, end)
 	if isBlankFill(c) {
 		for i := y; i < end; i++ {
 			row := g.rows[i]
@@ -465,6 +664,7 @@ func (g *grid) InsertLineArea(y, n int, c *uv.Cell, area uv.Rectangle) {
 		for x := area.Min.X; x < area.Max.X; x++ {
 			g.rows[i][x] = g.rows[i-n][x]
 		}
+		g.moveProtected(i, i-n, area.Min.X, area.Max.X)
 	}
 	for i := y; i < y+n; i++ {
 		for x := area.Min.X; x < area.Max.X; x++ {
@@ -513,6 +713,7 @@ func (g *grid) DeleteLineArea(y, n int, c *uv.Cell, area uv.Rectangle) {
 		for x := area.Min.X; x < area.Max.X; x++ {
 			g.rows[dst][x] = g.rows[src][x]
 		}
+		g.moveProtected(dst, src, area.Min.X, area.Max.X)
 	}
 	for i := end - n; i < end; i++ {
 		for x := area.Min.X; x < area.Max.X; x++ {
@@ -532,6 +733,25 @@ func (g *grid) rotateExt(y, end, mid int) {
 	if g.tail != nil {
 		rotateLeft(g.tail[y:end], mid-y)
 	}
+	if g.prot != nil {
+		rotateLeft(g.prot[y:end], mid-y)
+	}
+}
+
+// moveProtected copies the protection of columns x0 to x1-1 from row src to
+// row dst, as a line move inside side margins copies the cells.
+func (g *grid) moveProtected(dst, src, x0, x1 int) {
+	if g.prot == nil {
+		return
+	}
+	if g.prot[src] == nil {
+		g.clearProtected(dst, x0, x1)
+		return
+	}
+	if g.prot[dst] == nil {
+		g.prot[dst] = make([]bool, g.width)
+	}
+	copy(g.prot[dst][x0:x1], g.prot[src][x0:x1])
 }
 
 // rotateLeft moves s[k:] to the front of s and s[:k] to the back.

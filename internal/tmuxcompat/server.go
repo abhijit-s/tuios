@@ -55,11 +55,75 @@ func (s *Shim) listClients(name string, args []string) (string, []string, error)
 		vars["client_height"] = strconv.Itoa(sv.height)
 		vars["client_termname"] = "tuios"
 		vars["client_flags"] = "attached,focused"
-		out, d := expand(format, vars)
+		out, d := s.expand(format, vars)
 		detail = mergeDetail(detail, d)
 		s.println(out)
 	}
 	return outcomeFor(detail), detail, nil
+}
+
+// detachClient detaches tuios clients through the detach-client verb, with
+// tmux 3.7c's precedence. -s names a session, and every client of it is
+// detached: -a and -t are ignored, as tmux ignores them with -s. Otherwise the
+// shim lists one client per session, named tuios-SESSION, so -t names the
+// clients of that session, and with neither the target is the caller's
+// session. Without -a, -t detaches every client of its session, since the
+// shim's one client stands for all of them, and with no target the client
+// used last in the caller's session is detached, as tmux detaches the current
+// client. With -a the client used last is kept and the others of the session
+// go. In tmux, -a acts on every client of the server. Here it acts
+// on one session. A session out of the shim's reach is not found, as for
+// every other command.
+func (s *Shim) detachClient(name string, args []string) (string, []string, error) {
+	p, err := parseFlags(name, specs[name], args)
+	if err != nil {
+		return OutcomeUnsupported, nil, err
+	}
+	if len(p.Args) > 0 {
+		return OutcomeUnsupported, nil, errors.New("detach-client: the shim does not run a command on detach")
+	}
+	v, err := s.loadView()
+	if err != nil {
+		return OutcomeError, nil, err
+	}
+	params := map[string]any{}
+	if sv, ok := p.Value('s'); ok && sv != "" {
+		ref := strings.TrimSuffix(sv, ":")
+		target, found := v.sessionOf(ref)
+		if !found {
+			return OutcomeError, nil, fmt.Errorf("can't find session: %s", ref)
+		}
+		params["session"] = target.name
+	} else {
+		ref := ""
+		if tv, ok := p.Value('t'); ok && tv != "" {
+			sessName, isClient := strings.CutPrefix(tv, "tuios-")
+			if !isClient {
+				return OutcomeError, nil, fmt.Errorf("can't find client: %s", tv)
+			}
+			ref = sessName
+		}
+		switch {
+		case ref != "":
+			target, found := v.sessionOf(ref)
+			if !found {
+				return OutcomeError, nil, fmt.Errorf("can't find client: tuios-%s", ref)
+			}
+			params["session"] = target.name
+		case s.callerPane(v) == nil:
+			if v.def == nil {
+				return OutcomeError, nil, errors.New("no current client")
+			}
+			params["session"] = v.def.name
+		}
+		if p.Has('a') {
+			params["all_other"] = true
+		}
+	}
+	if _, err := s.Caller.Call("detach-client", params); err != nil {
+		return OutcomeError, nil, err
+	}
+	return OutcomeOK, nil, nil
 }
 
 // option is one tmux option show-options answers, with the value that says
@@ -147,13 +211,25 @@ func optionAssignment(cmd string, args []string) (name, value string, ok bool) {
 }
 
 // historyLimit is the scrollback length tuios keeps, read from the daemon's
-// appearance.scrollback_lines. It is empty when the daemon does not say.
+// appearance.scrollback_lines. get-option gives a value set on the session
+// as a number and the registry's default as a string, so both are read. A
+// daemon that does not say is taken to use the shipped default, as tmux
+// prints its default rather than nothing.
 func (s *Shim) historyLimit() string {
-	var n int64
-	if s.daemonOption(map[string]any{"key": "appearance.scrollback_lines"}, &n) {
-		return strconv.FormatInt(n, 10)
+	var v any
+	if s.daemonOption(map[string]any{"session": s.Session, "key": "appearance.scrollback_lines"}, &v) {
+		switch n := v.(type) {
+		case float64:
+			if n > 0 {
+				return strconv.FormatInt(int64(n), 10)
+			}
+		case string:
+			if i, err := strconv.Atoi(n); err == nil && i > 0 {
+				return n
+			}
+		}
 	}
-	return ""
+	return strconv.Itoa(config.DefaultScrollbackLines)
 }
 
 // showOptions prints options: one by name, or every one of a scope.
@@ -254,7 +330,7 @@ func (s *Shim) newSession(name string, args []string) (string, []string, error) 
 	if cwd != "" {
 		params["cwd"] = cwd
 	}
-	if argv := s.paneCommand(p.Args, p.Values('e')); len(argv) > 0 {
+	if argv := s.paneCommand(p.Args, append(s.paneEnvFor(nil), p.Values('e')...)); len(argv) > 0 {
 		params["command"] = argv
 	}
 	raw, err := s.Caller.Call("new-session", params)

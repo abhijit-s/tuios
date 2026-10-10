@@ -177,6 +177,13 @@ func (m *OS) BuildSessionState() *session.SessionState {
 	if len(m.WorkspaceStackRatio) > 0 {
 		state.WorkspaceStackRatio = maps.Clone(m.WorkspaceStackRatio)
 	}
+	// The other splits travel on the same terms.
+	if len(m.WorkspaceMasterSplits) > 0 {
+		state.WorkspaceMasterSplits = make(map[int]layout.MasterSplits, len(m.WorkspaceMasterSplits))
+		for ws, sp := range m.WorkspaceMasterSplits {
+			state.WorkspaceMasterSplits[ws] = sp.Clone()
+		}
+	}
 	// The master-stack shapes travel as ops (see master_layout.go), and the
 	// daemon keeps its own copy whatever a push holds. They are here for the
 	// state this client saves without a daemon.
@@ -277,6 +284,8 @@ func (m *OS) RestoreFromState(state *session.SessionState) error {
 	m.adoptWorkspaceMasterRatio(state)
 	m.WorkspaceStackRatio = make(map[int]float64, len(state.WorkspaceStackRatio))
 	m.adoptWorkspaceStackRatio(state)
+	m.WorkspaceMasterSplits = make(map[int]layout.MasterSplits, len(state.WorkspaceMasterSplits))
+	m.adoptWorkspaceMasterSplits(state)
 	// The shapes belong to the session too, and the seeds this client sent
 	// were sent to the session being left.
 	m.WorkspaceMasterLayout = maps.Clone(state.WorkspaceMasterLayout)
@@ -550,6 +559,10 @@ func (m *OS) ApplyStateSyncFrom(state *session.SessionState, sourceID string) er
 	}
 	defer func() {
 		m.applyingPeerSync = false
+		// The trees sent from here on were worked out from this state, except
+		// the ones the user had changed before it arrived.
+		m.treeAnswerBase, m.treeAnswerUser = state.Version, unsentBefore
+		defer func() { m.treeAnswerBase, m.treeAnswerUser = 0, nil }()
 		if m.syncAnswerOwed {
 			m.syncAnswerOwed = false
 			// One push for the whole sync, after it has been applied, so the
@@ -721,6 +734,7 @@ func (m *OS) ApplyStateSyncFrom(state *session.SessionState, sourceID string) er
 	workspaceChanged := previousWorkspace != m.CurrentWorkspace
 	m.adoptWorkspaceMasterRatio(state)
 	m.adoptWorkspaceStackRatio(state)
+	m.adoptWorkspaceMasterSplits(state)
 	m.adoptWorkspaceHasCustom(state)
 	masterRetile := m.adoptWorkspaceMasterLayout(state)
 
@@ -1063,9 +1077,22 @@ func (m *OS) ApplyStateSyncFrom(state *session.SessionState, sourceID string) er
 		}
 	})
 
+	// A pane a switch to an empty workspace asked for has arrived.
+	m.settlePaneRequests()
+
 	// After the sizes settle, so a pane primed here takes its snapshot at
 	// the size it is shown at.
 	m.reconcilePaneStreams()
+
+	// A focus this sync moved was moved somewhere else: by another client, a
+	// verb or the daemon. The daemon fires the hook for it and this client
+	// stays silent on session-side hooks (see firesHere), so FocusWindow's
+	// notice never happens here. A dock component watching the focus is drawn
+	// by this client and has to refresh in it, whichever side moved the focus.
+	// Last, so the rail section is told the pane and the size this sync left.
+	if focusChanged {
+		m.NotifyDockEvent(string(hooks.AfterFocusChange))
+	}
 
 	m.MarkAllDirty()
 	return nil
@@ -1100,6 +1127,20 @@ func (m *OS) adoptWorkspaceStackRatio(state *session.SessionState) {
 		m.WorkspaceStackRatio = make(map[int]float64, len(state.WorkspaceStackRatio))
 	}
 	maps.Copy(m.WorkspaceStackRatio, state.WorkspaceStackRatio)
+}
+
+// adoptWorkspaceMasterSplits is adoptWorkspaceStackRatio for the splits of the
+// other master-stack panes, merged on the same terms.
+func (m *OS) adoptWorkspaceMasterSplits(state *session.SessionState) {
+	if len(state.WorkspaceMasterSplits) == 0 {
+		return
+	}
+	if m.WorkspaceMasterSplits == nil {
+		m.WorkspaceMasterSplits = make(map[int]layout.MasterSplits, len(state.WorkspaceMasterSplits))
+	}
+	for ws, sp := range state.WorkspaceMasterSplits {
+		m.WorkspaceMasterSplits[ws] = sp.Clone()
+	}
 }
 
 // adoptWorkspaceHasCustom takes the session's custom-layout flags onto this
@@ -1238,6 +1279,7 @@ func (m *OS) updateWindowFromState(w *terminal.Window, ws *session.WindowState) 
 	w.AgentMeta = agentMetaFromWire(w.AgentMeta, ws.AgentMeta)
 	w.AgentQueued = ws.AgentQueued
 	w.AgentSubagents = ws.AgentSubagents
+	w.ProgramStatus = programStatusFromWire(w.ProgramStatus, ws.ProgramStatus)
 	w.AgentStateAt = ws.AgentStateAt
 	prevSeq := w.AgentCompletionSeq
 	w.AgentCompletionSeq = ws.CompletionSeq
@@ -1254,6 +1296,7 @@ func (m *OS) updateWindowFromState(w *terminal.Window, ws *session.WindowState) 
 	// message and harness above, which have to be the ones that arrived with the
 	// state rather than the ones it replaced.
 	m.noteAgentState(w, string(ws.AgentState))
+	m.markHostProgramStatus()
 	w.ForegroundCmd = ws.ForegroundCmd
 	// The shell's pid, as the daemon that spawned it knows it, and the only
 	// second source a daemon-backed pane has for the directory it reports over
@@ -1363,6 +1406,7 @@ func adoptWindowState(window *terminal.Window, ws session.WindowState) {
 	window.AgentMeta = agentMetaFromWire(nil, ws.AgentMeta)
 	window.AgentQueued = ws.AgentQueued
 	window.AgentSubagents = ws.AgentSubagents
+	window.ProgramStatus = programStatusFromWire(nil, ws.ProgramStatus)
 	window.AgentStateAt = ws.AgentStateAt
 	window.AgentCompletionSeq = ws.CompletionSeq
 	window.ForegroundCmd = ws.ForegroundCmd
@@ -1696,6 +1740,10 @@ func (m *OS) RestoreTerminalStates() error {
 
 			if state != nil && w.Terminal != nil {
 				// Restore IsAltScreen flag and emulator state
+				// The snapshot's own bounds, before any of it is written,
+				// as primePaneFromDaemon does. A window built at the layout's
+				// size is wider or taller than the snapshot as often as not.
+				w.ResizeEmulatorToSnapshot(state.Width, state.Height)
 				m.restoreTerminalContent(w, state)
 				// Remembered for the subscribe that SetupPTYOutputHandlers is
 				// about to make, so the stream resumes where this snapshot
@@ -1862,6 +1910,8 @@ func (m *OS) SetupPTYOutputHandlers() error {
 
 	// Always reset subscribed PTYs to prevent stale entries from previous sessions
 	m.SubscribedPTYs = make(map[string]bool)
+	// The same for requests for panes: they were made before this attach.
+	m.paneRequests = nil
 
 	m.LogInfo("[SETUP] SetupPTYOutputHandlers: setting up handlers for %d windows", len(m.Windows))
 

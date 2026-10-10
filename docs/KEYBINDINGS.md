@@ -2,14 +2,53 @@
 
 The keybinding reference lives on the docs site: https://tuios.dev/docs/keybindings
 
-Every binding lives in one of the 23 sections under `[keybindings]` in `config.toml` and is rebindable; the site page lists each section's defaults, the prefix chords, copy mode, and the key syntax.
+Every binding lives in one of the 24 sections under `[keybindings]` in `config.toml` and is rebindable; the site page lists each section's defaults, the prefix chords, copy mode, and the key syntax.
 
 To send the leader to the program in the pane, press it two times in terminal
 mode. The pane gets the leader that `leader_key` names, such as `ctrl+a`,
 encoded as the pane expects: CSI u for a pane using the Kitty keyboard
 protocol, legacy bytes otherwise. A leader with no legacy encoding is dropped.
 
+The `[keybindings]` sections can also be in a file that config.toml includes,
+or in a file in `config.d`. The tables merge key by key. A
+`[[keybindings.command]]` entry in a later file changes the earlier entry with
+the same `name`, or with the same `key` when one of them has no name. Add
+`disabled = true` to an entry to remove the earlier entry it matches. The
+keybind manager and `tuios keybinds unbind` write a change to the file that
+sets the action. See
+[Split the config into several files](CONFIGURATION.md#split-the-config-into-several-files).
+
 To inspect your own effective bindings, use the binary rather than any document: `tuios keybinds list`, `tuios keybinds doctor` for conflicts, `tuios keybinds explain <key>` for everything one key does, or the in-app keybind manager on `Ctrl+B k`.
+
+## The full list
+
+`tuios keybinds list` shows every action and the keys that run it, as your
+`config.toml` sets them. It has one table for each scope: global, window mode,
+terminal mode, the sidebar and its files and agent rows, the Inbox, its prompt,
+the mailbox, copy mode, the prefix and each prefix menu, and tape playback. A key in a
+prefix menu shows with its chord, such as `ctrl+b L 5`. The command keys have a
+table of their own.
+
+After the scopes, the list shows the fixed keys. tuios reads these keys itself,
+and you cannot rebind them: copy mode, hints mode, the message view, the ways
+out of the spotlight, the list keys and the mouse. The help overlay
+(`Ctrl+B ?`) shows the same rows. The last table shows the actions that have no
+default key. Bind one in `config.toml`, or run it from the command palette.
+
+`tuios keybinds list --json` prints the same rows as a JSON array. Each row has
+`scope`, `scope_name`, `chord`, `section`, `action`, `keys` and `description`.
+A fixed key has `fixed: true`. An action with no key has `unbound: true`. A key
+that a different action takes first is in `shadowed`.
+
+```sh
+tuios keybinds list --json | jq -r '.[] | select(.action == "toggle_tiling") | .keys[]'
+```
+
+`tuios keybinds browse` opens the same rows in an explorer. Press `/` to
+search, and `tab` or a click on a tab to show one scope. The detail pane shows
+the keys, the action, the scope and the description. `q` or `esc` leaves it.
+It opens only when you run `browse`. `tuios keybinds list` stays plain text,
+on a terminal too.
 
 ## Editing sidebar files
 
@@ -18,6 +57,10 @@ Focus the sidebar with `s` in window mode or `Ctrl+B e`, then select a file.
 file in a new pane. The pane runs the editor set under Settings, Sidebar, File
 editor. A folder keeps its navigation action. tuios does not edit a file that is
 not text. The binding is `file_edit` in `[keybindings.sidebar_files]`.
+
+`Y` copies the absolute path of the selected file or folder. The context menu
+of a folder has a Copy path row that does the same. The binding is
+`file_copy_path` in `[keybindings.sidebar_files]`.
 
 When the session runs on another machine, tuios does not check the file on your
 machine. If the editor is not on that machine, no pane opens. tuios shows a
@@ -57,11 +100,15 @@ A key in `config.toml` can spell a modifier in more than one way. tuios reads ea
 
 | Write | tuios reads it as | Where |
 |---|---|---|
-| `opt+`, `option+` | `alt+` | macOS only |
+| `opt+`, `option+` | `alt+` | all platforms |
 | `cmd+`, `command+` | `super+` | all platforms |
 | `control+` | `ctrl+` | all platforms |
 
 The order of the modifiers does not matter, so `shift+ctrl+x` is `ctrl+shift+x`. This applies to `leader_key`, to every binding table, and to `tuios keybinds explain`, `free` and `unbind`. `tuios keybinds explain opt+f12` shows `opt+f12 (tuios reads it as alt+f12)`. `tuios keybinds doctor` lists each key that tuios cannot read.
+
+You can use one `config.toml` on macOS and on Linux. On Linux, `opt+1` is `alt+1`. `tuios keybinds doctor` lists these keys for information.
+
+tuios ignores a key that it cannot read, such as `ctrl+nope`, and loads the rest of the file. The action gets its default key when it has no other key. If another action already has that default key, the action has no key. A leader that tuios cannot read changes to `ctrl+b`. tuios shows a config problem when it starts. The log viewer (leader `D` `l`) names each key and its file. `tuios keybinds doctor` shows the same information.
 
 A `super+` chord needs a terminal that sends the Super key. Most macOS terminals keep Command chords for their own menus. Ghostty and kitty send an unbound Command chord under the Kitty keyboard protocol.
 
@@ -81,6 +128,89 @@ Focus goes to the nearest window that lies in that direction and faces the focus
 With tiling off, `h` and `l` snap the focused window to the left or right half of the screen. `j` and `k` always move focus. The actions are `snap_left`, `snap_right`, `focus_down` and `focus_up` in `[keybindings.layout]`.
 
 In the scrolling layout, left and right move between columns. Up and down move between the windows in one column.
+
+## Finding a pane
+
+### Pane labels
+
+`Ctrl+B Q` puts a large label on each pane of the workspace. Type a label to
+focus that pane. `esc` closes the labels. `backspace` takes back the last key.
+`q` also closes, when `q` is not a label key. The action is `display_panes`,
+as in tmux.
+
+The labels are digits by default, in the order that `select_window_1` to
+`select_window_9` count the panes. Thus label `3` is the pane that `3` selects
+in window mode. A minimised pane gets no label. With more panes than keys, a
+label has two keys. A key with `Shift` is the same key.
+
+Set the keys in `[panes]`. Letters `a` to `z` and digits are allowed. The keys
+that come first go to the first panes.
+
+```toml
+[panes]
+label_keys = "asdfghjkl"
+```
+
+When a pane is zoomed, the zoomed pane shows its label. A list under it
+shows the labels of the panes that the zoom hides. A label of a hidden pane
+moves the zoom to that pane. A pane that is mostly off the screen, or too
+small for its label, is in the same list.
+
+The labels close when the layout changes: a pane opens, closes, moves or
+zooms, or the workspace or the session changes. A click or the mouse wheel
+also closes them. In multifocus, a label key goes to the labels and
+not to the panes.
+
+### The pane navigator
+
+`Ctrl+B /` opens the pane navigator. It shows a tree of sessions, workspaces
+and panes on the left, and a preview of the highlighted row on the right. The
+sessions on the machines in `[hosts]` are in the tree too. The action is
+`choose_tree`, as in tmux.
+
+| Key | What it does |
+|---|---|
+| `j`, `k`, arrows | Move |
+| `l`, `→` | Open a session or a workspace |
+| `h`, `←` | Close it, or go to its parent row |
+| `space` | Open or close |
+| `enter` | Go to the row: the session, the workspace and the pane |
+| `/` | Search |
+| `v` | Change the layout: tree, flat, cards |
+| `esc`, `q` | Close the navigator |
+
+The navigator has three boxes. Search is at the top and shows how many panes
+match, as `3/7`. Panes is the list. Preview shows the screen of the pane under
+the cursor, in the colors of that pane.
+
+The list has three layouts. Tree shows the sessions, their workspaces and their
+panes. Flat shows one row for each pane, with its session and workspace. Cards
+shows two rows for each pane: the name and the command, then the session, the
+workspace and the folder. `v` changes the layout. Your client keeps the last
+layout until it closes. `[panes] navigator_layout` sets the first layout. See
+[CONFIGURATION.md](CONFIGURATION.md).
+
+A session name has the color of the session in the sidebar. A dot in front of
+a pane shows the state of its agent. After the pane name is the command that
+runs in the pane, or the shell when the pane is at its prompt. A pane that has
+no name and no title shows its folder as its name. A search shows the matched characters in
+the accent color.
+
+Press `/` and type to search all panes. The search reads each pane's name,
+title, folder, running command, session and workspace. It also reads the last
+40 lines of each screen. A pane that matches only by its screen text shows the
+matching line on its row. `esc` stops the search and keeps the results. A
+second `esc` clears the search.
+
+The current session's panes are read from your client, and the preview of
+those panes is live. The other sessions are read when the navigator opens.
+Their preview shows the screen as it was then, with its colors. The preview
+shows colors and text only. Links, clipboard writes and other control sequences
+from a pane do not reach your terminal. A click on a pane goes to it. A
+click on a session or a workspace opens or closes it.
+
+`tuios list-windows --all --text 40 --json` prints the same rows for a script.
+See [CLI_REFERENCE.md](CLI_REFERENCE.md#tuios-list-windows).
 
 ## Neovim pane navigation
 
@@ -144,9 +274,21 @@ opens a further menu. On a screen too narrow for every column, the
 descriptions are cut before any key is left out.
 
 The key hints at the foot of a panel stay on one row. When they do not fit,
-they shorten in steps: `ctrl+` becomes `^`, `alt+` becomes `M-` and `shift+`
-becomes `S-`; then labels are dropped from the last hint backwards, keeping the
-keys; then the last hints are dropped for `…`.
+they shorten in steps. First, `ctrl+` becomes `^`, `alt+` becomes `M-` and
+`shift+` becomes `S-`. Then the least important hints go, one whole hint at a
+time. The way out, such as `esc`, stays. Only when the most important hints
+still do not fit do their labels go, from the last hint back. A hint is never
+cut in the middle of a word.
+
+### Mode keys in the dock
+
+Copy mode, multi copy mode and hints mode show their keys at the right end of
+the dock while the mode is open. The keys follow the rule for panel footers
+above, so a narrow screen shows fewer keys and never part of one. The main
+action and the way out of the mode always show. In hints mode, `?` shows all of
+its keys in the help. A message that arrives while a mode is open shows in the
+place of the keys until the message goes. The dock component for the keys is
+`copy-help`.
 
 An empty list says why it is empty in the middle of the panel, with the one key
 worth pressing next under it. A list that is still loading draws nothing for
@@ -155,7 +297,8 @@ its first half second, so a fast load never flashes a "reading" line.
 ## Messages
 
 A message shows at the right end of the dock. A message that is too long
-for the dock ends with `…` and `more`.
+for the dock stops after its last whole word, with `…` and `more`. A word with
+no space in it, such as a long path, is cut where the room ends.
 
 - Put the pointer on a message to hold it. It does not go away while the
   pointer is on it. A key press, or the terminal losing focus, ends the hold.
@@ -186,7 +329,8 @@ the errors and `A` copies the whole log.
 `Ctrl+B F` puts a short label on each URL, path, hash, address and number in
 the focused pane. Type a label to copy the text. Type it with `Shift` to copy
 the text and type it into the pane. Type it with `Ctrl` to open a URL or a
-path. `esc` closes. See [HINTS.md](HINTS.md) for the patterns and the
+path. `?` shows all of the keys of hints mode. `esc` closes. The dock shows
+the keys while the labels show. See [HINTS.md](HINTS.md) for the patterns and the
 `[hints]` settings. The action is `hints`, so you can bind it to a different
 key.
 
@@ -195,6 +339,18 @@ shows. The focused pane gets the shortest labels. `Shift` and a label types
 the text into the focused pane. This action has no default key. Bind it, or
 run it from the command palette. Set `hints.all_panes = true` to make
 `Ctrl+B F` do the same.
+
+## Links
+
+`Ctrl+click` on a link opens it. `Shift+click` also opens it, but most
+terminals keep `Shift+click` for their own selection. Hover a link to see
+where it goes. The label under the pointer shows the real target, also when
+the text on the screen is different.
+
+`Ctrl+click` and drag still moves the pane. A link opens only when the
+pointer does not move. `appearance.link_click` sets which click opens a
+link. See [CONFIGURATION.md](CONFIGURATION.md#opening-links) for the
+settings, the opener and a table of terminals.
 
 ## Scratch terminal
 
@@ -213,6 +369,27 @@ small live copy of the pane in a corner of the screen. Press `p` again, on any
 pane, to unpin it. A click on the view focuses the pane. The action is
 `toggle_pip`, and `[pip]` sets the size and the corner. See
 [SESSIONS.md](SESSIONS.md#picture-in-picture).
+
+## Spotlight
+
+`B` in window mode turns the spotlight on and off. The spotlight dims the
+screen outside a circle around the pointer. `Ctrl+B B` turns it on and off in
+any mode.
+
+While the spotlight is on, the dock shows a Spotlight chip with the key that
+turns it off:
+
+| Where | Turn off the spotlight |
+| --- | --- |
+| Window mode | `Esc` |
+| Terminal mode | `Ctrl+B B` |
+| Any mode | Click the Spotlight chip in the dock |
+
+In terminal mode `Esc` goes to the program in the pane, so vim and other
+programs get it. An open dialog, menu or popup closes before `Esc` turns the
+spotlight off. The actions are `toggle_spotlight` and
+`prefix_toggle_spotlight`, and `[spotlight]` sets the size and the dimming.
+The key was `b` in earlier versions.
 
 ## Paste an image
 
@@ -296,7 +473,10 @@ height = "80%"
 - `description` is the name in the command palette and in
   `tuios keybinds list`. It is optional.
 - `name` keeps a scratch terminal under a fixed name. It is optional. Without it,
-  tuios makes the name from the description or the command.
+  tuios makes the name from the description or the command. tuios uses only
+  the first 40 characters, so two entries can get the same name. tuios then
+  ignores the second entry, and `tuios keybinds doctor` shows it. Give one of
+  the two entries a `name`.
 - `width` and `height` set the size of a scratch or popup entry, in cells
   (`100`) or percent (`80%`). The default is `80%`.
 
@@ -325,7 +505,7 @@ program is not installed, the dock shows its exit code. The next press starts
 it again. tuios does not start it again by itself.
 
 The command and the palette row of an entry change when you save
-`config.toml`. A changed key works in the next client, as for the other
+`config.toml`. A changed key works at the next key press, as for the other
 keybindings. When you remove or rename an entry, or change the description of
 an entry that has no `name`, the panes of its scratch terminal close at the
 next reload. The
@@ -396,6 +576,19 @@ command = "tuios send-text -w \"$TUIOS_ACTIVE_PANE_ID\" \"$(fzf)\""
 description = "Pick a file"
 ```
 
+**Open a project.** This popup runs `fzf` over the folders in `~/dev` and
+switches to the session of the folder you pick. When the session does not
+exist, [`tuios switch-session`](CLI_REFERENCE.md#tuios-switch-session) makes
+it in that folder. See [Sessionizer](SESSIONS.md#sessionizer).
+
+```toml
+[[keybindings.command]]
+key = "prefix+alt+s"
+type = "popup"
+command = 'dir=$(find ~/dev -mindepth 1 -maxdepth 1 -type d | fzf) && tuios switch-session --create --cwd "$dir" "$(basename "$dir")"'
+description = "Open a project"
+```
+
 **Copy the pane's folder.** This shell entry copies the focused pane's folder
 to the clipboard. It tries `pbcopy`, then `wl-copy`, then `xclip`, and uses the
 first one it finds.
@@ -420,6 +613,7 @@ on the workspace on screen.
 | `Ctrl+B L m` | `focus_master` | Focus the master pane |
 | `Ctrl+B L i` | `add_master` | Make one more pane a master pane |
 | `Ctrl+B L d` | `remove_master` | Make one pane fewer a master pane |
+| `Ctrl+B =`, or `=` in window mode | `prefix_equalize_splits`, `equalize_splits` | Give the master panes and the stack their default sizes again |
 
 The resize keys move the divider between the master panes and the stack. With
 the master on the left, the right or in the center, the width keys move it,
@@ -455,6 +649,42 @@ The action asks first. The dialog shows how many panes close and how many
 agents are in them. `Cancel` is the default row. Scratch panes stay open.
 `tuios close-workspace` does the same from a shell. See
 [CLI_REFERENCE.md](CLI_REFERENCE.md#tuios-close-workspace).
+
+## Split into the same ssh
+
+These actions open a pane on the machine that the focused pane is connected to
+with ssh:
+
+| Action | What it does |
+| --- | --- |
+| `split_ssh_horizontal` | Splits the pane top and bottom. |
+| `split_ssh_vertical` | Splits the pane left and right. |
+| `new_window_ssh` | Opens a new window. |
+
+The new pane runs ssh again, to the same destination as the same user, with the connection options only.
+tuios does not run the remote command again. It also removes `-N`, `-f`, `-T`,
+`-W`, port forwards and the other options that stop a shell. `mosh` works the
+same way.
+
+When the focused pane does not run ssh, the action opens an ordinary pane. You
+can use the keys in every pane. Some ssh lines also get an ordinary pane. See
+[CONFIGURATION.md](CONFIGURATION.md#lines-that-are-not-followed).
+
+The actions have no default key. The command palette has an entry for each
+one. To bind them, add them to a section. This example uses keys for
+window-management mode:
+
+```toml
+[keybindings.layout]
+split_ssh_vertical = ["alt+v"]
+split_ssh_horizontal = ["alt+s"]
+new_window_ssh = ["alt+w"]
+```
+
+To make the ordinary split and new-window keys do the same, set
+`appearance.new_window_follow_ssh`. To start the new pane in the remote
+folder, make the remote shell report its folder. See
+[CONFIGURATION.md](CONFIGURATION.md#splits-that-follow-ssh).
 
 ## Copy mode
 
@@ -501,6 +731,36 @@ copy mode uses `Ctrl+B` for page up. In copy mode, `/` and `?` open the same
 prompts.
 
 When a search finds more than 1000 matches, the prompt shows `1000+`.
+
+### Line start and line end
+
+`Home` moves the copy cursor to the start of the line, as `0` does. `End`
+moves it to the end of the line, as `$` does. Both keys also move the end of a
+`v` or `V` selection.
+
+| Action | Default key |
+| --- | --- |
+| `copy_mode_line_start` | `Home` |
+| `copy_mode_line_end` | `End` |
+
+The keys are in the `copy_mode` section. They work only in copy mode. In the
+search prompt, they do not move the cursor. `0` and `$` are fixed keys, and
+you cannot rebind them.
+
+Do not bind a key here that copy mode already uses, such as `y` or `v`, or a
+key of a `[[keybindings.copy_pipe]]` entry. `tuios keybinds doctor` and the
+config check warn about such a key. A copy pipe key runs the pipe, and the
+binding does not run. A key that copy mode uses loses its copy mode action.
+
+`Ctrl+A` and `Ctrl+E` are not defaults. `Ctrl+A` is a common leader key, and
+`Ctrl+E` scrolls one line in tmux copy mode. To use them, add them to the
+section:
+
+```toml
+[keybindings.copy_mode]
+copy_mode_line_start = ["home", "ctrl+a"]
+copy_mode_line_end = ["end", "ctrl+e"]
+```
 
 tuios cannot put two actions on one key. `tuios send-keys` cannot do it either,
 because a key from `send-keys` does not go to copy mode.
@@ -582,6 +842,46 @@ server. The command starts in the folder of the focused pane and gets the
 variables of a command key: `TUIOS_SESSION`, `TUIOS_SOCKET`,
 `TUIOS_ACTIVE_PANE_ID` and `TUIOS_ACTIVE_PANE_CWD`. You can use tuios while
 the command runs.
+
+### Paste buffers
+
+tuios keeps your recent yanks as paste buffers, as tmux does. A yank in copy
+mode adds a buffer, and so does a mouse selection that you copy. The yank also
+goes to the clipboard, as before.
+
+| Key | Action | What it does |
+| --- | --- | --- |
+| `Ctrl+B ]` | `paste_buffer` | Paste the newest buffer into the focused pane |
+| `Ctrl+B #` | `choose_buffer` | Show the buffers, newest first, to choose one |
+
+`Ctrl+B ]` takes the newest of your own buffers: what you copied, or set
+yourself. A buffer that a program in a pane without `admin` set is never your
+newest, so no such program can set what the key pastes. The paste goes to the pane that was focused when you pressed
+the key, also when the focus moves before the text arrives. Each line feed
+becomes a carriage return, as in tmux.
+
+In the list, `Enter` or a click pastes the buffer, `d` deletes it, and `Esc`
+or `q` closes the list. The list shows "from pane" and the pane's name on a
+buffer that a program in a pane set, because you did not copy that text. A paste goes
+in the bracketed paste marks when the program in the pane asks for them, as a
+clipboard paste does.
+
+tmux shows the list on `=`. In tuios, `Ctrl+B =` makes the splits equal, so
+the list is on `#`, the tmux key for `list-buffers`. To use the tmux keys, move
+the splits key and give `=` to the list:
+
+```toml
+[keybindings.prefix_mode]
+prefix_equalize_splits = ["E"]
+choose_buffer = ["="]
+```
+
+The daemon keeps the buffers, so every client and every session shares them.
+A client with no daemon keeps its own. The buffers are in memory only, and
+they go when the daemon stops. `[paste_buffers]` in `config.toml` sets how
+many to keep. The commands `tuios list-buffers`, `show-buffer`, `set-buffer`,
+`delete-buffer` and `paste-buffer` read and change the same buffers, and so
+does `tmux` under the tmux shim.
 
 ## Screenshots over a panel
 
@@ -726,6 +1026,7 @@ not offered and do what an unbound key does: after `ctrl+b` in terminal mode,
 | --- | --- | --- |
 | `ctrl+b v` | anywhere | Review the focused pane's changes |
 | `ctrl+b O` | anywhere | Go to the newest finished turn nobody has seen; `O` again, inside the repeat window, goes to the next older one, and a turn that finishes meanwhile starts over |
+| `ctrl+b A` | anywhere | Open the Agents tab of the settings page, where you install, update and uninstall each harness's integration |
 | `v` | Inbox | Review the changes in the item's pane |
 | `z`, then `1` to `4` | Inbox | Snooze the item: 15 minutes, 1 hour, until 9:00 tomorrow, or until it changes; any other key cancels. On a snoozed item, wake it |
 | `u` | Inbox | Undo the last dismiss or snooze, within 10 seconds |
@@ -751,7 +1052,8 @@ shown. The digits are not bindings.
 The Inbox's keys are `inbox_review`, `inbox_snooze`, `inbox_undo`,
 `inbox_show_snoozed`, `inbox_deny_reason`, `inbox_detail_down` and
 `inbox_detail_up` in `[keybindings.inbox]`, and the prefix chords are
-`prefix_review` and `prefix_next_finished` in `[keybindings.prefix_mode]`.
+`prefix_review`, `prefix_next_finished` and `prefix_agents_settings` in
+`[keybindings.prefix_mode]`.
 The agent rows' keys are a section of their own,
 `[keybindings.sidebar_agents]` (`agent_unread`, `agent_snooze`,
 `agent_reply`, `agent_review`, `agent_cancel_queued`). It is consulted before
@@ -849,6 +1151,59 @@ reset the terminal, run this command or close the tab:
 printf '\033[=0;1u'
 ```
 
+### Shifted digits and AZERTY
+
+On a US keyboard `&` is `shift+7`. Some terminals send the chord and others send
+the character. By default, a binding on `opt+shift+7` therefore also matches
+`opt+&`, and a binding on `!` also matches `shift+1`. These US aliases apply
+only when no binding names the key itself. A binding that you write for a key
+always wins over an alias.
+
+On other layouts these keys are in other places. On a French Mac, `&` is the
+unshifted 1 key and the digits need Shift. tuios turns off the US aliases for a
+key when the terminal reports that the key is not where a US layout has it.
+Terminals that send this through the Kitty keyboard protocol include Ghostty,
+kitty, WezTerm and foot. Other terminals do not report the layout. To turn off
+the US aliases for every key, set this:
+
+```toml
+[keybindings]
+keyboard_layout = "other"   # the default is "us"
+```
+
+`tuios keybinds explain opt+&` shows a binding that the key runs through a US
+alias.
+
+#### A recipe for French AZERTY on macOS
+
+Set the left Option key to send Alt. In iTerm2 this is "Esc+". In WezTerm it
+is `send_composed_key_when_left_alt_is_pressed = false`. Then:
+
+- Option and Shift with a number key types the digit. The default `opt+1` to
+  `opt+9` switch workspaces with it.
+- The default `opt+shift+1` to `opt+shift+9` need Shift and a digit together,
+  which AZERTY cannot type. Bind the move to the unshifted keys:
+
+```toml
+[keybindings]
+keyboard_layout = "other"
+
+[keybindings.workspaces]
+move_and_follow_1 = ["opt+&"]
+move_and_follow_2 = ["opt+é"]
+move_and_follow_3 = ['opt+"']
+move_and_follow_4 = ["opt+'"]
+move_and_follow_5 = ["opt+("]
+move_and_follow_6 = ["opt+§"]
+move_and_follow_7 = ["opt+è"]
+move_and_follow_8 = ["opt+!"]
+move_and_follow_9 = ["opt+ç"]
+```
+
+To type `[ ] { } |` with Option, set the right Option key to compose. See
+[One Option key for typing](#one-option-key-for-typing). With
+`keyboard_layout = "other"`, tuios sends those characters to the pane.
+
 ## Keys sent to a pane
 
 In terminal mode, tuios sends these keys to the program in the pane:
@@ -884,9 +1239,23 @@ To change the keys, set `terminal_scroll_up` and `terminal_scroll_down` in
 ## macOS
 
 Option is a compose key on macOS unless the terminal is told otherwise, so an
-Option chord usually arrives as a character rather than as Alt. tuios reads the
-composed characters back into the chord they stand for, which covers most of
-them, but two kinds cannot be recovered:
+Option chord usually arrives as a character rather than as Alt. tuios reads
+the characters that a US layout composes back into the chord that types them.
+When Option+8 types `•`, tuios runs the `opt+8` binding and switches to
+workspace 8.
+
+If you use Option to type characters such as `#`, `•` or `{`, set this. tuios
+then sends the character to the pane:
+
+```toml
+[keybindings]
+option_glyphs = "type"   # the default is "bind"
+```
+
+With `keyboard_layout = "other"`, tuios does not use the US characters, and
+the characters go to the pane.
+
+Two kinds of chord cannot be read:
 
 - **Dead keys.** Option+e, i, n, u and backtick emit nothing at all until a
   second key ends the composition. `alt+n` is bound to "next pane" in terminal
@@ -923,6 +1292,28 @@ keybind = alt+right=unbind
 
 tuios says all of this on screen the first time it sees a chord that did not
 arrive as it was meant to.
+
+### One Option key for typing
+
+Some terminals let you set the two Option keys differently. Use the left Option
+key for tuios and the right Option key to type characters such as `#`, `•` or
+`{`. In WezTerm:
+
+```lua
+config.send_composed_key_when_left_alt_is_pressed = false
+config.send_composed_key_when_right_alt_is_pressed = true
+```
+
+In iTerm2, set Left Option key to "Esc+" and Right Option key to "Normal".
+Then set this, so that the right Option key types characters into the pane:
+
+```toml
+[keybindings]
+option_glyphs = "type"
+```
+
+The left Option key sends Alt and runs tuios bindings. The right Option key
+types characters into the pane.
 
 ### What works without changing anything
 

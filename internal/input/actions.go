@@ -64,6 +64,9 @@ const (
 	// hardcoded key hint waiting to go stale.
 	sidebarActFileOpen = "file_open"
 	sidebarActFileEdit = "file_edit"
+	// file_copy_path copies the row's path whatever the row is. file_open
+	// copies a file's path too, but on a folder it opens the folder.
+	sidebarActFileCopyPath = "file_copy_path"
 	// jump_1..jump_9 are matched by prefix; see HandleSidebarKey.
 	sidebarActJumpPrefix = "jump_"
 )
@@ -86,6 +89,7 @@ func NewActionDispatcher() *ActionDispatcher {
 func (d *ActionDispatcher) registerHandlers() {
 	// Window Management actions
 	d.Register("new_window", handleNewWindow)
+	d.Register("new_window_ssh", handleNewWindowSSH)
 	d.Register("close_window", handleCloseWindow)
 	d.Register("rename_window", handleRenameWindow)
 	d.Register("set_accent", handleSetAccent)
@@ -94,6 +98,7 @@ func (d *ActionDispatcher) registerHandlers() {
 	d.Register("restore_all", handleRestoreAll)
 	d.Register("next_window", handleNextWindow)
 	d.Register("prev_window", handlePrevWindow)
+	d.Register("last_pane", handleLastPane)
 
 	// Window selection (1-9)
 	for i := 1; i <= 9; i++ {
@@ -160,6 +165,7 @@ func (d *ActionDispatcher) registerHandlers() {
 	d.Register("scroll_move_left", handleScrollMoveLeft)
 	d.Register("scroll_move_right", handleScrollMoveRight)
 	d.Register("scroll_cycle_width", handleScrollCycleWidth)
+	d.Register("scroll_maximize", handleScrollMaximize)
 	d.Register("scroll_consume", handleScrollConsume)
 	d.Register("scroll_expel", handleScrollExpel)
 
@@ -167,6 +173,8 @@ func (d *ActionDispatcher) registerHandlers() {
 	d.Register("smart_split", handleSmartSplit)
 	d.Register("split_horizontal", handleSplitHorizontal)
 	d.Register("split_vertical", handleSplitVertical)
+	d.Register("split_ssh_horizontal", handleSplitSSHHorizontal)
+	d.Register("split_ssh_vertical", handleSplitSSHVertical)
 	d.Register("rotate_split", handleRotateSplit)
 	d.Register("equalize_splits", handleEqualizeSplits)
 	d.Register("cycle_tiling_scheme", handleCycleTilingScheme)
@@ -209,16 +217,24 @@ func (d *ActionDispatcher) registerHandlers() {
 	d.Register("next_session", handleNextSession)
 	d.Register("prev_session", handlePrevSession)
 
+	// Session switching (1-9), by the rail's own order
+	for i := 1; i <= 9; i++ {
+		d.Register("switch_session_"+string(rune('0'+i)), makeSwitchSessionHandler(i))
+	}
+
 	// Clipboard actions
 	d.Register("copy_selection", handleCopySelection)
 	d.Register("paste_clipboard", handlePasteClipboard)
 	d.Register("paste_image", handlePasteImage)
+	d.Register("paste_buffer", handlePasteBuffer)
+	d.Register("choose_buffer", handleChooseBuffer)
 	d.Register("clear_selection", handleClearSelection)
 
 	// Session lifecycle actions (context menu rows; the quit menu's kill rows
 	// route through the same OS methods, so the two cannot drift apart)
 	d.Register("settings_sidebar", handleSettingsSidebar)
 	d.Register("rename_session", handleRenameSession)
+	d.Register("rename_workspace", handleRenameWorkspace)
 	d.Register("kill_session", handleKillSession)
 	d.Register("kill_session_next", handleKillSessionNext)
 	d.Register("kill_session_quit", handleKillSessionQuit)
@@ -235,6 +251,7 @@ func (d *ActionDispatcher) registerHandlers() {
 		sidebarActFileCreate, sidebarActFileRename, sidebarActFileDelete,
 		sidebarActFileDeleteAll, sidebarActFileCopy, sidebarActFileCut,
 		sidebarActFilePaste, sidebarActFileOpen, sidebarActFileEdit,
+		sidebarActFileCopyPath,
 	} {
 		d.Register(action, makeSidebarFileHandler(action))
 	}
@@ -255,6 +272,7 @@ func (d *ActionDispatcher) registerHandlers() {
 	d.Register("toggle_logs", handleToggleLogs)
 	d.Register("toggle_cache_stats", handleToggleCacheStats)
 	d.Register("toggle_spotlight", handleToggleSpotlight)
+	d.Register("prefix_toggle_spotlight", handleToggleSpotlight)
 	d.Register("toggle_pip", handleTogglePiP)
 
 	// Multifocus actions (see multifocus_actions.go)
@@ -339,7 +357,18 @@ func GetDispatcher() *ActionDispatcher {
 // ============================================================================
 
 func handleNewWindow(_ tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
+	if o.FollowSSHOnNewWindow() {
+		o.NewWindowSSH()
+		return o, nil
+	}
 	o.NewWindowHere()
+	return o, nil
+}
+
+// handleNewWindowSSH opens a window that runs the focused pane's ssh, or an
+// ordinary one when that pane runs none.
+func handleNewWindowSSH(_ tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
+	o.NewWindowSSH()
 	return o, nil
 }
 
@@ -353,6 +382,13 @@ func handleCloseWindow(_ tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
 		o.FireHook(hooks.AfterCloseWindow, w.ID, w.Title())
 		o.DeleteWindow(o.FocusedWindow)
 	}
+	return o, nil
+}
+
+// handleRenameWorkspace opens the rename editor on the workspace the session
+// is showing now.
+func handleRenameWorkspace(_ tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
+	o.BeginRenameWorkspace(o.CurrentWorkspace)
 	return o, nil
 }
 
@@ -428,6 +464,15 @@ func handlePrevWindow(_ tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
 	return afterFocusCommand(o, prev, focusEnterCycle)
 }
 
+func handleLastPane(_ tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
+	prev := o.FocusedWindow
+	if !o.LastPane() {
+		o.ShowNotification("No pane to go back to", "info", o.Settings.NotificationDuration)
+		return o, nil
+	}
+	return afterFocusCommand(o, prev, focusEnterTargeted)
+}
+
 // makeSelectWindowHandler creates a handler for selecting a window by index.
 // The index comes from the action name, so the binding can be any key.
 func makeSelectWindowHandler(idx int) ActionHandler {
@@ -445,6 +490,13 @@ func makeSelectWindowHandler(idx int) ActionHandler {
 func makeSwitchWorkspaceHandler(workspace int) ActionHandler {
 	return func(_ tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
 		o.SwitchToWorkspace(workspace)
+		return o, nil
+	}
+}
+
+func makeSwitchSessionHandler(n int) ActionHandler {
+	return func(_ tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
+		o.SwitchToSessionByIndex(n - 1)
 		return o, nil
 	}
 }
@@ -723,6 +775,9 @@ func handleSmartSplit(_ tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
 }
 
 func handleSplitHorizontal(_ tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
+	if o.FollowSSHOnNewWindow() {
+		return handleSplitSSHHorizontal(tea.KeyPressMsg{}, o)
+	}
 	if o.AutoTiling {
 		o.SplitFocusedHorizontal()
 		o.ShowNotification("Split horizontal", "info", o.Settings.NotificationDuration)
@@ -731,8 +786,31 @@ func handleSplitHorizontal(_ tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
 }
 
 func handleSplitVertical(_ tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
+	if o.FollowSSHOnNewWindow() {
+		return handleSplitSSHVertical(tea.KeyPressMsg{}, o)
+	}
 	if o.AutoTiling {
 		o.SplitFocusedVertical()
+		o.ShowNotification("Split vertical", "info", o.Settings.NotificationDuration)
+	}
+	return o, nil
+}
+
+// handleSplitSSHHorizontal splits top/bottom and runs the focused pane's ssh
+// in the new pane, or a shell when that pane runs no ssh.
+func handleSplitSSHHorizontal(_ tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
+	if o.AutoTiling {
+		o.SplitFocusedHorizontalSSH()
+		o.ShowNotification("Split horizontal", "info", o.Settings.NotificationDuration)
+	}
+	return o, nil
+}
+
+// handleSplitSSHVertical splits left/right and runs the focused pane's ssh in
+// the new pane, or a shell when that pane runs no ssh.
+func handleSplitSSHVertical(_ tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
+	if o.AutoTiling {
+		o.SplitFocusedVerticalSSH()
 		o.ShowNotification("Split vertical", "info", o.Settings.NotificationDuration)
 	}
 	return o, nil
@@ -959,13 +1037,13 @@ func handleQuit(_ tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
 // System Action Handlers
 // ============================================================================
 
-// handleToggleSpotlight turns the beam on the focused pane's cursor on and off.
-//
-// One key in window mode rather than a chord: it is switched on while somebody
-// is watching the screen, and three keystrokes is the wrong shape for that.
+// handleToggleSpotlight turns the beam on and off. It is B in window mode and
+// leader, B in either mode; the chord is the way out of the beam in terminal
+// mode, where esc belongs to the program in the pane. See
+// internal/app/spotlight_exit.go.
 func handleToggleSpotlight(_ tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
 	save := o.ToggleSpotlight()
-	toggleNotify(o, "Spotlight", o.SpotlightOn())
+	o.AnnounceSpotlight()
 	return o, save
 }
 
@@ -1012,7 +1090,8 @@ func handleCopySelection(_ tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
 	if focusedWindow == nil {
 		return o, nil
 	}
-	return o, o.CopyToClipboard(selectionText(focusedWindow))
+	text := selectionText(focusedWindow)
+	return o, tea.Batch(o.CopyToClipboard(text), o.SaveToPasteBuffers(text))
 }
 
 func handlePasteClipboard(_ tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
@@ -1173,6 +1252,13 @@ func handleScrollMoveRight(_ tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
 func handleScrollCycleWidth(_ tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
 	if o.AutoTiling && o.UseScrollingLayout {
 		o.ScrollingCycleWidth()
+	}
+	return o, nil
+}
+
+func handleScrollMaximize(_ tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
+	if o.AutoTiling && o.UseScrollingLayout {
+		o.ScrollingMaximizeColumn()
 	}
 	return o, nil
 }

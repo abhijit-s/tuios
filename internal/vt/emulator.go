@@ -11,6 +11,8 @@ import (
 	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/charmbracelet/x/ansi/parser"
+
+	"github.com/Gaurav-Gosain/tuios/internal/cellsize"
 )
 
 // Logger represents a logger interface.
@@ -101,6 +103,12 @@ type Emulator struct {
 	// Thread-safe cached LNM flag (ANSI mode 20, updated on set/reset). Read
 	// once per line feed, for the same reason as cachedAutoWrap.
 	cachedLineFeedNewLine atomic.Bool
+	// Thread-safe cached origin-mode flag (DECOM ?6). Read on every carriage
+	// return and cursor address, for the same reason as cachedAutoWrap: the
+	// map read profiled at 13% of the daemon in a `yes` flood. It is kept in
+	// step by setMode, restoreCursor and RestoreModes, the three writers of
+	// that entry.
+	cachedOrigin atomic.Bool
 	// Unix-nanos timestamp of the last sync begin, for the present-anyway timeout
 	syncSetAtNanos atomic.Int64
 	// syncOpens counts the synchronized updates the guest has opened: it
@@ -123,6 +131,12 @@ type Emulator struct {
 	// rgbCache holds recently used truecolor SGR colours, made on the first
 	// one. See rgbColor.
 	rgbCache *[256]rgbSlot
+	// rgbSlab is the unused rest of the slab rgbColor boxes a missed colour
+	// into. See boxRGB.
+	rgbSlab []color.RGBA
+	// clusters holds recently drawn clusters, made on the first one outside
+	// ASCII and the symbol block. See clusterRun.
+	clusters *[clusterTableLen]string
 	// The cell handleGrapheme last drew into, and the line edges it was drawn
 	// under. A pending wrap makes the target differ from the cursor position
 	// observed beforehand, and the margins are read before the wrap is
@@ -146,6 +160,8 @@ type Emulator struct {
 
 	// The terminal's icon name and title.
 	iconName, title string
+	// titleStack holds what XTWINOPS 22 saved, oldest first. See pushTitle.
+	titleStack []savedTitle
 	// The current reported working directory. This is not validated.
 	cwd string
 
@@ -155,11 +171,6 @@ type Emulator struct {
 	// Response pipe: the emulator writes query responses here from inside Write
 	// (under the window IO lock), so writes must never block. bufPipe buffers.
 	pipe *bufPipe
-
-	// The character set selection saved by DECSC, restored by DECRC.
-	savedCharsets    [4]CharSet
-	savedCharsetIDs  [4]byte
-	savedGL, savedGR int
 
 	// The GL and GR character set identifiers.
 	gl, gr  int
@@ -206,6 +217,10 @@ type Emulator struct {
 
 	// Kitty keyboard protocol state
 	kittyKbd *kittyKeyboardState
+
+	// modifyOtherKeys is the level XTMODKEYS set: 0, 1 or 2. Atomic because
+	// the input path reads it from the UI goroutine.
+	modifyOtherKeys atomic.Int32
 
 	// semanticMarkers tracks OSC 133 shell integration markers
 	semanticMarkers *SemanticMarkerList
@@ -278,6 +293,7 @@ func NewEmulator(w, h int) *Emulator {
 
 	t.kittyKbd = newKittyKeyboardState()
 	t.registerKittyKeyboardHandlers()
+	t.registerModifyOtherKeysHandlers()
 
 	t.semanticMarkers = NewSemanticMarkerList(10000)
 
@@ -526,6 +542,12 @@ func (e *Emulator) Bounds() uv.Rectangle {
 	return e.scr.Bounds()
 }
 
+// AtGround reports whether the parser is between sequences: no escape
+// sequence, string or character is half read.
+func (e *Emulator) AtGround() bool {
+	return e.parser.state == parser.GroundState
+}
+
 // CellAt returns the current focused screen cell at the given x, y position.
 // It returns nil if the cell is out of bounds.
 func (e *Emulator) CellAt(x, y int) *uv.Cell {
@@ -682,8 +704,10 @@ func (e *Emulator) SetScrollbackMaxLines(maxLines int) {
 //
 // Reporting the method actually in use is the fix. Honouring mode 2027 would
 // mean changing placement to match, which is a different and much larger
-// change than making the answer true. For the same reason 2027 defaults to
-// set, so DECRQM tells a program the truth before it resets the mode.
+// change than making the answer true. For the same reason 2027 is permanently
+// set: DECRQM answers 3, and a guest that resets it is ignored, so the answer
+// stays true after the guest asks to change it. The ghostty backend does honour
+// a reset of 2027, and its DECRQM answer says so.
 func (e *Emulator) WidthMethod() uv.WidthMethod {
 	return ansi.GraphemeWidth
 }
@@ -700,18 +724,37 @@ func (e *Emulator) Width() int {
 
 // SetCellSize sets the pixel dimensions of a single character cell.
 // Used for XTWINOPS terminal size reporting.
+//
+// A guest with in-band resize reports on (mode 2048) is sent a new report
+// when the size in pixels changes, as it is on a resize: it scales SGR-pixel
+// mouse reports by the size it was last told.
 func (e *Emulator) SetCellSize(width, height int) {
+	// A size that is not one is ignored, as the ghostty backend ignores it:
+	// the cell set before, or the fallback, stays.
+	if width <= 0 || height <= 0 {
+		return
+	}
+	oldW, oldH := e.CellSize()
 	e.cellWidth = width
 	e.cellHeight = height
+	if newW, newH := e.CellSize(); (newW != oldW || newH != oldH) && e.isModeSet(ansi.ModeInBandResize) {
+		e.sendInBandResize()
+	}
 }
 
-// CellSize returns the pixel dimensions of a single character cell.
+// CellSize returns the pixel dimensions of a single character cell, or the
+// fallback cell when none was set. It is never zero.
 func (e *Emulator) CellSize() (width, height int) {
-	// Default to 8x16 pixels if not set (common VGA text mode dimensions)
-	if e.cellWidth == 0 || e.cellHeight == 0 {
-		return 8, 16
-	}
-	return e.cellWidth, e.cellHeight
+	return cellsize.Or(e.cellWidth, e.cellHeight)
+}
+
+// sendInBandResize sends the guest a mode 2048 report: the size in cells and
+// in pixels. Textual divides every SGR-pixel mouse report by pixels per cell
+// from this report, so the pixels are never zero (issue #506).
+func (e *Emulator) sendInBandResize() {
+	cw, ch := e.CellSize()
+	h, w := e.Height(), e.Width()
+	_, _ = io.WriteString(e.pipe, ansi.InBandResize(h, w, h*ch, w*cw))
 }
 
 // CursorPosition returns the terminal's cursor position.
@@ -815,6 +858,13 @@ func (e *Emulator) RestoreAltScreenMode(enabled bool) {
 			e.scr = &e.scrs[0]
 		}
 	}
+	// The kitty keyboard stack follows the screen, without the reset a live
+	// switch gives the alternate one: RestoreKittyKeyboardState puts back the
+	// stack that was in use.
+	if e.kittyKbd != nil {
+		e.kittyKbd.SelectScreen(enabled)
+		e.updateKittyKeyboardCache()
+	}
 	// NOTE: We don't modify e.modes[] here to avoid concurrent map access.
 	// The modes will be updated naturally when PTY output is processed.
 }
@@ -825,6 +875,30 @@ func (e *Emulator) RestoreAltScreenMode(enabled bool) {
 // effects would undo the restore.
 func (e *Emulator) RestoreCursorPosition(x, y int) {
 	e.setCursor(x, y)
+}
+
+// CursorPendingWrap reports whether a wrap is pending at the cursor.
+func (e *Emulator) CursorPendingWrap() bool {
+	return e.atPhantom
+}
+
+// RestoreCursorPendingWrap arms or clears the pending wrap a restored snapshot
+// had at the cursor. Call it after RestoreCursorPosition, which clears it.
+//
+// The cursor is also recorded as standing on the cell it was printed into, as
+// the print that armed the wrap left it, so a combining mark that arrives next
+// joins that cell rather than the one after it.
+func (e *Emulator) RestoreCursorPendingWrap(pending bool) {
+	e.atPhantom = pending
+	if !pending {
+		return
+	}
+	pos := e.scr.Cursor().Position
+	x := pos.X
+	if c := e.scr.CellAt(x, pos.Y); x > 0 && c != nil && c.Width == 0 {
+		x--
+	}
+	e.parkedX, e.parkedY = x, pos.Y
 }
 
 // defaultCharsetIDs is US ASCII in all four slots, which is what an emulator
@@ -970,6 +1044,12 @@ func (e *Emulator) RestoreModes(modes map[int]bool) {
 	for modeNum, enabled := range modes {
 		// Convert int back to Mode
 		mode := ansi.DECMode(modeNum)
+		// A snapshot from another backend or an older build can carry modes
+		// this emulator does not implement, or a value for one it fixes.
+		// Neither is taken, so DECRQM stays truthful after a reattach.
+		if !modeRecognised(mode) || modePermanent(mode) {
+			continue
+		}
 
 		if enabled {
 			e.modes[mode] = ansi.ModeSet
@@ -978,8 +1058,11 @@ func (e *Emulator) RestoreModes(modes map[int]bool) {
 		}
 		// This is the one write path that bypasses setMode, so the read-side
 		// caches it maintains have to be refreshed here or they go stale.
-		if mode == ansi.ModeAutoWrap {
+		switch mode {
+		case ansi.ModeAutoWrap:
 			e.cachedAutoWrap.Store(enabled)
+		case ansi.ModeOrigin:
+			e.cachedOrigin.Store(enabled)
 		}
 	}
 	e.modesMu.Unlock()
@@ -1111,45 +1194,11 @@ func (e *Emulator) EncodeMouseEvent(m Mouse) string {
 // inside the pane, which a guest in SGR-pixel mode is told instead of the cell
 // centre.
 func (e *Emulator) EncodeMouseEventAt(m Mouse, at MousePixel) string {
-	var (
-		enc  ansi.Mode
-		mode ansi.Mode
-	)
-
-	for _, mm := range []ansi.DECMode{
-		ansi.ModeMouseX10,
-		ansi.ModeMouseNormal,
-		ansi.ModeMouseHighlight,
-		ansi.ModeMouseButtonEvent,
-		ansi.ModeMouseAnyEvent,
-	} {
-		if e.isModeSet(mm) {
-			mode = mm
-		}
-	}
-
-	if mode == nil {
+	r, _, ok := e.mouseReportFor(m, at)
+	if !ok {
 		return ""
 	}
-
-	for _, mm := range []ansi.DECMode{
-		ansi.ModeMouseExtSgr,
-	} {
-		if e.isModeSet(mm) {
-			enc = mm
-		}
-	}
-
-	// Encode button
-	mouse := m.Mouse()
-	_, isMotion := m.(MouseMotion)
-	_, isRelease := m.(MouseRelease)
-	b := ansi.EncodeMouseButton(mouse.Button, isMotion,
-		mouse.Mod.Contains(ModShift),
-		mouse.Mod.Contains(ModAlt),
-		mouse.Mod.Contains(ModCtrl))
-
-	return e.encodeMouseReport(enc, b, mouse.X, mouse.Y, at, isRelease)
+	return r.encode()
 }
 
 // Resize resizes the terminal.
@@ -1222,7 +1271,7 @@ func (e *Emulator) Resize(width int, height int) {
 	e.atPhantom = phantom
 
 	if e.isModeSet(ansi.ModeInBandResize) {
-		_, _ = io.WriteString(e.pipe, ansi.InBandResize(e.Height(), e.Width(), 0, 0))
+		e.sendInBandResize()
 	}
 }
 
@@ -1352,6 +1401,13 @@ func (e *Emulator) Write(p []byte) (n int, err error) {
 			e.lastState = st
 			i = j - 1
 			continue
+		}
+		// A byte that cannot continue a rune ends it unfinished: the parser
+		// prints U+FFFD and reads the byte again from the ground state. Seen
+		// from here that is a rune completed in the ground state followed by
+		// this byte, so the grapheme is flushed the same way.
+		if e.parser.State() == parser.Utf8State && p[i]&0xc0 != 0x80 {
+			e.lastState = parser.GroundState
 		}
 		e.parser.Advance(p[i])
 		state := e.parser.State()
@@ -1642,11 +1698,10 @@ func (e *Emulator) registerKittyGraphicsHandler() {
 			return false
 		}
 
-		cmd, err := parseKittyCommand(data[1:], e.kittyHeaderOnly)
+		cmd, rawData, err := parseKittyAPC(data, e.kittyHeaderOnly)
 		if err != nil || cmd == nil {
 			return false
 		}
-		rawData := kittyRawAPC(data, e.kittyHeaderOnly)
 
 		// An undecodable payload is answered here, once, whoever renders the
 		// pane: the emulator's responses reach the guest in every mode (and a
@@ -1695,6 +1750,8 @@ func (e *Emulator) SetKittyPlaceholderMode(m KittyPlaceholderMode) {
 	e.kittyPlaceholderMode = m
 }
 
+// SetKittyPassthroughFunc installs the reader of every graphics command. fn
+// must not write to rawData: cmd.RawPayload shares its bytes.
 func (e *Emulator) SetKittyPassthroughFunc(fn func(cmd *KittyCommand, rawData []byte)) {
 	e.kittyPassthroughFunc = fn
 }
@@ -1707,12 +1764,8 @@ func (e *Emulator) SetKittyHeaderOnly(on bool) {
 }
 
 // kittyRawAPC rebuilds the whole graphics sequence, ESC _ G<params>;<payload>
-// ESC \, for the passthrough, or returns nil when headerOnly says no
-// passthrough reads it.
-func kittyRawAPC(data []byte, headerOnly bool) []byte {
-	if headerOnly {
-		return nil
-	}
+// ESC \, for the passthrough.
+func kittyRawAPC(data []byte) []byte {
 	rawData := make([]byte, len(data)+4)
 	rawData[0] = '\x1b'
 	rawData[1] = '_'

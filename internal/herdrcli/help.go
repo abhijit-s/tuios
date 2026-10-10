@@ -17,14 +17,36 @@ Usage:
   herdr agent <subcommand> ...
   herdr worktree <subcommand> ...
   herdr notification show <title> ...
+  herdr plugin <subcommand> ...
   herdr api snapshot
   herdr server reload-config
+  herdr terminal title set <title>
+  herdr status [server|client] [--json]
   herdr --version
 
 Run herdr <command> help for the subcommands of one command.
 Commands that act on herdr's own machine answer error unsupported.`
 
 var groupHelp = map[string]string{
+	"status": statusUsage,
+	"session": `herdr session commands:
+  herdr session list [--json]
+  herdr session attach, stop and delete act on herdr's own servers, which tuios does not run`,
+	"plugin": `herdr plugin commands:
+  herdr plugin install <owner>/<repo>[/subdir...] [--ref REF] [--yes]
+  herdr plugin uninstall <plugin_id|owner/repo[/subdir...]>
+  herdr plugin link <path> [--disabled]
+  herdr plugin list [--plugin ID] [--json]
+  herdr plugin config-dir <plugin_id>
+  herdr plugin unlink <plugin_id>
+  herdr plugin enable <plugin_id>
+  herdr plugin disable <plugin_id>
+  herdr plugin action <list|invoke>
+  herdr plugin log list [--plugin ID] [--limit N]
+  herdr plugin pane <open|focus|close>
+
+tuios runs install and uninstall as unsupported. It refuses link, unlink,
+enable and disable from a pane: run tuios plugins from a terminal outside tuios.`,
 	"pane": `herdr pane commands:
   herdr pane list [--workspace <workspace_id>]
   herdr pane current [--pane ID|--current]
@@ -92,6 +114,10 @@ var groupHelp = map[string]string{
 	"api": `herdr api commands:
   herdr api snapshot
   herdr api schema [--json | --output PATH]`,
+	"terminal": `herdr terminal commands:
+  herdr terminal title set <title>
+  herdr terminal title clear
+  herdr terminal attach and herdr terminal session use herdr's client protocol, which tuios does not serve`,
 	"server": `herdr server commands:
   herdr server reload-config
   herdr server agent-manifests [--json]

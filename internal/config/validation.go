@@ -2,13 +2,13 @@ package config
 
 import (
 	"fmt"
-	"regexp"
 	"slices"
 	"strings"
 	"time"
 	"unicode"
 
 	"charm.land/lipgloss/v2"
+	"github.com/Gaurav-Gosain/tuios/internal/lazyre"
 	"github.com/Gaurav-Gosain/tuios/internal/theme"
 )
 
@@ -75,6 +75,7 @@ func ValidateConfig(cfg *UserConfig) *ValidationResult {
 
 	validateCommands(cfg, result)
 	validateCopyPipes(cfg, result)
+	validateCopyModeKeys(cfg, result)
 
 	// Validate leader key
 	if cfg.Keybindings.LeaderKey != "" {
@@ -88,31 +89,13 @@ func ValidateConfig(cfg *UserConfig) *ValidationResult {
 		}
 	}
 
+	warnEnum(result, "keybindings", "keyboard_layout", cfg.Keybindings.KeyboardLayout, KeyboardLayouts, KeyboardLayoutUS)
+	warnEnum(result, "keybindings", "option_glyphs", cfg.Keybindings.OptionGlyphs, OptionGlyphModes, OptionGlyphsBind)
+
 	// Validate all sections
-	validateSection("window_management", cfg.Keybindings.WindowManagement)
-	validateSection("workspaces", cfg.Keybindings.Workspaces)
-	validateSection("layout", cfg.Keybindings.Layout)
-	validateSection("mode_control", cfg.Keybindings.ModeControl)
-	validateSection("system", cfg.Keybindings.System)
-	validateSection("navigation", cfg.Keybindings.Navigation)
-	validateSection("restore_minimized", cfg.Keybindings.RestoreMinimized)
-	validateSection("prefix_mode", cfg.Keybindings.PrefixMode)
-	validateSection("window_prefix", cfg.Keybindings.WindowPrefix)
-	validateSection("minimize_prefix", cfg.Keybindings.MinimizePrefix)
-	validateSection("workspace_prefix", cfg.Keybindings.WorkspacePrefix)
-	validateSection("debug_prefix", cfg.Keybindings.DebugPrefix)
-	validateSection("tape_prefix", cfg.Keybindings.TapePrefix)
-	validateSection("tape_prefix", cfg.Keybindings.TapePrefix)
-	validateSection("layout_prefix", cfg.Keybindings.LayoutPrefix)
-	validateSection("terminal_mode", cfg.Keybindings.TerminalMode)
-	validateSection("sidebar", cfg.Keybindings.Sidebar)
-	validateSection("sidebar_files", cfg.Keybindings.SidebarFiles)
-	validateSection("sidebar_agents", cfg.Keybindings.SidebarAgents)
-	validateSection("inbox", cfg.Keybindings.Inbox)
-	validateSection("inbox_peek", cfg.Keybindings.InboxPeek)
-	validateSection("mail", cfg.Keybindings.Mail)
-	validateSection("global", cfg.Keybindings.Global)
-	validateSection("script", cfg.Keybindings.Script)
+	for _, section := range keySections(&cfg.Keybindings) {
+		validateSection(section.name, section.keys)
+	}
 
 	// Validate enum appearance options (warn on unknown values; they fall back to defaults)
 	validateAppearanceEnums(cfg, result)
@@ -121,13 +104,16 @@ func ValidateConfig(cfg *UserConfig) *ValidationResult {
 	validateTapeConfig(cfg, result)
 	validateResumeAgents(cfg, result)
 	validateWindowSize(cfg, result)
+	validateSSHAgent(cfg, result)
 	validateLinkPolicies(cfg, result)
 	validatePanePermissions(cfg, result)
 	validateAgentWork(cfg, result)
+	validatePasteBuffers(cfg, result)
 
 	// Validate the notifications section (warn on a duration that would put a
 	// message back under the accessibility floor)
 	validateNotificationsConfig(cfg, result)
+	validateNotify(cfg, result)
 
 	// Keys two actions contest. The first action in each list is the one that
 	// runs; the rest never fire.
@@ -205,7 +191,9 @@ func ValidateConfig(cfg *UserConfig) *ValidationResult {
 	}
 
 	validateDock(cfg, result)
+	validateSidebarCustom(cfg, result)
 	validateHints(cfg, result)
+	validatePanes(cfg, result)
 	validateScratch(cfg, result)
 
 	return result
@@ -242,6 +230,12 @@ func validateResumeAgents(cfg *UserConfig, result *ValidationResult) {
 // allowed set. An unknown value falls back to smallest.
 func validateWindowSize(cfg *UserConfig, result *ValidationResult) {
 	warnEnum(result, "daemon", "window_size", cfg.Daemon.WindowSize, WindowSizeModes, "smallest")
+}
+
+// validateSSHAgent warns when daemon.ssh_agent holds a value outside its
+// allowed set. An unknown value is off.
+func validateSSHAgent(cfg *UserConfig, result *ValidationResult) {
+	warnEnum(result, "daemon", "ssh_agent", cfg.Daemon.SSHAgent, SSHAgentModes, SSHAgentOff)
 }
 
 // minReadableNotification is the shortest message lifetime this config will
@@ -323,6 +317,13 @@ func validateAppearanceEnums(cfg *UserConfig, result *ValidationResult) {
 	}
 
 	checkEnum("border_style", cfg.Appearance.BorderStyle, BorderStyles)
+	if !cfg.Appearance.MaxFPS.Valid() {
+		result.Warnings = append(result.Warnings, ValidationError{
+			Field:   "appearance",
+			Key:     "max_fps",
+			Message: fmt.Sprintf("'%s' is not a number or auto; read as %d", cfg.Appearance.MaxFPS, DefaultFPS),
+		})
+	}
 	checkEnum("dockbar_position", cfg.Appearance.DockbarPosition, DockbarPositions)
 	checkEnum("sidebar.position", cfg.Appearance.Sidebar.Position, SidebarPositions)
 	for _, problem := range SidebarSectionProblems(cfg.Appearance.Sidebar.Sections) {
@@ -357,6 +358,7 @@ func validateAppearanceEnums(cfg *UserConfig, result *ValidationResult) {
 	checkEnum("zen_mode", cfg.Appearance.ZenMode, ZenModeModes)
 	checkEnum("motion", cfg.Appearance.Motion, MotionLevels)
 	checkEnum("links", cfg.Appearance.Links, LinkModes)
+	checkEnum("link_click", cfg.Appearance.LinkClick, LinkClickModes)
 	checkEnum("window_button_style", cfg.Appearance.WindowButtonStyle, WindowButtonStyles)
 	checkEnum("tiling_scheme", cfg.Appearance.TilingScheme, TilingSchemes)
 	checkEnum("master_position", cfg.Appearance.MasterPosition, MasterPositions)
@@ -370,6 +372,7 @@ func validateAppearanceEnums(cfg *UserConfig, result *ValidationResult) {
 	validateClockFormat(cfg.Appearance.ClockFormat, result)
 	validateBorderColors(cfg, result)
 	validateScrollbar(cfg, result)
+	validateDockModeIcons(cfg, result)
 	validateBackgrounds(cfg, result)
 }
 
@@ -485,12 +488,12 @@ func validateClockFormat(format string, result *ValidationResult) {
 }
 
 // hexColorPattern matches the one colour literal the config accepts.
-var hexColorPattern = regexp.MustCompile(`^#[0-9a-fA-F]{6}$`)
+var hexColorPattern = lazyre.New(`^#[0-9a-fA-F]{6}$`)
 
 // IsHexColor reports whether s is a colour literal the config can hold. One
 // spelling, so a value written by the settings panel, typed at the CLI or put in
 // the file by hand is the same string either way.
-func IsHexColor(s string) bool { return hexColorPattern.MatchString(s) }
+func IsHexColor(s string) bool { return hexColorPattern().MatchString(s) }
 
 // validateBorderColors warns about a border override that is not a colour.
 //
@@ -510,6 +513,31 @@ func validateBorderColors(cfg *UserConfig, result *ValidationResult) {
 			Field:   "appearance",
 			Key:     c.key,
 			Message: fmt.Sprintf("'%s' is not a colour (expected #RRGGBB); the theme's border colour is used instead", c.value),
+		})
+	}
+}
+
+// validateDockModeIcons warns about a mode pill icon the dock cannot lay out:
+// one with a control character, or one wider than DockModeIconMaxWidth cells.
+// The pill draws the built-in icon instead, so the dock row keeps its shape.
+func validateDockModeIcons(cfg *UserConfig, result *ValidationResult) {
+	a := cfg.Appearance
+	for _, icon := range [...]struct {
+		key   string
+		value *string
+	}{
+		{"dock_mode_icon_window", a.DockModeIconWindow},
+		{"dock_mode_icon_terminal", a.DockModeIconTerminal},
+		{"dock_mode_icon_tiling", a.DockModeIconTiling},
+	} {
+		if icon.value == nil || DockModeIconUsable(*icon.value) {
+			continue
+		}
+		result.Warnings = append(result.Warnings, ValidationError{
+			Field: "appearance",
+			Key:   icon.key,
+			Message: fmt.Sprintf("%q is not a usable icon. Use at most %d cells and no control characters. The dock shows the default icon",
+				*icon.value, DockModeIconMaxWidth),
 		})
 	}
 }
@@ -552,10 +580,10 @@ var knownTitlePlaceholders = []string{"{title}", "{index}", "{cwd}"}
 
 // titlePlaceholderPattern matches anything written as a placeholder, so a typo
 // like {name} can be reported instead of being rendered literally in the title.
-var titlePlaceholderPattern = regexp.MustCompile(`\{[^{}]*\}`)
+var titlePlaceholderPattern = lazyre.New(`\{[^{}]*\}`)
 
 func validateTitleFormat(format string, result *ValidationResult) {
-	for _, placeholder := range titlePlaceholderPattern.FindAllString(format, -1) {
+	for _, placeholder := range titlePlaceholderPattern().FindAllString(format, -1) {
 		if slices.Contains(knownTitlePlaceholders, placeholder) {
 			continue
 		}
@@ -598,6 +626,247 @@ func findConflicts(cfg *UserConfig, _ *KeyNormalizer) map[string][]string {
 		conflicts[c.Press] = actions
 	}
 	return conflicts
+}
+
+// keySection is one keybinding table of config.toml, by its name there.
+type keySection struct {
+	name string
+	keys map[string][]string
+}
+
+// keySections are the keybinding tables ValidateConfig checks key by key.
+func keySections(kb *KeybindingsConfig) []keySection {
+	return []keySection{
+		{"window_management", kb.WindowManagement},
+		{"workspaces", kb.Workspaces},
+		{"layout", kb.Layout},
+		{"mode_control", kb.ModeControl},
+		{"system", kb.System},
+		{"navigation", kb.Navigation},
+		{"restore_minimized", kb.RestoreMinimized},
+		{"prefix_mode", kb.PrefixMode},
+		{"window_prefix", kb.WindowPrefix},
+		{"minimize_prefix", kb.MinimizePrefix},
+		{"workspace_prefix", kb.WorkspacePrefix},
+		{"debug_prefix", kb.DebugPrefix},
+		{"tape_prefix", kb.TapePrefix},
+		{"layout_prefix", kb.LayoutPrefix},
+		{"terminal_mode", kb.TerminalMode},
+		{"sidebar", kb.Sidebar},
+		{"sidebar_files", kb.SidebarFiles},
+		{"sidebar_agents", kb.SidebarAgents},
+		{"inbox", kb.Inbox},
+		{"inbox_peek", kb.InboxPeek},
+		{"mail", kb.Mail},
+		{"copy_mode", kb.CopyMode},
+		{"global", kb.Global},
+		{"script", kb.Script},
+	}
+}
+
+// DroppedKey is one key DropUnreadableKeys took out of a config.
+type DroppedKey struct {
+	// File is the config file that sets the key, as DisplayPath writes it,
+	// or "config.toml" when the files are not known.
+	File string `json:"file"`
+	// Section is the config table, or "keybindings" for the leader.
+	Section string `json:"section"`
+	// Action is the action the key was bound to, or "leader_key".
+	Action string `json:"action"`
+	Key    string `json:"key"`
+	// Problem is what is wrong, in the validator's words.
+	Problem string `json:"problem"`
+	// Fallback is the key the action uses now: the default key when the
+	// action had no other key, or the default leader. It is empty when the
+	// action kept another key of its own, or when every default key was
+	// already another action's.
+	Fallback []string `json:"fallback,omitempty"`
+	// TakenBy is the action that holds the default key, when the action got
+	// no key back because of it.
+	TakenBy string `json:"taken_by,omitempty"`
+	// KeptOthers is true when the action still has another key of its own.
+	KeptOthers bool `json:"kept_others,omitempty"`
+}
+
+// IsLeader reports whether the dropped key was the leader.
+func (d DroppedKey) IsLeader() bool { return d.Action == "leader_key" }
+
+// Outcome says what tuios does instead of the key, in one sentence.
+func (d DroppedKey) Outcome() string {
+	switch {
+	case d.IsLeader():
+		return fmt.Sprintf("The leader is %s until you correct it.", strings.Join(d.Fallback, ", "))
+	case len(d.Fallback) > 0:
+		return fmt.Sprintf("%s uses its default key, %s.", d.Action, strings.Join(d.Fallback, ", "))
+	case d.TakenBy != "":
+		return fmt.Sprintf("%s has no key, because its default key runs %s.", d.Action, d.TakenBy)
+	case d.KeptOthers:
+		return fmt.Sprintf("%s keeps its other keys.", d.Action)
+	}
+	return fmt.Sprintf("%s has no key.", d.Action)
+}
+
+// Warning is the line the TUI logs for the dropped key.
+func (d DroppedKey) Warning() string {
+	name := d.Key
+	if d.IsLeader() {
+		name = "leader_key = " + d.Key
+	}
+	return fmt.Sprintf("%s: [%s] %s: %s. tuios ignores this key. %s", d.File, d.Section, name, d.Problem, d.Outcome())
+}
+
+// DroppedWarnings is the Warning of each dropped key.
+func DroppedWarnings(dropped []DroppedKey) []string {
+	out := make([]string, 0, len(dropped))
+	for _, d := range dropped {
+		out = append(out, d.Warning())
+	}
+	return out
+}
+
+// DropUnreadableKeys takes out of cfg every key that ValidateConfig calls an
+// error, and returns what it took out. lc names the file each key came from;
+// it may be nil.
+//
+// Without it one such key cost the whole file: the load failed, tuios ran on
+// the defaults, and the error went to a stderr the first frame wiped (issue
+// #556). An action left with no key gets its default back, because an empty
+// list in the file means "unbound" and nobody wrote that. A default key that
+// another action already holds is left out, the same yield fillMissingKeybinds
+// makes, so the fallback never takes a key from a binding the user wrote. A
+// leader that cannot be read goes back to the default leader.
+//
+// The baseline is taken again afterwards, so a later save does not write the
+// dropped keys out of the file. The file stays as the user wrote it. The
+// result is kept on cfg as DroppedKeys, for keybinds doctor.
+func DropUnreadableKeys(cfg *UserConfig, lc *LayeredConfig) []DroppedKey {
+	if cfg == nil {
+		return nil
+	}
+	normalizer := NewKeyNormalizer()
+	defaults := DefaultConfig().Keybindings
+	fileOf := func(path ...string) string {
+		if lc == nil {
+			return "config.toml"
+		}
+		holders := lc.Holders(path)
+		if len(holders) == 0 {
+			return lc.DisplayPath(lc.Main)
+		}
+		return lc.DisplayPath(holders[len(holders)-1].Path)
+	}
+	var dropped []DroppedKey
+
+	kb := &cfg.Keybindings
+	if kb.LeaderKey != "" {
+		if ok, msg := normalizer.ValidateKey(kb.LeaderKey); !ok {
+			dropped = append(dropped, DroppedKey{
+				File: fileOf("keybindings", "leader_key"), Section: "keybindings", Action: "leader_key",
+				Key: kb.LeaderKey, Problem: msg, Fallback: []string{defaults.LeaderKey},
+			})
+			kb.LeaderKey = defaults.LeaderKey
+		}
+	}
+
+	defaultTables := map[string]map[string][]string{}
+	for _, section := range keySections(&defaults) {
+		defaultTables[section.name] = section.keys
+	}
+	type emptied struct {
+		section keySection
+		action  string
+		first   int // index of the action's first entry in dropped
+	}
+	var refill []emptied
+	for _, section := range keySections(kb) {
+		actions := make([]string, 0, len(section.keys))
+		for action := range section.keys {
+			actions = append(actions, action)
+		}
+		slices.Sort(actions)
+		for _, action := range actions {
+			keys := section.keys[action]
+			kept := keys[:0:0]
+			first := len(dropped)
+			for _, key := range keys {
+				if ok, msg := normalizer.ValidateKey(key); !ok {
+					dropped = append(dropped, DroppedKey{
+						File: fileOf("keybindings", section.name, action), Section: section.name,
+						Action: action, Key: key, Problem: msg,
+					})
+					continue
+				}
+				kept = append(kept, key)
+			}
+			if len(kept) == len(keys) {
+				continue
+			}
+			section.keys[action] = kept
+			if len(kept) > 0 {
+				for i := first; i < len(dropped); i++ {
+					dropped[i].KeptOthers = true
+				}
+				continue
+			}
+			refill = append(refill, emptied{section, action, first})
+		}
+	}
+	// The defaults go back once every bad key is out, so a default is only
+	// held back by a binding that works.
+	for _, e := range refill {
+		var back []string
+		takenBy := ""
+		for _, key := range defaultTables[e.section.name][e.action] {
+			if other := keyHolder(cfg, e.section, e.action, key); other != "" {
+				takenBy = other
+				continue
+			}
+			back = append(back, key)
+		}
+		e.section.keys[e.action] = back
+		for i := e.first; i < len(dropped) && dropped[i].Action == e.action && dropped[i].Section == e.section.name; i++ {
+			dropped[i].Fallback = back
+			if len(back) == 0 {
+				dropped[i].TakenBy = takenBy
+			}
+		}
+	}
+	if len(dropped) > 0 {
+		cfg.baseline, _ = MarshalUserConfig(cfg)
+	}
+	cfg.DroppedKeys = dropped
+	return dropped
+}
+
+// keyHolder is the action other than action that holds key in the scope of
+// section, or "". The window-mode tables are one keymap, so a key in any of
+// them counts, as it does for yieldTakenDefaults.
+func keyHolder(cfg *UserConfig, section keySection, action, key string) string {
+	tables := map[string][]string(section.keys)
+	if windowModeSection[section.name] {
+		tables = windowModeTables(cfg)
+	}
+	holders := make([]string, 0, 1)
+	for other, keys := range tables {
+		if other == action {
+			continue
+		}
+		if slices.ContainsFunc(keys, func(k string) bool { return sameKeyPress(k, key) }) {
+			holders = append(holders, other)
+		}
+	}
+	if len(holders) == 0 {
+		return ""
+	}
+	slices.Sort(holders)
+	return holders[0]
+}
+
+// windowModeSection are the tables windowModeTables joins.
+var windowModeSection = map[string]bool{
+	"window_management": true, "workspaces": true, "layout": true,
+	"mode_control": true, "system": true, "navigation": true,
+	"restore_minimized": true,
 }
 
 // hasKeybinding checks if an action has at least one keybinding in a specific section

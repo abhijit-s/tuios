@@ -50,8 +50,39 @@ type Terminal interface {
 	CursorPen() (uv.Style, uv.Link)
 	CursorStyle() (style CursorStyle, steady bool)
 	RestoreCursorPosition(x, y int)
+	// CursorPendingWrap reports whether the cursor stands on the last column
+	// with a wrap pending: the next printed character goes to the start of
+	// the next row, not over the cell the cursor is on. The cursor position
+	// alone cannot say this.
+	CursorPendingWrap() bool
+	// RestoreCursorPendingWrap arms or clears the pending wrap, after
+	// RestoreCursorPosition has put the cursor back.
+	RestoreCursorPendingWrap(pending bool)
 	RestoreCursorPen(pen uv.Style, link uv.Link)
 	RestoreCursorStyle(style CursorStyle, steady bool)
+	// CursorProtected reports whether DECSCA protects what the guest prints
+	// next. RestoreCursorProtected puts it back.
+	CursorProtected() bool
+	RestoreCursorProtected(on bool)
+	// SavedCursor is what DECSC last saved on the active screen, or with main
+	// set on the main screen under an active alternate one. A screen that
+	// never saved a cursor reports the zero SavedCursor, which is where a
+	// DECRC with nothing saved goes. RestoreSavedCursor puts one back.
+	SavedCursor(main bool) SavedCursor
+	RestoreSavedCursor(main bool, c SavedCursor)
+	// LastPrinted is the character REP repeats, as the guest sent it, before
+	// any character set maps it. It is empty when nothing has been printed
+	// since the last reset. RestoreLastPrinted puts it back.
+	LastPrinted() string
+	RestoreLastPrinted(cluster string)
+
+	// Protected cells. ProtectedCells lists the cells DECSCA protected on
+	// the active screen, or with main set on the main screen under an active
+	// alternate one, as runs along a row. RestoreProtectedCells replaces the
+	// protection on that screen with the runs given, after the cells are
+	// written: SetCell leaves a cell unprotected.
+	ProtectedCells(main bool) []CellRun
+	RestoreProtectedCells(main bool, runs []CellRun)
 
 	// Screen and mode state. The Restore* half of each pair exists for the
 	// same snapshot priming as SetCell.
@@ -100,7 +131,33 @@ type Terminal interface {
 
 	// Scrollback.
 	ScrollbackLen() int
+	// ScrollbackGeneration changes whenever the main screen's history does:
+	// a line pushed, the ring trimmed, cleared or resized. A reader that
+	// derived something from the history can keep it while the number
+	// stays the same.
+	ScrollbackGeneration() uint64
 	ScrollbackLine(index int) uv.Line
+	// ScrollbackRows, ScrollbackText and CopyScrollback are for a reader of
+	// many history lines at once. ScrollbackLine decodes each line into a
+	// fresh line of 112-byte cells and keeps the newest in a cache for the
+	// renderer, which a walk of the whole history churns and then pins.
+	// These go round the cache.
+	//
+	// ScrollbackRows calls fn with each history line from index from to
+	// end-1, oldest first, decoded to its full width into a buffer reused
+	// from line to line: fn must copy what it keeps. It stops when fn
+	// returns false. fn must not call the terminal, which may hold its own
+	// lock while fn runs.
+	ScrollbackRows(from, end int, fn func(index int, line uv.Line) bool)
+	// ScrollbackText is ScrollbackRows for a reader that wants only the
+	// text: each line is its cells' content and width, with no style and no
+	// cell built. cells runs up to the line's last stored cell, and the
+	// columns from len(cells) to width are spaces.
+	ScrollbackText(from, end int, fn func(index, width int, cells []TextCell) bool)
+	// CopyScrollback copies history lines from index from to end-1, with
+	// their wrap and padding flags, into a form a reader decodes after it
+	// releases the terminal.
+	CopyScrollback(from, end int) *ScrollbackCopy
 	PushScrollbackLine(line uv.Line)
 	ClearScrollback()
 	SetScrollbackMaxLines(maxLines int)
@@ -122,6 +179,15 @@ type Terminal interface {
 	KittyKeyboardFlags() int
 	KittyKeyboardStack() []int
 	RestoreKittyKeyboardState(stack []int)
+	// KittyKeyboardMainStack is the main screen's flag stack while the
+	// alternate screen is in use, nil otherwise. RestoreKittyKeyboardMainStack
+	// puts it back.
+	KittyKeyboardMainStack() []int
+	RestoreKittyKeyboardMainStack(stack []int)
+	// ModifyOtherKeys is the xterm modifyOtherKeys level the guest set with
+	// XTMODKEYS (CSI > 4 ; n m): 0 off, 1 or 2. See EncodeModifyOtherKeys.
+	ModifyOtherKeys() int
+	RestoreModifyOtherKeys(level int)
 
 	// Colors.
 	SetThemeColors(fg, bg, cur color.Color, ansiPalette [16]color.Color)
@@ -143,6 +209,8 @@ type Terminal interface {
 	SetCallbacks(cb Callbacks)
 	GetCallbacks() Callbacks
 	SetScreenClearFunc(f func())
+	// SetKittyPassthroughFunc installs the reader of every graphics
+	// command. fn must not write to rawData: cmd.RawPayload shares its bytes.
 	SetKittyPassthroughFunc(fn func(cmd *KittyCommand, rawData []byte))
 	// SetKittyHeaderOnly says whether the passthrough acts on the control
 	// keys alone, so the payload is not decoded. See ParseKittyHeader.
@@ -175,3 +243,25 @@ type Terminal interface {
 }
 
 var _ Terminal = (*Emulator)(nil)
+
+// SavedCursor is the state DECSC saves and DECRC puts back: the position, the
+// pen, the pending-wrap flag, origin mode, DECSCA protection and the character
+// set selection. Link is the hyperlink the pen held, which the pure emulator
+// saves with it and libghostty does not.
+type SavedCursor struct {
+	X, Y        int
+	Pen         uv.Style
+	Link        uv.Link
+	PendingWrap bool
+	Origin      bool
+	Protected   bool
+	// Charsets names the set in G0 to G3 by its designator byte, as
+	// Charsets does. A zero byte reads as US ASCII.
+	Charsets [4]byte
+	GL, GR   int
+}
+
+// CellRun is N cells of row Y from column X.
+type CellRun struct {
+	X, Y, N int
+}

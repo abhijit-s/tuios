@@ -31,6 +31,13 @@ type copyModeEffects struct {
 	enterTerminal bool
 	clipboard     string
 	setClipboard  bool
+	// flash is the region a yank took, written down before the yank ends the
+	// visual selection it came from. See Flash.
+	flash                bool
+	flashStart, flashEnd terminal.Position
+	// action is the [keybindings.copy_mode] action the key ran, for the
+	// recent actions list.
+	action string
 }
 
 type copyModeNotification struct {
@@ -68,6 +75,15 @@ func (fx *copyModeEffects) SetClipboard(text string) {
 	fx.setClipboard = true
 }
 
+// Flash queues the copy sweep over the region a yank took, in the pane's
+// absolute coordinates. A yank ends the visual selection inside the locked
+// region, so by the time the effects apply there is no selection left to read
+// the region from.
+func (fx *copyModeEffects) Flash(start, end terminal.Position) {
+	fx.flash = true
+	fx.flashStart, fx.flashEnd = start, end
+}
+
 // apply runs the queued effects against the real OS and Window. It must be
 // called with the window's I/O lock NOT held.
 //
@@ -81,6 +97,7 @@ func (fx *copyModeEffects) apply(o *app.OS, window *terminal.Window) (*app.OS, t
 		window.InvalidateCache()
 	}
 	if o != nil {
+		o.NoteAction(fx.action)
 		for _, n := range fx.notifications {
 			o.ShowNotification(n.message, n.notyType, n.duration)
 		}
@@ -90,11 +107,18 @@ func (fx *copyModeEffects) apply(o *app.OS, window *terminal.Window) (*app.OS, t
 	if fx.enterTerminal && o != nil {
 		cmd = o.EnterTerminalMode()
 	}
+	if fx.flash && o != nil {
+		o.NoteCopyFlashRegion(window, fx.flashStart, fx.flashEnd)
+	}
 	if fx.setClipboard {
 		if o != nil && o.Settings.CopyCommand != "" {
+			// Yank keeps the paste buffer itself.
 			cmd = o.Yank(fx.clipboard)
 		} else {
 			cmd = tea.SetClipboard(fx.clipboard)
+			if o != nil {
+				cmd = tea.Batch(cmd, o.SaveToPasteBuffers(fx.clipboard))
+			}
 		}
 	}
 	return o, cmd

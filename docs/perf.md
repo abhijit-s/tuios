@@ -535,6 +535,35 @@ with now takes effect at the next start (the settings row says so). It is its
 own commit so it can be reverted alone. The real fix is upstream, a bubbletea
 ticker that idles when nothing is pending.
 
+**max_fps goes to 240, and a change applies while tuios runs.** bubbletea
+clamps its ticker to 120 in `NewProgram`. `OS.BindProgram` now sets the
+ticker's rate after `NewProgram`, past that clamp, and resets it each time
+`NormalFPS` changes: a config reload, the settings row, or the display rate
+arriving for `max_fps = "auto"`. That also ends the "takes effect at the next
+start" rule above. Detection for auto is one short process (`hyprctl`, `niri`,
+`wlr-randr`, `xrandr` or `system_profiler`) in a goroutine, so it adds nothing
+to the startup path; until it answers, auto draws at 60.
+
+Real binary, one idle shell at 207x55, 10 s, voluntary context switches summed
+over every thread (the earlier rows read the main thread's counter), three runs
+each:
+
+| | voluntary ctx switches / s | CPU |
+|---|---|---|
+| before, default (60) | 389 / 369 / 385 | 0.4 / 0.3 / 0.3% |
+| before, max_fps 120 | 573 / 589 / 569 | 0.4 / 0.5 / 0.4% |
+| after, default (60) | 363 / 367 / 387 | 0.3 / 0.3 / 0.3% |
+| after, max_fps 120 | 585 / 624 / 624 | 0.4 / 0.4 / 0.4% |
+| after, max_fps 240 | 1028 / 1074 / 1037 | 0.5 / 0.7 / 0.7% |
+
+The default is unchanged. 240 is the cost of a ticker that does not idle, and
+it is opt-in. Frames on the wire with a pane printing as fast as it can
+(`TestMaxFPS240DrawsPastTheOldClamp`, run with `TUIOS_E2E_PERF=1`): before,
+max_fps 240 drew 120 frames a second; after, 236, and auto on a stand-in
+240 Hz display drew 227. The `internal/app` benchmarks (`IdleTick`,
+`ClientFrame`, `KeystrokeFrame`, `PointerSweep`, six runs each) show no
+regression: every change is within noise or faster, and allocations match.
+
 **Keys typed right after entering terminal mode reach the pane.**
 `HandleTerminalModeKey` dropped every unmodified printable key for 150 ms
 after entering terminal mode, a guard against mouse-sequence fragments from a
@@ -558,7 +587,8 @@ allocations. `internal/terminal`, handed to that pass.
 `ApplyReloadedConfig` never calls `KeybindRegistry.Reload`, so keybindings do
 not follow a config-file reload on any road. Pre-existing, unchanged by the
 section cache (the flattened map was already frozen the same way), and outside
-a performance pass. Reported rather than fixed.
+a performance pass. Reported rather than fixed. Fixed later in #358: the reload
+now calls it.
 
 ### Invariants held
 
@@ -1813,8 +1843,9 @@ five patterns, which would otherwise fail only on first use).
   `ValidateKey` change it would save about 0.4 ms per TUI start, and it adds
   hidden state that goes stale when the settings page edits the config.
 - **CoreFoundation and Security**, loaded by dyld because crypto/x509 is
-  linked: about 0.9 ms per exec. Removing it means a CLI binary without
-  net/http and crypto/tls.
+  linked: about 0.9 ms per exec. Removing it would mean a CLI binary without
+  net/http and crypto/tls. Notifications and `tuios update` now link them on
+  purpose, to drop the runtime need for curl.
 - **encoding/gob init**, 0.12 ms: the standard library scanning typelinks.
 - **gopsutil/cpu init**, 0.06 ms, which calls host_processor_info twice. On
   darwin gopsutil/process imports it for `ProcessCwd`.
@@ -2129,13 +2160,14 @@ request and push to main. It builds tuios the way the release does
 darwin/arm64 with the Go version go.mod names, prints the size, and fails when
 a binary is over its budget.
 
-| target | size at 62ec9c0c (Go 1.26.6) | budget | before the size cuts (e632e021) |
-|---|---|---|---|
-| linux/amd64 | 25,182,370 | 28,205,000 (raised for #387, about 28,172,450) | 26,681,504 |
-| darwin/arm64 | 23,834,594 | 26,620,000 (raised for #387, about 26,587,138) | 25,265,154 |
+| target | size at 62ec9c0c (Go 1.26.6) | before the size cuts (e632e021) | size at the last raise (Go 1.26.9) | budget |
+|---|---|---|---|---|
+| linux/amd64 | 25,182,370 | 26,681,504 | 34,046,114 | 34,600,000 |
+| darwin/arm64 | 23,834,594 | 25,265,154 | 32,043,810 | 32,600,000 |
 
-The budgets are about 3% above the size they were set at and below the size
-before the size cuts, so undoing those cuts fails the job.
+The first budgets were about 3% above the size they were set at and below the
+size before the size cuts, so undoing those cuts failed the job. Each raise
+since then is recorded below, oldest first.
 
 The linux/amd64 budget went from 26,000,000 to 26,400,000 when hints mode,
 mail compose, the host fence and multi copy mode brought the build to
@@ -2234,6 +2266,229 @@ refusals in internal/session, the client gates in internal/app, and the CLI
 and MCP refusals. Measured with `scripts/binary-size.sh` against main on one
 toolchain, the change adds 45,056 and 34,160 bytes, which puts the build at
 about 28,172,450 and 26,587,138 bytes on Go 1.26.6.
+
+The budgets went to 28,255,000 (linux/amd64) and 26,665,000 (darwin/arm64)
+for the master-stack splits (#403) and the master-stack equalize (#405): the
+weights the tiler reads for every pane, their inverse from the rectangles,
+and the session state that carries them. On the CI toolchain #403 alone put
+the build at 28,213,410 and 26,620,498 bytes, 8,410 and 498 over. Measured
+with `scripts/binary-size.sh` against main on one toolchain, #403 adds 28,672
+and 16,800 bytes and #405 adds 4,096 and 0.
+
+The budgets went to 28,320,000 (linux/amd64) and 26,725,000 (darwin/arm64)
+for the client list (#391): the `list-clients` verb and command, the peer pid
+read on each platform, and the `client-session-changed` event. On Go 1.26.6
+the build measured 28,283,042 and 26,688,242 bytes, 28,042 and 23,242 over
+the old budgets.
+
+The budgets went to 31,092,000 (linux/amd64) and 29,297,000 (darwin/arm64)
+for the October 2026 work, which landed as one series. On Go 1.26.6 main
+(a640011) measured 28,283,042 and 26,688,242 bytes, and the series brings the
+build to 31,051,938 and 29,257,058 bytes: 2,768,896 and 2,568,816 bytes more.
+Each row below is what one change adds to the rows above it, measured with the
+release flags after applying the changes to main in this order. A linux/amd64
+build grows in whole 4 KB pages, so a row of 8 KB or less there is mostly
+rounding. The rows add up to 12,288 and 32 bytes less than the totals,
+because the measurement left out one conflicting line of the notifications
+change and the fixes made in the final review.
+
+| change | linux/amd64 | darwin/arm64 |
+|---|---|---|
+| Stream races, MCP annotations and protocol versions, ACP cancel | +16,384 | +16,960 |
+| A pane TERM with a terminfo entry, the kitty query, DECRQM and DA1 | +8,192 | +64 |
+| Hot paths: wait-for coalescing, capture presize, DECOM cache, marker trim | +8,192 | +16,688 |
+| Request ids on the wire | +8,192 | +432 |
+| tmux shim: command prefixes, tmux 3.4 formats, wait-for, popups, run-shell, if-shell, moves, buffers, environment | +172,032 | +151,872 |
+| Terminal protocol: XTVERSION, DA3, XTGETTCAP, DECRQSS, OSC reply terminators, a kitty stack per screen, mouse encodings, modifyOtherKeys, the title stack | +36,864 | +33,520 |
+| Turn checkpoints | +147,456 | +134,768 |
+| Bulk history readers | +28,672 | +17,648 |
+| Inbox push notifications, the web deep link and `tuios notify test`, as first written with curl | +122,880 | +118,480 |
+| net/http for notifications and `tuios update`, in place of curl | +1,941,504 | +1,841,440 |
+| `tuios ship`, `fan keep --merge` and the pull request badge | +208,896 | +186,016 |
+| Mode legends in the dock | +8,192 | -48 |
+| Emulator allocations, the scroll window, the idle ticker and memtrim | +12,288 | +17,104 |
+| Opening links and OSC 8 in the frame | +28,672 | +17,120 |
+| Review fixes: the pushed commit, ignored files on restore, the push address, notification redirects, large untracked files, key state on reattach | +8,192 | +16,720 |
+
+The net/http row is 70% of the growth. tuios linked neither net/http nor
+crypto/tls before it. The maintainer accepted the 1.9 MB so that tuios needs
+no curl at run time: notifications and `tuios update` used to run curl from
+PATH, and a machine without it could not send either.
+
+The budgets went to 31,130,000 (linux/amd64) and 29,345,000 (darwin/arm64)
+for the rail's custom section (#399): the `[appearance.sidebar.custom]` table,
+its parser and validator, the section in the renderer, and the rail context
+and re-run in the dock engine. On Go 1.26.6 the build measured 31,092,898 and
+29,307,394 bytes, 898 and 10,394 over the old budgets.
+
+The linux/amd64 budget went to 31,170,000 for the CLI help audit (#430): the
+`--json` output of `tape list`, `layout list`, `resurrect`, `set-config` and
+`send-text`, and the longer help and error text. On Go 1.26.6 the build
+measured 31,133,858 bytes, 3,858 over the old budget. darwin/arm64 stayed
+under its budget at 29,341,282 bytes.
+
+The darwin/arm64 budget went to 29,415,000 for the complete `tuios keybinds
+list` (#434): its rows, the JSON output, the scoped descriptions and the fixed
+key groups shared with the help overlay. On Go 1.26.6 the build measured
+29,375,090 bytes, 30,090 over the old budget. linux/amd64 stayed under its
+budget at 31,162,530 bytes.
+
+The linux/amd64 budget went to 31,210,000 for the refreshed skill (#429): the
+new `checkpoints`, `ship`, `notify`, `clients` and `agents-off` topics that
+`tuios --skill` prints from the binary. On Go 1.26.6 the build measured
+31,174,818 bytes, 4,818 over the old budget. darwin/arm64 stayed under its
+budget at 29,375,138 bytes.
+
+Both budgets went up for tape actions and condition waits (#437): the
+`Action`, `Press`, `WaitFor`, `Expect`, `Run` and `Source` commands, the
+argument specs every command is checked against, and the action runner
+that run-command now reaches. On Go 1.26.6 the build measured 31,256,738
+bytes for linux/amd64, 46,738 over the old budget, and 29,458,610 bytes for
+darwin/arm64, 43,610 over.
+
+The budgets went to 31,340,000 (linux/amd64) and 29,540,000 (darwin/arm64) for
+the herdr methods that plugins call. On Go 1.26.6 the build measured
+31,305,890 and 29,509,922 bytes.
+
+The budgets went to 31,670,000 (linux/amd64) and 29,830,000 (darwin/arm64) for
+the herdr plugin host. On Go 1.26.6 the build measured 31,633,570 and
+29,797,122 bytes.
+
+The budgets went to 31,820,000 (linux/amd64) and 29,980,000 (darwin/arm64)
+for the opt-in explorers: `tuios help -i`, `tuios help --json`, `tuios config
+browse` and `tuios keybinds browse`, and the `internal/explore` panel behind
+them. On Go 1.26.6 the build measured 31,781,026 and 29,947,586 bytes,
+111,026 and 117,586 over the old budgets.
+
+The budgets went to 31,945,000 (linux/amd64) and 30,105,000 (darwin/arm64)
+for `tuios hosts sync`: the probe, install and restart scripts, the dev
+cross-build, the release download by tag, the restart question and the
+report. It links no new package. On Go 1.26.6 the build measured 31,908,002
+and 30,066,354 bytes, 88,002 and 86,354 over the old budgets.
+
+The budgets went to 32,015,000 (linux/amd64) and 30,155,000 (darwin/arm64)
+for the sessionizer work: `tuios switch-session`, its verb, and the start
+directory of a session. It links no new package. On Go 1.26.6 the build
+measured 31,977,634 and 30,116,962 bytes, 32,634 and 11,962 over the old
+budgets.
+
+The budgets went to 32,075,000 (linux/amd64) and 30,210,000 (darwin/arm64)
+for Tailscale SSH check mode in the host commands: the gate reader, the wait
+for an approval in the link and in `hosts sync`, and the shared ssh
+connection of a sync run. It links no new package. On Go 1.26.6 the build
+measured 32,034,978 and 30,167,794 bytes, 19,978 and 12,794 over the old
+budgets.
+
+The budgets went to 32,140,000 (linux/amd64) and 30,275,000 (darwin/arm64)
+for the pane labels (`display_panes`): the block font, the label pass over
+the canvas and the `[panes]` section. It links no new package. On Go 1.26.6
+the build measured 32,084,130 and 30,219,138 bytes, 9,130 and 9,138 over the
+old budgets.
+
+The budgets went to 32,185,000 (linux/amd64) and 30,330,000 (darwin/arm64)
+for ssh-aware splits: the ssh and mosh line parser, the process tree checks,
+the `ssh -G` host match, and the three actions. It links no new package. On
+Go 1.26.6 the build measured 32,141,474 and 30,286,114 bytes, 1,474 and 11,114
+over the old budgets.
+
+The budgets went to 32,365,000 (linux/amd64) and 30,480,000 (darwin/arm64)
+for the pane navigator (`choose_tree`) and `list-windows --all`: the tree,
+its search and preview, the load of the other sessions, and the listing
+across sessions and hosts. It links no new package. On Go 1.26.6 the build
+measured 32,305,314 and 30,420,946 bytes, 120,314 and 90,946 over the old
+budgets.
+
+The budgets went to 32,445,000 (linux/amd64) and 30,550,000 (darwin/arm64)
+for the settings page's Agents tab: the integration report the tab shares
+with `tuios doctor agents`, the install and uninstall actions, the notice and
+its stored dismissals, and the check that a file did not change during an
+edit. It links no new package. On Go 1.26.6 the build measured 32,399,522 and
+30,505,330 bytes, 34,522 and 25,330 over the old budgets.
+
+The budgets went to 32,600,000 (linux/amd64) and 30,690,000 (darwin/arm64)
+for the Tailscale SSH sign-in: the rail's sign-in control and hover, the check
+that a sign-in link is on a Tailscale login origin, the `retry-host` verb, and
+`tuios hosts signin`. It links no new package. On Go 1.26.6 the build measured
+32,571,554 and 30,639,922 bytes: linux/amd64 was 46,554 over its budget of
+32,525,000, and darwin/arm64 had 10,078 left of its 30,650,000.
+
+The linux/amd64 budget went from 32,600,000 to 32,700,000 when the rail's
+opt-in switch numbers brought the build to 32,600,226 bytes (Go 1.26.6). Main
+had 226 bytes of room before it, so the feature could not fit. The
+darwin/arm64 budget stays at 30,690,000: the feature brought that build to
+30,673,362 bytes, inside the room it already had.
+
+The darwin/arm64 budget went from 30,690,000 to 30,760,000 for the
+borderless zoom: the option, its settings row, and the zoom path that drops
+the border. With the copy-mode help order before it, the build measured
+30,690,498 bytes on Go 1.26.6, 498 over the old budget. The which-key menus
+and the dock mode icons come next and add about 20 KB, which fits in the room
+this leaves.
+
+The budgets went to 32,825,000 (linux/amd64) and 30,875,000 (darwin/arm64)
+for OSC 7501, the Program Status Protocol: the parser and record store in
+`internal/progstatus`, the records in the daemon and the window state, the
+rail and Inbox display, the reports to the host terminal, and `tuios status`.
+It links no new package. On Go 1.26.6 the build measured 32,792,738 and
+30,842,578 bytes: linux/amd64 was 92,738 over its budget of 32,700,000, and
+darwin/arm64 82,578 over its 30,760,000.
+
+The budgets went to 33,100,000 (linux/amd64) and 31,140,000 (darwin/arm64)
+for config includes and config.d (#518): the merge of several files, the
+three-way save that edits the lines of the changed key in the file that holds
+it, the watcher that follows every file, and the config files, origin and
+prune commands. That brought the build to 33,034,402 and 31,077,826 bytes
+(Go 1.26.6) on main at 01d72efb, about 209 KB and 203 KB over the old budgets.
+
+The budgets went to 33,172,000 (linux/amd64) and 31,198,000 (darwin/arm64)
+for images drawn as block glyphs on a host without graphics: the glyph
+encoder (`internal/mosaic`), its glyph tables, the 16-colour floor, the
+drawing pass and the `image_symbols` option. It links no new package. On Go
+1.26.6 the build measured 33,136,802 and 31,162,594 bytes, 69,632 and 51,248
+over origin/main at ebeee191. On linux/amd64, 64 KiB of that is a section
+crossing an alignment boundary, not code.
+
+The budgets went to 33,250,000 (linux/amd64) and 31,290,000 (darwin/arm64)
+for following the person's ssh agent (#552): the link keeper for sessions and
+hosts, the ssh -G check of a host's forwarding, the ssh-agent-path verb and
+command, and the agent field of the link handshake. On main at d42b9d06 the
+build measured 33,194,146 and 31,230,146 bytes on Go 1.26.6, 22,146 and
+32,146 over the old budgets.
+
+The budgets went to 33,450,000 (linux/amd64) and 31,460,000 (darwin/arm64)
+for the paste buffers (#514): the store and the session each buffer came
+from, the five buffer verbs and their commands, base64 content and uploads,
+the chooser, and the tmux shim's use of the daemon's buffers. It links no new
+package. On main at 1b570369 the build measured 33,370,274 and 31,383,090
+bytes on Go 1.26.6, 120,274 and 93,090 over the old budgets.
+
+The budgets went to 33,500,000 (linux/amd64) and 31,540,000 (darwin/arm64)
+for bounding the memory clients can make the daemon hold (#557): the frame
+reader that charges a frame before it reads it, the read budgets it shares
+with the verb line reader, the connection caps and their refusals, the wait
+for a pane's large write slot, and the client's hold and retry of a refused
+paste. It links golang.org/x/sync/semaphore, which was already in the module
+graph. On Go 1.26.6 the build measured 33,431,714 and 31,467,538 bytes, 45,056
+and 51,296 over origin/main at d2f6277b. darwin/arm64 was 7,538 bytes over the
+old budget.
+
+The budgets went to 34,000,000 (linux/amd64) and 32,000,000 (darwin/arm64)
+when main moved to the go1.26.9 toolchain and newer golang.org/x modules. On
+origin/main at 370097e6 the build measured 33,493,154 and 31,536,434 bytes,
+6,846 and 3,566 bytes under the old budgets. The glyph fallback for hosts that
+store images in their cells (#583, issue 567) added 8,192 and 32 bytes: the
+xterm.js check in the startup probe and the handler for a late XTVERSION
+answer. That put linux/amd64 1,346 bytes over. Both budgets now have about
+500 KB of room, and both stay under the 35 MB ceiling.
+
+The budgets went to 34,600,000 (linux/amd64) and 32,600,000 (darwin/arm64)
+for the phone apps. stream-pane, attach-presence and the size lease (#602),
+agent-transcript (#603) and Web Push with RFC 8291 encryption (#608) landed
+first, and `tuios pair` (#607) adds the QR encoder (rsc.io/qr) and the
+pairing listener. With #607 the build measured 34,046,114 and 32,043,810
+bytes, 46,114 and 43,810 over the old budgets. Both budgets again have about
+550 KB of room, and linux/amd64 is now within 400 KB of the 35 MB ceiling, so
+the next feature that needs room should look for bytes to cut first.
 
 To raise a budget, do it on purpose in its own commit: run
 `scripts/binary-size.sh` on the Go version in go.mod, set the new budget a
@@ -2357,3 +2612,328 @@ M3 Pro.
   checks which modal overlays are open after every message. The clock is read
   only when that set changes, and the loading-frame check reads it only while
   a load is out; before that change the tick was 386 ns.
+
+## 2026-10 bulk history readers
+
+Measured on a shared 4-core Xeon at 2.1 GHz with `GOMAXPROCS=2`, three runs
+each, before and after in the same session. Times carry the noise of a shared
+machine. Bytes are exact.
+
+### What changed
+
+`Scrollback.Line` decodes a stored line into a fresh `uv.Line` of 112-byte
+cells and keeps the newest 256 in a cache for the renderer. Every reader of
+the whole history went through it: copy-mode search on every key, the history
+save, the snapshot sent on attach, the ANSI capture and the image sweep. A
+full 10,000-line ring at 207 columns is 251 MB of cells, and the cache was left
+holding about 5 MB of them per pane until the pane next printed.
+
+`vt.Terminal` now has three readers that go round the cache. `ScrollbackRows`
+decodes each line into one buffer it reuses. `ScrollbackText` hands out each
+cell's content and width and builds no cell. `CopyScrollback` copies the lines
+in their encoded form, a byte or so a cell, for a reader that decodes them
+after it releases the emulator's lock. The ghostty backend reads each line
+through the library as `ScrollbackLine` does and does not cache it. The cache
+is also bounded at 65,536 cells, about 7 MB, as well as 256 lines.
+
+- Copy-mode search reads the history as text cells and takes a match's
+  columns from the cells. It used to count runes as columns, so a cell of
+  several runes before a match put the cursor right of it. A key that extends
+  the query searches only the lines the last search matched, when the history
+  has not changed and the last search was not cut at the match limit.
+- The history save copies the encoded rows under `terminalMu` and decodes
+  and packs them after.
+- The packed snapshot packs the screen under `terminalMu`, copies the history
+  and the main screen under an alternate screen, and packs those after.
+- The cell snapshot, the ANSI capture, the tape capture, the command output
+  read and the image sweep use the row or text reader.
+
+### Numbers
+
+| Benchmark | before | after |
+|---|---|---|
+| `ScrollbackLineString/w207` (the cached path, unchanged) | 168 ms, 251 MB | 165 ms, 251 MB |
+| `ScrollbackRows/w207` (new) | | 64 ms, 5.7 MB |
+| `ScrollbackText/w207` (new) | | 1.06 ms, 4.4 KB |
+| `CopyModeSearchKey` (one key, 207x55, full ring) | 150 ms, 271 MB | 11 ms, 0.40 MB |
+| `CopyModeSearchTyping` (16 keys) | 1.30 s, 2.37 GB | 36 ms, 8.5 MB |
+| `HistoryCaptureLocked/buildlog/1000` | 11.8 ms, 25.8 MB | 0.79 ms, 1.36 MB |
+| `HistoryCaptureLocked/buildlog/5000` | 67 ms, 124 MB | 1.05 ms, 1.89 MB |
+| `HistorySave/buildlog` | 21.0 ms, 28.0 MB | 11.5 ms, 3.57 MB |
+| `HistorySave20BusyPanes` | 515 ms, 562 MB | 231 ms, 72 MB |
+| `HistorySave20BusyPanes` max-wait | 61 to 72 ms | 4 to 12 ms |
+| `HistorySave20BusyPanes` heap-after (new metric) | 159 MB | 51 MB |
+| `WireTerminalState/scrollback-1000` (cell form) | 68 ms, 68.8 MB | 53 ms, 44.2 MB |
+| `WireTerminalStatePacked/scrollback-1000` (new) | 26 ms, 27.6 MB | 14 ms, 3.2 MB |
+| `WireTerminalStatePacked/scrollback-1000` locked-ms | 26 ms | 0.9 ms |
+
+The before row of `WireTerminalStatePacked` timed `GetTerminalStatePacked`,
+which held the lock for the whole read. At depth 0 the packed snapshot
+allocates 25 KB more than before: the one history row is decoded where the
+benchmark's repeated reads used to find it in the cache.
+
+`TestCopyModeSearchKeyBudget` holds one search key to 4 MB, and
+`TestHistoryCaptureBudget` holds the locked part of a history save to 4 MB.
+Both fail on the tree before this change, at 258 MB and 24.7 MB.
+
+## 2026-10 emulator allocations, scroll window, idle ticker, memory trim
+
+Measured on a shared 4-core Xeon at 2.1 GHz with `GOMAXPROCS=2`, three runs
+each, before and after in the same session. Emulator numbers come from a
+207x55 pane with 10,000 lines of history, fed in 16 KiB writes. Real-binary
+numbers come from `tuios attach` in a 207x57 tmux pane, read from `/proc`
+over 20 s after 10 s of settling.
+
+### What changed
+
+- A truecolor cell that misses the 256-slot colour cache boxes its colour
+  into a 64-colour slab, not a heap value of its own. The value has the same
+  dynamic type, so `==` and type switches behave as before.
+- A non-ASCII cluster comes from a 1,024-slot table of recent clusters. A run
+  of new clusters copies the rest of the run once after four misses.
+- A kitty graphics command is parsed from the one copy of the sequence the
+  passthrough gets. `RawPayload` shares those bytes. A passthrough must not
+  write to `rawData`.
+- A scroll of the whole screen moves a window over a backing array twice the
+  screen height. It does not slide every row header, extent and wrap flag.
+- The client drops the Bubble Tea frame ticker to `IdleFPS` after 500 ms
+  with no composed frame. Input, a raw write or a composed frame wakes it
+  with a 1 ms tick for 4 ms, then the normal rate.
+- The session-list poll tick no longer composes a frame. It changes nothing
+  on screen. The refresh it starts composes one only when the listing it
+  fetched changed, since the rail draws other sessions from that listing.
+- `internal/memtrim` calls `debug.FreeOSMemory` 2 s after a burst of pane
+  closes, after the client goes idle, and from the daemon's 30 s sweep. It
+  trims only when the process is quiet and holds 32 MB or more of heap past
+  its live data, and at most once in 30 s.
+
+### Numbers
+
+| Benchmark | before | after |
+|---|---|---|
+| truecolor per character, 7.6 MB | 96 ms, 417,520 allocs | 92 ms, 18,849 allocs |
+| CJK and emoji, 2.5 MB | 153 ms, 190,137 allocs | 150 ms, 55,113 allocs |
+| `WriteKittyAPC` (1.97 MB frame) | 3.79 ms, 5.90 MB, 2,405 allocs | 3.08 ms, 3.93 MB, 1,924 allocs |
+| `yes`, 1 MB | 61.5 ms | 55.1 ms |
+| `seq 1 100000` | 23.8 ms | 21.5 ms |
+| `EmulatorShortLineScroll/with-scrollback` | 345 ns | 325 ns |
+
+CJK throughput did not move. Its time is grapheme segmentation, not
+allocation.
+
+| Real binary | before | after |
+|---|---|---|
+| Client idle CPU, 1 pane | 0.95% | 0.40% |
+| Client idle CPU, 10 panes | 1.23% | 0.47% |
+| Client voluntary context switches a second | 355 to 364 | 112 to 118 |
+| Daemon RSS 5 s after 49 of 50 panes close | 57 to 77 MB | 41 to 49 MB |
+| Client RSS 5 s after 49 of 50 panes close | 58 to 60 MB | 59 to 60 MB |
+
+The ticker change alone gave 0.56% and 0.59%. The poll tick composed a frame
+every 3 s, and each frame woke the ticker for 500 ms. The client's own
+scavenger already returned its free pages in these runs, so the client trim
+did not run.
+
+`TestIdleCostStaysLow` holds 0 idle wire bytes. `TestPerfInputLatency` is
+16.7 ms at p50 and 18.4 ms at p95 for 1, 4 and 8 panes, before and after.
+The `TestLatency*` tests in `internal/terminal`, `internal/input` and
+`internal/app` are within noise.
+
+`TestTruecolorGradientAllocatesPerSlab`, `TestRepeatedClustersAllocateNothing`,
+`TestNovelClusterRunAllocatesBoundedly` and `TestKittyFrameCopiesPayloadOnce`
+hold the budgets. Each fails on the tree before its change. The kitty one
+measures 2.99 times the frame size there.
+
+## 2026-10 frame clock
+
+A guest that animates at the frame rate showed 83 to 88% of its frames at
+max_fps 120, with gaps of 17 ms, and max_fps 240 drew at most 125 frames a
+second of an animating pane. The client ran two clocks. Each pane's coalescer
+signalled on its own, with a fixed 8 ms floor, and every signal composed a
+frame. Bubble Tea wrote frames only on its ticker. A frame composed just
+after a tick waited almost a whole period, and two guest frames could land
+between two ticks while the next period had none. Nine animating panes asked
+for about 1000 composes a second, and the ticker wrote 120 of them.
+
+### The harness
+
+`e2e/tui/perf_frames_test.go` runs a guest (`e2e/tui/framepace`) that draws
+at a fixed rate and logs when each frame was ready. The host side of the
+client's PTY is read without rendering, and every frame end (the end of the
+client's synchronized update) is timestamped as it arrives. Each guest frame
+carries its sequence number, in a tag at the top left for text and in the
+first eight pixel bytes for kitty images, so a host frame is matched to the
+guest frame it shows. It reports frame intervals and guest-to-host latency as
+p50, p95 and p99, the share of guest frames shown, and client and daemon CPU.
+`TUIOS_PERF_PPROF` takes CPU profiles of both over the window, and
+`TUIOS_PERF_OUT` keeps every sample as JSON.
+
+```
+cd e2e/tui && TUIOS_E2E=1 TUIOS_PERF=1 go test -count=1 -v -run TestPerfFrames .
+```
+
+The host is a truecolor terminal (`COLORTERM=truecolor`), as kitty and
+ghostty are. Without it the renderer converts every colour to the 256-colour
+palette, which was a third of the client's CPU in the first profile.
+
+### What changed
+
+- `Window.SetFrameInterval`: the coalescer floor is one frame at max_fps,
+  not 8 ms. It is per pane, and each client sets it on its own panes: in the
+  SSH and web servers each connection is its own client, and one client's
+  max_fps does not set another's.
+- The coalescer and the new frame gate count intervals with the generic cell
+  rate algorithm (`terminal.NextFrameTime`, `terminal.FrameSlack`). A frame up
+  to a quarter of a period early stands for the end of the period. Counted
+  from the moment of the emit, every late Go timer stretched the next interval,
+  and the intervals of a 120 Hz guest came out 9 ms long.
+- `takePaneOutput`: frames for pane output are spaced one period apart for
+  the whole client, and a held frame comes as a `frameDueMsg`. Output that
+  answers a key, a paste, a click or a wheel step is not held.
+- `kickFlush`, `flushCmd`: when the frame or the cursor changed, one value is
+  sent on Bubble Tea's ticker channel, so a composed frame is written at once.
+  It is sent when `flushMsg` reaches `Update`, after Bubble Tea has stored the
+  frame. A first version sent it on a 100 us timer from `View`, which could
+  fire before the store: the renderer then wrote the frame before, and a typed
+  key waited a whole tick (p99 17 to 24 ms). `TestKickFlushWritesTheFrame`
+  fails on a Bubble Tea release where the channel no longer works.
+- Every visible pane with output is drawn in each frame. Unfocused panes were
+  drawn on every third pass, which made them uneven once passes were bounded.
+- A pane far behind its output is drawn every two frames, not every 250 ms,
+  and a frame that costs more keeps its own interval.
+
+### Numbers
+
+207x55, one guest unless noted, three interleaved runs of each build at a
+load average of 2.6 to 3.1. Base is origin/main at 582af540.
+
+| Case | base | after |
+|---|---|---|
+| 120 Hz guest, max_fps 120: frames shown a second | 110, 101, 104 | 120, 120, 120 |
+| interval p95 / p99 | 16.8 to 17.1 / 17.4 to 17.5 ms | 9.2 to 9.4 / 9.7 to 9.9 ms |
+| latency p50 / p99 | 9.9 to 15.9 / 17.8 to 19.2 ms | 7.4 to 7.5 / 9.0 to 9.4 ms |
+| 240 Hz guest, max_fps 240: frames shown | 123, 124, 124 | 239, 240, 240 |
+| interval p95 / p99 | 9.3 to 10.0 / 12.1 to 12.7 ms | 5.3 / 5.9 ms |
+| 240 Hz guest, max_fps 120: latency p50 | 8.9 to 9.9 ms | 3.5 ms |
+| 9 panes at 120 Hz: mean of the nine guests | 108.7, 106.4, 109.3 | 108.4, 109.3, 111.0 |
+| slowest guest | 99, 95, 101 | 87, 90, 90 |
+| client CPU | 914 to 970 ms/s | 634 to 658 ms/s |
+| flood (`framepace scroll`): frames a second | 14, 16, 41 | 66, 68, 68 |
+| interval p95 | 100.8, 101.9, 99.9 ms | 17.7, 17.7, 17.6 ms |
+| 285 MB flood (`yes \| head`): time, max gap | 5.3 to 5.6 s, 101 ms | 5.1 to 5.2 s, 16 to 21 ms |
+| shm frames, 120 and 240 Hz | all shown, p99 9.6 and 5.5 ms | all shown, unchanged |
+
+In the nine-pane case the guests' mean rate is unchanged, but the spread is
+wider: most guests show 115 to 120 frames, and one or two show 87 to 98. All
+nine guests draw at exactly the frame rate, and with one frame clock for the
+whole client, a guest whose frames arrive at the same moment as a frame is
+composed has some of them land a frame late and some a frame early. Before,
+each pane's signal composed a frame of its own, so every guest was drawn
+soon after it wrote. A tighter gate (no early frames, a timer at the end of
+the period) and a coalescer without cost pacing were both tried and neither
+moved it outside run-to-run noise, so it is left as measured.
+
+Typed keys at the default 60 frames a second, 60 ms apart
+(`TestTypingLatencyStaysLow`), two runs each:
+
+| | base | after |
+|---|---|---|
+| 1 pane: p50 / p99 | 6.2 / 7.4 ms | 4.7 to 4.8 / 5.8 to 6.0 ms |
+| 8 panes: p50 / p99 | 6.2 / 22.8 ms | 5.4 to 5.6 / 6.9 to 7.6 ms |
+
+Back to back (`TestPerfInputLatency`), where each key waits for the last
+echo, the p50 moves from 16.6 to 16.9 ms to 11.0 to 16.2 ms and the p99 stays
+at 17.5 to 18 ms.
+
+`TestFramePacingKeepsTheGuestsRate`, `TestFloodStaysSmooth` and
+`TestTypingLatencyStaysLow` assert the rates and the typing p99 under
+`TUIOS_E2E_PERF`. `TestMaxFPS240DrawsPastTheOldClamp` measures 63,
+243 and 241.
+
+### What it costs
+
+- A pane flooding past what the client can parse is drawn four times as
+  often, so it is further behind its guest: latency p50 175 to 209 ms against
+  75 to 113 ms. The guest wrote as many lines in the same time.
+- At max_fps 240 a pane streaming kitty graphics composes 240 frames a second
+  instead of 125. Each is the same frame and is not written, but the client
+  takes 312 to 330 ms/s of CPU against 190 to 204.
+
+### Invariants held
+
+```
+BenchmarkIdleTick-4   0 render/tick   0 work/tick   296 B/op   5 allocs/op
+```
+
+`TestIdleCostStaysLow`: 0 idle wire bytes, 104 ticks, 0 work, 0 renders.
+
+## 2026-10 kitty streams without a compose
+
+A guest that streams kitty images through shared memory, reusing one image id,
+has each frame written to the host by the passthrough at once (#344). Each
+frame still marked its pane as having new output, so the client composed the
+whole screen for it and threw the result away. A frame edit (`a=f`), which the
+tuios-wayland viewer sends for small damage, waited in the passthrough's queue
+for that compose.
+
+### What changed
+
+- `terminal.graphicsOnly` recognises a write that holds only kitty commands
+  leaving every cell alone (no placement without `C=1`, no virtual placement,
+  no chunk of a command that began in an earlier write), with cursor moves
+  between them, written while the parser is between sequences
+  (`Emulator.AtGround`; libghostty-vt cannot say, so it never skips). With
+  the guest's cursor hidden, such a write sets `HasGraphicsOutput` instead of
+  `HasNewOutput`. The client composes for it only when the passthrough queued
+  commands for the next frame (`KittyPassthrough.HasQueued`). A pane output
+  signal that marked nothing no longer composes either, except while a drag
+  or a resize is open, when it composes as before: those frames show the
+  gesture between motion events.
+- `forwardAnimation`: an edit of an image that is placed and shown, with no
+  synchronized update open, is written at once (`editShowsAtOnce`).
+
+### Numbers
+
+`TestPerfFrames`, 207x55, a frame the size of the pane (2070x1040 pixels):
+
+| Case | before | after |
+|---|---|---|
+| shm, 240 Hz, max_fps 240: client CPU | 206 ms/s (312 to 336 with the frame clock alone) | 42 to 44 ms/s |
+| shm, 120 Hz, max_fps 120: client CPU | 170 to 190 ms/s | 22 ms/s |
+| shm, 60 Hz: client CPU | 86 ms/s | 10 to 12 ms/s |
+| 64x64 edit at 120 Hz: latency p50 / p95 / p99 | 1.9 / 4.8 / 6.8 ms | 0.6 / 0.7 to 0.8 / 0.8 to 1.0 ms |
+| edit: client CPU | 164 ms/s | 14 ms/s |
+
+Every frame and every edit reaches the host on both sides.
+`TestKittyStreamCostsLittle` asserts the CPU and the edit latency under
+`TUIOS_E2E_PERF`.
+
+## 2026-10 saving the cursor on the libghostty backend
+
+A reattach now carries the cursor DECSC saved. libghostty keeps it where no
+query reaches, so the backend records the cursor at every save (DECSC, SCOSC,
+1048, 1049) as the stream goes past: it hands the library the bytes before the
+save and reads the cursor, the pen and origin mode. apt saves and restores the
+cursor around its status line on every line it prints, so it pays this once a
+line. `BenchmarkBackendApt` is that stream: a scroll region above the last row,
+2000 lines, each followed by a save, a status line redraw and a restore, at
+120x40.
+
+### Numbers
+
+`go test -tags ghostty ./internal/vt/ -bench 'BackendApt$' -benchtime 3s
+-count 2`, run twice, GOMAXPROCS=4, nice 19 on cores 0-7 of a machine in use:
+
+| Build | ms per 2000 lines |
+|---|---|
+| main | 2.7 to 3.2 |
+| recording the saved cursor, the screen read from the library | 5.3 to 6.9 |
+| recording the saved cursor, the screen read from the cache | 4.3 to 4.9 |
+
+The library read was three `Mode` cgo calls per save and per restore, to ask
+which screen was active. The scanner already flips `cachedAltScreen` at the
+switch, mid-write, so `liveScreenLocked` reads that instead. What is left is
+the flush before the save and the cursor reads, about 0.8 µs a save.
+`BenchmarkBackendScroll`, which saves nothing, measured 44 to 64 ms on main
+and 47 to 50 ms here in the same runs, which is within the noise of this
+machine.

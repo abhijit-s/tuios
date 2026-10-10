@@ -168,7 +168,7 @@ func removeStandInShm(prefix string) {
 		}
 		// Only a stand-in: a pid can be reused after its owner exits.
 		cmdline, _ := os.ReadFile(filepath.Join("/proc", head, "cmdline"))
-		for _, standIn := range []string{"frameloop", "placeholders", "placeonce", "shmstream"} {
+		for _, standIn := range []string{"frameloop", "placeholders", "placeonce", "shmstream", "framepace"} {
 			if bytes.Contains(cmdline, []byte(standIn)) {
 				_ = syscall.Kill(pid, syscall.SIGKILL)
 				break
@@ -285,7 +285,17 @@ func TestKittyStandInShmRemovedAfterTest(t *testing.T) {
 	t.Run("stream", func(t *testing.T) {
 		startStream(t, startOpts{}, "shm")
 		prefix = standInShmPrefix(t)
-		matches, _ := filepath.Glob(filepath.Join("/dev/shm", prefix+"*"))
+		// The stand-in reports its geometry, which is what startStream waits
+		// for, and only then creates its object. Wait for the object itself.
+		var matches []string
+		deadline := time.Now().Add(shellTimeout)
+		for {
+			matches, _ = filepath.Glob(filepath.Join("/dev/shm", prefix+"*"))
+			if len(matches) > 0 || time.Now().After(deadline) {
+				break
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
 		if len(matches) == 0 {
 			t.Fatalf("the stand-in made no object with prefix %q", prefix)
 		}
@@ -298,7 +308,7 @@ func TestKittyStandInShmRemovedAfterTest(t *testing.T) {
 		if err := syscall.Kill(pid, syscall.SIGKILL); err != nil {
 			t.Fatalf("kill stand-in %d: %v", pid, err)
 		}
-		deadline := time.Now().Add(shellTimeout)
+		deadline = time.Now().Add(shellTimeout)
 		for syscall.Kill(pid, 0) == nil && time.Now().Before(deadline) {
 			time.Sleep(50 * time.Millisecond)
 		}

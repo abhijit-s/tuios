@@ -18,10 +18,15 @@ import (
 // Production never writes it.
 var macOSHost = platformIsMacOS()
 
+// E2EPlatformDarwin reports whether the end-to-end suite asked for the macOS
+// defaults and key handling on another platform, with
+// TUIOS_E2E_PLATFORM=darwin. It is for the suite only.
+func E2EPlatformDarwin() bool { return os.Getenv("TUIOS_E2E_PLATFORM") == "darwin" }
+
 // platformIsMacOS is the real answer, read once at init.
 func platformIsMacOS() bool {
 	// Check GOOS first (most reliable)
-	if runtime.GOOS == "darwin" {
+	if runtime.GOOS == "darwin" || E2EPlatformDarwin() {
 		return true
 	}
 	// Fallback to environment variables

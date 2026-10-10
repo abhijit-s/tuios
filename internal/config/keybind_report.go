@@ -3,6 +3,8 @@ package config
 import (
 	"sort"
 	"strings"
+
+	"github.com/Gaurav-Gosain/tuios/internal/plural"
 )
 
 // PaneFacts is what the caller observed about the pane the report is about.
@@ -204,6 +206,13 @@ type KeyFate struct {
 	Ambiguity string `json:"ambiguity,omitempty"`
 	// GuestWants is every curated program that binds this key.
 	GuestWants []GuestClash `json:"guest_wants,omitempty"`
+	// USLayoutActs is every scope where the key runs a binding written for
+	// another key, because the two are one key on a US layout: alt+& runs a
+	// binding on alt+shift+7. That happens when the terminal does not report
+	// the layout, and never with keybindings.keyboard_layout = "other". A
+	// scope where the key has a binding of its own is not listed, since that
+	// binding wins.
+	USLayoutActs []Binding `json:"us_layout_acts,omitempty"`
 	// Free is true when nothing in tuios claims the key in any scope.
 	Free bool `json:"free"`
 }
@@ -219,6 +228,22 @@ func (r *KeybindRegistry) Fate(key string, facts PaneFacts) KeyFate {
 		}
 	}
 
+	if r.config.Keybindings.KeyboardLayout != KeyboardLayoutOther {
+		aliases := map[string]bool{}
+		for _, a := range r.normalizer.USAliasKeys(key) {
+			aliases[lookupForm(a)] = true
+		}
+		own := map[string]bool{}
+		for _, a := range fate.Acts {
+			own[a.Scope] = true
+		}
+		for _, b := range r.Bindings() {
+			if !b.Unbound && !b.Shadowed && !own[b.Scope] && aliases[lookupForm(b.Key)] {
+				fate.USLayoutActs = append(fate.USLayoutActs, b)
+			}
+		}
+	}
+
 	for _, s := range r.TerminalModeSwallowed() {
 		if lookupForm(s.Key) != want {
 			continue
@@ -229,6 +254,16 @@ func (r *KeybindRegistry) Fate(key string, facts PaneFacts) KeyFate {
 			fate.SwallowReason += " (built in, not configurable)"
 		}
 		break
+	}
+
+	if !fate.SwallowedInTerminal && reservedTerminalChord(key) {
+		for _, a := range fate.USLayoutActs {
+			if a.Scope == ScopeWindowMode && terminalSafeAction(a.Action) {
+				fate.SwallowedInTerminal = true
+				fate.SwallowReason = a.Desc + " (on a US layout)"
+				break
+			}
+		}
 	}
 
 	fate.Ambiguity = AmbiguityVerdict(want, facts.HostDisambiguates)
@@ -261,7 +296,7 @@ func (r *KeybindRegistry) Fate(key string, facts PaneFacts) KeyFate {
 		})
 	}
 
-	fate.Free = len(fate.Acts) == 0 && !fate.SwallowedInTerminal
+	fate.Free = len(fate.Acts) == 0 && len(fate.USLayoutActs) == 0 && !fate.SwallowedInTerminal
 	return fate
 }
 
@@ -275,6 +310,16 @@ type KeybindReport struct {
 	LeaderReadAs string `json:"leader_read_as,omitempty"`
 	// KeyProblems are the keys in config.toml that tuios cannot read.
 	KeyProblems []KeyProblem `json:"key_problems"`
+	// OptionKeys are the opt+ and option+ keys tuios reads as alt+ off
+	// macOS. They are information, not problems: a config.toml shared with a
+	// Mac works as it is.
+	OptionKeys []KeyReadAs `json:"option_keys_read_as_alt,omitempty"`
+	// CommandProblems are the [[keybindings.command]] entries tuios ignores
+	// or warns about, in the validator's words.
+	CommandProblems []CommandProblem `json:"command_problems"`
+	// CopyModeProblems are the [keybindings.copy_mode] keys that a copy pipe
+	// entry or one of copy mode's own keys also uses.
+	CopyModeProblems []CopyModeProblem `json:"copy_mode_problems"`
 	// EvidenceNote is the report explaining its own tiers. It ships inside the
 	// payload because a consumer that only ever sees the JSON has nowhere else
 	// to learn that one third of it is a curated list.
@@ -324,6 +369,10 @@ func (r *KeybindRegistry) Report(facts PaneFacts) KeybindReport {
 		GuestClashes: r.GuestClashes(facts.Command),
 		LeaderReadAs: readAs(leader),
 		KeyProblems:  r.KeyProblems(),
+		OptionKeys:   r.OptionKeys(),
+
+		CommandProblems:  r.config.Keybindings.CommandProblems(),
+		CopyModeProblems: r.config.Keybindings.CopyModeProblems(),
 	}
 
 	seen := map[string]bool{}
@@ -357,16 +406,28 @@ func (r *KeybindRegistry) Report(facts PaneFacts) KeybindReport {
 func (rep KeybindReport) Summary() string {
 	var parts []string
 	if n := len(rep.KeyProblems); n > 0 {
-		parts = append(parts, plural(n, "key tuios cannot read", "keys tuios cannot read"))
+		parts = append(parts, plural.CountAs(n, "key tuios cannot read", "keys tuios cannot read"))
+	}
+	ignored := 0
+	for _, p := range rep.CommandProblems {
+		if p.Ignored {
+			ignored++
+		}
+	}
+	if ignored > 0 {
+		parts = append(parts, plural.CountAs(ignored, "command entry tuios ignores", "command entries tuios ignores"))
+	}
+	if n := len(rep.CopyModeProblems); n > 0 {
+		parts = append(parts, plural.CountAs(n, "copy mode key used twice", "copy mode keys used twice"))
 	}
 	if n := len(rep.Collisions); n > 0 {
-		parts = append(parts, plural(n, "key claimed twice", "keys claimed twice"))
+		parts = append(parts, plural.CountAs(n, "key claimed twice", "keys claimed twice"))
 	}
 	if n := len(rep.GuestClashes); n > 0 {
-		parts = append(parts, plural(n, "key a guest wants", "keys a guest wants"))
+		parts = append(parts, plural.CountAs(n, "key a guest wants", "keys a guest wants"))
 	}
 	if n := len(rep.Ambiguous); n > 0 {
-		parts = append(parts, plural(n, "ambiguous key", "ambiguous keys"))
+		parts = append(parts, plural.CountAs(n, "ambiguous key", "ambiguous keys"))
 	}
 	if len(parts) == 0 {
 		return "No conflicts found"
@@ -374,34 +435,9 @@ func (rep KeybindReport) Summary() string {
 	return strings.Join(parts, ", ")
 }
 
-// plural renders a count with the right noun.
-func plural(n int, one, many string) string {
-	word := many
-	if n == 1 {
-		word = one
-	}
-	return itoa(n) + " " + word
-}
-
-// itoa avoids pulling strconv in for one call site.
-func itoa(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	var buf [20]byte
-	i := len(buf)
-	for n > 0 {
-		i--
-		buf[i] = byte('0' + n%10)
-		n /= 10
-	}
-	return string(buf[i:])
-}
-
 // readAs returns the canonical spelling of key when it differs from what the
 // user wrote by more than case, and "" when it does not. A key the validator
-// rejects on this platform gets "" too: opt+f12 on Linux is not read as
-// anything, and the doctor lists it as a key tuios cannot read.
+// rejects gets "" too, and the doctor lists it as a key tuios cannot read.
 func readAs(key string) string {
 	trimmed := strings.TrimSpace(key)
 	if ok, _ := (&KeyNormalizer{isMacOS: macOSHost}).ValidateKey(trimmed); !ok {
@@ -423,17 +459,78 @@ type KeyProblem struct {
 	Action string `json:"action"`
 	Key    string `json:"key"`
 	// Problem is what is wrong, in the validator's words.
-	Problem  string   `json:"problem"`
+	Problem string `json:"problem"`
+	// File is the config file that sets the key.
+	File string `json:"file"`
+	// Outcome says what tuios does instead: the action uses its default
+	// key, the leader is the default leader, or no key press matches.
+	Outcome  string   `json:"outcome"`
 	Evidence Evidence `json:"evidence"`
+}
+
+// KeyReadAs is one key that tuios reads in another spelling.
+type KeyReadAs struct {
+	// Section is the config table, or "keybindings" for the leader.
+	Section string `json:"section"`
+	// Action is the action the key is bound to, or "leader_key".
+	Action string `json:"action"`
+	Key    string `json:"key"`
+	ReadAs string `json:"read_as"`
+}
+
+// OptionKeys returns every opt+ or option+ key in the leader and the binding
+// tables, with the alt+ spelling tuios reads it as. It is empty on macOS,
+// where opt+ is the native name of the key and needs no note.
+func (r *KeybindRegistry) OptionKeys() []KeyReadAs {
+	if macOSHost {
+		return nil
+	}
+	kb := &r.config.Keybindings
+	var out []KeyReadAs
+	check := func(section, action, key string) {
+		lower := strings.ToLower(strings.TrimSpace(key))
+		if !strings.Contains(lower, "opt+") && !strings.Contains(lower, "option+") {
+			return
+		}
+		if as := readAs(key); as != "" {
+			out = append(out, KeyReadAs{Section: section, Action: action, Key: key, ReadAs: as})
+		}
+	}
+	if kb.LeaderKey != "" {
+		check("keybindings", "leader_key", kb.LeaderKey)
+	}
+	for _, name := range SectionNames() {
+		section := kb.section(name)
+		actions := make([]string, 0, len(section))
+		for action := range section {
+			actions = append(actions, action)
+		}
+		sort.Strings(actions)
+		for _, action := range actions {
+			for _, key := range section[action] {
+				check(name, action, key)
+			}
+		}
+	}
+	return out
 }
 
 // KeyProblems returns every key in the leader and the binding tables that the
 // validator rejects. Such a key is loaded but no key press ever matches it, so
 // without this the only sign of it is a binding that does nothing.
+//
+// A config that went through DropUnreadableKeys has no such key left, and its
+// DroppedKeys are reported instead, with the file and what tuios does now.
 func (r *KeybindRegistry) KeyProblems() []KeyProblem {
 	kb := &r.config.Keybindings
 	normalizer := &KeyNormalizer{isMacOS: macOSHost}
 	var out []KeyProblem
+	for _, d := range r.config.DroppedKeys {
+		out = append(out, KeyProblem{
+			Section: d.Section, Action: d.Action, Key: d.Key, Problem: d.Problem,
+			File: d.File, Outcome: d.Outcome(), Evidence: EvidenceCertain,
+		})
+	}
 	check := func(section, action, key string) {
 		if strings.TrimSpace(key) == "" {
 			return
@@ -441,7 +538,8 @@ func (r *KeybindRegistry) KeyProblems() []KeyProblem {
 		if ok, msg := normalizer.ValidateKey(key); !ok {
 			out = append(out, KeyProblem{
 				Section: section, Action: action, Key: key,
-				Problem: msg, Evidence: EvidenceCertain,
+				Problem: msg, File: "config.toml",
+				Outcome: "No key press matches this key.", Evidence: EvidenceCertain,
 			})
 		}
 	}

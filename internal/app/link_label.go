@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"charm.land/lipgloss/v2"
+	"github.com/Gaurav-Gosain/tuios/internal/config"
 	"github.com/Gaurav-Gosain/tuios/internal/overlay"
 	"github.com/Gaurav-Gosain/tuios/internal/theme"
 )
@@ -25,8 +26,24 @@ import (
 // explain the first.
 
 // linkLabelHint is what the label says about acting on the run. It is the only
-// place in the interface that names the gesture.
-const linkLabelHint = "shift+click to open"
+// place in the interface that names the gesture, so it follows
+// appearance.link_click. With both clicks on (the default) it names ctrl+click, because that
+// is the one most outer terminals pass on to tuios.
+//
+// The same holds on macOS. Ghostty, kitty, WezTerm and Terminal.app all pass
+// ctrl+click on to tuios, and none of them opens the OSC 8 link on cmd+click
+// while the program reports the mouse, so the label never names cmd+click.
+func linkLabelHint(s *config.Settings) string {
+	switch s.LinkClick {
+	case config.LinkClickOff:
+		return ""
+	case config.LinkClickShift:
+		return "shift+click to open"
+	case config.LinkClickCtrl:
+		return "ctrl+click to open"
+	}
+	return "ctrl+click to open"
+}
 
 // linkLabelMax bounds the address. A URL can be thousands of characters and the
 // label is one row on a screen that is not; the end is trimmed rather than the
@@ -46,7 +63,10 @@ func (m *OS) renderLinkLabel() *lipgloss.Layer {
 	renderW := m.GetRenderWidth()
 
 	body := overlay.Truncate(sanitizeLinkText(link.URL), linkLabelMax)
-	text := body + "  " + linkLabelHint
+	text := body
+	if hint := linkLabelHint(&m.Settings); hint != "" {
+		text += "  " + hint
+	}
 	label := tooltipLabel(text, max(renderW-2, 1), pal)
 
 	// The label sits one row under the pointer so it never covers the run it is

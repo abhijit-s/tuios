@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"time"
 
 	"github.com/Gaurav-Gosain/tuios/internal/harness"
@@ -19,29 +20,36 @@ func newDoctorCommand() *cobra.Command {
 		Short: "Check that parts of tuios are set up and working",
 		Long: `Check that parts of tuios are set up and working.
 
-tuios keybinds doctor checks the keybindings; the checks here cover the rest.`,
+'tuios keybinds doctor' checks the keybindings. The checks here cover the rest.`,
 	}
 	cmd.AddCommand(newDoctorAgentsCommand(), newDoctorShellCommand())
 	return cmd
 }
 
 // agentPaneGap is an agent pane whose harness has an integration this machine
-// does not have installed, so its state rests on screen rules and silence.
+// does not have installed, or has out of date. A pane without one has its
+// state rest on screen rules and silence. A pane with an out of date one
+// misses what the newer hooks report.
 type agentPaneGap struct {
 	Session string `json:"session"`
 	Window  string `json:"window_id"`
 	Name    string `json:"name"`
 	Harness string `json:"harness"`
+	// Integration is "not installed" or "out of date".
+	Integration string `json:"integration"`
 }
 
 // doctorAgentsReport is what tuios doctor agents prints.
 type doctorAgentsReport struct {
 	TuiosOnPath bool                 `json:"tuios_on_path"`
 	Harnesses   []integration.Status `json:"harnesses"`
-	// Panes lists running agents without their integration. It is empty when
-	// no daemon runs, and DaemonRunning says which.
+	// Panes lists running agents whose integration is not installed or out
+	// of date. It is empty when no daemon runs, and DaemonRunning says which.
 	DaemonRunning bool           `json:"daemon_running"`
 	Panes         []agentPaneGap `json:"panes_without_integration"`
+	// HostsUnknown lists the sessions whose agent panes were not checked,
+	// because the daemon could not say which run on another machine.
+	HostsUnknown []string `json:"sessions_not_checked,omitempty"`
 	// Unsupported lists the harnesses tuios recognises and has no
 	// integration for, with the reason, so none is silently left out.
 	Unsupported []integration.Unsupported `json:"without_integration"`
@@ -94,7 +102,8 @@ conversation id, with the state left to the screen rules. Harnesses tuios
 recognises and has no integration for are listed with the reason. With a
 daemon running it also lists the agent panes whose harness has an
 integration that is not installed, since their state then rests on screen
-rules and the silence timer. Last, it lists the harness manifests loaded
+rules and the silence timer, and the ones whose integration is out of date,
+with the command that fixes each. Last, it lists the harness manifests loaded
 from the user manifest directory, saying which replace a bundled manifest,
 and the files there that failed to load.`,
 		Example: `  tuios doctor agents
@@ -113,12 +122,15 @@ and the files there that failed to load.`,
 	return cmd
 }
 
-// agentPane is one row of list-agents, as doctor reads it.
+// agentPane is one row of list-agents, as doctor reads it. A row with
+// HostsUnknown set stands for a whole session whose panes were not checked,
+// because the daemon could not say which of them run on another machine.
 type agentPane struct {
-	Session string
-	Window  string
-	Name    string
-	Harness string
+	Session      string
+	Window       string
+	Name         string
+	Harness      string
+	HostsUnknown bool
 }
 
 // livePanes lists every agent pane on the running daemon, and false when no
@@ -160,37 +172,99 @@ func livePanes() ([]agentPane, bool) {
 		if json.Unmarshal(raw, &res) != nil {
 			continue
 		}
+		remote, ok := remoteWindows(client, s.Name)
+		if !ok {
+			// Which panes run on another machine is not known, and the
+			// local integration says nothing about those. The session is
+			// reported as not checked rather than checked wrongly.
+			out = append(out, agentPane{Session: s.Name, HostsUnknown: true})
+			continue
+		}
 		for _, a := range res.Agents {
+			// A pane on another machine runs that machine's harness, whose
+			// integration is not the one installed here.
+			if remote[a.WindowID] {
+				continue
+			}
 			out = append(out, agentPane{Session: s.Name, Window: a.WindowID, Name: a.Name, Harness: a.Harness})
 		}
 	}
 	return out, true
 }
 
-// doctorAgents builds the report. panes is injected so the report can be
-// tested without a daemon.
-func doctorAgents(env integration.Env, command string, panes func() ([]agentPane, bool)) doctorAgentsReport {
-	r := doctorAgentsReport{Unsupported: integration.UnsupportedHarnesses()}
-	installed := map[string]bool{}
-	for _, t := range integration.Targets() {
-		st := t.Status(env, command)
-		r.Harnesses = append(r.Harnesses, st)
-		r.TuiosOnPath = st.TuiosOnPath
-		installed[t.ID] = st.Installed
+// remoteWindows lists the windows of a session whose process runs on another
+// machine, by window id, and false when the daemon could not say.
+func remoteWindows(client *session.VerbClient, sessionName string) (map[string]bool, bool) {
+	raw, err := client.CallWithTimeout("list-windows", map[string]any{"session": sessionName}, 2*time.Second)
+	if err != nil {
+		return nil, false
 	}
+	var res struct {
+		Windows []struct {
+			ID   string `json:"window_id"`
+			Host string `json:"host"`
+		} `json:"windows"`
+	}
+	if json.Unmarshal(raw, &res) != nil {
+		return nil, false
+	}
+	out := map[string]bool{}
+	for _, w := range res.Windows {
+		if w.Host != "" {
+			out[w.ID] = true
+		}
+	}
+	return out, true
+}
+
+// doctorAgents builds the report. The harness half is integration.BuildOverview,
+// which the settings page's Agents tab draws too. panes is injected so the
+// report can be tested without a daemon.
+func doctorAgents(env integration.Env, command string, panes func() ([]agentPane, bool)) doctorAgentsReport {
+	base := integration.BuildOverview(env, command)
+	r := doctorAgentsReport{TuiosOnPath: base.TuiosOnPath, Harnesses: base.Harnesses, Unsupported: base.Unsupported}
 	if panes == nil {
 		return r
 	}
 	live, running := panes()
 	r.DaemonRunning = running
 	for _, p := range live {
-		id, ok := integration.Canonical(p.Harness)
-		if !ok || installed[id] {
+		if p.HostsUnknown {
+			r.HostsUnknown = append(r.HostsUnknown, p.Session)
 			continue
 		}
-		r.Panes = append(r.Panes, agentPaneGap(p))
+		st, ok := base.Lookup(p.Harness)
+		if !ok || st.State() == integration.StateInstalled {
+			continue
+		}
+		state := integration.StateNotInstalled
+		if st.State() == integration.StateOutOfDate {
+			state = integration.StateOutOfDate
+		}
+		r.Panes = append(r.Panes, agentPaneGap{Session: p.Session, Window: p.Window, Name: p.Name, Harness: st.Harness, Integration: state.String()})
 	}
 	return r
+}
+
+// printPaneGaps lists the panes whose integration is in state, then the
+// command that fixes each harness they run. verb names what the command does.
+func printPaneGaps(w io.Writer, panes []agentPaneGap, state, verb string) {
+	var harnesses []string
+	for _, p := range panes {
+		if p.Integration != state {
+			continue
+		}
+		if len(harnesses) == 0 {
+			fmt.Fprintf(w, "Agent panes whose integration is %s:\n", state)
+		}
+		fmt.Fprintf(w, "  %s:%s (%s) runs %s\n", p.Session, p.Window, p.Name, p.Harness)
+		if !slices.Contains(harnesses, p.Harness) {
+			harnesses = append(harnesses, p.Harness)
+		}
+	}
+	for _, h := range harnesses {
+		fmt.Fprintf(w, "%s it with: tuios integration install %s\n", verb, h)
+	}
 }
 
 func printDoctorAgents(w io.Writer, r doctorAgentsReport, asJSON bool) error {
@@ -222,13 +296,16 @@ func printDoctorAgents(w io.Writer, r doctorAgentsReport, asJSON bool) error {
 	switch {
 	case !r.DaemonRunning:
 		fmt.Fprintln(w, "No daemon is running, so no panes were checked.")
+	case len(r.Panes) == 0 && len(r.HostsUnknown) == 0:
+		fmt.Fprintln(w, "Every agent pane with an integration available has it installed and current.")
 	case len(r.Panes) == 0:
-		fmt.Fprintln(w, "Every agent pane with an integration available has it installed.")
+		fmt.Fprintln(w, "Every agent pane checked has its integration installed and current.")
 	default:
-		fmt.Fprintln(w, "Agent panes whose integration is not installed:")
-		for _, p := range r.Panes {
-			fmt.Fprintf(w, "  %s:%s (%s) runs %s\n", p.Session, p.Window, p.Name, p.Harness)
-		}
+		printPaneGaps(w, r.Panes, integration.StateNotInstalled.String(), "Install")
+		printPaneGaps(w, r.Panes, integration.StateOutOfDate.String(), "Update")
+	}
+	for _, s := range r.HostsUnknown {
+		fmt.Fprintf(w, "Session %s was not checked: tuios could not read which machine its panes run on.\n", s)
 	}
 	for _, m := range r.UserManifests {
 		if m.ReplacesBundled {

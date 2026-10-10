@@ -28,6 +28,7 @@ type herdrWorkspace struct {
 	TabCount    int                     `json:"tab_count"`
 	ActiveTabID string                  `json:"active_tab_id"`
 	AgentStatus string                  `json:"agent_status"`
+	Tokens      map[string]string       `json:"tokens,omitempty"`
 	Worktree    *herdrWorkspaceWorktree `json:"worktree,omitempty"`
 }
 
@@ -265,19 +266,16 @@ func herdrSessionParams(sess *Session) json.RawMessage {
 // herdrFocusedSession is the session herdr would call the active workspace:
 // the one an attached client showed last, else the one used last.
 func (d *Daemon) herdrFocusedSession(sessions []*Session) *Session {
-	var best, bestAttached *Session
+	var attached []*Session
 	for _, s := range sessions {
-		if best == nil || s.LastActive().After(best.LastActive()) {
-			best = s
-		}
-		if d.findTUIClient(s.ID) != nil && (bestAttached == nil || s.LastActive().After(bestAttached.LastActive())) {
-			bestAttached = s
+		if d.findTUIClient(s.ID) != nil {
+			attached = append(attached, s)
 		}
 	}
-	if bestAttached != nil {
-		return bestAttached
+	if best := mostRecentSession(attached, false); best != nil {
+		return best
 	}
-	return best
+	return mostRecentSession(sessions, false)
 }
 
 // herdrListedWorkspace reports whether workspace ws of a session is one of
@@ -359,6 +357,7 @@ func (d *Daemon) addHerdrSession(v *herdrView, sess *Session, st *SessionState, 
 	w := herdrWorkspace{
 		WorkspaceID: wsID, Number: number, Label: label, Focused: active,
 		ActiveTabID: activeTab, AgentStatus: "unknown",
+		Tokens: d.herdrWorkspaceMeta.tokens(sess.ID, time.Now()),
 	}
 	if wt := st.Worktree; wt != nil && wt.RepoRoot != "" {
 		w.Worktree = &herdrWorkspaceWorktree{

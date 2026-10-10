@@ -16,14 +16,19 @@ var optionWalkSkips = map[string]string{
 	"hooks":                        "a free-form map of event to command",
 	"daemon.agent_binaries":        "a list, which a value arriving as one string cannot spell",
 	"daemon.respond_from_shell":    "a grant to act as the person, which set-option, a verb any pane can call, must not be able to switch",
+	"daemon.single_client":         "detaches the person's other clients on every attach, which set-option, a verb any pane can call, must not be able to switch; detach-client needs admin for the same reason",
+	"daemon.ssh_agent":             "points every new pane's SSH_AUTH_SOCK at a link the daemon keeps, which set-option, a verb any pane can call, must not be able to switch",
 	"notifications.agent.sounds":   "file paths, which no accepted set or range can check",
 	"dock.left":                    "an ordered list of component names, not a scalar path",
 	"dock.center":                  "an ordered list of component names, not a scalar path",
 	"dock.right":                   "an ordered list of component names, not a scalar path",
 	"dock.custom":                  "a free-form map of component name to its command and refresh",
 	"hosts":                        "a map of host name to its address, which no single settable path can spell",
+	"notify":                       "where the Inbox's text goes and with which credentials, which a pane must not change over the control protocol",
+	"plugins":                      "which plugins run outside every pane with the person's rights, which set-option, a verb any pane can call, must not be able to change",
 	"tailscale":                    "file-plane config for what the hosts table suggests, read from the file by the two callers that use it, like [hosts] above",
 	"appearance.sidebar.agent_row": "a table of tokens, each with a look and an ordered rule list, which no single settable path can spell",
+	"appearance.sidebar.custom":    "the rail section's command, which runs outside every pane on every refresh, as dock commands and hooks do; set-option, a verb any pane can call in the default open mode, must not be able to set it, the way daemon.respond_from_shell is kept out above",
 	"hints.patterns":               "a list of regular expressions, which a value arriving as one string cannot spell",
 	"scratch.session":              "no longer used: read only so a config from the first scratch design loads and validation can say to remove it",
 	// [agents] is file-plane config the daemon reads from the file, like
@@ -32,7 +37,10 @@ var optionWalkSkips = map[string]string{
 	"agents.permissions":    "what a pane may do through tuios is not for a pane to change over the control protocol",
 	"agents.recap":          "file-plane config the daemon reads from the file, like [hosts]",
 	"agents.queue":          "file-plane config the daemon reads from the file, like [hosts]",
+	"agents.checkpoints":    "file-plane config the daemon reads from the file, like [hosts]",
 	"agents.herdr_protocol": "file-plane config the daemon reads from the file, like [hosts]",
+	// Read by a client when it starts, which is when it asks its terminal.
+	"agents.host_program_status": "file-plane config a client reads from the file when it starts, like [hosts]",
 }
 
 // TestOptionRegistryCoversEveryScalarField is the guard that keeps the
@@ -109,6 +117,7 @@ func TestSetOptionValueRejectsBadInput(t *testing.T) {
 		{"non-numeric int", "appearance.scroll_lines", "several"},
 		{"out-of-range int", "appearance.scroll_lines", "9999"},
 		{"unparseable bool", "appearance.hide_window_buttons", "maybe"},
+		{"the rail section's command", "appearance.sidebar.custom.command", "echo"},
 	}
 
 	for _, tc := range cases {
@@ -181,8 +190,8 @@ func TestOptionSpecsAreWellFormed(t *testing.T) {
 	sections := []string{
 		"appearance", "sidebar", "dock", "scrollbar", "selection",
 		"startup", "daemon", "notifications", "tape", "debug",
-		"screenshot", "screensaver", "spotlight", "hints", "scratch", "pip", "launcher",
-		"agents",
+		"screenshot", "screensaver", "spotlight", "hints", "panes", "scratch", "pip", "launcher",
+		"agents", "workspaces",
 	}
 	for _, opt := range optionSpecs {
 		if opt.Description == "" {

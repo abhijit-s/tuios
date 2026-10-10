@@ -135,69 +135,27 @@ func TestConform_DeviceAttributes(t *testing.T) {
 			t.Errorf("DA1 replied %q, which does not contain %q", da1, want)
 		}
 	}
+	// The class has to stay VT220 or later: vim, neovim, notcurses and a tmux
+	// inside a pane read it before anything else. And every attribute after it
+	// has to be one this emulator implements, because a guest acts on each.
+	// The answer used to claim 132 columns (1), selective erase (6), national
+	// replacement sets (9), technical characters (15) and user windows (18).
+	fields := strings.Split(strings.TrimSuffix(strings.TrimPrefix(da1, "\x1b[?"), "c"), ";")
+	switch fields[0] {
+	case "62", "63", "64", "65":
+	default:
+		t.Errorf("DA1 replied %q, whose class %q is not VT220 or later", da1, fields[0])
+	}
+	implemented := map[string]bool{"4": true, "22": true}
+	for _, f := range fields[1:] {
+		if !implemented[f] {
+			t.Errorf("DA1 replied %q, which claims attribute %s that this emulator does not implement", da1, f)
+		}
+	}
 
 	da2 := reply(t, 80, 24, "\x1b[>c")
 	if !strings.HasPrefix(da2, "\x1b[>") || !strings.HasSuffix(da2, "c") {
 		t.Errorf("DA2 replied %q, which is not a secondary device attributes report", da2)
-	}
-}
-
-// silence reports whether the emulator wrote nothing back. Replies are written
-// during the write that provokes them, so anything at all is already in the
-// pipe by the time WriteString returns and a short wait is conclusive.
-func silence(t *testing.T, in string) string {
-	t.Helper()
-	emu := vt.NewEmulator(80, 24)
-	if _, err := emu.WriteString(in); err != nil {
-		t.Fatalf("write %q: %v", in, err)
-	}
-	got := make(chan string, 1)
-	go func() {
-		buf := make([]byte, 512)
-		n, _ := emu.Read(buf)
-		got <- string(buf[:n])
-	}()
-	select {
-	case s := <-got:
-		return s
-	case <-time.After(200 * time.Millisecond):
-		return ""
-	}
-}
-
-// TestConform_QueriesThisEmulatorLeavesUnanswered pins the requests that get no
-// reply, so that staying silent is a decision on the record rather than a gap.
-//
-// Silence is safe for all three: each is a capability probe a guest sends with
-// a timeout and falls back from. It is not free, though, because the guest pays
-// that timeout. These are listed in the order they would be worth answering.
-func TestConform_QueriesThisEmulatorLeavesUnanswered(t *testing.T) {
-	for _, tc := range []struct{ name, in, why string }{
-		{
-			"XTVERSION", "\x1b[>0q",
-			"a guest reads the terminal's name and version from it to decide which " +
-				"extensions to use; answering would let one pick this emulator's " +
-				"kitty graphics and keyboard support without probing for them",
-		}, {
-			"DA3, the terminal unit identifier", "\x1b[=c",
-			"the answer is a made-up unit id, so there is nothing to be right about",
-		}, {
-			"DECRQSS for SGR", "\x1bP$qm\x1b\\",
-			"answered with a refusal rather than silence, see TestConform_DECRQSS",
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			got := silence(t, tc.in)
-			if tc.name == "DECRQSS for SGR" {
-				if got != "\x1bP0$r\x1b\\" {
-					t.Errorf("reply = %q, want a refusal (%s)", got, tc.why)
-				}
-				return
-			}
-			if got != "" {
-				t.Errorf("reply = %q, want none; if this now answers, delete the case (%s)", got, tc.why)
-			}
-		})
 	}
 }
 
@@ -234,7 +192,7 @@ func TestConform_DECRQSS(t *testing.T) {
 			// A setting this emulator does not report still gets an answer.
 			// Zero says so, and the guest stops waiting.
 			"a setting this emulator does not report is refused, not ignored",
-			"\x1bP$qm\x1b\\",
+			"\x1bP$q\"p\x1b\\",
 			"\x1bP0$r\x1b\\",
 		}, {
 			"a setting nobody defines is refused too",
@@ -281,16 +239,37 @@ func TestConform_DECRQM(t *testing.T) {
 		// that probes before enabling takes the answer at its word.
 		{"mode 47 reports reset by default", "\x1b[?47$p", "\x1b[?47;2$y"},
 		{"mode 47 reports set while in it", "\x1b[?47h\x1b[?47$p", "\x1b[?47;1$y"},
+		{"UTF-8 mouse reports reset by default", "\x1b[?1005$p", "\x1b[?1005;2$y"},
+		{"UTF-8 mouse reports set after ?1005h", "\x1b[?1005h\x1b[?1005$p", "\x1b[?1005;1$y"},
+		{"urxvt mouse reports reset by default", "\x1b[?1015$p", "\x1b[?1015;2$y"},
+		{"urxvt mouse reports set after ?1015h", "\x1b[?1015h\x1b[?1015$p", "\x1b[?1015;1$y"},
 		{"SGR pixel mouse reports reset by default", "\x1b[?1016$p", "\x1b[?1016;2$y"},
 		{"SGR pixel mouse reports set after ?1016h", "\x1b[?1016h\x1b[?1016$p", "\x1b[?1016;1$y"},
 		{"in-band resize reports reset by default", "\x1b[?2048$p", "\x1b[?2048;2$y"},
 		// Setting 2048 sends the current size at once, ahead of the report.
-		{"in-band resize reports set after ?2048h", "\x1b[?2048h\x1b[?2048$p", "\x1b[48;24;80;0;0t\x1b[?2048;1$y"},
+		{"in-band resize reports set after ?2048h", "\x1b[?2048h\x1b[?2048$p", "\x1b[48;24;80;480;800t\x1b[?2048;1$y"},
 
 		// A mode nobody defines has to report 0, not 2. Reporting reset says
 		// the terminal knows the mode and has it off, which is a different
 		// claim and one a guest acts on.
 		{"an unknown private mode reports not recognised", "\x1b[?9999$p", "\x1b[?9999;0$y"},
+
+		// Setting a mode does not make the emulator recognise it. Storing
+		// whatever the guest set had DECRQM report these as set, so a guest
+		// that set, probed and trusted the answer used an encoding or a
+		// feature nothing here produces.
+		{"an unknown private mode set first still reports not recognised", "\x1b[?9999h\x1b[?9999$p", "\x1b[?9999;0$y"},
+		{"DECCOLM set first reports not recognised", "\x1b[?3h\x1b[?3$p", "\x1b[?3;0$y"},
+		{"reverse wrap set first reports not recognised", "\x1b[?45h\x1b[?45$p", "\x1b[?45;0$y"},
+		{"an unknown ANSI mode set first reports not recognised", "\x1b[2h\x1b[2$p", "\x1b[2;0$y"},
+		{"a soft reset does not make KAM recognised", "\x1b[!p\x1b[2$p", "\x1b[2;0$y"},
+
+		// Widths are always measured by grapheme cluster (see WidthMethod),
+		// whatever the guest asks, so 2027 is permanently set: 3, before and
+		// after a reset, and after a RIS.
+		{"grapheme clustering reports permanently set", "\x1b[?2027$p", "\x1b[?2027;3$y"},
+		{"grapheme clustering stays permanently set after ?2027l", "\x1b[?2027l\x1b[?2027$p", "\x1b[?2027;3$y"},
+		{"grapheme clustering stays permanently set after RIS", "\x1bc\x1b[?2027$p", "\x1b[?2027;3$y"},
 
 		// The ANSI form has no private marker and is a separate table.
 		// Reset, not "not recognised": this emulator implements IRM, and
@@ -305,5 +284,117 @@ func TestConform_DECRQM(t *testing.T) {
 				t.Errorf("reply = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// TestConform_PixelSizeReports pins the three answers a guest reads its pixel
+// size from: XTWINOPS 14 (text area), XTWINOPS 16 (one cell) and the in-band
+// resize report of mode 2048. They come from one cell size, the host's once it
+// is set and the fallback cell before that, and none of them is ever zero.
+//
+// Issue #506: the 2048 report carried 0 for both pixel sizes. Textual takes
+// pixels per cell from it and divides every SGR-pixel mouse report by that,
+// so it quit with ZeroDivisionError when the mouse entered its pane.
+//
+// The ways it could fail, written down before the code:
+//   - The 2048 report keeps 0;0 for the pixels.
+//   - The reports disagree: 14 from the host cell, 2048 from the fallback.
+//   - A cell size that changes after 2048 is on is never told to the guest,
+//     which then scales the mouse by the old cell.
+//   - A cell size set again to the same value sends a report each time.
+func TestConform_PixelSizeReports(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		cw, ch int
+		in     string
+		want   string
+	}{
+		{"14t with no cell size uses the fallback", 0, 0, "\x1b[14t", "\x1b[4;480;800t"},
+		{"16t with no cell size uses the fallback", 0, 0, "\x1b[16t", "\x1b[6;20;10t"},
+		{"2048 with no cell size uses the fallback", 0, 0, "\x1b[?2048h", "\x1b[48;24;80;480;800t"},
+		{"14t with the host cell", 8, 16, "\x1b[14t", "\x1b[4;384;640t"},
+		{"16t with the host cell", 8, 16, "\x1b[16t", "\x1b[6;16;8t"},
+		{"2048 with the host cell", 8, 16, "\x1b[?2048h", "\x1b[48;24;80;384;640t"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			emu := vt.NewEmulator(80, 24)
+			emu.SetCellSize(tc.cw, tc.ch)
+			next := replies(emu)
+			if _, err := emu.WriteString(tc.in); err != nil {
+				t.Fatal(err)
+			}
+			if got := next(); got != tc.want {
+				t.Errorf("reply = %q, want %q", got, tc.want)
+			}
+		})
+	}
+
+	t.Run("a new cell size is reported once while 2048 is on", func(t *testing.T) {
+		emu := vt.NewEmulator(80, 24)
+		next := replies(emu)
+		if _, err := emu.WriteString("\x1b[?2048h"); err != nil {
+			t.Fatal(err)
+		}
+		if got, want := next(), "\x1b[48;24;80;480;800t"; got != want {
+			t.Fatalf("on ?2048h: reply = %q, want %q", got, want)
+		}
+		emu.SetCellSize(8, 16)
+		if got, want := next(), "\x1b[48;24;80;384;640t"; got != want {
+			t.Fatalf("after a new cell size: reply = %q, want %q", got, want)
+		}
+		emu.SetCellSize(8, 16)
+		if got := next(); got != "" {
+			t.Fatalf("the same cell size again sent %q, want nothing", got)
+		}
+	})
+
+	t.Run("a zero cell size keeps the cell set before", func(t *testing.T) {
+		emu := vt.NewEmulator(80, 24)
+		next := replies(emu)
+		emu.SetCellSize(8, 16)
+		emu.SetCellSize(0, 0)
+		if _, err := emu.WriteString("\x1b[16t"); err != nil {
+			t.Fatal(err)
+		}
+		if got, want := next(), "\x1b[6;16;8t"; got != want {
+			t.Fatalf("reply = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("a new cell size is not reported while 2048 is off", func(t *testing.T) {
+		emu := vt.NewEmulator(80, 24)
+		next := replies(emu)
+		emu.SetCellSize(8, 16)
+		if got := next(); got != "" {
+			t.Fatalf("a new cell size with 2048 off sent %q, want nothing", got)
+		}
+	})
+}
+
+// replies starts one reader of what the emulator writes back to the guest.
+// Each call of the function it returns is the next chunk, or "" when nothing
+// came within a short wait. One reader serves every call, so a call that
+// timed out cannot leave a reader behind that eats the next chunk.
+func replies(emu *vt.Emulator) func() string {
+	ch := make(chan string, 16)
+	go func() {
+		buf := make([]byte, 512)
+		for {
+			n, err := emu.Read(buf)
+			if n > 0 {
+				ch <- string(buf[:n])
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+	return func() string {
+		select {
+		case s := <-ch:
+			return s
+		case <-time.After(300 * time.Millisecond):
+			return ""
+		}
 	}
 }

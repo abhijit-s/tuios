@@ -81,8 +81,10 @@ func (t *GhosttyTerminal) scrollbackLineLocked(index int) uv.Line {
 	// The cache is emptied when the pane writes, and also when it grows past
 	// a few screens of rows: a capture of the whole history is 10000 decoded
 	// lines of 112-byte cells, and a pane that is then idle would have kept
-	// them for as long as it stayed idle.
-	if t.scrollCacheGen != t.scrollGeneration || len(t.scrollCache) >= ghosttyScrollCacheCap {
+	// them for as long as it stayed idle. Every line is the pane's width, so
+	// the pure ring's bound on cells is a bound on lines here.
+	limit := min(ghosttyScrollCacheCap, max(1, cacheCellCap/max(t.width, 1)))
+	if t.scrollCacheGen != t.scrollGeneration || len(t.scrollCache) >= limit {
 		clear(t.scrollCache)
 		t.scrollCacheGen = t.scrollGeneration
 	}
@@ -104,8 +106,16 @@ func (t *GhosttyTerminal) scrollbackLineLocked(index int) uv.Line {
 // readHistoryLineLocked reads one history row as uv cells from src, which is
 // either the live terminal (main screen active) or the decoded snapshot copy.
 func (t *GhosttyTerminal) readHistoryLineLocked(src *gh.Terminal, index int) uv.Line {
-	line := make(uv.Line, t.width)
-	for x := 0; x < t.width; x++ {
+	return t.readHistoryLine(src, index, t.width, nil)
+}
+
+// readHistoryLine is readHistoryLineLocked for a reader that may hold no lock:
+// src is a terminal of its own, width the pane's width when src was copied,
+// and pal the palette copied with it. It reads nothing else of t but the cell
+// decoder, which never changes.
+func (t *GhosttyTerminal) readHistoryLine(src *gh.Terminal, index, width int, pal *ghosttyPalette) uv.Line {
+	line := make(uv.Line, width)
+	for x := 0; x < width; x++ {
 		line[x] = uv.Cell{Content: " ", Width: 1}
 		ref, err := src.GridRef(gh.Point{Tag: gh.PointTagHistory, X: uint16(x), Y: uint32(index)})
 		if err != nil || ref == nil {
@@ -159,7 +169,7 @@ func (t *GhosttyTerminal) readHistoryLineLocked(src *gh.Terminal, index int) uv.
 		}
 		if dc.styleID != 0 {
 			if gs, err := ref.Style(); err == nil && gs != nil {
-				out.Style = t.convertStyle(gs)
+				out.Style = t.convertStyleIn(gs, pal)
 			}
 		}
 		if dc.link {

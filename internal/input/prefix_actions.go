@@ -53,6 +53,7 @@ func (d *ActionDispatcher) registerPrefixHandlers() {
 	d.Register("prefix_toggle_sidebar", handlePrefixToggleSidebar)
 	d.Register("prefix_session_switcher", handlePrefixSessionSwitcher)
 	d.Register("prefix_workspace_switcher", handlePrefixWorkspaceSwitcher)
+	d.Register("choose_tree", handleChooseTree)
 	d.Register("prefix_explore", handleToggleFocusSidebar)
 	d.Register("prefix_jump_notif", handlePrefixJumpNotif)
 	d.Register("prefix_last_message", handlePrefixLastMessage)
@@ -61,6 +62,7 @@ func (d *ActionDispatcher) registerPrefixHandlers() {
 	d.Register("prefix_next_attention", handlePrefixNextAttention)
 	d.Register("prefix_review", handlePrefixReview)
 	d.Register("prefix_next_finished", handlePrefixNextFinished)
+	d.Register("prefix_agents_settings", handlePrefixAgentsSettings)
 	d.Register("prefix_detach", handlePrefixDetach)
 	d.Register("prefix_close_session", handlePrefixCloseSession)
 	d.Register("prefix_exit_mode", handlePrefixExitMode)
@@ -68,6 +70,7 @@ func (d *ActionDispatcher) registerPrefixHandlers() {
 	d.Register("hints", handleOpenHints)
 	d.Register("toggle_scratch", handleToggleScratch)
 	d.Register("hints_all_panes", handleOpenHintsAllPanes)
+	d.Register("display_panes", handleDisplayPanes)
 	d.Register(config.ActionCopyModeSearchForward, handleCopyModeSearchForward)
 	d.Register(config.ActionCopyModeSearchBackward, handleCopyModeSearchBackward)
 
@@ -385,6 +388,12 @@ func handlePrefixMail(_ tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
 
 func handlePrefixInbox(_ tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
 	o.OpenInbox("")
+	return o, nil
+}
+
+// handlePrefixAgentsSettings opens the settings page on its Agents tab.
+func handlePrefixAgentsSettings(_ tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
+	o.OpenAgentsSettings()
 	return o, nil
 }
 

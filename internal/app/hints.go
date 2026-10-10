@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
-	"time"
 	"unicode"
 	"unicode/utf8"
 
@@ -121,8 +120,6 @@ type hintsState struct {
 	// and dimmed holds the colours already worked out for it.
 	dim    int
 	dimmed map[[2]uint32]color.Color
-	// noticeID is the dock message that says the keys, taken down on close.
-	noticeID string
 }
 
 // HintsOpen reports whether hints mode is open on a pane that is still there,
@@ -272,15 +269,10 @@ func (m *OS) openHints(all bool) {
 		}
 		return
 	}
+	// The keys are not said in a message. The dock shows them as a legend
+	// for as long as the labels are up (see mode_legend.go).
 	m.hints = state
 	m.CancelCopyFlash()
-	// The keys are said while the labels are up and taken back when they go,
-	// so opening hints a few times does not queue a message per open.
-	before := len(m.Notifications)
-	m.ShowNotification("Type a label to copy. Shift+label types it. Ctrl+label opens it. Esc closes.", "info", m.Settings.NotificationDuration)
-	if len(m.Notifications) > before {
-		state.noticeID = m.Notifications[len(m.Notifications)-1].ID
-	}
 }
 
 // hintsWindows is every pane the all-panes form labels: the focused pane
@@ -417,16 +409,8 @@ func (m *OS) CloseHints() {
 	if m.hints == nil {
 		return
 	}
-	panes, notice := m.hints.panes, m.hints.noticeID
+	panes := m.hints.panes
 	m.hints = nil
-	if notice != "" {
-		for i, n := range m.Notifications {
-			if n.ID == notice {
-				m.Notifications = append(m.Notifications[:i], m.Notifications[i+1:]...)
-				break
-			}
-		}
-	}
 	for _, p := range panes {
 		if w := m.windowByID(p.windowID); w != nil {
 			w.ContentDirty = true
@@ -466,6 +450,30 @@ func (m *OS) hintsPaneWindow(p *hintsPane) *terminal.Window {
 		return nil
 	}
 	return w
+}
+
+// hintsHelpKey closes hints mode and opens the help on its keys. It is not a
+// letter, so no label alphabet can take it.
+const hintsHelpKey = "?"
+
+// HintsShowKeys is the hintsHelpKey: hints mode closes, and the help opens on
+// the section that lists all of its keys, scrolled to them. The dock's legend
+// shows only the keys that fit, and this is the way to the rest.
+func (m *OS) HintsShowKeys() {
+	m.CloseHints()
+	m.OpenHelpAtCategory(HelpCategoryCopyMode)
+	cats := m.HelpCategories()
+	if m.HelpCategory < 0 || m.HelpCategory >= len(cats) {
+		return
+	}
+	for i, b := range cats[m.HelpCategory].Bindings {
+		if strings.HasPrefix(b.Description, helpHintsPrefix) {
+			// The render clamps this to the last page, which holds
+			// every hints line when they are the last in the section.
+			m.HelpScrollOffset = i
+			return
+		}
+	}
 }
 
 // HintsUsesLetter reports whether r is one of the letters labels are made
@@ -573,21 +581,14 @@ func (m *OS) copyHint(window *terminal.Window, match hintMatch, note string) tea
 // sweeps it over the selection. The flash takes absolute rows, in which the
 // scrollback comes first and the screen follows it.
 func (m *OS) noteHintFlash(window *terminal.Window, match hintMatch) {
-	if !m.Settings.CopyFlash || m.copyFlashDuration() <= 0 || !m.Settings.MotionAllows(config.MotionBasic) {
-		return
-	}
 	if len(match.cells) == 0 {
 		return
 	}
 	base := window.ScrollbackLen() - window.ScrollbackOffset
 	first, last := match.cells[0], match.cells[len(match.cells)-1]
-	m.copyFlash = &copyFlash{
-		WindowID: window.ID,
-		Start:    terminal.Position{X: first.x, Y: base + first.y},
-		End:      terminal.Position{X: last.x, Y: base + last.y},
-		At:       time.Now(),
-	}
-	window.ContentDirty = true
+	m.NoteCopyFlashRegion(window,
+		terminal.Position{X: first.x, Y: base + first.y},
+		terminal.Position{X: last.x, Y: base + last.y})
 }
 
 // openHint opens a URL or a path and copies anything else.
@@ -685,6 +686,8 @@ func hintCwdHost(cwd string) (string, bool) {
 	if !strings.HasPrefix(cwd, "file://") {
 		return "", false
 	}
+	// The host alone is wanted, so a report with no path, file://far, still
+	// names another machine and still blocks opening a path here.
 	u, err := url.Parse(cwd)
 	if err != nil {
 		return "", false

@@ -113,23 +113,31 @@ func (c *Client) ListSessions() ([]SessionInfo, error) {
 // initial window) and no attached client. name may be empty to let the daemon
 // generate one. It returns an error if the name is already taken.
 func (c *Client) CreateDetachedSession(name string, width, height int) error {
-	return c.createSession(name, width, height, false)
+	return c.createSession(name, width, height, false, "")
+}
+
+// CreateDetachedSessionIn is CreateDetachedSession with a start directory:
+// the session's first window starts in cwd, and so does any later window with
+// no directory to inherit. See NewPayload.Cwd.
+func (c *Client) CreateDetachedSessionIn(name string, width, height int, cwd string) error {
+	return c.createSession(name, width, height, false, cwd)
 }
 
 // CreateGlobalSession creates a session meant to hold panes from more than one
 // machine. It is created with no windows, because its first pane is the one
 // the user picks a machine for. See NewPayload.Global.
 func (c *Client) CreateGlobalSession(name string, width, height int) error {
-	return c.createSession(name, width, height, true)
+	return c.createSession(name, width, height, true, "")
 }
 
-func (c *Client) createSession(name string, width, height int, global bool) error {
+func (c *Client) createSession(name string, width, height int, global bool, cwd string) error {
 	msg, err := NewMessage(MsgNew, &NewPayload{
 		SessionName: name,
 		Width:       width,
 		Height:      height,
 		Detach:      true,
 		Global:      global,
+		Cwd:         cwd,
 	})
 	if err != nil {
 		return err
@@ -240,6 +248,9 @@ func (c *Client) sendHello() error {
 	if resp.Type == MsgError {
 		var errPayload ErrorPayload
 		_ = resp.ParsePayload(&errPayload)
+		if errPayload.Code == ErrCodeBusy {
+			return ErrTooManyConnections
+		}
 		return fmt.Errorf("the daemon refused this client: %s", errPayload.Message)
 	}
 	if resp.Type != MsgWelcome {
@@ -282,6 +293,23 @@ func (c *Client) getTerminalSize() (width, height int) {
 		return 80, 24 // Default
 	}
 	return width, height
+}
+
+// SendControlMessageWait is SendControlMessage with a read deadline of wait
+// instead of thirty seconds, for a request whose answer comes when the work
+// is done: a tape answers when it ends.
+func (c *Client) SendControlMessageWait(msg *Message, wait time.Duration) (*Message, error) {
+	if err := c.send(msg); err != nil {
+		return nil, fmt.Errorf("failed to send message: %w", err)
+	}
+	c.recvMu.Lock()
+	defer c.recvMu.Unlock()
+	_ = c.conn.SetReadDeadline(time.Now().Add(wait))
+	resp, err := ReadMessage(c.conn)
+	if err != nil {
+		return nil, fmt.Errorf("failed to receive response: %w", err)
+	}
+	return resp, nil
 }
 
 // SendControlMessage sends a control message to the daemon and waits for a response.

@@ -25,6 +25,262 @@ It covers the whole `config.toml`: the `[appearance]` table and its `sidebar`, `
 
 `tuios list-options` describes every settable path with its type, default, and accepted values, straight from the registry the validator uses. The in-app settings page (`Ctrl+B ,`) edits and persists the same options, and its rows are derived from that same registry: an option an agent can set is an option a person can reach, and a test fails the build if one is not.
 
+## Split the config into several files
+
+You can keep part of the config in other files. Use this to share one
+config.toml between machines and keep the settings for one machine, such as
+its hosts, in a separate file. A Nix or home-manager setup can also put its
+settings in a file that it manages, and leave config.toml to tuios.
+
+There are two ways to add files. Use one or both.
+
+1. Put an `include` list at the top of config.toml, before the first table:
+
+   ```toml
+   include = ["hosts.toml", "~/.config/tuios/local.toml", "?work.toml"]
+   ```
+
+   A relative path is relative to the file that has the `include` line. `~`
+   is your home directory. A name that starts with `?` is optional: when the
+   file is not there, tuios says nothing. An included file can have its own
+   `include` list.
+
+   On Windows, write an include path with forward slashes, or put it in a
+   single-quoted literal string. In a double-quoted TOML string, a backslash
+   starts an escape:
+
+   ```toml
+   include = ["C:/Users/me/tuios/local.toml", 'C:\Users\me\tuios\work.toml']
+   ```
+
+2. Put `*.toml` files in a `config.d` directory next to config.toml. tuios
+   reads them in name order, so `10-theme.toml` comes before `50-hosts.toml`.
+
+### Which value wins
+
+tuios reads the files in this order. A later file wins over an earlier file.
+
+1. The files in the `include` list, in list order. An included file's own
+   includes come before it.
+2. The files in `config.d`, in name order.
+3. config.toml.
+
+config.toml wins, and it holds only what you changed. On the first start,
+tuios writes a config.toml with comments and no settings. The one exception
+is `[startup]`: tuios writes `tiled = true` and `daemon = true` there, unless
+another file sets them. Each change from tuios adds or changes only the key
+you changed. So an included file applies everywhere except where you chose a
+value of your own.
+
+A config.toml from an older tuios sets every key, and so it hides every other
+file. Run `tuios config prune` to remove the keys that have their default
+value. When another file sets one of those keys, its value then applies. The
+command lists those keys and asks before it changes the file. Use
+`tuios config prune --dry-run` to see the keys and `--yes` to skip the
+question. A run with no terminal needs `--yes`.
+
+The files merge with these rules:
+
+- Tables merge key by key, at every depth. `[hosts.NAME]` tables merge by
+  name, so each file can add its own hosts.
+- For a single value, the later file wins.
+- An array of values replaces the earlier array. It does not add to it.
+- An array of tables, such as `[[keybindings.command]]`, merges entry by entry.
+  It is never replaced whole. A later entry matches an earlier entry by `name`
+  when both have a name, and by `key` when they do not. A matched entry merges
+  key by key. An entry that matches nothing goes at the end.
+- To remove an entry that an earlier file sets, add an entry with the same
+  `name` or `key` and `disabled = true`:
+
+  ```toml
+  [[keybindings.command]]
+  name = "deploy"
+  disabled = true
+  ```
+
+A relative file path in an included file, such as a `[plugins] dirs` entry or
+a `token_file`, is relative to that file.
+
+These are not errors:
+
+- An include that names a file that does not exist. tuios shows a warning and
+  skips it, so one machine can include a file that only it has.
+- An include cycle, or a file that includes itself. tuios shows a warning and
+  reads each file once.
+- An optional include or a `config.d` file that tuios cannot read, such as a
+  link that points to itself. tuios shows a warning and skips it. A required
+  include that tuios cannot read stops the load.
+- An `include` key below a table header. TOML puts it in that table, so it
+  includes nothing. tuios shows a warning.
+
+An include that names a directory stops the load. Put a directory of files in
+`config.d`. A file that exists and has a TOML error also stops the load, the
+same as an error in config.toml.
+
+### Find where a key comes from
+
+```sh
+tuios config files                     # every file, in merge order
+tuios config origin                    # every key and the file that sets it
+tuios config origin appearance.theme   # one key
+```
+
+`tuios config origin` also names the earlier files that set the same key. Their
+values lose.
+
+### Hot reload
+
+tuios watches every file it reads: config.toml, each included file, each file
+in `config.d`, and the `config.d` directory itself. When a file is a link,
+tuios also watches the file that the link points to. A save to any of them
+takes effect at once. An included file that was missing applies when you make
+it, if its directory exists.
+
+### Where tuios writes a change
+
+The settings page, `tuios set-config`, the keybind manager,
+`tuios keybinds unbind`, `tuios hosts add` and `tuios plugins` write the config.
+They write only the keys you changed, and never copy the other files into
+config.toml. A change made while a file changed on disk keeps the new values
+of that file. Each change goes to one file:
+
+- A key that a file sets goes to the last file that sets it.
+- A new entry in a table of entries, such as a new `[hosts.NAME]`, goes to the
+  last writable file that has entries in that table.
+- Any other new key goes to config.toml.
+- A removed key is removed from each file that sets it.
+
+tuios changes only the lines of the key, so the comments, the blank lines and
+the line endings of the file stay. A comment above a table stays with that
+table. tuios never writes a file you wrote again from its values. When it
+cannot express a change in the lines of an included file, it writes the change
+to config.toml and tells you. When it cannot remove a key that way, the save
+fails and the message names the file. Only config.toml itself is written again
+whole in that case, without its comments.
+
+tuios never writes a read-only file. This includes a file that Nix or
+home-manager links in from the store. When a read-only file sets the key,
+tuios writes the change to config.toml and tells you. When config.toml is
+read-only too, tuios writes the change to the last writable file that config.toml
+includes. The change must go to a file that comes after every file that sets
+the key. If there is no such file, the save fails and the message names the
+file to change. tuios cannot remove a key from a read-only file. It removes an
+array entry with a `disabled = true` entry in a writable file. When an entry
+that tuios writes must not take keys back from an earlier file's entry, tuios
+writes a `disabled = true` entry first and the new entry after it.
+
+`tuios config reset` writes the first-start config.toml again, with your
+`include` list, and lists the other files that still apply. When config.toml
+has an error, the reset still keeps an `include` list that it can read.
+
+## One config on macOS and Linux
+
+You can share one `config.toml` between a Mac and a Linux machine, for example with a dotfiles repo. tuios reads `opt+` and `option+` as `alt+` on every platform. On Linux, a key such as `opt+1` is `alt+1`.
+
+tuios ignores a key that it cannot read and loads the rest of the file. The action gets its default key when it has no other key. If another action already has that default key, the action has no key. tuios shows a config problem when it starts, and the log viewer (leader `D` `l`) names each key and its file. `tuios keybinds doctor` and `tuios config apply` list these keys too.
+
+## Keyboard layout and Option characters
+
+```toml
+[keybindings]
+keyboard_layout = "us"   # us, other
+option_glyphs = "bind"   # bind, type
+```
+
+| Key | Default | What it does |
+|---|---|---|
+| `keyboard_layout` | `us` | `us` lets a binding on `opt+shift+7` also match `opt+&`, as on a US keyboard. Set `other` for AZERTY, QWERTZ and other layouts. A key that the terminal reports through the Kitty keyboard protocol uses that report. |
+| `option_glyphs` | `bind` | What a character that macOS Option typed does. `bind` runs the Option binding that the character stands for on a US layout. `type` sends it to the pane. Set `type` if you use Option to type characters. |
+
+See [Shifted digits and AZERTY](KEYBINDINGS.md#shifted-digits-and-azerty) and
+[One Option key for typing](KEYBINDINGS.md#one-option-key-for-typing).
+
+## Opening links
+
+tuios finds two kinds of link in a pane. An OSC 8 hyperlink is a link that a
+program marked, such as `ls --hyperlink`, `gcc`, `delta`, `gh` or an agent
+CLI. Its text and its target can be different. A bare URL is plain text that
+starts with `http://`, `https://`, `ftp://`, `ftps://`, `file://`, `ssh://` or
+`git://`. Hints mode and the pointer use the same URL detector.
+
+```toml
+[appearance]
+links = "all"          # off, marked (OSC 8 only), all
+link_click = "both"    # both, ctrl, shift, off
+link_opener = ""       # for example "firefox --new-tab" or "open -a Safari %s"
+```
+
+| Key | Default | What it does |
+|---|---|---|
+| `links` | `all` | The links that tuios finds. `marked` finds only OSC 8 links. |
+| `link_click` | `both` | The click that opens a link. `both` is `Ctrl+click` and `Shift+click`. `Ctrl+click` also works on macOS, in Ghostty, kitty, WezTerm and Terminal.app. `Cmd+click` does not open a link there. |
+| `link_opener` | empty | The command that opens a web link. tuios puts the URL where `%s` is, or at the end. If this is empty, tuios uses `$BROWSER`, then the system opener. |
+
+The system opener is `open` on macOS, `rundll32` on Windows, `wslview` under
+WSL, and `xdg-open` on other systems. tuios runs no shell. It gives the URL to
+the opener as one argument. If the opener fails, tuios shows a message and
+puts the URL on your clipboard.
+
+### Which machine opens the link
+
+- A local client opens the link on your machine.
+- Under `ssh`, tuios does not use the system opener, because it would open the
+  browser on the remote machine. tuios puts the URL on your clipboard. Set
+  `$BROWSER` or `link_opener` to a command that forwards the URL, if you have
+  one.
+- A remote client (`tuios ssh`, the web client) puts the URL on your
+  clipboard.
+- A Linux machine with no `DISPLAY` and no `WAYLAND_DISPLAY` has no desktop.
+  tuios puts the URL on your clipboard.
+
+In all these cases, tuios also sends each link to your terminal as OSC 8. Use
+the link click of your terminal to open it on your machine.
+
+### Safety
+
+- Only `http`, `https`, `mailto`, `ftp` and `ftps` links go to the opener.
+  tuios copies other links, such as `javascript:`, `data:` or the scheme of an
+  application.
+- A `file://` link opens in an editor pane only when the file is on this
+  machine. A `file://` link with the name of another host does not open.
+- tuios refuses an address with control characters or spaces.
+- The hover label shows the target. After a click, the message names the host.
+  tuios does not ask before it opens a link. The label and the scheme list
+  give the protection, and a prompt on each click teaches people to accept it.
+
+### OSC 8 in the output of tuios
+
+tuios draws each pane into its own frame, so your terminal sees the output of
+tuios and not the output of the program. tuios writes every link in the
+focused pane as OSC 8. An OSC 8 link keeps its URI and its `id=`. A bare URL
+gets an `id=` from tuios, so a URL that wraps to the next row is one link.
+Your terminal can then show and open the real target. In a pane that is not
+focused, tuios writes the OSC 8 links of the program. Your terminal finds the
+bare URLs itself.
+
+### Terminals
+
+A terminal sends a click to tuios only when the terminal does not use the
+click itself. Most terminals keep `Shift+click` for their own selection when
+a program reads the mouse. That is why `Ctrl+click` is the main click.
+
+| Terminal | `Shift+click` gets to tuios | `Ctrl+click` gets to tuios | The terminal opens OSC 8 links |
+|---|---|---|---|
+| kitty | No. kitty opens the URL under the pointer. | Yes | Yes, with `Shift+click` or `Ctrl+Shift+click` |
+| Ghostty | No. Ghostty extends its selection. | Yes. On a link, Ghostty opens it. | Yes, with `Ctrl+click` (Linux) or `Cmd+click` (macOS) |
+| WezTerm | No. `Shift` bypasses mouse reporting. | Yes | Yes |
+| Alacritty | No. Alacritty opens a hinted URL. | Yes | Yes, with `Shift+click` |
+| foot | No. `Shift` bypasses mouse reporting. | Yes | Yes, in URL mode (`Ctrl+Shift+O`) |
+| iTerm2 | Yes | Yes | Yes, with `Cmd+click` |
+| Windows Terminal | No. `Shift` bypasses mouse mode. | Yes | Yes, with `Ctrl+click` when it gets the click |
+| xterm | No. `Shift` bypasses mouse reporting. | Yes | No |
+
+`Cmd` is not part of the mouse protocol, so tuios never sees `Cmd+click`. On
+macOS, `Cmd+click` opens a link through the terminal, from the OSC 8 that
+tuios writes. In Ghostty, a program can ask for `Shift+click` with
+`XTSHIFTESCAPE`, or you can set `mouse-shift-capture = true`. tuios does not
+ask, because that takes `Shift` selection away from you.
+
 ## Neovim pane navigation
 
 `appearance.nvim_navigation` is `false` by default. Set it to `true` to enable
@@ -51,13 +307,163 @@ focus-key mappings and protocol behaviour.
 
 To change the value of one session while it runs, use `tuios set-config daemon.window_size latest -s NAME`. The value is not saved to the config file. A change in the config file applies when the daemon starts again.
 
+`single_client` in `[daemon]` (default `false`) keeps one client for each session. When a client attaches, every other client of that session detaches. The newest attach wins. Each detached client exits with status 0 and prints "Another client attached to this session." The session continues to run. This is `tuios attach -d` on every attach. Two attaches do not detach the other clients: a view-only client, such as `tuios-web --read-only`, and the attach that tuios makes on its own to get a session back after a host link drops. A change in the config file applies to the next attach.
+
+```toml
+[daemon]
+single_client = true
+```
+
+`ssh_agent` in `[daemon]` (default `"off"`) can be `"follow"`. Then each session has a stable link to the ssh agent socket of the client that attached to the session or used it last. When you ssh to the machine with agent forwarding and run `tuios attach`, your panes use the agent of that ssh connection.
+
+```toml
+[daemon]
+ssh_agent = "follow"
+```
+
+- The link is `agent-<session id>.sock` in the folder of the daemon socket, for example `$XDG_RUNTIME_DIR/tuios/agent-3f2a9c1d-0b7e-4d0a-9c4e-5a1f2b3c4d5e.sock`. `tuios ssh-agent-path` prints it.
+- Each new pane of the session gets `SSH_AUTH_SOCK` set to the link.
+- A shell that started before you set the option keeps its old value. To use the link in that shell and in every shell, add this line to your shell rc: `p=$(tuios ssh-agent-path 2>/dev/null) && export SSH_AUTH_SOCK="$p"`
+- When the client that the link points at detaches, the link moves to the socket of the client before it. When no attached client has a socket, the link points at the `SSH_AUTH_SOCK` of the daemon, if the daemon has one that passes the checks below. Otherwise tuios removes the link.
+- The daemon removes its links when it stops and when you set the option to `"off"`. At start, it removes the links that a stopped daemon left.
+- tuios uses the `SSH_AUTH_SOCK` of `tuios attach` and `tuios new` only. A client that runs inside a pane does not count. tuios finds such a client by its process, so a process that leaves its pane on purpose (for example, with `setsid` and a clean environment) can still move the link. This check stops mistakes and agents, not a local process that wants to get past it.
+- tuios resolves a symbolic link once, so `~/.ssh/agent.sock` and the 1Password agent work. The link then points at the real socket. The real socket must be a Unix socket that you own. Every folder above it must be owned by you or by root, and no other user can write to it, unless it is sticky like `/tmp`. tuios refuses other sockets.
+- A client of the tuios SSH server or of `tuios-web` has no agent socket, so it does not move the link. To follow your agent, ssh to the machine with `ssh -A` and run `tuios attach`.
+- The agent can follow you to a remote host too. Turn on `ssh_agent = "follow"` on both machines, and turn on agent forwarding for the link to that host. Use `ForwardAgent yes` for the host in `~/.ssh/config`, or `ssh_options = ["-A"]` under `[hosts.NAME]`. tuios does not forward the agent by default. The daemon keeps one link for each such host, `agent-link-<host>-<hash>.sock`. The host name is in lower case and cut to 32 characters, and the hash is of the exact name, so two hosts never share a link. It points at the agent of the person on this machine who attached a session on that host, or typed in one, last. A session of this machine does not move it. The daemon starts the link ssh to that host with `SSH_AUTH_SOCK` set to that link. On the host, the panes of a session you attach through the link use the forwarded agent.
+- tuios decides that a host forwards from what `ssh -G` prints for its address with its `ssh_options`. That is how ssh itself reads the options and `~/.ssh/config`. tuios asks again when the config changes, and when `ssh -G` failed the last time. A host that leaves the config takes its link with it.
+- Before any client attaches a session on a forwarding host, its link points at the daemon's own `SSH_AUTH_SOCK`. If the daemon has none, or its socket fails the checks above, the panes on that host have no agent until a client attaches. The link ssh to a host that does not forward starts with the environment of the daemon, unchanged. Without forwarding, the panes on the host use the `SSH_AUTH_SOCK` that their own login there sets: the agent of the daemon on the host, or one from keychain or gnome-keyring through PAM, or none.
+- If the link to a host shares an ssh master connection, ssh forwards the agent of that master.
+- Forward the agent only to a host you trust. Root on the host can use a forwarded agent to sign in to other machines as you while the link is up. If the host pins the hub with `restrict` in `authorized_keys`, add `agent-forwarding` to the options of that key.
+
+A change in the config file applies to the next attach. New panes get the link while the option is on.
+
 `[hints]` sets what hints mode (`Ctrl+B F`) labels. See [HINTS.md](HINTS.md).
+
+`[panes]` sets `label_keys`, the keys that the pane labels (`Ctrl+B Q`) use. The default is `1234567890`. Letters `a` to `z` and digits are allowed. See [KEYBINDINGS.md](KEYBINDINGS.md#pane-labels).
+
+`[panes]` also sets `navigator_layout`, the layout the pane navigator (`Ctrl+B /`) opens in: `tree`, `flat` or `cards`. The default is `tree`. Press `v` in the navigator to change the layout. See [KEYBINDINGS.md](KEYBINDINGS.md#the-pane-navigator).
 
 `[scratch]` sets the size of the box in which `Ctrl+B g` shows the scratch terminal. The old `session` key is no longer used. See [SESSIONS.md](SESSIONS.md#the-scratch-terminal).
 
 `[pip]` sets the size (`width`, `height`, border included, default 40x12) and the first `corner` (default `bottom-right`) of the picture-in-picture view that `p` pins. See [SESSIONS.md](SESSIONS.md#picture-in-picture).
 
 `[[keybindings.command]]` binds a key to a command that you write: a scratch terminal, a popup, a pane or a command with no window. A mistake in an entry is a warning, and tuios ignores that entry. See [KEYBINDINGS.md](KEYBINDINGS.md#command-keys).
+
+## Frame rate
+
+`appearance.max_fps` is the highest frame rate tuios draws at. Your terminal
+and your monitor can show fewer frames. A value above what they can show does
+not make tuios smoother.
+
+```toml
+[appearance]
+max_fps = 144     # a number from 10 to 240
+# max_fps = "auto"  # the refresh rate of your display
+# max_fps = 0       # 60, the default
+```
+
+| Value | Frame rate |
+| --- | --- |
+| `0` | 60. This is the default. |
+| `10` to `240` | That number. A value outside the range moves to the nearest end. |
+| `"auto"` | The refresh rate of your display, from 10 to 240. If tuios cannot find the rate, it uses 60. |
+
+The settings page offers Auto, 30, 60, 90, 120, 144, 165 and 240. With Auto
+selected, the row shows the rate in use, for example `Auto (144)`. A change
+applies at once, with no restart.
+
+**What limits the frames you see.** tuios sends a frame to your terminal. The
+terminal then draws the frame on its own schedule. kitty and ghostty draw at
+most once for each refresh of the monitor, so a 60 Hz monitor shows at most 60
+frames a second, whatever max_fps is. Over SSH, the network and the remote
+terminal set the limit too.
+
+**What it costs.** tuios draws only when something on the screen changes.
+The terminal library under it still wakes at max_fps while tuios is idle. An
+idle tuios at 240 wakes about three times as often as at 60. See
+[perf.md](perf.md) for the measured numbers.
+
+**How auto finds the rate.** tuios looks once, in the background, when it
+starts. It looks again when the config file is reloaded. It never delays the
+first frame. Until the answer arrives, tuios draws at 60.
+
+- Linux on Wayland: tuios asks `hyprctl` on Hyprland, `niri` on niri, and
+  `wlr-randr` on other wlroots compositors. It reads the current mode of each
+  output that is on.
+- Linux on X11, or on a Wayland compositor that none of these tools speaks
+  for: tuios asks `xrandr --current`. Under XWayland the answer comes from the
+  compositor and can be less exact.
+- macOS: tuios asks `system_profiler SPDisplaysDataType`. Some built-in
+  displays do not report a rate. tuios then uses 60.
+- Windows: tuios does not look, and uses 60.
+
+A terminal window cannot tell which display it is on. With several displays,
+auto uses the highest rate among them.
+
+Auto looks only when tuios runs on the same machine as your desktop. Over SSH,
+in tuios-web and in the SSH server, auto uses 60, because the displays on the
+machine are not the ones you see.
+
+## Images on a terminal without graphics
+
+A program in a pane can draw a picture with sixel. Your terminal shows the
+picture when it supports sixel or kitty graphics. Some terminals support
+neither: kmscon, the Linux console, and many SSH clients. On these, tuios
+draws the picture with block characters. Each character cell shows two
+colours.
+
+`appearance.image_symbols` sets the characters.
+
+```toml
+[appearance]
+image_symbols = "auto"    # the default
+# image_symbols = "octant"
+# image_symbols = "off"   # show a box instead of the picture
+```
+
+| Value | Characters | Detail in one cell |
+| --- | --- | --- |
+| `"auto"` | Chosen from `TERM`. See the next table. | |
+| `"octant"` | Octants, Unicode 16 (U+1CD00 and on) | 2 by 4 |
+| `"sextant"` | Sextants, Unicode 13 (U+1FB00 and on) | 2 by 3 |
+| `"quadrant"` | Quadrants (▖ ▗ ▘ ▝ and others) | 2 by 2 |
+| `"half"` | Half blocks (▀ ▄) | 1 by 2 |
+| `"off"` | None. tuios shows a box with "image" in it. | |
+
+A finer set shows more detail, but your font must have the characters. A
+terminal cannot tell tuios which characters its font has. So `auto` reads
+`TERM`:
+
+| `TERM` | `auto` uses | Why |
+| --- | --- | --- |
+| `kmscon` | Octants | kmscon draws with its built-in Unifont, which has the octants. |
+| `linux` | Half blocks | The Linux console uses fonts of 256 or 512 characters. These fonts have the CP437 block characters and nothing finer. |
+| Anything else | Quadrants | Quadrants are in the Basic Multilingual Plane. Every font with block characters has them. |
+
+If your font has octants, set `"octant"` for the best picture.
+
+**Colours.** tuios uses the colours your terminal shows.
+
+- 24-bit colour: each cell gets the two colours that fit the picture best.
+- 256 colours: tuios mixes palette colours in a dither pattern.
+- 16 colours, for example the Linux console: tuios always uses half blocks.
+  It mixes the 16 colours in a dither pattern. It uses only the 8 dark
+  colours as a background, because the Linux console uses bright
+  backgrounds for blink. If a picture keeps too little of its shape in 16
+  colours, tuios shows the box instead. On the pictures measured, this
+  did not happen. See [KMSCON-GRAPHICS.md](KMSCON-GRAPHICS.md).
+
+**What the program sees.** With block characters on, tuios tells the
+program in the pane that sixel works. Programs such as chafa, timg and yazi
+then send sixel. With `"off"`, tuios tells the program that sixel does not
+work, and the program uses its own text output.
+
+A terminal with sixel or kitty graphics always gets the real picture. It
+never gets block characters.
+
+tuios does not draw kitty graphics images as block characters yet. On a
+terminal without graphics, a program that only uses kitty graphics uses its
+own text output.
 
 ## Backgrounds
 
@@ -176,6 +582,133 @@ command that joins its arguments into a shell line, such as `swaymsg exec --`
 or `hyprctl dispatch exec`. With such a command, the text of a desktop entry
 becomes shell code. Any installed package can write a desktop entry.
 
+## When a workspace becomes empty
+
+When the last pane on the workspace on screen closes, tuios shows the
+workspace you came from. This happens when the pane's program stops, when you
+close the pane, when `tuios xpanes -ss` closes it, and with
+`tuios close-workspace`.
+
+tuios goes back in this order:
+
+1. For a workspace that `tuios xpanes` opened, the workspace where you ran
+   `tuios xpanes`.
+2. The workspace you showed last that still has panes. After a chain of
+   empty workspaces, tuios goes back past each one.
+3. The workspace with the lowest number that has panes.
+
+When no workspace has panes, tuios shows the splash screen. The workspace on
+screen is the same for every client of the session, so every client goes
+back. Moving a pane to another workspace does not close it, so tuios does not
+go back.
+
+To stay on the empty workspace, turn the setting off:
+
+```toml
+[workspaces]
+return_when_empty = false
+```
+
+The daemon reads the setting when it starts and when the file changes.
+`tuios set-config workspaces.return_when_empty false` changes it while tuios
+runs.
+
+## When you switch to an empty workspace
+
+By default, a workspace with no panes shows the splash screen. To open a
+pane there when you switch to it, as the new-window key does, turn on this
+setting:
+
+```toml
+[workspaces]
+new_window_when_empty = true
+```
+
+The new pane starts in the folder of the pane that had focus on the
+workspace you came from. The new pane starts in the session's start folder
+in these cases:
+
+- You came from a workspace with no pane.
+- You came from a scratch terminal.
+- The pane you came from runs on another machine.
+
+The start folder is the folder that `tuios new --cwd` gave.
+
+A pane opens only when you switch: with a workspace key, a click on the
+dock, the workspace switcher, the pane navigator or the command palette.
+These switches do not open a pane:
+
+- `move_and_follow` and other moves that take a pane with them.
+- `tuios xpanes`, `tuios select-workspace`, `tuios run-command` and tape
+  scripts. These bring their own panes or run from a script.
+- The switch back from an empty workspace that `return_when_empty` makes.
+- The start of tuios and an attach to a session. The workspace on screen
+  stays as it is.
+
+When two clients show the same session, the client that switches opens the
+pane. The other client shows it. A workspace gets one pane, also when two
+clients switch to it at the same time. When you switch away before the pane
+opens, you stay where you went, and a switch back does not open a second
+pane.
+
+With `appearance.new_window_follow_ssh = true`, a pane that runs ssh gives a
+new pane that runs the same ssh, as the new-window key does.
+
+The daemon must be this version of tuios or newer. With an older daemon, a
+switch opens no pane. Run `tuios kill-server` and start tuios again to load
+the new daemon.
+
+Each client reads the setting from its config file, and a change applies at
+once. The settings page has it under Daemon, and
+`tuios set-config workspaces.new_window_when_empty true` changes it while
+tuios runs.
+
+## Paste buffers
+
+tuios keeps your recent yanks as paste buffers. `Ctrl+B ]` pastes the newest,
+and `Ctrl+B #` shows them all (see [KEYBINDINGS.md](KEYBINDINGS.md#paste-buffers)).
+
+```toml
+[paste_buffers]
+limit = 20     # how many unnamed buffers to keep. 0 keeps none.
+max_kb = 16384 # most KiB all buffers hold together, at most 262144. 0 uses 16384.
+```
+
+The rules are the tmux rules. A yank makes a buffer that tuios names
+`buffer0`, `buffer1` and so on. `limit` counts only these buffers, and past it
+the oldest of them goes. A buffer that you name with `set-buffer -b` stays
+until you delete it, or until the buffers pass `max_kb`. Past `max_kb` the
+oldest unnamed buffer goes first, then the oldest named one. tuios does not
+keep a yank that is larger than `max_kb` as a buffer, but the yank still goes
+to the clipboard. With `limit = 0`, a yank goes only to the
+clipboard.
+
+The daemon keeps the buffers in memory, so every client and every session
+shares them. They go when the daemon stops. The daemon reads the setting when
+it starts and when the file changes. A smaller limit drops the oldest buffers
+at once.
+
+A buffer is yours or one pane's. Your yanks, and what you set from outside
+every pane or from a pane that holds `admin`, are yours. What a pane without
+`admin` sets is that pane's own. A buffer can hold a secret that you copied,
+so a pane without `admin` sees and pastes only its own buffers: not yours,
+and not another pane's, in its session or not. It cannot change or replace a
+buffer that you set, and it cannot make a named buffer, so a name you keep a
+command under stays yours. From inside a pane, reading its buffers needs the
+`read` grant, changing them needs `write`, and pasting needs both. See
+[What a pane may do](#what-a-pane-may-do).
+
+Large requests to the daemon, such as a big `set-buffer`, a `stash put` or an
+image paste, take memory from a budget. You, outside every pane or in a pane
+that holds `admin`, have a budget of your own. A pane without `admin` shares
+another, so it cannot use up yours.
+
+One thing a pane can still learn: the automatic buffer numbers (`buffer0`,
+`buffer1`) come from one counter for everybody. A gap between two of a pane's
+own buffer numbers tells it that other buffers were made in between, such as
+your yanks. It tells the pane how often you copy, not what. tuios accepts this
+as a low risk.
+
 ## Master-stack layout
 
 These options shape the master-stack layout. Each workspace starts with them.
@@ -204,6 +737,221 @@ master_ratio = 50
 With `center`, the grid is off, so `master_grid` has no effect. The first pane
 of the workspace is the master. To make another pane the master, focus it and
 press `Ctrl+B L Enter`.
+
+## Rounded dock pills
+
+`appearance.dock_pill_caps` puts rounded caps on every pill in the dock: the
+mode chip, the workspace tabs and the minimized windows. It is `true` by
+default. Set it to `false` for flat pills:
+
+```toml
+[appearance]
+dock_pill_caps = false
+```
+
+Under ASCII glyphs the workspace tabs have no caps. The rail's pills do not
+change with this option.
+
+## Mode pill icons
+
+The mode pill at the start of the dock shows an icon for the mode. Three
+options set the icons:
+
+| Option | Mode |
+| --- | --- |
+| `appearance.dock_mode_icon_window` | Window mode |
+| `appearance.dock_mode_icon_terminal` | Terminal mode |
+| `appearance.dock_mode_icon_tiling` | Window mode and terminal mode while tiling is on |
+
+```toml
+[appearance]
+dock_mode_icon_window = "WM"
+dock_mode_icon_terminal = ">_"
+dock_mode_icon_tiling = ""
+```
+
+- When an option is not set, the pill shows the icon of the glyph set. With
+  `use_ascii_only`, that icon is `W`, `T` or `#`.
+- An empty string shows no icon. If the mode has no other text, the dock shows
+  no pill in that mode.
+- An icon can be at most 8 cells wide. A wide character, such as `終`, counts
+  as two cells. The dock does not accept control characters. For an icon that
+  it does not accept, the dock shows the default icon and the config check
+  shows a warning.
+- The pill adds one space on each side of the icon. You do not need to add
+  spaces.
+- While tiling is on, the pill also shows the next split direction, `V` or
+  `H`.
+
+To remove the whole mode pill, remove `"mode"` from the `left` list in the
+`[dock]` table. See [The dock's components](#the-docks-components).
+
+You can also set the icons on the settings page, in the Dock section, or with
+`tuios set-config dock_mode_icon_window WM`. The word `default` puts an icon
+back to the icon of the glyph set, in the settings, with set-config and in
+`config.toml`. The change applies at once.
+
+## Workspace label cap
+
+`appearance.dock_workspace_label_max` caps a workspace tab's label in cells,
+so one long name cannot push the other pills off the bar. The cap is `12` by
+default and counts the tab format's own characters, so `"<{name}>"` loses two
+of them to the brackets. Set it to `0` to draw the whole name and let the
+strip scroll instead:
+
+```toml
+[appearance]
+dock_workspace_label_max = 0
+```
+
+A dock too narrow for even one pill keeps the current workspace's tab, cut to
+whatever room is left, so the workspaces always have something to click. You
+can also set it on the settings page, in the Appearance section. The change
+applies at once.
+
+## Compact dock
+
+The dock has two rows by default: a rule and the row of pills.
+`appearance.dock_compact` removes the rule, so the dock has one row. The panes
+get that row. The default is `false`.
+
+```toml
+[appearance]
+dock_compact = true
+```
+
+The option works with the dock at the top and at the bottom. It has no effect
+when `dockbar_position` is `hidden`. You can also set it on the settings page,
+in the Dock section, or with `tuios set-config dock_compact true`. The change
+applies at once.
+
+The rule shows how long a dock message stays. A compact dock does not show
+this.
+
+When clients with different docks share a session, the panes keep the
+largest dock height. A client with a compact dock shows a blank row in that
+case.
+
+## Borderless zoom
+
+`z` zooms the focused pane. By default the zoomed pane keeps its border, and
+`appearance.zoom_size` sets how much of the screen it takes.
+`appearance.zoom_borderless` shows the zoomed pane on the whole pane region
+with no border and no title bar. The program in the pane gets the full size.
+The dock and the rail stay on the screen. The default is `false`.
+
+```toml
+[appearance]
+zoom_borderless = true
+```
+
+With this option on, `zoom_size` and `zoom_max_width` have no effect. The
+option also applies to a floating pane. When you zoom out, the pane gets its
+border back. You can also set it on the settings page, in the Advanced section,
+or with `tuios set-config appearance.zoom_borderless true`. The change applies
+at once.
+
+## Splits that follow ssh
+
+The actions `split_ssh_horizontal`, `split_ssh_vertical` and `new_window_ssh`
+open a pane on the machine that the focused pane is connected to with ssh. See
+[KEYBINDINGS.md](KEYBINDINGS.md#split-into-the-same-ssh).
+
+`appearance.new_window_follow_ssh` makes the ordinary actions do the same:
+`split_horizontal`, `split_vertical` and `new_window`. When the focused pane
+does not run ssh, these actions open an ordinary pane. The default is `false`.
+
+```toml
+[appearance]
+new_window_follow_ssh = true
+```
+
+tuios finds ssh in the foreground of the pane. ssh can run from a shell, or
+from `sshpass`, `autossh` or `mosh`. tuios reads only the processes that you
+own in the pane. It runs the `ssh` or `mosh` that it finds on its own `PATH`,
+with no shell on this machine. It never runs the program that the pane runs.
+
+The new ssh gets the same environment as an ordinary new pane. If the ssh
+that tuios follows has an `SSH_AUTH_SOCK` that names your own agent socket,
+the new ssh gets that value too. An agent that your shell started in the pane
+then works in the split. The socket must not be a link, and its folder must
+be yours and closed to other users.
+
+The new ssh line keeps only what it needs to reach the same host as the same
+user. It always gets `-o ControlMaster=no`. Your `~/.ssh/config` applies to it
+as usual, so a setting that you put there still works in the split.
+
+### Lines that are not followed
+
+tuios follows an ssh line only when each `-o` option is on one of two lists.
+The new pane keeps these options:
+
+`AddressFamily`, `BatchMode`, `CertificateFile`, `CheckHostIP`, `Ciphers`,
+`Compression`, `ConnectionAttempts`, `ConnectTimeout`, `EscapeChar`,
+`HostKeyAlgorithms`, `HostName`, `IdentitiesOnly`, `IdentityFile`,
+`KbdInteractiveAuthentication`, `KexAlgorithms`, `LogLevel`, `MACs`,
+`PasswordAuthentication`, `Port`, `PreferredAuthentications`, `ProxyJump`,
+`PubkeyAcceptedAlgorithms`, `PubkeyAuthentication`, `ServerAliveCountMax`,
+`ServerAliveInterval`, `StrictHostKeyChecking`, `TCPKeepAlive` and `User`.
+
+The new pane does not get these options, and tuios still follows the line:
+
+- Forwards and sessions: `LocalForward`, `RemoteForward`, `DynamicForward`,
+  `GatewayPorts`, `ExitOnForwardFailure`, `ClearAllForwardings`, `Tunnel`,
+  `TunnelDevice`, `RemoteCommand`, `SessionType`, `StdinNull`,
+  `ForkAfterAuthentication` and `RequestTTY`.
+- Files, sockets, environment and forwarding: `ControlMaster`,
+  `ControlPersist`, `ControlPath`, `UserKnownHostsFile`,
+  `GlobalKnownHostsFile`, `HostKeyAlias`, `IdentityAgent`, `SendEnv`,
+  `SetEnv`, `ForwardAgent`, `ForwardX11` and `ForwardX11Trusted`.
+- The flags `-A`, `-X`, `-Y`, `-S`, `-L`, `-R`, `-D`, `-W`, `-w`, `-N`, `-f`,
+  `-n`, `-T`, `-t`, `-M` and `-s`.
+
+These ssh lines get an ordinary pane:
+
+- An `-o` option that is not on the two lists above. `ProxyCommand`,
+  `LocalCommand`, `XAuthLocation` and `Match` are examples.
+- An option or a value with a control character, such as a line break.
+- `-E`, `-F`, `-I`, `-G`, `-V`, `-Q` and `-O`, and an option that tuios does
+  not know.
+- A `-J` or `ProxyJump` hop that is not `[user@]host[:port]` or the `ssh://`
+  form, made of letters, digits and `._:@[]-`, or a hop that starts with `-`.
+- A mosh destination that starts with `-`.
+- mosh with `--ssh`, `--client` or `--server`.
+- ssh that another program starts, such as `scp`, `rsync`, `git` or `sftp`.
+
+Put a `ProxyCommand` or a `ProxyJump` in `~/.ssh/config` to use it with a
+split. A split with `-J` on the command line is followed.
+
+### Start in the remote folder
+
+The new pane starts in the remote folder when the remote shell reports its
+folder with OSC 7. The host name in the report must be the same as the host
+in the ssh line, or as the `HostName` that `ssh -G` gives for that line.
+`reachy-mini` matches `pollen@reachy-mini`. When `~/.ssh/config` makes `prod`
+an alias for `box.example.com`, a report from `box.example.com` or from `box`
+matches `ssh prod`. A report from `box.other.com` does not. When there is no
+match, the new pane starts in the remote home folder.
+
+fish sends the report by default. For bash, add this line to `~/.bashrc` on
+the remote machine:
+
+```bash
+PROMPT_COMMAND='printf "\033]7;file://%s%s\033\\" "$HOSTNAME" "$PWD"'${PROMPT_COMMAND:+;$PROMPT_COMMAND}
+```
+
+For zsh, add these lines to `~/.zshrc` on the remote machine:
+
+```zsh
+autoload -Uz add-zsh-hook
+_tuios_osc7() { printf '\e]7;file://%s%s\e\\' "$HOST" "$PWD" }
+add-zsh-hook precmd _tuios_osc7
+```
+
+To go to the folder, tuios adds `-t`, `-o RemoteCommand=none` and the
+command `exec sh -c 'cd "FOLDER" ...'` to ssh. This works with every login
+shell that can start `sh`. If the folder is gone, the new pane starts in the
+home folder. A folder name with a quote, `$`, a backslash or `!` is not used.
 
 ## The dock's components
 
@@ -237,6 +985,56 @@ A custom component's first line of stdout becomes its cell, it is hidden when
 the command fails, and `tuios list-dock-components` says which and why.
 
 `examples/dock/README.md` is the full contract and five working recipes.
+
+## The rail's custom section
+
+The rail has one section whose rows are the output of a command you write.
+Place `custom` in `appearance.sidebar.sections` like any built-in section and
+describe it in `[appearance.sidebar.custom]`:
+
+```toml
+[appearance.sidebar]
+sections = "sessions:25,terminals,custom:35,agents:30"
+
+[appearance.sidebar.custom]
+title   = "Brief"
+command = "agent-brief render"
+refresh = "event:window-focused,agent-state"
+```
+
+| Key | Meaning |
+|---|---|
+| `title` | The section's heading. Defaults to `Custom`. |
+| `command` | Run through `sh -c`, as dock commands are. Every line of stdout is a row. |
+| `refresh` | `once` (the default), a duration such as `"30s"` with a one-second floor, or `event:TYPE[,TYPE...]` with the dock's event types. `push` is refused: a command that stays running cannot see the focus or the section's size change. |
+
+The command is a dock component that draws on the rail, so the dock's rules
+apply: it runs in the client, under a three second timeout, with bounded
+output; SGR colour survives and every other control sequence is stripped; a
+command that fails, times out or prints nothing leaves the title over an
+empty section, never an earlier run's rows; five failures in a row stop it
+until the config reloads or `tuios refresh-dock rail/custom`; and
+`tuios list-dock-components` lists it as `rail/custom` with why it drew
+nothing. Rows are cut to the rail's width and to the lines the section's
+share gives it, with `… +N` for the ones below the fold.
+
+Each run gets the client's environment plus `TUIOS_SESSION`, `TUIOS_SOCKET`,
+`TUIOS_RAIL_SECTION` (`custom`), `TUIOS_RAIL_WIDTH` (the columns a row may
+use), `TUIOS_RAIL_HEIGHT` (the most rows the section's share can give it; the
+rail may give fewer when other sections need the lines),
+`TUIOS_ACTIVE_PANE_ID` and `TUIOS_ACTIVE_PANE_CWD` (the focused pane and its
+folder, named as `[[keybindings.command]]` names them). They are read for
+each run, and an event that lands while a run is going costs one more run
+after it, so a quick focus change never leaves the old pane's rows on
+screen. `agent-state` fires for the states `[notifications.agent]` alerts on.
+The command does not run while the rail is hidden or folded, so the width it
+is told is never `0`, and it runs again when the rail opens.
+
+`appearance.sidebar.sections` is a settable option, so `tuios set-config` can
+place the section. `[appearance.sidebar.custom]` is read from the file only:
+the command runs outside every pane on every refresh, as dock commands and
+hooks do, and in the default open mode any pane can call `set-option`, so
+the command stays out of its reach, as `daemon.respond_from_shell` does.
 
 ## Turn off agent features
 
@@ -331,6 +1129,162 @@ run `tuios integration install claude-code` (or `opencode`, `kilo`, `qwen`)
 again after upgrading. [AGENT_STATE.md](AGENT_STATE.md#approvals-from-the-inbox) says how
 a prompt is held, answered and handed back.
 
+## Push notifications to your phone
+
+The `[notify]` table sends a push notification when the Inbox gets an item
+that waits for you. The daemon sends it, so it works when no client is
+attached. Set one provider or more. Each provider gets every notification.
+
+```toml
+[notify]
+web_url = "https://term.example.com/"   # tuios-web, for a link to the item
+content = "summary"                     # or "title"
+quiet_active_seconds = 120
+cooldown_seconds = 60
+max_per_hour = 30
+
+[notify.triggers]
+approval = true
+plan = true
+question = true
+ask = true
+mail = false
+errored = false
+finished = false
+
+[notify.ntfy]
+url = "https://ntfy.sh/a-long-random-topic"
+token_file = "~/.config/tuios/ntfy-token"   # optional
+
+[notify.pushover]
+user_env = "PUSHOVER_USER"
+token_file = "~/.config/tuios/pushover-token"
+
+[notify.webhook]
+url = "https://hooks.example.com/tuios"
+token_env = "TUIOS_HOOK_TOKEN"              # optional, sent as a bearer token
+```
+
+| Key | Default | What it does |
+| --- | --- | --- |
+| `enabled` | `true` | Turns every notification off when `false`. Nothing is sent without a provider. |
+| `web_url` | empty | The address of tuios-web. Each notification links to `web_url/inbox?item=ID`, which opens the Inbox on the item. See [WEB.md](WEB.md#open-the-inbox-from-a-notification). |
+| `content` | `summary` | `summary` sends the kind, the pane name and the one line the Inbox shows. `title` sends only the kind and the session. |
+| `quiet_active_seconds` | `120` | Holds a notification while you typed into a pane at an attached client in this many seconds. When you stay away that long and the item is still open, tuios sends it. `0` sends at once. |
+| `cooldown_seconds` | `60` | The shortest time between two notifications for the same pane and kind. |
+| `max_per_hour` | `30` | The most notifications in one hour. `0` sets no limit. |
+| `allow_http_redirects` | `false` | Lets a provider redirect to a plain `http` address. |
+
+`[notify.triggers]` selects the Inbox kinds that send a notification. The
+kinds that wait for you are on by default: `approval`, `plan`, `question` and
+`ask` (a question from `tuios ask-human`). The kinds that only report are off:
+`mail`, `errored` and `finished`.
+
+Each item sends one notification at most. A repeated state report, or a new
+line on the same item, sends nothing. An item from a linked host sends
+nothing here. That host sends its own.
+
+### Providers
+
+- `[notify.ntfy]`: `url` is the topic address. `priority` is 1 to 5. When it
+  is unset, an item that waits for you gets 4 and other items get 3. The
+  link goes in the `Click` header.
+- `[notify.pushover]`: your user key and an application token. `url`
+  replaces the Pushover API address, for a relay.
+- `[notify.webhook]`: tuios sends a JSON `POST` to `url` with these fields:
+  `event` (`tuios.inbox`), `kind`, `title`, `body`, `link`, `urgent`,
+  `item_id`, `session`, `window`, `harness`, and `test` for a test
+  notification. At `content = "title"` the body is empty.
+
+### Secrets
+
+Give each token in one of three ways. tuios uses the first one that is set.
+
+- `token = "..."` in config.toml.
+- `token_env = "NAME"`: an environment variable of the daemon. The daemon
+  keeps the environment of the shell that started it.
+- `token_file = "PATH"`: a file that only you can read (mode 600 or 400).
+
+Pushover uses `user`, `user_env` and `user_file` for the user key in the
+same way. tuios reads the value each time it sends, so a new token in the
+file applies at once.
+
+tuios sends each notification itself and needs no other program. It uses
+`HTTPS_PROXY`, `NO_PROXY` and the system certificates. Each send waits at
+most 10 seconds. It follows at most 3 redirects. The token goes in a request
+header and is never logged.
+
+tuios does not write a secret to its logs or its output. The address is
+also secret on a public ntfy server, so logs and `tuios notify test` show
+only the host. A redirect to a plain `http` address is refused, unless you
+set `allow_http_redirects`. A redirect to another host is always refused,
+because the message and its token would go there. Set the url to the
+address the server redirects to.
+
+### Apply a change
+
+The daemon reads `[notify]` when it starts, and again when the file changes.
+A change that turns notifications off, or changes the triggers, applies at
+once. A new address, or a new source for a secret, waits for
+`tuios config apply` from a terminal outside tuios, or a daemon restart. A
+program in a pane can write config.toml, and this stops it from sending your
+Inbox to another address. Like `[hosts]`, `[notify]` is not in
+`list-options`, and `tuios set-config` cannot change it.
+
+Run `tuios notify test` to send a test notification through each provider.
+It does not send to the phones of `[notify.webpush]`.
+It says the result for each provider. See
+[CLI_REFERENCE.md](CLI_REFERENCE.md#tuios-notify-test).
+
+### Web Push to a phone
+
+A phone can get Inbox items by Web Push. The phone does not keep a
+connection to tuios. Its push service, or its UnifiedPush distributor such as
+the ntfy app, wakes it. The phone app registers with the `register-push`
+verb, or you register it with `tuios notify push register`. Only you can
+register a phone. A program in a pane cannot. See
+[protocol.md](protocol.md#register-push).
+
+```toml
+[notify.webpush]
+subject = "https://example.com/tuios-contact"   # optional
+allow_insecure = false
+```
+
+| Key | Default | What it does |
+| --- | --- | --- |
+| `subject` | `https://tuios.dev/push` | The VAPID subject: a URL that a push service can use to contact you. It must be an `https` URL or a `mailto:` URI. The push service reads it, so the default names no machine. |
+| `allow_insecure` | `false` | Lets tuios send to a push service on a loopback or private address, by `https` or `http`, for a push service on your own network. A change to `true` waits for `tuios config apply`. |
+
+When `allow_insecure` is `false`, tuios does not send to a loopback or
+private address. This applies also to a host name that resolves to one. tuios
+never sends to a link-local, multicast or unspecified address. A push does not
+follow a redirect.
+
+When an item opens, tuios encrypts it for each phone that asked for its kind
+and sends it to the phone's push service. When the item closes, tuios sends a
+close, so the phone can remove the notification. A phone gets `approval`,
+`plan`, `ask` and `question` unless it asked for other kinds. The triggers,
+`quiet_active_seconds` and `cooldown_seconds` are for the other providers.
+`enabled = false` stops the pushes of new items. A phone still gets the close
+of an item, so it can remove a notification. `max_per_hour` applies to each
+phone. An item from another machine is not pushed. That machine pushes to its
+own phones.
+
+A push of `approval`, `plan`, `ask` or `question` lives one hour on the push
+service. Other pushes live 120 seconds. tuios tries a failed push again after
+1, 4 and 15 seconds. When the push service says that the phone is gone (404
+or 410), tuios removes the phone and shows an Inbox item about it.
+
+Each registration shows an Inbox item named `phone NAME`. It says who
+registered the phone. Another machine can register a phone over a link with
+`respond`, but it can not replace a registered phone. Check the item. Remove
+a phone you do not know with `tuios notify push rm NAME`. The phones and the VAPID key are in
+the state directory, in `push/`, with mode 600.
+
+Run `tuios notify push ls` to see the phones and the VAPID public key. Run
+`tuios notify push rm NAME` to remove a phone.
+
 ## Harnesses that report to herdr
 
 Crush, and other agents that herdr lists as reporting by themselves, report
@@ -364,6 +1318,57 @@ when it starts and again when the file changes. A change applies to the next
 pane. [AGENT_STATE.md](AGENT_STATE.md#herdrs-pane-state-protocol) says what is
 accepted.
 
+## Report pane states to your terminal
+
+When tuios runs in a terminal that reads OSC 7501, the Program Status
+Protocol (Rex does), it reports the agent state of each pane there.
+`host_program_status` in `[agents]` turns this off:
+
+```toml
+[agents]
+host_program_status = "auto"   # auto (default), off
+```
+
+`auto` asks the terminal when a client starts, and reports only when the
+terminal answers. `off` never asks. A client reads the value when it starts.
+An unknown value reads as `auto`, with a warning. See
+[PROGRAM_STATUS.md](PROGRAM_STATUS.md#tuios-inside-a-terminal-that-reads-osc-7501).
+
+## herdr plugins
+
+tuios runs herdr plugins: folders with a `herdr-plugin.toml`. The `[plugins]`
+table says which plugins run and where tuios finds more of them:
+
+```toml
+[plugins]
+enabled = ["example.notes"]          # the ids of the plugins that run
+dirs = ["~/src/my-herdr-plugin"]     # more plugin folders, or manifests
+```
+
+tuios also finds plugins in `$XDG_CONFIG_HOME/tuios/plugins/<folder>/` and in
+herdr's own `plugins.json` and managed checkouts. To find a plugin runs
+nothing. A plugin runs only when its id is in `enabled`.
+
+An enabled plugin runs its commands with your rights, outside every pane.
+Enable only plugins that you trust.
+
+Use the commands to change the table. They change only the `enabled` or
+`dirs` line and keep the rest of the file:
+
+```bash
+tuios plugins enable example.notes
+tuios plugins disable example.notes
+tuios plugins link ~/src/my-herdr-plugin
+```
+
+You must run them from a terminal outside tuios. A change to the file that
+removes a plugin from `enabled` applies at once. A change that adds a plugin
+to `enabled`, or a folder to `dirs`, waits for `tuios config apply` or a
+daemon restart. `tuios plugins enable ID` applies only the plugin that it
+names. A new folder waits because it can hold a
+plugin with the id of a plugin that you enabled.
+[AGENT_STATE.md](AGENT_STATE.md#herdr-plugins) says what runs and when.
+
 ## Plans, risk rules, the recap and the queue
 
 These tables configure the agent review, triage, reply and approval work,
@@ -392,6 +1397,11 @@ test_patterns = ["go test", "pytest"]
 
 [agents.queue]
 max = 8
+
+[agents.checkpoints]
+enabled = true
+keep = 50
+max_untracked_mb = 50
 ```
 
 - `hold_plans` also hands a plan an agent in plan mode asks to have approved
@@ -428,6 +1438,14 @@ max = 8
   reads it at start and again when the file changes; a queue already longer
   keeps what it holds. The queue is built: see
   [AGENT_STATE.md](AGENT_STATE.md#queued-messages).
+- `[agents.checkpoints]` saves the git work tree of an agent's pane each time
+  the agent finishes a turn that changed a file (`tuios checkpoint`).
+  `enabled` is true by default. `keep` is how many checkpoints one pane keeps:
+  50 by default, at most 1000. `max_untracked_mb` leaves an untracked file
+  larger than this many megabytes out of a checkpoint: 50 by default, and a
+  negative value means no limit. `tuios checkpoint list` names the files left
+  out, and a restore does not change them. The daemon reads these at start
+  and again when the file changes. See [Turn checkpoints](AGENT_STATE.md#turn-checkpoints).
 
 One rail option goes with them: `appearance.sidebar.agent_rest_fold`, how long
 an agent row rests (idle, unknown, or done and already seen) before the rail
@@ -441,15 +1459,21 @@ takes two rows or more, and never a row that needs you, a finished turn not
 yet seen, a working agent, the pane you are in, one with messages queued, or
 one whose agent has subagents at work.
 
-The agent row in `[appearance.sidebar.agent_row]` has four tokens for what
+The agent row in `[appearance.sidebar.agent_row]` has five tokens for what
 tuios feeds itself: `now` (what a working agent is doing, drawn only while it
 works), `context` (`ctx 84%` in the warning ink, drawn only at 80% or more),
 `subagents` (`2 subagents`, how many subagents the agent has at work, drawn
-on any row while any run, from Claude Code's hooks) and `prompt` (the first
-line of the last prompt, not shipped on the row). The shipped `tokens` list is
-now `["session", "need", "harness", "name", "elapsed", "context", "subagents",
-"meta", "now", "message"]`; a list you wrote keeps its own order and gains
-nothing, so add `subagents` to it to see the count. The `meta` token no longer
+on any row while any run, from Claude Code's hooks), `pr` (`PR #12 open
+pass`, the pull request of the session's worktree branch and its checks, in
+the error ink for failing checks, the warning ink for pending ones and the
+success ink for passing ones and a merge, see
+[Shipping a worktree](AGENT_STATE.md#shipping-a-worktree)) and `prompt` (the
+first line of the last prompt, not shipped on the row). The shipped `tokens`
+list is now `["session", "need", "harness", "name", "progress", "elapsed",
+"context", "subagents", "pr", "meta", "now", "message"]`. `progress` (`40%`)
+is the progress a program reported with OSC 7501, drawn while it works or
+waits (see [PROGRAM_STATUS.md](PROGRAM_STATUS.md)). A list you wrote keeps its own
+order and gains nothing. Add `subagents` or `pr` to it to see them. The `meta` token no longer
 draws the fed keys (`now`, `prompt`, `model`, `context`, `cost`, `plan`,
 `subagents`), so place any of them you want with its own token. See
 [What the second line says](AGENT_STATE.md#what-the-second-line-says).
@@ -497,7 +1521,9 @@ daemon logs it, and `tuios pane-grants` says so. When a start finds that
 panes hold more than at the last run, it says so in the log, in
 `tuios pane-grants` and in the Inbox. Like
 `[agents.approvals]`, it is not in `list-options` and `tuios set-config` cannot
-change it, so no pane can loosen it.
+change it, so no pane can loosen it. The [paste buffers](#paste-buffers) hold
+what you copied, so a pane needs `read` to read them, `write` to change them,
+and both to paste one.
 [AGENT_STATE.md](AGENT_STATE.md#what-a-pane-may-do) has the whole model.
 
 ## What another machine may do here
@@ -522,7 +1548,7 @@ allow = ["list", "mail"]
 
 | Capability | What it lets the other machine do here |
 | --- | --- |
-| `list` | Read: sessions, windows, captures, screenshots, agent state, the Inbox, prompts, waits and the event stream. |
+| `list` | Read: sessions, windows, captures, screenshots, agent state, the Inbox, prompts, waits and the event stream. It also gives a live stream of the bytes of any pane (`stream-pane`). |
 | `mail` | Send and read agent mail, and use the stash. |
 | `open` | Start processes: sessions, windows, worktrees, fans, `start-agent`, clones of a repository by its URL, and panes this machine runs for it. |
 | `write` | Change what is here: type into panes, `run` a line at a prompt, close and move windows, set options, layouts and names, report agent state, and attach. Also read a worktree's work out with `bundle-worktree` (`tuios worktree pull`), since a machine that may type into a shell here can read those files already. |
@@ -574,3 +1600,38 @@ algorithm lists. `ProxyCommand`, `LocalCommand`, the known hosts files,
 dash. A host with a refused entry is ignored, and `tuios hosts` and the Inbox
 name the reason. Put such options in `~/.ssh/config`. [protocol.md](protocol.md#what-a-linked-machine-may-do-here) has
 the verb by verb table.
+
+The daemon's links never ask for a password, a passphrase or a code. They
+run ssh with `BatchMode=yes`. A client that can ask you, such as tuios-gpui,
+signs in to a machine itself and keeps that connection open as an ssh master
+in the folder `cm` beside the daemon's socket. That folder is
+`$XDG_RUNTIME_DIR/tuios/cm`, or `/tmp/tuios-<uid>/cm` when
+`XDG_RUNTIME_DIR` is not set. When that folder and its parent exist, are not
+symbolic links, belong to you and only you can open them, each link and
+`tuios hosts test` run ssh with `-o ControlMaster=no` and `-o ControlPath=<folder>/%C`. The link then
+uses the master when one is open for that machine, and connects as usual when
+none is. A machine that needs a password or a second factor then works for
+as long as the master is open. No secret is stored.
+
+A link connects as usual and does not use the folder in these cases:
+
+- Your `~/.ssh/config` gives the host a `ControlPath`. The link uses the
+  master you open there.
+- The host forwards the agent (`ForwardAgent`). A connection through a master
+  gets the forwarding of the master, so the link would lose its agent.
+- A socket path in the folder is too long. The limit is 107 characters on
+  Linux and 103 on macOS. Set `XDG_RUNTIME_DIR` to a shorter folder.
+- tuios runs on Windows. Win32-OpenSSH has no `ControlMaster`.
+
+`%C` names a master by the local host, the remote host, the port and the
+user. It does not include a `ProxyCommand`, so a host reached through two
+different proxy commands shares one master. It includes the jump host only
+on OpenSSH 10.6 and later. On an earlier version, a host reached through two
+different jump hosts also shares one master.
+
+`tailscale_login` is the origin of a Headscale server that sends the Tailscale
+SSH check for this host, for example `"https://headscale.example"`. tuios
+shows and opens a sign-in link only on `login.tailscale.com`,
+`controlplane.tailscale.com` and this origin, over https, with the host matched
+exactly. Anything on the host can print the banner that carries the link. See
+[Tailscale SSH check mode](SESSIONS.md#tailscale-ssh-check-mode).

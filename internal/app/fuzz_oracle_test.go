@@ -10,6 +10,7 @@ import (
 	"github.com/Gaurav-Gosain/tuios/internal/config"
 	"github.com/Gaurav-Gosain/tuios/internal/fuzz"
 	"github.com/Gaurav-Gosain/tuios/internal/terminal"
+	"github.com/Gaurav-Gosain/tuios/internal/vt"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -498,7 +499,7 @@ func checkGuestCellsAreNotPaintedOver(f *fuzzOS) []fuzz.Violation {
 		}
 		marks[i] = paneMarker(i)
 		w.LockIO()
-		_, _ = w.Terminal.Write([]byte("\x1b[H\x1b[2J" + marks[i]))
+		writeMarkerAtOrigin(w.Terminal, marks[i])
 		w.UnlockIO()
 		w.MarkContentDirty()
 	}
@@ -539,6 +540,49 @@ func checkGuestCellsAreNotPaintedOver(f *fuzzOS) []fuzz.Violation {
 		}
 	}
 	return nil
+}
+
+// writeMarkerAtOrigin clears a pane's screen and writes mark into its top-left
+// cell, whatever modes its guest left set.
+//
+// A plain CUP home is not enough. With origin mode (DECOM) on, home is the top
+// left corner of the margins, not of the screen, and a right margin (DECSLRM)
+// wraps the marker before it ends. Both are the emulator doing what the guest
+// asked, so a marker they move is not chrome painting over a pane.
+//
+// The check changes as little of the guest's state as it can, because the
+// actions after it still run under that state:
+//
+//   - The top and bottom margins are never touched. With origin mode off, home
+//     is the screen's corner whatever they are, and the marker is one row.
+//   - Origin mode goes off only if it is on, and back on after the marker.
+//   - The left and right margins open to the full width only if DECLRMM is on,
+//     and then they go back to what ScrollRegion reports. That is the only
+//     state the check reads back from the emulator.
+//
+// All of it goes through Write, as sequences. The Restore calls are for a
+// reattach: the ghostty backend queues them and replays them on its next read,
+// which cleared the marker it had just written.
+func writeMarkerAtOrigin(t vt.Terminal, mark string) {
+	const decom, declrmm = 6, 69
+	modes := t.GetModes()
+	region := t.ScrollRegion()
+
+	var seq strings.Builder
+	if modes[decom] {
+		seq.WriteString("\x1b[?6l")
+	}
+	if modes[declrmm] {
+		seq.WriteString("\x1b[s") // DECSLRM with no parameters: the full width
+	}
+	seq.WriteString("\x1b[H\x1b[2J" + mark)
+	if modes[declrmm] && !region.Empty() {
+		fmt.Fprintf(&seq, "\x1b[%d;%ds", region.Min.X+1, region.Max.X)
+	}
+	if modes[decom] {
+		seq.WriteString("\x1b[?6h")
+	}
+	_, _ = t.Write([]byte(seq.String()))
 }
 
 // paneCellsAreOnScreen reports whether the n cells starting at (x,y) are cells

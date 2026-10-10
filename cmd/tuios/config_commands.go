@@ -4,11 +4,11 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
 
 	"github.com/Gaurav-Gosain/tuios/internal/config"
 	"github.com/Gaurav-Gosain/tuios/internal/theme"
-	"github.com/pelletier/go-toml/v2"
 )
 
 func printConfigPath() error {
@@ -82,38 +82,46 @@ func resetConfigToDefaults() error {
 		}
 	}
 
-	defaultCfg := config.DefaultConfig()
-
-	var sb strings.Builder
-	sb.WriteString(config.ConfigFileHeader(configPath))
-
-	data, err := toml.Marshal(defaultCfg)
-	if err != nil {
-		return fmt.Errorf("failed to marshal config: %w", err)
-	}
-
-	if _, err := sb.Write(data); err != nil {
-		return fmt.Errorf("failed to write config data: %w", err)
-	}
-
-	if err := os.WriteFile(configPath, []byte(sb.String()), 0o600); err != nil {
+	// The reset file holds no settings, so every key has its default and
+	// every file the config includes applies. The include list stays: it is
+	// where the rest of the config is, not a setting.
+	if err := config.ResetConfig(configPath); err != nil {
 		return fmt.Errorf("failed to write config file: %w", err)
 	}
-
 	fmt.Printf("Configuration reset to defaults\n")
 	fmt.Printf("  Location: %s\n", configPath)
 	fmt.Println("\nYou can customize it with: tuios config edit")
+	// The reset is of config.toml alone. Say which other files still set
+	// keys, so a setting that did not go back is not a surprise.
+	if lc, err := config.LoadLayered(configPath); err == nil {
+		var others []string
+		for _, l := range lc.Layers {
+			if l.Kind != config.LayerMain {
+				others = append(others, lc.DisplayPath(l.Path))
+			}
+		}
+		if len(others) > 0 {
+			fmt.Println("These files still apply:")
+			for _, o := range others {
+				fmt.Println("  " + o)
+			}
+		}
+	}
+
 	return nil
 }
 
 func previewThemeColors(themeName string) error {
+	if !slices.Contains(theme.AvailableThemes(), themeName) {
+		return fmt.Errorf("no theme named %q. Run 'tuios list-themes' to see the themes", themeName)
+	}
 	if err := theme.Initialize(themeName); err != nil {
 		return fmt.Errorf("failed to initialize theme: %w", err)
 	}
 
 	currentTheme := theme.Current()
 	if currentTheme == nil {
-		return fmt.Errorf("theme '%s' not found", themeName)
+		return fmt.Errorf("no theme named %q. Run 'tuios list-themes' to see the themes", themeName)
 	}
 
 	fmt.Printf("Theme: %s\n\n", themeName)

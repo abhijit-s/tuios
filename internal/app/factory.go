@@ -7,6 +7,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/Gaurav-Gosain/tuios/internal/config"
 	"github.com/Gaurav-Gosain/tuios/internal/hooks"
+	"github.com/Gaurav-Gosain/tuios/internal/layout"
 	"github.com/Gaurav-Gosain/tuios/internal/session"
 	"github.com/Gaurav-Gosain/tuios/internal/terminal"
 	"github.com/Gaurav-Gosain/tuios/pkg/applist"
@@ -59,6 +60,10 @@ type OSOptions struct {
 	// loaded when it connected, so a save would write one client's stale view
 	// of the whole file over the operator's and over every other client's.
 	ConfigReadOnly bool
+
+	// OpenInboxItem opens the Inbox on this item once attached. tuios-web
+	// sets it from a notification's link. See OS.OpenInboxOn.
+	OpenInboxItem string
 
 	// ShowKeys enables the key display overlay.
 	ShowKeys bool
@@ -195,12 +200,13 @@ func NewOS(opts OSOptions) *OS {
 		NumWorkspaces:     numWorkspaces,
 
 		// Workspace state maps
-		WorkspaceFocus:       make(map[int]int),
-		FocusHistory:         make(map[int][]string),
-		WorkspaceLayouts:     make(map[int][]WindowLayout),
-		WorkspaceHasCustom:   make(map[int]bool),
-		WorkspaceMasterRatio: make(map[int]float64),
-		WorkspaceStackRatio:  make(map[int]float64),
+		WorkspaceFocus:        make(map[int]int),
+		FocusHistory:          make(map[int][]string),
+		WorkspaceLayouts:      make(map[int][]WindowLayout),
+		WorkspaceHasCustom:    make(map[int]bool),
+		WorkspaceMasterRatio:  make(map[int]float64),
+		WorkspaceStackRatio:   make(map[int]float64),
+		WorkspaceMasterSplits: make(map[int]layout.MasterSplits),
 
 		// Resize tracking
 		PendingResizes: make(map[string][2]int),
@@ -279,6 +285,7 @@ func NewOS(opts OSOptions) *OS {
 		ForceEnable: opts.ForceGraphicsEnabled,
 		Output:      opts.GraphicsOutput,
 		Caps:        caps,
+		Symbols:     symbolKind(seed.ImageSymbols, caps.Term),
 	})
 
 	// Tell the terminal package what tuios can forward, so shells spawned
@@ -313,19 +320,18 @@ func NewOS(opts OSOptions) *OS {
 		// Collected here and reported from Init, once there is a TUI to report
 		// them in.
 		os.ConfigWarnings = config.ConfigWarnings(cfg)
-		// A sink the client cannot deliver is a config problem like any other,
-		// and it is only knowable here, where the client is known.
+		// A setting the client cannot carry out is a notice, not a problem:
+		// the file is valid and the setting works on another client. It is
+		// only knowable here, where the client is known.
 		if opts.BrowserClient {
-			os.ConfigWarnings = append(os.ConfigWarnings, browserAlertWarnings(cfg)...)
-			os.ConfigWarnings = append(os.ConfigWarnings,
-				remoteDockComponentWarning(cfg, "tuios-web")...)
+			os.ConfigNotices = append(os.ConfigNotices, browserAlertNotices(cfg)...)
+			os.ConfigNotices = append(os.ConfigNotices,
+				remoteDockComponentNotice(cfg, "tuios-web")...)
 		}
 		if opts.IsSSHMode {
-			os.ConfigWarnings = append(os.ConfigWarnings,
-				remoteDockComponentWarning(cfg, "over SSH")...)
-		}
-		if opts.IsSSHMode {
-			os.ConfigWarnings = append(os.ConfigWarnings, sshAlertWarnings(cfg)...)
+			os.ConfigNotices = append(os.ConfigNotices,
+				remoteDockComponentNotice(cfg, "over SSH")...)
+			os.ConfigNotices = append(os.ConfigNotices, sshAlertNotices(cfg)...)
 		}
 		if cfg.Debug.ShowKeyEvents {
 			os.ShowKeys = true

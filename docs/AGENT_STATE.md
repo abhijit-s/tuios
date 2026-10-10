@@ -48,6 +48,9 @@ matches the build.
    tuios doctor agents                      # what is installed, and agent panes missing one
    ```
 
+   Or press `ctrl+b A` to open the Agents tab of the settings page, and press
+   enter on a harness. See [The Agents tab](#the-agents-tab).
+
 2. Learn two keys: `ctrl+b i` opens the Inbox and `ctrl+b o` goes to the
    oldest item. The rail is on by default from v0.8.0. A config file that sets
    it off keeps it off; turn it on with:
@@ -84,12 +87,33 @@ matches the build.
    attached: an `after-agent-state` hook ([HOOKS.md](HOOKS.md); `tuios --skill
    recipes` has a working one).
 
+### OpenCode versions
+
+The OpenCode integration supports V1 1.18.29+ and V2. After upgrading tuios,
+run `tuios integration install opencode` again and restart the OpenCode terminal
+client to pick up the new plugin.
+
+V1 uses the server hooks in `plugins/tuios-agent-state.js`. V2 discovers the
+adjacent `plugins/tuios-agent-state/` directory and runs its `tui.js` in the
+terminal client. The V2 server entrypoints do not report pane state: a shared
+server can inherit another pane's environment, or start outside tuios.
+
+V2 reports the displayed root session. Events for other sessions and subagents
+do not change that pane's state. Attaching or switching sessions restores the
+current state and pending prompts. It reads V2's session usage totals and forms,
+and uses the session-scoped permission reply API. The Inbox still offers only
+tool calls its whole-call checks understand; other approvals stay in OpenCode.
+Headless V2 clients such as `opencode run` do not load this terminal plugin.
+
 ## Supported agents
 
 tuios gets an agent's state in one of these ways, best first:
 
 - **Hook**: a hook or plugin that `tuios integration install` writes reports
   each state. "Session" means that the hook reports only the conversation id.
+- **OSC 7501**: the program writes the Program Status Protocol sequence, or
+  calls `tuios status`. Any program can do this, not only an agent. See
+  [PROGRAM_STATUS.md](PROGRAM_STATUS.md).
 - **herdr**: the agent reports by itself over
   [herdr's pane state protocol](#herdrs-pane-state-protocol). You install
   nothing.
@@ -118,6 +142,7 @@ tuios gets an agent's state in one of these ways, best first:
 | Grok CLI, Hermes Agent | session hook, screen, title | working, needs_input, idle | screen fixtures |
 | Cline, Goose, Maki | screen | working, needs_input, idle | screen fixtures |
 | Aider | process | working, idle | unit |
+| Any program that writes OSC 7501 (a build, a deploy script, `tuios status`) | OSC 7501 | working, needs_input, idle, done, errored | E2E with a script |
 
 An agent that herdr supports through its own hook scripts, such as Letta Code
 or MastraCode, reports to tuios too when you install herdr's integration for it.
@@ -128,6 +153,7 @@ Those scripts send herdr's protocol to `HERDR_SOCKET_PATH`.
 | To | Read |
 | --- | --- |
 | Understand the states and who decides them | [States](#states), [Sources and precedence](#sources-and-precedence) |
+| Let any program or script report its state | [PROGRAM_STATUS.md](PROGRAM_STATUS.md) |
 | Make a harness report, or see why a pane is or is not an agent | [Harness integrations](#harness-integrations), [Recognising a harness](#recognising-a-harness), [Screen rules](#screen-rules) |
 | Use the Inbox and answer prompts | [The Inbox](#the-inbox), [Answering a prompt without attaching](#answering-a-prompt-without-attaching), [Approvals from the Inbox](#approvals-from-the-inbox), [KEYBINDINGS.md](KEYBINDINGS.md#the-inbox) |
 | Let agents ask you something | [Questions an agent asks you](#questions-an-agent-asks-you) |
@@ -168,6 +194,7 @@ dies with the daemon. `tuios --skill mail` has the whole contract.
 | `tuios worktree ls`, `tuios worktree diff`, `tuios fan keep SESSION` | Watch them, read what one changed, keep one and remove the rest without losing uncommitted work |
 | `tuios fan compare SESSION`, `tuios fan verify SESSION -- CMD`, `tuios fan diff A B` | Every attempt side by side with its changes and last check, one check run in all of them, and what two did differently |
 | `tuios review [SESSION]`, `tuios review note FILE:LINE 'TEXT'`, `tuios review send` | What the agent in a pane changed against its base, notes on its lines, and the notes sent to it as one message when it rests. See [Reviewing an agent's changes](#reviewing-an-agents-changes) |
+| `tuios ship commit`, `tuios ship merge`, `tuios ship pr`, `fan keep SESSION --merge` | Commit an agent's work, merge its branch into the base, push it and open a pull request. The rail shows the pull request and its checks. See [Shipping a worktree](#shipping-a-worktree) |
 | `--select 'group:fan/retry needs:you'` | Address every agent pane a selector matches, on `list-agents`, `list-attention`, `wait-for`, `send-agent-message` and `ask-agent` |
 | `--grants read,write` | On `fan`, `start-agent` and `new-window`: what the new panes may do |
 
@@ -208,6 +235,7 @@ may do there; answering prompts is off by default. See
 - [Harness integrations](#harness-integrations)
 - [Headless agents over a protocol](#headless-agents-over-a-protocol)
 - [Typing a prompt](#typing-a-prompt)
+- [Turn checkpoints](#turn-checkpoints)
 - [Environment](#environment)
 - [Alerts](#alerts)
 - [Who can act as the person](#who-can-act-as-the-person)
@@ -232,8 +260,11 @@ and `explain-agent-detect` also report `needs_you`, true for `needs_input` and
 `errored`, so a consumer that only wants "does a person have to act" does not
 have to know which states mean it.
 
-`get-agent-state` and `list-agents` also report `blocked_by`, `approval` or
-`question`, for a pane on `needs_input`. A screen, title or notify rule
+`get-agent-state` and `list-agents` also report `blocked_by`, `approval`,
+`question` or `auth`, for a pane on `needs_input`. Only an explicit report says
+`auth` (a login, a token or a credential): `set-agent-state --kind auth`, or an
+OSC 7501 report with `kind=auth`. An OSC 7501 report with no kind gives an
+empty `blocked_by`, and its message is never read for one. A screen, title or notify rule
 supplies it from its `kind` (named in the manifest, or guessed from the rule's
 words), and a report supplies it with the `kind` param of `set-agent-state`, as
 `tuios agent-hook` does. A report that carries no kind has it guessed from the
@@ -438,7 +469,11 @@ prints:
 
 `pane send-text`, `pane send-keys`, `pane run` and the report commands print
 nothing when they succeed. `pane read` and `agent read` print the text read.
-`herdr --version` prints `herdr 0.9.3+tuios`.
+`herdr --version` prints `herdr 0.9.3+tuios`. `herdr status server` says
+`status: running` when the socket answers, and `status: not running` when
+it does not. `--json` gives the same in herdr's JSON. `endpoint_compatible`
+is always false, because tuios does not serve herdr's client protocol.
+`herdr session list` names one session, `default`, at the herdr socket.
 
 The daemon makes the link when it starts, beside its socket:
 `$XDG_RUNTIME_DIR/tuios/herdr/bin/herdr`, or `/tmp/tuios-<uid>/herdr/bin/herdr`
@@ -454,22 +489,27 @@ pane, as plugins do:
 ```
 
 These commands answer: `pane` (all of herdr's subcommands), `tab`,
-`workspace`, `agent` (except `attach`), `worktree`, `notification show` and
-`api snapshot`. A command runs only if tuios answers its method (see
-[Methods](#methods)). For any other method, the socket answers
-`unsupported`. `server reload-config` is one of these: tuios does not read
-herdr's config. The commands that do their work on herdr's own
-machine answer herdr's error shape with code `unsupported` and exit 1:
-`status`, `config`, `session`, `terminal`, `machine`, `channel`, `update`,
-`completion`, `plugin`, `integration`, `api schema`, `agent attach` and
-`server stop`. So a plugin that calls one of them fails cleanly and can
-continue. tuios does not host herdr plugins, so `plugin` does not install,
-link or run a plugin. Run the plugin's command yourself (see
-[herdr tools in tuios](#herdr-tools-in-tuios)).
+`workspace`, `agent` (except `attach`), `worktree`, `notification show`,
+`api snapshot`, `server reload-config`, `terminal title`, `status`,
+`session list` and `plugin`. A command runs only if tuios answers its method
+(see [Methods](#methods)). For any other method, the socket answers
+`unsupported`. The commands that do their work on herdr's own machine answer
+herdr's error shape with code `unsupported` and exit 1: `config`, `session
+attach`, `session stop`, `session delete`, `terminal attach`, `terminal
+session`, `machine`, `channel`, `update`, `completion`, `integration`, `api
+schema`, `agent attach`, `server stop`, `plugin install` and `plugin
+uninstall`. So a plugin that calls one of them fails cleanly and can
+continue. The other `plugin` commands go to the plugin host (see [herdr
+plugins](#herdr-plugins)). `plugin config-dir` prints the plugin's config
+folder.
 
-When the daemon cannot make the link, for example on Windows,
-`HERDR_BIN_PATH` names the tuios binary. Then only `pane` and `notification`
-answer, as `tuios pane ...` and `tuios notification ...`.
+On Windows the link is `herdr.exe`. It is a hardlink to the tuios binary.
+When the binary is on another volume, it is a copy of the binary. The
+daemon makes the link again when it starts and the binary has changed.
+
+When the daemon cannot make the link, `HERDR_BIN_PATH` names the tuios
+binary. Then only `pane` and `notification` answer, as `tuios pane ...` and
+`tuios notification ...`.
 
 Use `set-agent-state` and `set-agent-meta` in your own scripts. herdr's
 commands are there for tools that already speak herdr.
@@ -592,7 +632,9 @@ holds the pane's [grants](#what-a-pane-may-do):
 - `pane.send_text`, `pane.send_keys` and `pane.send_input` need `write`. A pane
   may not type into a pane that waits on a prompt without `respond`, because
   the keys answer the prompt. `admin` does not give `respond`.
-- A create, close, rename, focus, swap, zoom or move needs `admin`.
+- A create, close, rename, focus, swap, zoom, resize or move needs `admin`.
+  So does a change to the title of the client's terminal, and a workspace
+  metadata report.
 - `agent.start` needs what `start-agent` needs (`fan`), and its typing needs
   `write`, as for `pane.send_text`.
 
@@ -630,10 +672,20 @@ A refused call answers error `forbidden`, and nothing changes.
 | `pane.focus_direction` | `focus-window` | the pane that `pane.neighbor` names. With none, `changed` is false and `reason` is `no_neighbor` |
 | `pane.swap` | `set-layout` grant, then the attached client | by direction or by `source_pane_id` and `target_pane_id`. The source keeps the focus. A swap that cannot happen answers `reason` `no_neighbor`, `same_pane`, `not_found` or `cross_tab`. Without an attached client it fails with `no_client` |
 | `pane.zoom` | `focus-window`, `run-command ToggleZoom` | `mode` `toggle`, `on` or `off`. The pane is focused first. `reason` is `single_pane`, `already_zoomed` or `already_unzoomed` when nothing changes |
+| `pane.resize` | `set-layout` grant, then the attached client | moves one border of the pane by `amount`, a share of the tab (0.05 when not given, 0.5 at most, one cell at least). `right` and `down` move a border right or down, `left` and `up` move it left or up. The border is the one on that side of the pane, or the other one when the pane is at the edge of the tab there. `changed` is false and `reason` is `unchanged` when nothing moves, as in a floating or scrolling layout. Without an attached client it fails with `no_client` |
+| `pane.move` | `move-window` | to a tab of the pane's own workspace, or to a new tab there. tuios places the pane in the tab's layout itself, so `target_pane_id`, `split` and `ratio` are not followed. The pane keeps its id. A tab of another workspace, and `new_workspace`, fail with `unsupported`, because a tuios window stays in its session. `reason` is `same_tab` or `zoomed_tab` when nothing moves |
 | `agent.list`, `agent.get` | `list-windows` | a target is a pane id, a terminal id, or one agent's label or name |
 | `agent.wait` | `wait-for agent-state` | |
 | `agent.start` | `start-agent` grant, then `send-text` and `send-keys` | needs `fan` on the session (what `start-agent` needs) and `write` for the typing. Types the agent's command at the shell prompt of a pane, and names the pane after the agent. See below |
 | `agent.prompt` | `send-text` with `submit` | types the prompt as `ask-agent` does. An agent that works or waits on a prompt fails with `agent_not_idle` |
+| `agent.rename` | `set-window` | names the pane that holds the agent. No `name` clears it. `agent.get` and the other agent methods then find the agent by the new name |
+| `agent.explain` | `explain-agent-detect` | `explain` is what tuios's detector reports for the pane. It is tuios's report, not herdr's |
+| `workspace.report_metadata` | `set-session-accent` grant | the tokens show under `tokens` in `workspace.list`, `workspace.get` and the snapshot, until a `ttl_ms` runs out or the session closes. herdr's limits and words apply. A token is keyed by its name: a later report replaces it, and `null` clears it. A report with a `seq` at or below the last one from its `source` changes nothing. tuios keeps the tokens in memory and does not draw them |
+| `client.window_title.set`, `client.window_title.clear` | `run-command` grant, then the attached client | sets or clears the title of the terminal that the tuios client runs in. The client is the one that shows the caller's session, else the one that shows the active workspace. Without one, `changed` is false and `reason` is `no_foreground_client`, as in herdr. Control characters are taken out, and the title is cut to 256 characters |
+| `server.agent_manifests` | none | lists the agents tuios knows, under herdr's names. `source` is `bundled`, or the path of your own manifest file with `source_kind` `local override`. tuios fetches no manifests from the network, so the remote fields are left out |
+| `server.reload_config` | none | answers `config_reload` with status `applied` and a diagnostic. tuios does not read herdr's `config.toml`, and it reads its own config file when the file changes, so nothing is reloaded |
+| `pane.clear_agent_authority` | the pane reports | a pane may clear only itself. A state that a report holds clears, and detection reads the pane again. A state that the detector holds stays |
+| `release_notes.dismiss`, `product_announcement.dismiss` | none | fail with `stale_release_notes` and `stale_announcement`, as herdr does when none is current. tuios shows none of herdr's |
 | `worktree.list` | `git worktree list` | needs what `list-worktrees` needs |
 | `worktree.create` | `new-worktree` | tuios chooses the path. A `path` fails with `unsupported` |
 | `worktree.open` | `new-session` in the checkout | a checkout that a session shows answers `already_open: true` |
@@ -642,11 +694,11 @@ A refused call answers error `forbidden`, and nothing changes.
 | `events.wait` | `wait-for agent-state` | answers only a `pane_agent_status_changed` match, as herdr does |
 | the pane reports | `set-agent-state` and the rest | see [herdr's pane state protocol](#herdrs-pane-state-protocol) |
 
-Every other herdr method answers error `unsupported`: the `server.*`,
-`plugin.*`, `integration.*`, `client.*` and `layout.*` methods, and
-`workspace.move`, `workspace.move_block`, `workspace.report_metadata`,
-`agent.rename`, `agent.explain`, `agent.view.*`, `pane.resize`, `pane.move`,
-`pane.scroll`, `pane.clear` and the copy, selection and link methods. The
+The `plugin.*` methods and `popup.close` are answered by the plugin host. See
+[herdr plugins](#herdr-plugins).
+
+Every other herdr method answers error `unsupported`. See
+[What tuios does not answer](#what-tuios-does-not-answer). The
 `pane.graphics.*` methods, which herdr 0.9.2 removed, answer
 `unknown_method`, as herdr does. A method that herdr does not have answers
 `invalid_request`, as herdr does.
@@ -675,6 +727,20 @@ Past that the answer is `rate_limited`.
 `invalid_request` with serde's words, for example ``missing field `pane_id` ``.
 An id that finds nothing answers `workspace_not_found`, `tab_not_found` or
 `pane_not_found`.
+
+#### What tuios does not answer
+
+These methods answer error `unsupported`. Each row says why.
+
+| Methods | Why |
+| --- | --- |
+| `workspace.move`, `workspace.move_block` | tuios lists its sessions in the order they were made. It has no order to change |
+| `layout.export`, `layout.apply`, `layout.set_split_ratio` | herdr's layout is a split tree. tuios tiles its panes in the client and does not export a tree |
+| `agent.view.set`, `agent.view.clear` | they set how herdr's sidebar sorts and filters agents. The tuios rail has no such view, so tuios does not pretend to apply one |
+| `pane.scroll`, `pane.clear`, `pane.edit_scrollback` | tuios scrolls a pane in the client, in copy mode. It does not move the view, or clear the screen, for another program |
+| `pane.selection.read`, `pane.copy_motion`, `pane.copy_search`, `pane.input.set`, `pane.link.activate`, `pane.link.resolve`, `command.invoke`, `client_shell.surface.set` | herdr's own client calls these to draw its screen. A tuios client does this work itself |
+| `integration.list`, `integration.install`, `integration.uninstall` | they install herdr's agent hooks. Use `tuios integration` |
+| `server.stop`, `server.live_handoff`, `server.ssh_agent.register`, `server.reload_agent_manifests` | they act on herdr's own server. Use `tuios kill-server`. tuios reads its harness manifests when it starts |
 
 #### Where tuios differs from herdr
 
@@ -721,20 +787,32 @@ install it as its README says and run its command.
 | [terminal-browser](https://github.com/zenbu-labs/terminal-browser) | `terminal-browser open URL --split right` (or `left`, `down`, `up`) | `pane split`, `pane swap`, `pane run`, `pane neighbor`, `pane process-info`, `HERDR_TAB_ID` |
 | [terminal-code](https://github.com/zenbu-labs/terminal-code) | `tode --split right` | the same as terminal-browser |
 | [vim-herdr-navigation](https://github.com/paulbkim-dev/vim-herdr-navigation) | install its Vim or Neovim part. In Vim, `Ctrl+h/j/k/l` at the last split moves the tuios focus to the next pane | `pane focus --direction --pane` |
-| [herdr-splits.nvim](https://github.com/lmilojevicc/herdr-splits.nvim) | install the Neovim plugin. The same moves as above | `pane edges`, `pane focus --direction`. Its resize keys fail, because tuios does not answer `pane.resize` |
+| [herdr-splits.nvim](https://github.com/lmilojevicc/herdr-splits.nvim) | install the Neovim plugin. The same moves as above, and its resize keys | `pane edges`, `pane focus --direction`, `pane resize` |
 | [herdr-watch](https://github.com/Unayung/herdr-watch) | `HERDR_SOCKET_PATH="$XDG_RUNTIME_DIR/tuios/tuios.sock.herdr" node bridge.js` | the socket: `agent.list`, `pane.read`, `agent.prompt` |
 | [herdr-telegram-agents](https://github.com/permgps/herdr-telegram-agents) | its service, with `HERDR_SOCKET_PATH` set as for herdr-watch | the socket: `agent.*`, `events.subscribe`, `tab.*`, `workspace.list`, `agent.start` |
 
-These Vim plugins also install a herdr key binding that moves from a shell
-pane into Vim. That binding is a herdr plugin action, and tuios does not run
-it. In tuios, move into the Vim pane with the directional focus keys.
+These Vim plugins also have herdr actions that move from a shell pane into
+Vim. herdr binds the actions to keys in its own config, which tuios does not
+read. In tuios, link and enable the plugin, and bind each action to a
+[command key](KEYBINDINGS.md#command-keys) of type `shell`:
+
+```toml
+[[keybindings.command]]
+key = "ctrl+h"
+type = "shell"
+command = "tuios plugins run vim-herdr-navigation left"
+description = "Navigate left (Vim/tuios)"
+```
+
+Add one entry for each of `left`, `down`, `up` and `right`. The key then
+works in every pane. In a pane that runs Vim, the action sends the key to Vim.
 
 terminal-browser and terminal-code draw with kitty graphics. Run the tuios
 client in a terminal that shows kitty images (kitty, Ghostty, WezTerm).
 terminal-browser writes `kitty_graphics = true` into herdr's config file
 (`$HERDR_CONFIG_PATH`, else `~/.config/herdr/config.toml`) and then runs
-`herdr server reload-config`. tuios answers that command with
-`unsupported`, and terminal-browser continues. terminal-browser reads the
+`herdr server reload-config`. tuios answers that the reload is done, and
+terminal-browser continues. tuios does not read herdr's config file. terminal-browser reads the
 command line of every pane on its workspace with `pane process-info`, which
 needs `write` on the session. Every pane holds it by default (`admin` under
 the default mode `open`, `write` under `strict`).
@@ -756,11 +834,132 @@ command = "zoe"
 description = "Agent flow graph"
 ```
 
-A plugin that needs herdr's plugin host does not run: its `[[actions]]`,
-`[[panes]]`, `[[events]]` and `[[startup]]` entries in `herdr-plugin.toml`
-are herdr's, and tuios does not read that file. A client for herdr's
-terminal protocol (`terminal.attach`, `herdr agent attach`) does not connect,
+A plugin that has a `herdr-plugin.toml` runs in tuios's plugin host. See
+[herdr plugins](#herdr-plugins). A client for herdr's terminal protocol (`terminal.attach`, `herdr agent attach`) does not connect,
 because tuios does not serve that protocol.
+
+#### herdr plugins
+
+tuios runs herdr plugins: a folder with a `herdr-plugin.toml` manifest, in
+herdr 0.9.3's format. You do not change the plugin.
+
+**Where tuios finds plugins.** tuios looks in four places, in this order:
+
+1. The folders and manifests that `[plugins] dirs` in `config.toml` names.
+   `tuios plugins link DIR` adds one.
+2. The tuios plugins folder: `$XDG_CONFIG_HOME/tuios/plugins/<folder>/`.
+3. herdr's registry: `$XDG_CONFIG_HOME/herdr/plugins.json`, else
+   `~/.config/herdr/plugins.json`.
+4. herdr's managed checkouts: `~/.config/herdr/plugins/github/*`.
+
+tuios only reads herdr's files. It does not write to them. When two places
+have the same plugin id, the first one wins. `tuios plugins list` shows the
+other one with the error `plugin_id_shadowed`.
+
+**Nothing runs until you enable it.** To find and list a plugin runs none of
+its code. A plugin runs only when its id is in `[plugins] enabled`. herdr's
+own `enabled` flag has no effect in tuios.
+
+```bash
+tuios plugins list
+tuios plugins info example.notes
+tuios plugins enable example.notes
+tuios plugins disable example.notes
+```
+
+You must enable and disable a plugin from a terminal outside tuios. The
+daemon refuses `plugin.enable`, `plugin.disable`, `plugin.link` and
+`plugin.unlink` from a pane, from a process that a plugin started, and from
+another machine. A change to `config.toml` that removes a plugin from
+`enabled` applies at once. A change that adds a plugin, or a folder to
+`dirs`, waits for `tuios config apply` or a daemon restart.
+`tuios plugins enable ID` applies only the plugin that it names.
+
+**An enabled plugin runs with your rights.** Its startup commands, actions
+and event hooks run outside every pane, as your user, as they do in herdr.
+Enable only plugins that you trust. A process that a plugin starts cannot
+enable a plugin or answer as you, also after its command exits. While the
+command runs, its processes hold the default pane grants
+(`[agents.permissions]`). A plugin pane is an ordinary pane. It holds the grants that a pane
+started by its caller holds.
+
+**What runs:**
+
+| Entry | When it runs |
+| --- | --- |
+| `[[build]]` | Only when you run `tuios plugins build ID`. tuios shows each command before it runs it. |
+| `[[startup]]` | Once, when the daemon starts, and when you enable the plugin while the daemon runs. Disable the plugin or stop the daemon to stop it. |
+| `[[actions]]` | From the command palette, `tuios plugins run ID ACTION`, `herdr plugin action invoke` or `plugin.action.invoke`. |
+| `[[events]]` | When the herdr event stream sends the event that the entry names. See [Events](#events). |
+| `[[panes]]` | From the command palette, `tuios plugins open ID PANE`, `herdr plugin pane open` or `plugin.pane.open`. |
+| `[[link_handlers]]` | Not yet. `tuios plugins info` lists them. |
+
+A command is an argv array. No shell reads it. A program with a `/` in its
+name is found from the plugin folder, as in herdr. A program without one is
+found on `PATH`.
+
+A background command runs in the plugin folder, with no terminal and stdin
+closed. tuios keeps the first 64 KiB of its stdout and stderr in a log of 200
+runs. `tuios plugins log` shows it. A pane reads the log only with
+`admin`, because a command can print what the pane may not see. At most 32 commands run at once, and at
+most 8 for one plugin. tuios kills an action or event command after 10
+minutes. One plugin runs at most 20 event hooks in 10 seconds. tuios drops
+and logs the hooks past that limit.
+
+The commands get herdr's variables: `HERDR_PLUGIN_ID`, `HERDR_PLUGIN_ROOT`,
+`HERDR_PLUGIN_CONFIG_DIR`, `HERDR_PLUGIN_STATE_DIR`,
+`HERDR_PLUGIN_CONTEXT_JSON`, `HERDR_SOCKET_PATH`, `HERDR_BIN_PATH` and
+`HERDR_ENV`. An action also gets `HERDR_PLUGIN_ACTION_ID`. A hook gets
+`HERDR_PLUGIN_EVENT` and `HERDR_PLUGIN_EVENT_JSON`. A pane gets
+`HERDR_PLUGIN_ENTRYPOINT_ID`. The herdr link is first on `PATH`, so a plugin
+that runs `herdr` reaches tuios. The config folder is
+`$XDG_CONFIG_HOME/tuios/plugin-config/<id>` and the state folder is
+`$XDG_STATE_HOME/tuios/plugins/<id>`. tuios does not share them with herdr.
+
+**Pane placement:**
+
+| herdr placement | In tuios |
+| --- | --- |
+| `popup` | A popup, at the `width` and `height` of the entry |
+| `overlay` | A popup, 90% by 90% |
+| `split` | A new pane on the workspace of the target pane. A tiling client puts it beside the focused pane. |
+| `zoomed` | As `split`, then zoomed |
+| `tab` | A new pane on the first empty workspace |
+
+A popup needs an attached client. `popup.close` closes the popup that the
+caller runs in, else the popup of the focused session.
+
+`plugin.list` lists every plugin that tuios found. A plugin whose manifest
+does not load has a warning that starts with `manifest unavailable:`.
+
+#### Plugins tested with tuios
+
+These plugins ran unchanged in tuios's plugin host, each in an
+isolated daemon. "Before" is tuios without the plugin host.
+
+| Plugin | What ran | Before | Now |
+| --- | --- | --- | --- |
+| [terminal-browser](https://github.com/zenbu-labs/terminal-browser) | the `open-split` action | did not run | opens a split that runs the browser |
+| [terminal-code](https://github.com/zenbu-labs/terminal-code) | the `open-split` action | did not run | opens a split that runs `tode` |
+| [vim-herdr-navigation](https://github.com/paulbkim-dev/vim-herdr-navigation) | its actions, from a shell and from Neovim, and from a command key | did not run | moves the tuios focus from a shell. Sends the key to Neovim. Neovim at its last split moves the tuios focus |
+| [herdr-splits.nvim](https://github.com/lmilojevicc/herdr-splits.nvim) | its navigation and resize actions | did not run | the same as vim-herdr-navigation, and the resize moves a border |
+| [herdr-nvim-nav](https://github.com/aimdevlee/herdr-nvim-nav) | `tuios plugins build`, then its actions | did not run | the same as vim-herdr-navigation |
+| [herdr-nvim](https://github.com/ChmaraX/herdr-nvim) | `tuios plugins build`, then the `toggle` action | did not run | opens the Neovim sidebar in a split |
+| [herdr-file-viewer](https://github.com/smarzban/herdr-file-viewer) | `tuios plugins build`, then its open action | did not run | opens its pane in a split |
+| [herdr-sidebar](https://github.com/alexarthurs/herdr-sidebar) | `tuios plugins build`, then its `workspace.created` hook | did not run | the hook opens the sidebar pane in a new session |
+| [herdr-plus](https://github.com/cloudmanic/herdr-plus) | `tuios plugins build`, then the `quick-actions` action | did not run | opens its picker |
+| [herdr-auto-title](https://github.com/kryptamine/herdr-auto-title) | `tuios plugins build`, then its startup service | did not run | names the tab after the folder and the program in it |
+
+tuios reads all 113 manifests of the 115 most starred herdr plugins. These
+parts of a plugin do not run yet:
+
+- `[[link_handlers]]`.
+- `herdr plugin install` and `uninstall`: link a cloned folder with
+  `tuios plugins link DIR`.
+- A client of herdr's terminal protocol (`terminal.attach`, `herdr agent
+  attach`), such as the phone and web clients.
+- The methods in [What tuios does not answer](#what-tuios-does-not-answer).
+  77 of herdr's 102 methods answer.
 
 #### Events
 
@@ -808,6 +1007,7 @@ decide which opinion wins:
 | Source   | Meaning                                          |
 | -------- | ------------------------------------------------ |
 | `report` | The agent reporting for itself (default)         |
+| `program` | The pane's own OSC 7501 report ([PROGRAM_STATUS.md](PROGRAM_STATUS.md)) |
 | `osc`    | An escape sequence the pane emitted              |
 | `screen` | A rule matched against the pane's rendered text  |
 | `stall`  | The silence timer                                |
@@ -818,6 +1018,11 @@ ranked above it, so a screen rule cannot overwrite what an agent reported for
 itself. A source updating its own claim is always allowed. A report that loses
 comes back with `"applied": false` and the state that stands, rather than an
 error.
+
+`program` ranks just below `report` and above `transcript`. Both are the
+program saying what it does, and when a harness hook and an OSC 7501 report
+describe the same pane, the hook keeps the pane. Only the pane's emulator sets
+`program`, so `set-agent-state` does not accept it.
 
 Omitting `source` means `report`, so a caller that never sets it behaves exactly
 as it always has. `get-agent-state` reports the winning `source` and, when one
@@ -1686,13 +1891,18 @@ opens, as `claude · opus 4.7 · 42% ctx · $1.20`.
 These are row tokens like the rest (see `[appearance.sidebar.agent_row]` in
 [CONFIGURATION.md](CONFIGURATION.md)): `now` (only while working), `context`
 (only at 80% or more), `subagents` (while any run, on any row; its number is
-the count, for a `gt` or `lt` rule) and `prompt` (the first line of the last
-prompt you gave the agent, not shipped on the row), beside `$model`, `$cost`,
-`$plan` and `$key` for any key, which draw a value on any row. The shipped
-order is `session, need, harness, name, elapsed, context, subagents, meta, now,
-message`: `now` comes last so a long command loses its tail before anything
-else does. A `tokens` list you wrote keeps its own order, and draws the count
-once you add `subagents` to it.
+the count, for a `gt` or `lt` rule), `pr` (the pull request of the session's
+worktree branch and its checks, such as `PR #12 open pass`, see
+[Shipping a worktree](#shipping-a-worktree)) and `prompt` (the first line of
+the last prompt you gave the agent, not shipped on the row), beside `$model`,
+`$cost`, `$plan` and `$key` for any key, which draw a value on any row. The
+shipped order is `session, need, harness, name, progress, elapsed, context,
+subagents, pr, meta, now, message`: `now` comes last so a long command loses
+its tail before anything else does. A `tokens` list you wrote keeps its own
+order, and draws the count once you add `subagents` to it. `progress` (`40%`)
+is the progress of a pane's OSC 7501 report while it works or waits, and its
+number is the percent; add it to a list you wrote to see it (see
+[PROGRAM_STATUS.md](PROGRAM_STATUS.md)).
 
 ### Agent metadata
 
@@ -2022,6 +2232,11 @@ approvals, questions, asks and errored items are `blocked`, finished items are
 filter says `here`. An item of a machine whose link is down is not counted.
 Without the Inbox (an older daemon, or while reconnecting) the header counts its
 rows, as it did before.
+
+The daemon can also send an Inbox item to your phone, through ntfy, Pushover
+or a webhook. It sends the item when nobody is at an attached client, and the
+link in the notification opens tuios-web on the item. See
+[Push notifications to your phone](CONFIGURATION.md#push-notifications-to-your-phone).
 
 ### Questions an agent asks you
 
@@ -2621,11 +2836,21 @@ The rules are read from the file and again when it changes, and cannot be set
 with `set-option`, so a pane cannot switch them off through tuios. An approval
 nobody holds is matched on its line: tuios's own hooks report
 `approve <Tool>: <what>`, read as that tool and argument; any other line is
-read as a command. That line is clipped to 100 characters, so a risky part
-past the cut is not there to match. A clipped line is therefore marked
+read as a command. That line is clipped to 100 characters, and a part that
+looks like a key is replaced with `***`. So a risky part past the cut or
+behind the stars is not there to match. Such a line is therefore marked
 `cut short` besides whatever the rules found: the allow takes the second
-press, and a pane with the `respond` grant cannot give it. A held call is
-matched on the whole command the hook sends, not on the line.
+press, and a pane with the `respond` grant cannot give it. A path in the line
+is read only up to the stars. The `...` at the end of a clipped line is the
+cut, and the last path in that line is read only up to it. A `...` at any
+other place is part of the path. `outside the worktree` marks a path that the
+line does not show whole only when the part it shows already leaves the
+worktree. A held call is matched on the whole command the hook sends, not on
+the line.
+
+A Codex `apply_patch` line is always marked `cut short`. Its line shows the
+patch, and every patch starts with `*** Begin Patch`. tuios cannot tell these
+stars from a redacted part.
 
 The rules are a speed bump, not a sandbox. A command written to hide what it
 does (a variable holding `rm`, an alias, a script file) passes them. The
@@ -2803,7 +3028,7 @@ tuios can work out by looking. tuios wires nineteen of them itself:
 tuios integration install claude-code   # any harness below, or --all
 tuios integration status                # installed and current, per harness
 tuios integration uninstall codex
-tuios doctor agents                     # PATH, install state, and panes missing theirs
+tuios doctor agents                     # PATH, install state, and panes missing theirs or out of date
 ```
 
 An integration reports one of two things. Twelve report the pane's **state**:
@@ -2905,6 +3130,48 @@ command only, so it would replace a user's own, and it reports only that a turn
 finished. Hooks are on by default in Codex; `status` notes a `config.toml` that
 turns them off with `[features] hooks = false`. `tuios agent-hook codex` still
 reads a `notify` payload, so a hand-wired `notify` reports `done`.
+
+### The Agents tab
+
+The settings page has an Agents tab with the report `tuios doctor agents`
+prints. Open it with `ctrl+b A`, or with `Agents: settings, install and update
+integrations` in the command palette. The tab is only there for a terminal on
+this machine. It is not there when `[agents] enabled = false`, or on a client
+that `tuios ssh` or `tuios-web` serves, since the integrations on the server are
+not the remote person's to change.
+
+Each row is one harness. It shows whether the harness is on PATH, and one of
+these states:
+
+| State | What it means |
+| ----- | ------------- |
+| installed | The integration is installed and current. An install made with `--command` is current too. The line under the row names the program its hooks run. |
+| out of date | An older tuios installed it. Update it. |
+| not installed | The integration is not installed. If the harness has not run here, run it once first. |
+| no integration | tuios has no integration for this harness. The line under the row gives the reason. |
+| cannot read | tuios cannot read or parse the integration's file. The line under the row names the file. |
+
+Press enter or click a row to see its actions: install, update or uninstall.
+Each action names the file it changes. Press enter on the action to do it, or
+esc to go back. The actions run the same code as `tuios integration install`
+and `tuios integration uninstall`. An update keeps the program the installed
+hooks run, so an install made with `--command /path/to/tuios` keeps that path.
+A new install runs `tuios`. Uninstall removes the hooks, the MCP server and the
+status line that tuios wrote. If the harness saves the file while tuios edits
+it, tuios tries once more, and then says the file changed and does not write
+it. When an integration spans several files and one fails, the message names
+the files tuios already changed and the ones it did not. The result or the error shows in the dock.
+
+When a pane runs a harness whose integration is out of date, or not installed
+where it could be, tuios shows one notice for that harness, such as "Claude
+Code integration is out of date. Open Settings, Agents to update it." The
+notice comes once per harness each time the client starts. Click the right
+end of the notice to dismiss it for good: it does not come back until the
+state or the version changes. Esc and a click on the text clear it for this
+run only. Panes on other machines get no notice, since their harness uses that
+machine's integration. `tuios doctor agents` leaves those panes out too. When
+it cannot read which machine the panes of a session run on, it says that it
+did not check that session.
 
 ### The MCP server
 
@@ -3709,6 +3976,136 @@ Who acts:
   machine's session, is refused in the dock before anything is asked: attach
   there and review it there.
 
+## Turn checkpoints
+
+The daemon saves the work tree of an agent's pane at the end of each turn.
+You can read what one turn changed, and you can undo it.
+
+```bash
+tuios checkpoint list -w build            # one row per saved turn
+tuios checkpoint diff -w build 2          # what turn 2 changed
+tuios checkpoint restore -w build 1       # put the files back as turn 1 left them
+```
+
+The verbs are `list-checkpoints`, `checkpoint-diff` and `restore-checkpoint`
+([protocol.md](protocol.md#list-checkpoints)).
+
+**When a checkpoint is taken.** A pane goes from `working` to `done`,
+`idle` or `needs_input`. A pane can also go to `unknown` at the end of a
+counted turn (see [Finished turns](#finished-turns)). The pane's directory
+must be in a git work tree, found as for `review-diff`. The daemon then saves
+the work tree as a commit under `refs/tuios/checkpoints/<window id>/<n>`. A
+turn that changed no file since the last checkpoint gets no checkpoint.
+
+**What a checkpoint holds.** Tracked files as they are on disk, and
+untracked files that git does not ignore. Ignored files are not in it. The
+commit's parent is `HEAD` at that time. The message records the turn number,
+the time, the agent state and a short label. The label is the turn's prompt,
+or the line the turn ended with, or the state's message.
+
+**What does not change.** The daemon writes the tree through a temporary
+index. Your index, `HEAD`, your branch and the stash stay as they are. Git
+does not push `refs/tuios`, because no default refspec names it.
+
+**Restore.** `checkpoint restore N` first saves the work tree as a `safety`
+checkpoint. To undo the restore, restore that checkpoint. Then the daemon
+writes the files that differ and removes the files that checkpoint N does
+not have. It does not touch ignored files, the index or `HEAD`. `git status`
+then shows the restored files as changes. The restore stops while the agent
+is `working` or `needs_input`, because the agent would write over the files.
+Wait for the turn to end, or use `--force`.
+
+**Diff.** `checkpoint diff N` compares checkpoint N with the pane's checkpoint
+before it. The first checkpoint compares with `HEAD` at the time it was
+taken. The caps of `review-diff` apply.
+
+**Cost and limits.** The git commands run off the daemon's event path, one
+at a time, with a limit of 30 seconds each. On a work tree of 50,000 files a
+checkpoint takes about 100 ms. Each pane keeps the newest 50 checkpoints.
+Removing a worktree with `worktree rm` or `fan keep` deletes the checkpoints
+taken in it. Checkpoints of a pane on another machine are not available here.
+Attach to that machine to use them.
+
+```toml
+[agents.checkpoints]
+enabled = true   # set false to take no checkpoints
+keep = 50        # checkpoints per pane, 1 to 1000
+```
+
+**Grants.** From a pane, `list-checkpoints` and `checkpoint-diff` need
+`read`. `restore-checkpoint` needs `write`. A pane can restore only a pane
+that holds no grant it does not hold.
+
+## Shipping a worktree
+
+When an agent's work in a worktree is good, take it to a merged change from
+tuios. You do not need to go to the worktree's directory.
+
+```bash
+tuios ship commit -s api-feat-retry -m 'Add a retry to the client'
+tuios ship merge -s api-feat-retry          # into the base, in the main checkout
+tuios ship pr -s api-feat-retry --draft     # push, then open a pull request with gh
+tuios ship status -s api-feat-retry         # the pull request and its checks
+tuios fan keep api-fan-retry-2 --merge      # keep one attempt, merge it, remove the others
+```
+
+The verbs are `ship-commit`, `ship-merge`, `ship-push`, `ship-pr` and
+`ship-status` ([protocol.md](protocol.md#ship-commit)). The pane is found as
+for `review-diff`. A call from inside a pane that names no pane is about that
+pane. A pane on another machine is refused.
+
+**Your identity.** git runs in the daemon with your environment. Your name,
+email, signing setup and hooks make the commit. tuios sets no identity and
+adds nothing to the message. Without `-m`, the message is the pane's last
+prompt, or the line its last turn ended with. When a hook or signing refuses
+the commit, the index goes back to what it was. A commit is refused while the
+agent is `working` or `needs_input`, unless you pass `--force`.
+
+**Merge.** The branch merges into the base the worktree was made from, in the
+main checkout. That checkout must have the base checked out and no
+uncommitted change to a tracked file (`checkout_dirty`). When the merge
+conflicts, tuios undoes it with `git reset --merge` and lists the files
+(`merge_conflict`). The main checkout is then as it was. `--squash` makes one
+commit. `--ff-only` refuses a branch that cannot be fast-forwarded. Nothing is
+forced.
+
+**Push and pull request.** These send work off this machine, so each one
+asks first. The first call answers `confirm_required` with what it would send
+and a token. The token is a hash of the branch, its commit, the remote and the
+pull request. The call goes ahead only with the token of what is there now.
+The CLI shows the list and asks `[y/N]`, or takes `--yes`. A push is never
+forced. `ship pr` runs your own `gh` (`gh pr create`, `gh pr view`). tuios
+holds no GitHub token. Without gh, or when gh is not logged in, the call stops
+with `gh_unavailable` before anything is pushed. When the branch has an open
+pull request already, the push updates it.
+
+**When the caller is not you.** A push or a pull request from a process
+inside a pane, or from a connection limited with `restrict-connection`, also
+needs your yes in the Inbox. The question pops up on the client
+that shows the pane: `Push feat/retry (abc1234) to origin?`, with `allow` and
+`deny`. The call waits for your answer, two minutes by default. When the wait
+ends first, the call fails with `not_ready` and the question stays. Call
+again with `request_id` to wait for it. Over a link, a push is refused.
+
+**The pull request on the rail.** `ship pr` and `ship status --refresh`
+record the branch's pull request on the worktree session. The agent rows of
+that session show it as the `pr` token: `PR #12 open pending`, `PR #12 open
+pass`, `PR #12 open fail` or `PR #12 merged`. The token is red for failing
+checks, amber for pending ones and green for passing ones and a merge.
+`worktree ls` shows it in a PR column, and `ls --json` and `worktree ls
+--json` carry it as `pr`.
+
+**Cost.** While a client is attached and a recorded pull request is open, one
+daemon goroutine reads each open pull request with `gh pr view` once a minute.
+It makes one gh call at a time and writes the record only when the answer
+changed. A merged or closed pull request is not read again. With no open pull
+request, with no client attached, or without gh, there is no goroutine and no
+timer.
+
+**Grants.** From a pane, `ship-commit` and `ship-merge` need `write`, on a
+pane that holds no grant the caller does not hold. `ship-push` and `ship-pr`
+need `write` and your yes in the Inbox. `ship-status` needs `read`.
+
 ## Environment
 
 When tuios spawns a pane it exports the environment a state-reporting shim needs:
@@ -3741,6 +4138,15 @@ Every pane also gets `HERDR_ENV`, `HERDR_SOCKET_PATH`, `HERDR_PANE_ID` and
 tuios can pass through to yours: `ghostty` when your terminal takes kitty
 graphics, `WezTerm` when it takes sixel, and `TUIOS` when it takes neither.
 Image tools choose their output from this name.
+
+`TERM` is the `TERM` of the client that made the session, if the machine that
+runs the pane has a terminfo entry for it. If it has none, the pane gets
+`xterm-256color`. This keeps `clear`, `tput` and curses programs working when
+you attach from a terminal such as kitty to a machine without its entry. To
+keep your terminal's own `TERM`, install its terminfo entry on that machine,
+for example with `infocmp -x xterm-kitty | ssh HOST tic -x -`. tuios looks in
+`$TERMINFO`, `~/.terminfo`, `$TERMINFO_DIRS` and the system terminfo
+directories, as ncurses does.
 
 One pane is told something else. Codex sends its notifications as OSC 9, which
 tuios shows with their text, only to a terminal it knows by that name (Ghostty,

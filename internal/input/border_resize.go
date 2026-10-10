@@ -48,9 +48,14 @@ func armBorderResize(x, y int, o *app.OS) bool {
 	if o.SidebarBandContains(x, y) || o.InDockBand(y) {
 		return false
 	}
-	// Scrolling columns have their own width gesture; leave them alone.
+	// Scrolling columns drawing their own borders have the right drag for
+	// their width. Under shared borders the divider between two columns is
+	// drawn, and the resize pointer offered over it, so it has to be one.
 	if o.AutoTiling && o.UseScrollingLayout {
-		return false
+		if !o.PanesBorderless() {
+			return false
+		}
+		return armScrollDividerResize(x, y, o)
 	}
 	if o.AutoTiling {
 		return armTiledBorderResize(x, y, o)
@@ -59,20 +64,35 @@ func armBorderResize(x, y int, o *app.OS) bool {
 }
 
 // armTiledBorderResize grabs the division between two tiled panes. The pane
-// whose edge was grabbed is the resize target; the BSP tree moves the divider
+// whose edge was grabbed is the resize target; the layout moves the divider
 // that owns that edge, so either neighbour of a division will do.
 //
 // Where the division is drawn depends on the panes, not on the setting. Under
-// shared borders the tilers reserve a cell between neighbours (layout.
-// CalculateTilingLayout, bsp.childBounds) and that cell is the divider, owned by
-// neither pane. Without them the panes are edge to edge and the division is the
-// border column each pane draws for itself, which is why the grab is measured
-// from BorderOffset: it is the pane's own answer to whether it drew one.
+// shared borders the tilers reserve the cells between neighbours (layout.
+// CalculateMasterLayout, bsp.childBounds) and those cells are the divider,
+// owned by neither pane. Without them the panes are edge to edge and the
+// division is the border column each pane draws for itself, which is why the
+// grab is measured from BorderOffset: it is the pane's own answer to whether
+// it drew one.
+//
+// A divider cell is claimed from both sides. Most cells are past some pane's
+// right or bottom edge, but not all: where a divider meets another one, the
+// panes on one side stop short of the junction and only the pane across the
+// line reaches it, with its left or top edge. With the master on the right or
+// at the bottom that junction is the middle of the divider the user is most
+// likely to grab.
 func armTiledBorderResize(x, y int, o *app.OS) bool {
+	// A floating or zoomed pane drawn over the cell owns the press: the
+	// divider under it is hidden, and grabbing it would resize panes the user
+	// cannot see.
+	if paneOver(x, y, o) {
+		return false
+	}
 	contentLeft, contentTop := o.PaneLeft(), o.PaneTop()
 	contentRight := contentLeft + o.PaneWidth()
 	contentBottom := contentTop + o.PaneHeight()
 	slop := borderSlop(o)
+	gap := o.SeparatorGap()
 
 	for i := range o.Windows {
 		w := o.Windows[i]
@@ -80,23 +100,123 @@ func armTiledBorderResize(x, y int, o *app.OS) bool {
 			continue
 		}
 		off := w.BorderOffset()
+		inRows := y >= w.Y && y < w.Y+w.Height
+		inCols := x >= w.X && x < w.X+w.Width
 		// Interior divisions only. A pane edge lying on the content boundary is
 		// the screen's own, with no neighbour behind it to give space to.
 		switch {
-		case y >= w.Y && y < w.Y+w.Height && within(x, w.X+w.Width-off, slop) && w.X+w.Width < contentRight:
-			beginBorderResize(o, i, app.BorderEdgeRight)
-		case y >= w.Y && y < w.Y+w.Height && off > 0 && within(x, w.X, slop) && w.X > contentLeft:
+		case inRows && w.X+w.Width < contentRight && onDivision(x, w.X+w.Width-off, w.X+w.Width+dividerSpan(off, gap), slop):
+			beginBorderResize(o, i, app.BorderEdgeRight, w.X+w.Width-x)
+		case inRows && w.X > contentLeft && off > 0 && within(x, w.X, slop):
 			// The neighbour's own border is the other half of the same drawn
 			// division, so grabbing it has to work too.
-			beginBorderResize(o, i, app.BorderEdgeLeft)
-		case x >= w.X && x < w.X+w.Width && within(y, w.Y+w.Height-off, slop) && w.Y+w.Height < contentBottom:
-			beginBorderResize(o, i, app.BorderEdgeBottom)
+			beginBorderResize(o, i, app.BorderEdgeLeft, w.X-x)
+		case inRows && w.X > contentLeft && off == 0 && gap > 0 && onDivision(x, w.X-gap, w.X, slop):
+			beginBorderResize(o, i, app.BorderEdgeLeft, w.X-x)
+		case inCols && w.Y+w.Height < contentBottom && onDivision(y, w.Y+w.Height-off, w.Y+w.Height+dividerSpan(off, gap), slop):
+			beginBorderResize(o, i, app.BorderEdgeBottom, w.Y+w.Height-y)
+		case inCols && w.Y > contentTop && off == 0 && gap > 0 && onDivision(y, w.Y-gap, w.Y, slop):
+			// The top row of a pane drawing its own border is its title bar,
+			// which stays a drag handle; the pane above owns that division.
+			beginBorderResize(o, i, app.BorderEdgeTop, w.Y-y)
 		default:
 			continue
 		}
 		return true
 	}
 	return false
+}
+
+// paneOver reports whether a floating or zoomed pane covers the cell.
+func paneOver(x, y int, o *app.OS) bool {
+	idx := findClickedWindow(x, y, o)
+	if idx < 0 {
+		return false
+	}
+	w := o.Windows[idx]
+	return w.IsFloating || w.Zoomed
+}
+
+// armScrollDividerResize grabs the divider between two columns of the
+// scrolling strip. The column on its left is the one resized: the strip has
+// no other column to give the width to, and the columns after it slide along.
+// Windows stacked in a column share its height evenly, so the dividers between
+// them do not move.
+//
+// The divider runs the full height of the strip, the row of a stacked
+// column's own divider included, where no window of that column reaches. A
+// cell past the last column is empty ground and grabs nothing.
+//
+// The grab does not focus the column. Focus in the strip scrolls the focused
+// column into view, which would slide the strip under the pointer as the drag
+// starts, and the column on the left may be one whose only visible part is
+// the divider.
+func armScrollDividerResize(x, y int, o *app.OS) bool {
+	// A press on a pane is the pane's, whatever is drawn under it.
+	if findClickedWindow(x, y, o) >= 0 {
+		return false
+	}
+	contentRight := o.PaneLeft() + o.PaneWidth()
+	contentTop := o.PaneTop()
+	if y < contentTop || y >= contentTop+o.PaneHeight() {
+		return false
+	}
+	// A slide still in flight would stamp its own rectangles over the drag.
+	// The panes land first, and the press is measured against where they
+	// stand.
+	o.CompleteAllAnimations()
+	gap := o.SeparatorGap()
+	slop := borderSlop(o)
+	tiled := func(w *terminal.Window) bool {
+		return w.Workspace == o.CurrentWorkspace && !w.Minimized && !w.IsFloating
+	}
+	found := -1
+	for i, w := range o.Windows {
+		right := w.X + w.Width
+		if !tiled(w) || right >= contentRight || !onDivision(x, right, right+gap, slop) {
+			continue
+		}
+		neighbour := false
+		for _, n := range o.Windows {
+			if tiled(n) && n.X == right+gap {
+				neighbour = true
+				break
+			}
+		}
+		if !neighbour {
+			continue
+		}
+		// Any window of the column names it. The one level with the press
+		// is preferred, so the edge is measured from a window on that row.
+		if found < 0 || (y >= w.Y && y < w.Y+w.Height) {
+			found = i
+		}
+	}
+	if found < 0 {
+		return false
+	}
+	w := o.Windows[found]
+	beginBorderResizeAt(o, found, app.BorderEdgeRight, w.X+w.Width-x, false)
+	return true
+}
+
+// dividerSpan is how many cells past a pane's far edge its division runs: the
+// reserved cells between borderless panes, none for a pane whose own border
+// column is the division.
+func dividerSpan(off, gap int) int {
+	if off > 0 {
+		return 0
+	}
+	return gap
+}
+
+// onDivision reports whether v falls in the division [from, to), or within
+// slop cells of it. An empty range is the single cell from.
+func onDivision(v, from, to, slop int) bool {
+	if to <= from {
+		to = from + 1
+	}
+	return v >= from-slop && v < to+slop
 }
 
 // armFloatingBorderResize grabs a floating pane's own frame. The top row is the
@@ -125,11 +245,11 @@ func armFloatingBorderResize(x, y int, o *app.OS) bool {
 
 	switch {
 	case onLeft && !onTop:
-		beginBorderResize(o, idx, app.BorderEdgeLeft)
+		beginBorderResize(o, idx, app.BorderEdgeLeft, w.X-x)
 	case onRight && !onTop:
-		beginBorderResize(o, idx, app.BorderEdgeRight)
+		beginBorderResize(o, idx, app.BorderEdgeRight, w.X+w.Width-x)
 	case onBottom && !onLeft && !onRight:
-		beginBorderResize(o, idx, app.BorderEdgeBottom)
+		beginBorderResize(o, idx, app.BorderEdgeBottom, w.Y+w.Height-y)
 	default:
 		return false
 	}
@@ -139,14 +259,24 @@ func armFloatingBorderResize(x, y int, o *app.OS) bool {
 // beginBorderResize arms the gesture. It reuses o.Resizing so the release path
 // already flushes deferred PTY resizes, syncs the BSP tree, and pushes state to
 // the daemon exactly as a corner resize does; BorderResizing selects the
-// single-edge motion handler.
-func beginBorderResize(o *app.OS, idx int, edge app.BorderResizeEdge) {
+// single-edge motion handler. grab is how far the edge lies from the pressed
+// cell, which the motion handler keeps.
+func beginBorderResize(o *app.OS, idx int, edge app.BorderResizeEdge, grab int) {
+	beginBorderResizeAt(o, idx, edge, grab, true)
+}
+
+// beginBorderResizeAt is beginBorderResize with the choice of focusing the
+// pane whose edge was grabbed.
+func beginBorderResizeAt(o *app.OS, idx int, edge app.BorderResizeEdge, grab int, focus bool) {
 	w := o.Windows[idx]
-	o.FocusWindow(idx)
+	if focus {
+		o.FocusWindow(idx)
+	}
 	o.BeginPointerGesture()
 	o.Resizing = true
 	o.BorderResizing = true
 	o.BorderResizeEdge = edge
+	o.BorderResizeGrab = grab
 	o.InteractionMode = true
 	o.DraggedWindowIndex = idx
 	w.IsBeingManipulated = true
@@ -164,32 +294,39 @@ func applyBorderResize(o *app.OS, mx, my int) {
 	}
 	w := o.Windows[idx]
 
-	// The same allowance the arming used, read from the same place: on a pane
-	// that draws its own border the pointer sits on the last cell the pane owns,
-	// so its far edge is one past the pointer, while a reserved separator cell is
-	// already past the pane. Without this the pane jumps a cell on the press,
+	// The edge stays as far from the pointer as it was on the press. On a pane
+	// that draws its own border the pointer sits on the last cell the pane
+	// owns, so its far edge is one past the pointer, while a reserved divider
+	// cell is already past the pane. Without this the pane jumps on the press,
 	// before the pointer has moved at all.
-	off := w.BorderOffset()
+	grab := o.BorderResizeGrab
 
 	newX, newY, newW, newH := w.X, w.Y, w.Width, w.Height
 	switch o.BorderResizeEdge {
 	case app.BorderEdgeRight:
-		newW = mx - w.X + off
+		newW = mx + grab - w.X
 	case app.BorderEdgeLeft:
 		right := w.X + w.Width
-		newX = mx
-		newW = right - mx
+		newX = mx + grab
+		newW = right - newX
 	case app.BorderEdgeBottom:
-		newH = my - w.Y + off
+		newH = my + grab - w.Y
 	case app.BorderEdgeTop:
 		bottom := w.Y + w.Height
-		newY = my
-		newH = bottom - my
+		newY = my + grab
+		newH = bottom - newY
 	case app.BorderEdgeNone:
 		return
 	}
 
-	if o.AutoTiling && !o.UseScrollingLayout {
+	if o.AutoTiling && o.UseScrollingLayout {
+		// Measured from where the column stood at the press. The strip may
+		// move under the pointer during the drag, and a width measured from
+		// the column's current edge would chase it.
+		o.ScrollingResizeColumnVisual(w, mx+grab-o.PreResizeState.X, false)
+		return
+	}
+	if o.AutoTiling {
 		treeInSync := o.AdjustTilingNeighborsVisual(w, newX, newY, newW, newH)
 		if o.SharedBorders && !treeInSync {
 			o.MarkBSPSyncPending()

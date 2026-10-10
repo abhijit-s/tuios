@@ -151,6 +151,25 @@ func (t *GhosttyTerminal) RestoreCursorPosition(x, y int) {
 	r.hasCursor = true
 }
 
+// CursorPendingWrap reads the pending-wrap flag straight from the library.
+func (t *GhosttyTerminal) CursorPendingWrap() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.closed.Load() {
+		return false
+	}
+	t.flushRestoreLocked()
+	pending, err := t.term.CursorPendingWrap()
+	return err == nil && pending
+}
+
+func (t *GhosttyTerminal) RestoreCursorPendingWrap(pending bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	r := t.pendingRestore()
+	r.pendingWrap = pending
+}
+
 func (t *GhosttyTerminal) RestoreCursorPen(pen uv.Style, link uv.Link) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -185,6 +204,16 @@ func (t *GhosttyTerminal) RestoreKittyKeyboardState(stack []int) {
 	defer t.mu.Unlock()
 	r := t.pendingRestore()
 	r.kittyKbdStack = append([]int(nil), stack...)
+}
+
+func (t *GhosttyTerminal) RestoreKittyKeyboardMainStack(stack []int) {
+	if len(stack) == 0 {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	r := t.pendingRestore()
+	r.kittyKbdMainStack = append([]int(nil), stack...)
 }
 
 // SetThemeColors mirrors the pure emulator: default fg/bg/cursor and the
@@ -294,7 +323,7 @@ func (t *GhosttyTerminal) handleColorOSC(number int, payload []byte) {
 			}
 			var xrgb ansi.XRGBColor
 			xrgb.Color = c
-			_, _ = t.pipe.Write([]byte("\x1b]4;" + string(parts[1]) + ";" + xrgb.String() + "\x1b\\"))
+			_, _ = t.pipe.Write([]byte("\x1b]4;" + string(parts[1]) + ";" + xrgb.String() + oscReplyEnd(t.scanner.oscBEL)))
 			return
 		}
 		if c := ansi.XParseColor(arg); c != nil {
@@ -321,9 +350,10 @@ func (t *GhosttyTerminal) handleColorOSC(number int, payload []byte) {
 
 // handleDefaultColorOSC mirrors the pure emulator's OSC 10/11/12 family:
 // guest-set colors override the theme defaults, "?" queries answer with
-// whichever is in force.
+// whichever is in force, each item after the first applies to the next
+// colour, and a reply ends the way the query did.
 func (t *GhosttyTerminal) handleDefaultColorOSC(number int, parts [][]byte) {
-	set := func(c color.Color) {
+	set := func(number int, c color.Color) {
 		switch number {
 		case 10, 110:
 			t.guestFg = c
@@ -333,32 +363,30 @@ func (t *GhosttyTerminal) handleDefaultColorOSC(number int, parts [][]byte) {
 			t.guestCur = c
 		}
 	}
-	switch len(parts) {
-	case 1:
-		set(nil)
-	case 2:
-		arg := string(parts[1])
-		if arg == "?" {
-			var c color.Color
-			switch number {
-			case 10:
-				c = firstColor(t.guestFg, t.reportFg, t.defaultFg, color.White)
-			case 11:
-				c = firstColor(t.guestBg, t.reportBg, t.defaultBg, color.Black)
-			case 12:
-				c = firstColor(t.guestCur, t.defaultCur, color.White)
-			default:
-				return
+	if number >= 110 || len(parts) < 2 {
+		set(number, nil)
+		return
+	}
+	dynamicColorItems(number, parts, func(number int, arg string) {
+		if arg != "?" {
+			if c := ansi.XParseColor(arg); c != nil {
+				set(number, c)
 			}
-			var xrgb ansi.XRGBColor
-			xrgb.Color = c
-			_, _ = t.pipe.Write([]byte("\x1b]" + itoa(number) + ";" + xrgb.String() + "\x1b\\"))
 			return
 		}
-		if c := ansi.XParseColor(arg); c != nil {
-			set(c)
+		var c color.Color
+		switch number {
+		case 10:
+			c = firstColor(t.guestFg, t.reportFg, t.defaultFg, color.White)
+		case 11:
+			c = firstColor(t.guestBg, t.reportBg, t.defaultBg, color.Black)
+		case 12:
+			c = firstColor(t.guestCur, t.defaultCur, color.White)
 		}
-	}
+		var xrgb ansi.XRGBColor
+		xrgb.Color = c
+		_, _ = t.pipe.Write([]byte("\x1b]" + itoa(number) + ";" + xrgb.String() + oscReplyEnd(t.scanner.oscBEL)))
+	})
 }
 
 func firstColor(cs ...color.Color) color.Color {
@@ -435,22 +463,27 @@ func (t *GhosttyTerminal) EncodeMouseEventAt(m Mouse, at MousePixel) string {
 		t.mu.Unlock()
 	}
 	mouse := m.Mouse()
-	_, isMotion := m.(MouseMotion)
-	_, isRelease := m.(MouseRelease)
-	b := ansi.EncodeMouseButton(mouse.Button, isMotion,
-		mouse.Mod.Contains(ModShift),
-		mouse.Mod.Contains(ModAlt),
-		mouse.Mod.Contains(ModCtrl))
-	if pixels && at.OK {
-		return ansi.MouseSgr(b, at.X, at.Y, isRelease)
+	r := mouseReport{
+		button:  mouse.Button,
+		shift:   mouse.Mod.Contains(ModShift),
+		alt:     mouse.Mod.Contains(ModAlt),
+		ctrl:    mouse.Mod.Contains(ModCtrl),
+		x:       mouse.X,
+		y:       mouse.Y,
+		x10Only: t.cachedMouseX10.Load(),
+		encoding: pickMouseEncoding(t.cachedMouseUTF8.Load(), t.cachedMouseURXVT.Load(),
+			sgr, pixels),
 	}
+	_, r.motion = m.(MouseMotion)
+	_, r.release = m.(MouseRelease)
 	if pixels {
-		return ansi.MouseSgr(b, mouse.X*cw+cw/2, mouse.Y*ch+ch/2, isRelease)
+		if at.OK {
+			r.x, r.y = at.X, at.Y
+		} else {
+			r.x, r.y = mouse.X*cw+cw/2, mouse.Y*ch+ch/2
+		}
 	}
-	if sgr {
-		return ansi.MouseSgr(b, mouse.X, mouse.Y, isRelease)
-	}
-	return ansi.MouseX10(b, mouse.X, mouse.Y)
+	return r.encode()
 }
 
 func (t *GhosttyTerminal) SetKittyPassthroughFunc(fn func(cmd *KittyCommand, rawData []byte)) {

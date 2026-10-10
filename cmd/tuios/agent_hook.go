@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -86,7 +87,7 @@ hands its hook payload on stdin (or, for the Codex notify command, as the last
 argument). The event comes from the payload, or from the event argument when
 the payload does not name it. Supported harnesses: claude-code, codex,
 copilot, cursor-agent, gemini-cli, opencode, amp, kilo, kimi, omp, pi and qwen,
-which report the pane's state; and antigravity, crush, devin, droid, grok,
+which report the pane's state. antigravity, crush, devin, droid, grok,
 hermes and qoder, which report only the conversation id (set-agent-session)
 and leave the state to the pane's screen rules.
 
@@ -168,7 +169,7 @@ given.`,
 	cmd.Flags().StringVarP(&o.window, "window", "w", "", "Pane to report for, by window id or name (default: TUIOS_PANE_ID, then the controlling terminal, then the parent processes)")
 	cmd.Flags().BoolVar(&o.explain, "explain", false, "Print what was decided and why to stderr")
 	cmd.Flags().DurationVar(&o.timeout, "timeout", agentHookDeadline, "Give up after this long")
-	cmd.Flags().IntVar(&o.integration, "integration", 0, "Version marker of a managed hook entry; ignored")
+	cmd.Flags().IntVar(&o.integration, "integration", 0, "Version marker of a managed hook entry. tuios ignores it")
 	_ = cmd.Flags().MarkHidden("integration")
 	return cmd
 }
@@ -191,6 +192,9 @@ type agentHookOutcome struct {
 	// ActivityRecorded says whether the daemon kept the event's activity,
 	// nil when none was sent.
 	ActivityRecorded *bool `json:"activity_recorded,omitempty"`
+	// TranscriptRefused is why the daemon did not join the pane to the
+	// transcript the hook named.
+	TranscriptRefused string `json:"transcript_refused,omitempty"`
 	// Subagents is how many subagents the pane holds after a
 	// report-agent-activity call, nil when none was made.
 	Subagents *int `json:"subagents,omitempty"`
@@ -455,6 +459,7 @@ func agentHook(o agentHookOptions, args []string, hio agentHookIO) agentHookOutc
 		}
 		out.Applied, out.State, out.Reason = &res.Applied, res.State, res.Reason
 		out.ActivityRecorded = res.ActivityRecorded
+		out.TranscriptRefused = res.TranscriptRefused
 		out.StatusLineFlushed = flushAtTurnEnd(out, res, client, hio)
 	}
 	if alone == nil {
@@ -546,10 +551,10 @@ func flushAtTurnEnd(out agentHookOutcome, res hookReportResult, client verbCalle
 // session and its ancestors.
 func resolveHookPane(o agentHookOptions, hio agentHookIO, client verbCaller, sid int, ancestors []int) (sess, window, by string, err error) {
 	if o.window != "" {
-		return firstNonEmptyString(o.session, hio.getenv("TUIOS_SESSION")), o.window, "flag", nil
+		return cmp.Or(o.session, hio.getenv("TUIOS_SESSION")), o.window, "flag", nil
 	}
 	if id := hio.getenv("TUIOS_PANE_ID"); id != "" {
-		return firstNonEmptyString(o.session, hio.getenv("TUIOS_SESSION")), id, "env", nil
+		return cmp.Or(o.session, hio.getenv("TUIOS_SESSION")), id, "env", nil
 	}
 	if sid <= 1 && len(ancestors) == 0 {
 		return "", "", "", errors.New("no pane: TUIOS_PANE_ID is unset")
@@ -575,6 +580,9 @@ type hookReportResult struct {
 	State            string `json:"state"`
 	Reason           string `json:"reason"`
 	ActivityRecorded *bool  `json:"activity_recorded"`
+	// TranscriptRefused is why the daemon did not join the pane to the
+	// transcript_path the report named, "" when it did or none was named.
+	TranscriptRefused string `json:"transcript_refused"`
 }
 
 // hookFields are the set-agent-state params a hook report may carry beyond
@@ -744,13 +752,4 @@ func reportHookSession(client verbCaller, sess, window, harness string, harnessP
 		return hookReportResult{}, err
 	}
 	return res, nil
-}
-
-func firstNonEmptyString(vals ...string) string {
-	for _, v := range vals {
-		if v != "" {
-			return v
-		}
-	}
-	return ""
 }

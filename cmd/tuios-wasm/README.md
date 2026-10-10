@@ -20,6 +20,7 @@ node cmd/tuios-wasm/smoke.mjs out/        # headless Chromium check
 | `tuios.wasm.br`, `tuios.wasm.gz` | the program, compressed. The raw file is over Cloudflare's 25 MiB limit, so only these ship |
 | `wasm_exec.js` | Go's loader, from the toolchain that built the wasm |
 | `webterm.js`, `webterm.css`, `xterm.css` | the renderer, sip's xterm.js bundle |
+| `webterm-vtgl.js` | the vtgl renderer, which the page loads only for `?renderer=vtgl`. Only a sip that ships it as its own file has it |
 | `fonts/*.woff2` | JetBrains Mono Nerd Font, regular and bold |
 | `manifest.json` | the tuios commit, the sizes and the sha256 of every file |
 | `index.html` | a demo page with a five-step track, for trying a change |
@@ -182,5 +183,5 @@ lesson:
   all follow it. Its screen also matches the claude-code harness rules.
 - `tuios tape play demo.tape` plays a tape that opens two windows and runs
   commands in them. `tuios tape list` lists the tapes.
-- `top`, `rain`, `neofetch`, `tree`, `fortune`, `cowsay` and `colors` are
-  there for fun. The launcher (Alt+Space) lists the full-screen ones.
+- `top`, `rain`, `fastfetch`, `tree`, `fortune`, `cowsay` and `colors` are
+  there for fun. `neofetch` is another name for `fastfetch`. The launcher (Alt+Space) lists the full-screen ones.

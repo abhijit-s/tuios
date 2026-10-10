@@ -285,8 +285,9 @@ func TestHerdrUnknownAndUnsupportedMethods(t *testing.T) {
 		params any
 		code   string
 	}{
-		{"plugin.list", map[string]any{}, "unsupported"},
-		{"pane.resize", map[string]any{}, "unsupported"},
+		{"plugin.enable", map[string]any{}, "invalid_request"},
+		{"layout.apply", map[string]any{}, "unsupported"},
+		{"pane.resize", map[string]any{}, "invalid_request"},
 		{"no.such_method", map[string]any{}, "invalid_request"},
 		{"pane.get", map[string]any{}, "invalid_request"},
 		{"pane.get", map[string]any{"pane_id": "w1:p1"}, "pane_not_found"},

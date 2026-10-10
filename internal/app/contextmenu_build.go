@@ -4,7 +4,6 @@ import (
 	"path/filepath"
 	"slices"
 
-	"github.com/Gaurav-Gosain/tuios/internal/config"
 	"github.com/Gaurav-Gosain/tuios/internal/terminal"
 )
 
@@ -118,7 +117,8 @@ func (m *OS) contextMenuTargetAt(x, y int) (target ContextMenuTarget, windowInde
 // must never treat the dock band as a pane.
 //
 // A dock of DockHeight rows at the top of the screen occupies rows 0 to
-// DockHeight-1, so the test is exclusive. Writing it inclusive, as the click
+// DockHeight-1, so the test is exclusive. DockHeight is one row when the dock
+// is compact and two when it is not. Writing it inclusive, as the click
 // handler in internal/input still does, claims one row more than the dock draws
 // on: with the dock at the top that extra row is the first row of the topmost
 // window, which is how the pane menu came to be unreachable there.
@@ -128,9 +128,9 @@ func (m *OS) InDockBand(y int) bool {
 	case "hidden":
 		return false
 	case "top":
-		return y < config.DockHeight
+		return y < m.Settings.DockHeight()
 	default:
-		return y >= m.Height-config.DockHeight
+		return y >= m.Height-m.Settings.DockHeight()
 	}
 }
 
@@ -521,6 +521,11 @@ func (m *OS) fileRowMenu(t fileMenuTarget) (string, []ContextMenuItem) {
 	rows := []ContextMenuItem{open}
 	if t.Name != "" && !t.IsDir && !t.Up {
 		rows = append(rows, m.item(glyphFile, "Edit", "file_edit", !canOpen))
+	}
+	// A file's first row already copies its path. A folder's opens it, so the
+	// copy is a row of its own (issue #414).
+	if t.Name != "" && t.IsDir && !t.Up {
+		rows = append(rows, m.item(glyphCopy, "Copy path", "file_copy_path", !canOpen))
 	}
 	return fileMenuTitle(t), append(rows,
 		separator(),

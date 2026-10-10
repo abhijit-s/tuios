@@ -59,9 +59,9 @@ var (
 		EventWindowFocused, EventWindowMoved, EventWindowMinimized, EventWindowRestored,
 		EventWorkspaceSwitched, EventWorkspaceRenamed, EventAgentState, EventAgentMessage,
 		EventOutput, EventBell, EventNotification, EventModeChanged,
-		EventSessionCreated, EventSessionClosed, EventGap, EventAttention,
+		EventSessionCreated, EventSessionClosed, EventClientSessionChanged, EventGap, EventAttention,
 		EventHostChanged, EventPrompt, EventCommandStarted, EventCommandFinished,
-		EventAgentActivity,
+		EventAgentActivity, EventTranscript,
 	}
 	// knownEventTypes are the event types a subscribe filter can name.
 	knownEventTypes = EventTypeNames
@@ -95,7 +95,9 @@ var errorCodeCatalog = []struct {
 	{ErrVerbNotHuman, "Only the person at an attached client may make this call, and it carried no nonce from a live attach. dismiss-attention, respond and reply-approval raise it."},
 	{ErrVerbPromptChanged, "respond pressed nothing: the pane is not on needs_input, no rule reads its prompt now, the prompt is not the one prompt_id names, or another client already answered it. Read it again with peek-prompt."},
 	{ErrVerbNotResumable, "resume-agent found no conversation it can resume in the pane: none was recorded by a hook, the harness has no resume command, the recorded id is not one plain shell token, or the pane runs on another machine. Nothing was typed."},
-	{ErrVerbConfirmRequired, "A write addressed by selector was not sent, because it carried no confirm token or the token names a different set of panes than the selector matches now. Nothing was sent. The hint lists the panes the selector matches and carries the token for them in confirm: check the list, then call again with that token."},
+	{ErrVerbConfirmRequired, "A write addressed by selector, or a ship-push or ship-pr, was not sent, because it carried no confirm token or the token names something other than what would be sent now. Nothing was sent. The hint lists the panes the selector matches, or what the push would send, and carries the token in confirm: check the list, then call again with that token."},
+	{ErrVerbNoTranscript, "agent-transcript found no transcript for the pane: it is not joined to one, or the file is gone. Nothing was read."},
+	{ErrVerbUnsupportedHarness, "agent-transcript cannot read the transcript of the pane's harness. Read the pane with capture-pane or stream-pane."},
 	{ErrVerbNoKeyboard, "The target is the person's inbox, human, which has no pane to type into. Leave a message with send-agent-message -w human and wait for the reply on your own inbox."},
 	{ErrVerbNoShellIntegration, "The pane's shell has not sent the OSC 133 marks that say where a command starts and ends, so the daemon cannot run a command in it and report its exit code, or say what the last command printed. Nothing was typed. Enable the shell's prompt integration, or use send-text and wait-for window-output."},
 	{ErrVerbNotAtPrompt, "run typed nothing because the pane's shell is not at its prompt: a command is running in it. The message names the command. Wait for it with wait-for command-finished, or run in another pane."},
@@ -109,10 +111,19 @@ var errorCodeCatalog = []struct {
 	{ErrVerbGitFailed, "A git command failed. The message is git's own. The repository is as it was."},
 	{ErrVerbRepoNotFound, "No checkout on this machine has the origin repo_url names, and clone was not passed. Pass clone to clone it, repos_root to look somewhere else, or repo to name the directory."},
 	{ErrVerbNotRepo, "No git repository is under the pane or session named, so there is nothing to review. Nothing was read."},
+	{ErrVerbNothingToCommit, "ship-commit found no change in the work tree, so nothing was committed. ship-push and ship-pr raise it for a branch with no commit."},
+	{ErrVerbMergeConflict, "ship-merge stopped on conflicts and aborted the merge. The main checkout is as it was. The hint lists the conflicting files. Rebase the branch in the worktree, resolve them there, and merge again."},
+	{ErrVerbCheckoutDirty, "ship-merge refused: the main checkout has uncommitted changes, a merge or rebase in progress, or is not on the branch to merge into. Nothing was merged."},
+	{ErrVerbNoRemote, "ship-push or ship-pr found no remote to push to, or not the one named. Nothing was pushed. Add a remote, or name one with remote."},
+	{ErrVerbGhUnavailable, "ship-pr or ship-status needs the gh CLI, and it is not installed or not logged in. Nothing was pushed or opened. Install gh and run gh auth login."},
+	{ErrVerbNoCheckpoint, "The pane has no checkpoint by that number, or none at all. Nothing was read or changed. The hint lists the checkpoints it has. list-checkpoints lists them too."},
 	{ErrVerbNoNotes, "send-review found no unsent review notes for the pane, so nothing was sent. Add one with review-note first."},
+	{ErrVerbNoBuffer, "No paste buffer has the name given, or there are no paste buffers when none was named. Nothing was read, pasted or deleted. list-buffers shows the names."},
 	{ErrVerbQueueFull, "The pane's delivery queue holds as many messages as [agents.queue] max allows. Nothing was queued. Wait for the agent to take one, or drop one with cancel-queued."},
 	{ErrVerbRiskUnacknowledged, "An allow for an approval that matches a risk rule was refused because risk_ack did not name exactly the rules it matched. Nothing was answered. Read the rules with get-approval, or answer in the pane."},
 	{ErrVerbAgentsDisabled, "The verb is an agent feature, and the agent features are off: [agents] enabled = false. Nothing was done. Set agents.enabled = true in the config to use it."},
+	{ErrVerbBusy, "The daemon had no room for the request now: other large requests held its memory, or the pane has not read the last large input. Nothing was done. Try again."},
+	{ErrVerbTooManyConnections, "The daemon already serves as many connections as it takes, and closed this one. Nothing was done. Close some clients or commands, then try again."},
 	{ErrVerbInternal, "Unexpected server-side failure."},
 }
 

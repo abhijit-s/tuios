@@ -275,6 +275,8 @@ func (d *Daemon) agentRows(sess *Session, all bool, unread map[string]int, now i
 			"queued": w.AgentQueued,
 			// How many subagents the pane's agent is running.
 			"subagents": w.AgentSubagents,
+			// The pane's OSC 7501 records, the root first.
+			"program_status": programStatusList(w.ProgramStatus),
 		})
 	}
 	return agents
@@ -666,7 +668,7 @@ func (d *Daemon) verbReleaseAgentMessage(cs *connState, params json.RawMessage) 
 	if p.ID == 0 {
 		return nil, invalidParam("id", "id is required: the message_id of the held message")
 	}
-	if !d.verifyAnyHumanNonce(p.HumanNonce, cs) {
+	if !d.humanNonceHeld(p.HumanNonce, cs) {
 		return nil, hintedVerbError(ErrVerbNotHuman, "release-agent-message is for the person at an attached client", &VerbHint{
 			Param:  "human_nonce",
 			Detail: "Mail from another machine is held so the person decides whether an agent sees it. Only a client attached right now can pass it on, with the nonce its attach reply carried.",
@@ -675,6 +677,9 @@ func (d *Daemon) verbReleaseAgentMessage(cs *connState, params json.RawMessage) 
 	sess, verr := d.resolveVerbSession(p.Session)
 	if verr != nil {
 		return nil, verr
+	}
+	if _, ok := d.humanNonceFor(p.HumanNonce, sess.ID, cs); !ok {
+		return nil, nonceScopeError("release-agent-message")
 	}
 	held, ok := d.agents.takeHeld(sess.Name(), p.ID)
 	if !ok {
@@ -1074,7 +1079,7 @@ func (d *Daemon) askAgent(cs *connState, sess *Session, state *SessionState, tar
 	gate := d.newPromptGate(sess, target.ID)
 	submittedAt, werr := submitPrompt(d.ctx, pty, p.Text, d.inputProfileFor(sess, target.ID))
 	if werr != nil {
-		return nil, newVerbError(ErrVerbInternal, werr.Error())
+		return nil, promptWriteError(werr)
 	}
 	gate.markSubmitted(submittedAt)
 
@@ -1187,6 +1192,8 @@ func agentBlockedError(w WindowState) *verbError {
 		what = "an approval"
 	case harness.PromptKindQuestion:
 		what = "a question"
+	case harness.PromptKindAuth:
+		what = "a login"
 	}
 	msg := "the target agent is waiting on " + what + ", and text typed now would answer it"
 	if note := printableClaim(w.AgentMessage, agentMsgMaxSubject); note != "" {

@@ -75,8 +75,13 @@ type sixelFrameState struct {
 	gen uint64
 	// rects is the latest frame's visible rectangles.
 	rects []sixelRect
-	// visible is the set of ids in rects, which eviction spares.
+	// visible is the set of ids in rects, which eviction spares, and of the
+	// images the latest frame drew as glyphs.
 	visible map[uint32]bool
+	// drawn is the images drawn as glyphs on the frame being composed
+	// (drawImageSymbols). SetFrame moves them into visible. Eviction spares
+	// them too, since it can run before SetFrame.
+	drawn map[uint32]bool
 	// hostW and hostH are the host's cell size in pixels, and hostRows its
 	// height in cells, as of the latest frame.
 	hostW, hostH, hostRows int
@@ -151,6 +156,10 @@ func (sp *SixelPassthrough) SetFrame(rects []sixelRect, hostW, hostH, hostCols, 
 	for _, r := range rects {
 		f.visible[r.id] = true
 	}
+	for id := range f.drawn {
+		f.visible[id] = true
+	}
+	clear(f.drawn)
 	if hostW != f.hostW || hostH != f.hostH || hostRows != f.hostRows || hostCols != f.hostCols {
 		f.hostW, f.hostH, f.hostRows, f.hostCols = hostW, hostH, hostRows, hostCols
 		f.force = true
@@ -374,14 +383,12 @@ func (sp *SixelPassthrough) kittyBytesLocked(out []byte) []byte {
 	for _, r := range f.rects {
 		next[r] = true
 	}
-	for r, pid := range f.placements {
-		if !next[r] || f.force {
-			if e := sp.images[r.id]; e != nil && e.kittyID != 0 {
-				out = kittyDeletePlacement(out, e.kittyID, pid)
-			}
-			delete(f.placements, r)
-		}
-	}
+	// Place first, then delete. A rectangle whose image is still being
+	// compressed is not placed this frame, and the placement it replaces has
+	// to stay up until it is: deleting it now leaves the cells empty for a
+	// frame. A program that sends a new image for every frame, a browser
+	// drawing a page as sixel, then blinks between the picture and nothing.
+	var waiting []sixelRect
 	for _, r := range f.rects {
 		if _, placed := f.placements[r]; placed {
 			continue
@@ -399,6 +406,9 @@ func (sp *SixelPassthrough) kittyBytesLocked(out []byte) []byte {
 				sp.startJobLocked(r.id, e,
 					func() []byte { return kittyTransmitRGBA(nil, id, img) },
 					func(b []byte) { ent.kittyPayload = b })
+			}
+			if e.kittyPayload == nil {
+				waiting = append(waiting, r)
 				continue
 			}
 			e.kittyID = sixelKittyIDBase + r.id
@@ -419,9 +429,32 @@ func (sp *SixelPassthrough) kittyBytesLocked(out []byte) []byte {
 			e.kittyID, pid, src.Min.X, src.Min.Y, src.Dx(), src.Dy(), r.cols(), r.rows())
 		out = append(out, "\x1b8"...)
 	}
+	for r, pid := range f.placements {
+		if next[r] && !f.force {
+			continue
+		}
+		if !f.force && overlapsAny(r, waiting) {
+			continue
+		}
+		if e := sp.images[r.id]; e != nil && e.kittyID != 0 {
+			out = kittyDeletePlacement(out, e.kittyID, pid)
+		}
+		delete(f.placements, r)
+	}
 	f.shown = next
 	f.force = false
 	return out
+}
+
+// overlapsAny reports whether r covers a host cell that one of rs covers.
+func overlapsAny(r sixelRect, rs []sixelRect) bool {
+	for _, o := range rs {
+		if r.x < o.x+o.cols() && o.x < r.x+r.cols() &&
+			r.y < o.y+o.rows() && o.y < r.y+r.rows() {
+			return true
+		}
+	}
+	return false
 }
 
 // takeDownLocked removes everything this passthrough put on a kitty host, for
@@ -512,6 +545,9 @@ func (m *OS) scanSixelFrame(canvas *frameCanvas) {
 	if sp == nil {
 		return
 	}
+	// Image glyphs, for a marker drawn after the pass that ran before the
+	// shading. Usually there is none left.
+	m.drawImageSymbols(canvas)
 	sp.mu.Lock()
 	mode := sp.mode
 	sp.mu.Unlock()
@@ -541,7 +577,10 @@ func (m *OS) scanSixelFrame(canvas *frameCanvas) {
 				blankCellKeepGround(c)
 				continue
 			}
-			if mode == sixelPlaceholder || !info.picture {
+			// A marker left in symbols mode is an image that cannot be
+			// drawn as glyphs: one never decoded, or a frame without
+			// colour.
+			if mode == sixelPlaceholder || mode == sixelSymbols || !info.picture {
 				// The theme's dim text colour, read once a frame.
 				if dim == nil {
 					dim = theme.UI().FgDim
@@ -614,12 +653,14 @@ type sixelInfo struct {
 
 func (sp *SixelPassthrough) info(id uint32) sixelInfo {
 	sp.mu.Lock()
-	defer sp.mu.Unlock()
 	e := sp.images[id]
 	if id == 0 || e == nil {
+		sp.mu.Unlock()
 		return sixelInfo{}
 	}
-	return sixelInfo{picture: e.img != nil, rows: e.rows, cols: e.cols}
+	info := sixelInfo{picture: e.img != nil, rows: e.rows, cols: e.cols}
+	sp.mu.Unlock()
+	return info
 }
 
 // blankCellKeepGround makes an image cell a plain blank on its background.

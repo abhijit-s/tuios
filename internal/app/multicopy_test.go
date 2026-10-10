@@ -93,7 +93,7 @@ func TestMultiCopyDockSaysWhatTheModeIs(t *testing.T) {
 		t.Errorf("pill after a search = %q, want MULTI 2/3", label)
 	}
 
-	help := hintsText(m.copyModeHelp(a)[0])
+	help := hintsText(m.copyModeHelp(a))
 	for _, want := range []string{"y yank all", "Y save to file", "tab format: markdown"} {
 		if !strings.Contains(help, want) {
 			t.Errorf("multi copy help %q does not have %q", help, want)
@@ -101,7 +101,7 @@ func TestMultiCopyDockSaysWhatTheModeIs(t *testing.T) {
 	}
 	// Plain copy mode's help is unchanged.
 	m.MultiCopy = nil
-	if help := hintsText(m.copyModeHelp(a)[0]); strings.Contains(help, "yank all") {
+	if help := hintsText(m.copyModeHelp(a)); strings.Contains(help, "yank all") {
 		t.Errorf("plain copy mode shows the multi copy help: %q", help)
 	}
 }
@@ -124,7 +124,7 @@ func TestPrefixMenuNamesMultiCopyMode(t *testing.T) {
 
 	describe := func() string {
 		for _, bnd := range m.prefixMenuBindings() {
-			if bnd.Key == config.WhichKeyCopyPasteKey {
+			if bnd.Action == "prefix_selection" {
 				return bnd.Description
 			}
 		}
@@ -134,7 +134,7 @@ func TestPrefixMenuNamesMultiCopyMode(t *testing.T) {
 		t.Errorf("without multifocus the menu says %q", got)
 	}
 	m.MultifocusSet = map[string]bool{"wa": true, "wb": true}
-	if got := describe(); got != "Multi copy (2)/paste image" {
-		t.Errorf("with multifocus the menu says %q, want Multi copy (2)/paste image", got)
+	if got := describe(); got != "Multi copy (2)/paste image/buffer" {
+		t.Errorf("with multifocus the menu says %q, want Multi copy (2)/paste image/buffer", got)
 	}
 }

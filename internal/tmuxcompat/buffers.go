@@ -16,8 +16,10 @@ import (
 
 // Paste buffers: load-buffer, set-buffer, paste-buffer and delete-buffer.
 //
-// tmux keeps its buffers in the server. The shim has no server, so a buffer
-// is a file in the shim's runtime directory, which only the user can read.
+// tmux keeps its buffers in the server. A daemon with the paste buffer verbs
+// is that server, and holds them (buffers_daemon.go). With an older daemon
+// the shim has no server, so a buffer is a file in the shim's runtime
+// directory, which only the user can read.
 // That lets `tmux load-buffer x` and a later `tmux paste-buffer` work across
 // two calls, as they do with tmux. A shim with no runtime directory keeps its
 // buffers for the one call.
@@ -38,6 +40,27 @@ type buffer struct {
 	name string
 	data string
 	at   time.Time
+	// size and sample come from the daemon's listing, so a listing reads no
+	// buffer's whole content. sampled says they are set.
+	size    int
+	sample  string
+	sampled bool
+	// auto is the daemon's word that it named the buffer. A buffer in a
+	// file is automatic when its name is one tmux would give.
+	auto bool
+}
+
+// automatic reports whether the buffer is one a set without -b made.
+func (b buffer) automatic() bool {
+	if b.sampled {
+		return b.auto
+	}
+	n, ok := strings.CutPrefix(b.name, "buffer")
+	if !ok || n == "" {
+		return false
+	}
+	_, err := strconv.Atoi(n)
+	return err == nil
 }
 
 // bufferDir is where buffers live, "" when the shim keeps them in memory.
@@ -56,6 +79,9 @@ func bufferFile(dir, name string) string {
 
 // buffers lists the buffers, in no order. See topBuffer for the newest.
 func (s *Shim) buffers() ([]buffer, error) {
+	if s.daemonBuffers() {
+		return s.daemonBufferList()
+	}
 	dir := s.bufferDir()
 	if dir == "" {
 		return s.memBuffers, nil
@@ -96,6 +122,9 @@ func withoutBuffer(list []buffer, name string) []buffer {
 
 // readBuffer returns the data of buffer name.
 func (s *Shim) readBuffer(name string) (string, bool, error) {
+	if s.daemonBuffers() {
+		return s.daemonBufferRead(name)
+	}
 	dir := s.bufferDir()
 	if dir == "" {
 		for _, b := range s.memBuffers {
@@ -115,16 +144,30 @@ func (s *Shim) readBuffer(name string) (string, bool, error) {
 	return string(data), true, nil
 }
 
-// writeBuffer stores data as buffer name and puts it on top.
+// writeBuffer stores data as buffer name and puts it on top. A name of ""
+// is a new buffer the daemon names, and comes only from newBufferName when
+// the daemon holds the buffers.
 func (s *Shim) writeBuffer(name, data string) error {
+	if data == "" {
+		// tmux stores nothing for empty data, and says nothing.
+		return nil
+	}
 	if len(data) > maxBufferBytes {
 		return fmt.Errorf("buffer is too large: %d bytes, the limit is %d", len(data), maxBufferBytes)
 	}
+	if s.daemonBuffers() {
+		return s.daemonBufferWrite(name, data, false)
+	}
 	dir := s.bufferDir()
 	if dir == "" {
-		s.memBuffers = append(withoutBuffer(s.memBuffers, name), buffer{name: name, data: data, at: time.Now()})
+		s.memBuffers = append(withoutBuffer(s.memBuffers, name), buffer{name: name, data: data, at: newestAfter(s.memBuffers)})
 		return nil
 	}
+	list, err := s.buffers()
+	if err != nil {
+		return err
+	}
+	stamp := newestAfter(list)
 	if err := EnsureDir(s.Dir); err != nil {
 		return err
 	}
@@ -145,11 +188,34 @@ func (s *Shim) writeBuffer(name, data string) error {
 		_ = os.Remove(tmp.Name())
 		return err
 	}
+	if err := os.Chtimes(tmp.Name(), stamp, stamp); err != nil {
+		_ = os.Remove(tmp.Name())
+		return err
+	}
 	return os.Rename(tmp.Name(), path)
+}
+
+// newestAfter is the time to stamp a new buffer with: now, or just after the
+// newest buffer in list when the clock has not moved past it. The kernel
+// stamps a file with a clock that ticks every few milliseconds, so two
+// buffers written in one tick would otherwise tie, and the top of the stack
+// would fall to the name order. The step is a microsecond, which NTFS's
+// 100ns mtime keeps.
+func newestAfter(list []buffer) time.Time {
+	stamp := time.Now().Round(0)
+	for _, b := range list {
+		if !stamp.After(b.at) {
+			stamp = b.at.Add(time.Microsecond)
+		}
+	}
+	return stamp
 }
 
 // removeBuffer deletes buffer name.
 func (s *Shim) removeBuffer(name string) error {
+	if s.daemonBuffers() {
+		return s.daemonBufferRemove(name, 0)
+	}
 	dir := s.bufferDir()
 	if dir == "" {
 		s.memBuffers = withoutBuffer(s.memBuffers, name)
@@ -163,13 +229,20 @@ func (s *Shim) removeBuffer(name string) error {
 }
 
 // newBufferName is the name tmux gives a buffer made without -b:
-// bufferNNNN, one past the highest in use.
+// bufferN, one past the highest in use. With the daemon holding the
+// buffers it is "", and the daemon names the buffer as it names a yank.
 func (s *Shim) newBufferName() (string, error) {
+	if s.daemonBuffers() {
+		return "", nil
+	}
 	list, err := s.buffers()
 	if err != nil {
 		return "", err
 	}
-	next := 0
+	// The number only goes up, as in tmux, so a deleted buffer's name is not
+	// given again. The count is kept beside the buffers, since every call is
+	// a process of its own.
+	next := s.loadBufferCount()
 	for _, b := range list {
 		if n, ok := strings.CutPrefix(b.name, "buffer"); ok {
 			if i, err := strconv.Atoi(n); err == nil && i >= next {
@@ -177,11 +250,49 @@ func (s *Shim) newBufferName() (string, error) {
 			}
 		}
 	}
-	return fmt.Sprintf("buffer%04d", next), nil
+	s.saveBufferCount(next + 1)
+	return fmt.Sprintf("buffer%d", next), nil
 }
 
-// topBuffer is the name of the newest buffer, "" when there is none: the top
-// of tmux's buffer stack. Of two written at one time, the later name wins.
+// bufferCountFile holds the number of the next buffer name. Its name is not
+// hex, so buffers never takes it for a buffer.
+const bufferCountFile = "next"
+
+// loadBufferCount is the number the next buffer name starts from.
+func (s *Shim) loadBufferCount() int {
+	dir := s.bufferDir()
+	if dir == "" {
+		return s.memNext
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, bufferCountFile))
+	if err != nil {
+		return 0
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(string(raw)))
+	if err != nil || n < 0 {
+		return 0
+	}
+	return n
+}
+
+// saveBufferCount keeps the number the next buffer name starts from. It is
+// best effort: losing it only lets a name come back after a delete.
+func (s *Shim) saveBufferCount(n int) {
+	dir := s.bufferDir()
+	if dir == "" {
+		s.memNext = n
+		return
+	}
+	if EnsureDir(s.Dir) != nil || EnsureDir(dir) != nil {
+		return
+	}
+	_ = os.WriteFile(filepath.Join(dir, bufferCountFile), []byte(strconv.Itoa(n)), 0o600)
+}
+
+// topBuffer is the name of the newest automatic buffer, "" when there is
+// none: the top of tmux's buffer stack, which a command with no -b takes. A
+// buffer someone named is not on it. Of two written at one time, the later
+// name wins.
 func (s *Shim) topBuffer() (string, error) {
 	list, err := s.buffers()
 	if err != nil {
@@ -189,6 +300,9 @@ func (s *Shim) topBuffer() (string, error) {
 	}
 	var top buffer
 	for _, b := range list {
+		if !b.automatic() {
+			continue
+		}
 		if top.name == "" || b.at.After(top.at) || b.at.Equal(top.at) && b.name > top.name {
 			top = b
 		}
@@ -257,17 +371,24 @@ func (s *Shim) setBuffer(name string, args []string) (string, []string, error) {
 		return OutcomeError, detail, errors.New("set-buffer: give the data as one argument")
 	}
 	data := p.Args[0]
-	buf, named := p.Value('b')
-	if !named && p.Has('a') {
-		buf, err = s.topBuffer()
-	}
-	if buf == "" && err == nil {
+	buf, _ := p.Value('b')
+	// set-buffer -a with no -b makes a new buffer, as in tmux.
+	newBuf := buf == "" && err == nil
+	if newBuf {
 		buf, err = s.newBufferName()
 	}
 	if err != nil {
 		return OutcomeError, detail, err
 	}
-	if p.Has('a') {
+	if p.Has('a') && !newBuf {
+		if s.daemonBuffers() {
+			// The daemon appends in one step, so nothing set between a
+			// read and a write here is lost.
+			if err := s.daemonBufferWrite(buf, data, true); err != nil {
+				return OutcomeError, detail, fmt.Errorf("set-buffer: %w", err)
+			}
+			return outcomeFor(detail), detail, nil
+		}
 		old, _, err := s.readBuffer(buf)
 		if err != nil {
 			return OutcomeError, detail, err
@@ -345,7 +466,14 @@ func (s *Shim) pasteBuffer(name string, args []string) (string, []string, error)
 		}
 	}
 	if p.Has('d') {
-		if err := s.removeBuffer(buf); err != nil {
+		// Only the text that was pasted goes: a buffer set again meanwhile
+		// stays.
+		remove := s.removeBuffer
+		if s.daemonBuffers() {
+			version := s.readVersion
+			remove = func(name string) error { return s.daemonBufferRemove(name, version) }
+		}
+		if err := remove(buf); err != nil {
 			return OutcomeError, detail, err
 		}
 	}

@@ -36,6 +36,35 @@ var (
 func agentWorkVerbs() map[string]verbEntry {
 	humanNonce := verbParam{Name: "human_nonce", Type: "string", Description: "The nonce from the attach reply of a client attached now. The TUI sends its own. Without a live one the call is not the person's."}
 	return map[string]verbEntry{
+		// verb_agent_transcript.go
+		"agent-transcript": {
+			description: "Read the conversation of the agent in a pane, for a client that shows it to the person: prompts, answers, thinking, tool calls with their status, diffs of edits, plans and todo lists, decoded from the transcript the pane is joined to. Only the person can read it, with a live human_nonce, as reply-approval checks it. Claude Code transcripts only. Every string is the agent's or its tools', with control characters removed and likely secrets masked, so the reply is marked untrusted.",
+			params: []verbParam{
+				sessionParam,
+				{Name: "window", Type: "string", Required: true, Description: "The pane: a window id or name."},
+				{Name: "human_nonce", Type: "string", Required: true, Description: "The nonce of a client attached now, or of attach-presence on this connection. Without a live one the call is refused with not_human. A presence made for one session reads only that session's panes."},
+				{Name: "after", Type: "string", Description: "The cursor of an earlier reply. The reply then holds the entries after it. Omit it to read the newest limit entries."},
+				{Name: "before", Type: "string", Description: "The older cursor of an earlier reply. The reply then holds the newest limit entries before it. Do not give it with after."},
+				{Name: "limit", Type: "int", Description: "The most entries to return, 1 to 1000. Leave it out for the default. 0 is refused.", Default: "200"},
+			},
+			returns: []verbParam{
+				{Name: "session", Type: "string", Description: "The pane's session."},
+				{Name: "window", Type: "string", Description: "The pane's window id."},
+				{Name: "harness", Type: "string", Description: "The harness whose transcript was read."},
+				{Name: "cursor", Type: "string", Description: "Send it as after to read what comes next. It is opaque."},
+				{Name: "reset", Type: "bool", Description: "True when after was not a cursor into the file as it is now. The entries are then the newest limit, and the client starts its list again."},
+				{Name: "more", Type: "bool", Description: "True when a read after a cursor stopped before the end. Read again with the new cursor."},
+				{Name: "older", Type: "string", Description: "Send it as before to read the entries before this page. Empty when the page starts at the first entry."},
+				{Name: "entries", Type: "[]object", Description: "id, at (unix ms), role (user, assistant, tool), kind (text, thinking, tool_call, tool_result, plan, todos), text, truncated, tool, target, status (ok, error, running), tool_id, diff, plan and todos. Each diff line carries spans (syntax tokens with chroma CSS classes) and words (the changed part), in UTF-16 offsets. A diff with whole_replace true was not matched line by line: each hunk shows the changed old lines removed, then the changed new lines added. An entry with an id the client holds replaces it."},
+				{Name: "untrusted", Type: "bool", Description: "Always true: the text is the agent's."},
+			},
+			examples: []string{
+				`{"id":1,"verb":"agent-transcript","params":{"session":"work","window":"api","human_nonce":"<from attach-presence>"}}`,
+				`{"id":2,"verb":"agent-transcript","params":{"session":"work","window":"api","human_nonce":"<from attach-presence>","after":"<the cursor of the last reply>"}}`,
+				`{"id":3,"verb":"agent-transcript","params":{"session":"work","window":"api","human_nonce":"<from attach-presence>","before":"<the older cursor of the first reply>"}}`,
+			},
+			handler: (*Daemon).verbAgentTranscript,
+		},
 		// verb_review.go
 		"review-diff": {
 			description: "Read what the agent in a pane changed: the diff of its worktree against the base it was made from, or for a plain repository against the upstream merge base, untracked files included and ignored files left out. Nothing in the repository, its index or its working tree is changed. The text is the repository's, so it is marked untrusted.",
@@ -166,11 +195,14 @@ func agentWorkVerbs() map[string]verbEntry {
 			handler: (*Daemon).verbVerifyFan,
 		},
 		"keep-fan": {
-			description: "Keep one attempt of a fan and remove the others: each sibling's worktree and session go, the way remove-worktree removes them, each on its own. A sibling with uncommitted changes is left in place unless stash or force says what to do with them. Branches are never deleted.",
+			description: "Keep one attempt of a fan and remove the others: each sibling's worktree and session go, the way remove-worktree removes them, each on its own. A sibling with uncommitted changes is left in place unless stash or force says what to do with them. Branches are never deleted. With merge, the kept attempt's branch is first merged into its base, as ship-merge does.",
 			params: []verbParam{
 				{Name: "session", Type: "string", Required: true, Description: "The attempt to keep."},
 				{Name: "stash", Type: "bool", Description: "Stash a sibling's uncommitted changes before removing it.", Default: "false"},
 				{Name: "force", Type: "bool", Description: "Discard a sibling's uncommitted changes.", Default: "false"},
+				{Name: "merge", Type: "bool", Description: "First merge the kept attempt's branch into its base in the main checkout, as ship-merge does. A merge that conflicts or is refused stops the call before any sibling is removed.", Default: "false"},
+				{Name: "merge_mode", Type: "string", Description: "With merge: merge, squash or ff-only, as ship-merge takes mode.", Accepted: shipMergeModes, Default: "merge"},
+				{Name: "into", Type: "string", Description: "With merge: the branch to merge into. Omit for the base the attempt was made from."},
 			},
 			returns: []verbParam{
 				{Name: "kept", Type: "string", Description: "The session kept."},
@@ -178,10 +210,12 @@ func agentWorkVerbs() map[string]verbEntry {
 				{Name: "group", Type: "string", Description: "The fan's group."},
 				{Name: "removed", Type: "[]object", Description: "One per sibling: session and removed, with remove-worktree's result when it was removed, or note and code when it was not."},
 				{Name: "left", Type: "int", Description: "How many siblings were not removed."},
+				{Name: "merge", Type: "object", Description: "With merge: what ship-merge returns for the kept attempt. Omitted without merge."},
 			},
 			examples: []string{
 				`{"id":1,"verb":"keep-fan","params":{"session":"api-fan-retry-1"}}`,
 				`{"id":1,"verb":"keep-fan","params":{"session":"api-fan-retry-1","stash":true}}`,
+				`{"id":1,"verb":"keep-fan","params":{"session":"api-fan-retry-1","merge":true,"merge_mode":"squash"}}`,
 			},
 			handler: (*Daemon).verbKeepFan,
 		},

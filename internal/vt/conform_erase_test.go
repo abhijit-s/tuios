@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/Gaurav-Gosain/tuios/internal/vt"
+	"github.com/charmbracelet/x/ansi"
 )
 
 func TestConform_ScreenAlignmentPattern(t *testing.T) {
@@ -115,21 +116,96 @@ func TestConform_EraseSavedLines(t *testing.T) {
 
 // TestConform_SelectiveErase covers DECSCA, DECSED and DECSEL.
 //
-// Nothing here implements character protection, so DECSCA is logged as a
-// sequence the emulator did not act on. tmux does not implement it either.
+// DECSCA 1 protects what is printed next, and DECSCA 0 or 2 stops. A selective
+// erase (DECSED, DECSEL) erases only the cells that are not protected. The
+// plain erases (ED, EL) erase protected cells too: DEC protection guards a
+// cell against the selective forms only. That is what xterm and ghostty do.
+// tmux implements none of it.
 //
-// DECSED and DECSEL used to be unhandled as well, and a guest that sent
-// CSI ? 2 J expecting the screen cleared got nothing at all. A selective erase
-// erases every cell DECSCA has not protected, and with DECSCA unimplemented no
-// cell is protected, so they now erase exactly as ED and EL do. That is what
-// xterm and ghostty do on a screen with nothing protected.
+// DECSED and DECSEL used to be unhandled, and a guest that sent CSI ? 2 J
+// expecting the screen cleared got nothing at all. Then they erased exactly
+// as ED and EL do, because DECSCA was not implemented, so a protected cell
+// was erased too.
 func TestConform_SelectiveErase(t *testing.T) {
 	runConform(t, []conformCase{
 		{
-			name:      "DECSCA is not implemented",
-			in:        "\x1b[1\"qAB",
-			want:      "AB",
-			unhandled: true,
+			name: "DECSCA alone changes nothing visible",
+			in:   "\x1b[1\"qAB",
+			want: "AB",
+		}, {
+			name: "DECSED keeps the protected cells",
+			in:   "\x1b[1\"qAB\x1b[0\"qCD\x1b[1;1H\x1b[?2J",
+			want: "AB",
+		}, {
+			name: "DECSEL keeps the protected cells",
+			in:   "ab\x1b[1\"qCD\x1b[2\"qef\x1b[1;1H\x1b[?2K",
+			want: "  CD",
+		}, {
+			name: "ED erases the protected cells too",
+			in:   "\x1b[1\"qAB\x1b[0\"q\x1b[1;1H\x1b[2J",
+			want: "",
+		}, {
+			name: "an unknown DECSCA value leaves protection as it was",
+			in:   "\x1b[1\"qA\x1b[7\"qB\x1b[0\"q\x1b[1;1H\x1b[?2K",
+			want: "AB",
+		}, {
+			name: "a soft reset stops protecting",
+			in:   "\x1b[1\"q\x1b[!pAB\x1b[1;1H\x1b[?2K",
+			want: "",
+		}, {
+			name: "DECRC brings the protection DECSC saved",
+			in:   "\x1b[1\"q\x1b7\x1b[0\"q\x1b8AB\x1b[1;1H\x1b[?2K",
+			want: "AB",
+		}, {
+			name: "overwriting a protected cell unprotected it",
+			in:   "\x1b[1\"qAB\x1b[0\"q\x1b[1;1Hx\x1b[1;1H\x1b[?2K",
+			want: " B",
+		}, {
+			name: "protection moves with a delete",
+			in:   "ab\x1b[1\"qCD\x1b[0\"q\x1b[1;1H\x1b[2P\x1b[?2K",
+			want: "CD",
+		}, {
+			name: "protection moves with an insert",
+			in:   "\x1b[1\"qCD\x1b[0\"q\x1b[1;1H\x1b[2@\x1b[?2K",
+			want: "  CD",
+		}, {
+			name: "protection scrolls with its row",
+			in:   "x\r\n\x1b[1\"qP\x1b[0\"q\x1b[S\x1b[1;1H\x1b[?2J",
+			want: "P",
+		}, {
+			// The protection moves with its row, and a row that moves in
+			// keeps none of what was there before. Each case below fails when
+			// the protection stays where the row was.
+			name: "protection moves down with an inserted line",
+			in:   "ab\r\n\x1b[1\"qP\x1b[0\"q\x1b[1;1H\x1b[L\x1b[?2J",
+			want: "\n\nP",
+		}, {
+			name: "protection moves up with a deleted line",
+			in:   "ab\r\n\x1b[1\"qP\x1b[0\"q\x1b[1;1H\x1b[M\x1b[?2J",
+			want: "P",
+		}, {
+			name: "protection moves down with a reverse index in a region",
+			in:   "\x1b[2;4r\x1b[2;1H\x1b[1\"qP\x1b[0\"q\x1b[2;1H\x1bM\x1b[?2J",
+			want: "\n\nP",
+		}, {
+			name: "protection moves down with an inserted line inside side margins",
+			in:   "\x1b[?69h\x1b[2;5sab\x1b[1\"qC\x1b[0\"qd\x1b[1;2H\x1b[L\x1b[?69l\x1b[?2J",
+			want: "\n  C",
+		}, {
+			name: "protection moves up with a deleted line inside side margins",
+			in:   "a\r\nab\x1b[1\"qC\x1b[0\"qd\x1b[?69h\x1b[2;5s\x1b[1;2H\x1b[M\x1b[?69l\x1b[?2J",
+			want: "  C",
+		}, {
+			// An erased cell is not protected any more. The background a
+			// selective erase paints shows it: a cell still protected keeps
+			// the default one.
+			name:  "an erase in line unprotects the cells it erases",
+			in:    "\x1b[1\"qA\x1b[0\"q\x1b[1;1H\x1b[K\x1b[41m\x1b[?J",
+			cells: []cellWant{{x: 0, y: 0, bg: ansi.Red}},
+		}, {
+			name:  "a line scrolled in at the bottom is not protected",
+			in:    "\x1b[1\"qP\x1b[0\"q\x1b[S\x1b[41m\x1b[1;1H\x1b[?J",
+			cells: []cellWant{{x: 0, y: 3, bg: ansi.Red}},
 		}, {
 			// These two cases used to want "ABC" and an unhandled sequence:
 			// the selective erase erased nothing.

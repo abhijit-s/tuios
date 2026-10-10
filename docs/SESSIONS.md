@@ -14,6 +14,7 @@ what does and does not come back after each kind of interruption.
 - [Local Sessions](#local-sessions)
 - [Daemon Sessions](#daemon-sessions)
 - [Attaching and Detaching](#attaching-and-detaching)
+- [Sessionizer](#sessionizer)
 - [The Scratch Terminal](#the-scratch-terminal)
 - [Picture in Picture](#picture-in-picture)
 - [What Survives](#what-survives)
@@ -22,6 +23,9 @@ what does and does not come back after each kind of interruption.
 - [Windows on Another Machine](#windows-on-another-machine)
 - [Agents and Worktrees on Another Machine](#agents-and-worktrees-on-another-machine)
 - [Global Sessions](#global-sessions)
+- [Keeping Hosts on One Version](#keeping-hosts-on-one-version)
+- [Starting the Daemon on a Host](#starting-the-daemon-on-a-host)
+- [Adding a Phone](#adding-a-phone)
 - [Machines on a Tailnet](#machines-on-a-tailnet)
 - [Where State Lives](#where-state-lives)
 - [Limitations](#limitations)
@@ -223,6 +227,9 @@ direction. The rail, the palette and session cycling switch across machines
 the same way. Rename and delete work only on sessions on the machine you are
 on.
 
+`tuios switch-session` switches a client from the command line, also from a
+pane. See [Sessionizer](#sessionizer).
+
 Switching is not the same as detaching and reattaching: the client tears down
 its view of the current session and builds a view of the target, in place. The
 session you left keeps running.
@@ -247,6 +254,45 @@ A client that dies without detaching (its terminal is closed, the SSH connection
 drops, the process is killed) is equivalent to a detach as far as the session is
 concerned. The daemon notices the connection go away and keeps the session
 running. Nothing is lost, because nothing the session needs lived in the client.
+
+## Sessionizer
+
+A sessionizer opens a project as a session. You pick a folder, and tuios
+shows its session. When the session does not exist, tuios makes it in that
+folder first.
+
+Add this command key to `config.toml`. It opens a popup with `fzf` over the
+folders in `~/dev`:
+
+```toml
+[[keybindings.command]]
+key = "prefix+alt+s"
+type = "popup"
+command = 'dir=$(find ~/dev -mindepth 1 -maxdepth 1 -type d | fzf) && tuios switch-session --create --cwd "$dir" "$(basename "$dir")"'
+description = "Open a project"
+```
+
+Press `Ctrl+B` `Alt+S`, pick a folder, and press `Enter`. The client switches
+to the session of that folder. Its windows start in the folder.
+
+- [`tuios switch-session`](CLI_REFERENCE.md#tuios-switch-session) switches
+  the client that shows the popup. Nothing is nested.
+- `--create` makes the session when it is missing. `--cwd` sets the folder
+  of its windows. The session keeps this folder after a daemon restart.
+- With `startup.tiled = true`, the new session is tiled. tuios reads this
+  setting from the config of the client that switches. This is also true
+  for a session on a host.
+- To open a project on a host, put the host before the name:
+  `tuios switch-session --create --cwd "$dir" "build:$(basename "$dir")"`.
+  The folder is a path on that host.
+
+From a shell outside tuios, name the client with `-s`:
+
+```sh
+tuios switch-session -s work --create --cwd ~/dev/api api
+```
+
+To make a session without a switch, run `tuios new NAME --detach --cwd DIR`.
 
 ## The Scratch Terminal
 
@@ -776,6 +822,73 @@ any session is, but where it is held says nothing about where its panes run.
 Turn the group off with `global_session = false` in the config. Sessions that
 already exist stay listed.
 
+## Keeping Hosts on One Version
+
+`tuios hosts sync` installs the tuios version of this machine on every host in
+the `[hosts]` table that runs another one. A release build sends its own
+release, `--dev` sends a build of the checkout, and `--binary` sends a file.
+
+```sh
+tuios hosts sync --dry-run    # see what would change
+tuios hosts sync --dev        # install a build of this checkout everywhere
+```
+
+The daemon on a host keeps running the old version, and its sessions keep
+running. The row for the host gives the command to restart it. Add
+`--restart` to restart them in the same run: sync lists the sessions and the
+programs that a restart ends, and asks first. The sessions come back after the
+restart with their layouts and new shells. See
+[`tuios hosts sync`](CLI_REFERENCE.md#tuios-hosts-sync).
+
+## Starting the Daemon on a Host
+
+A link reaches a host only when a tuios daemon runs there. When none runs,
+`tuios hosts test NAME` reports `no_daemon` and prints the command to run on
+the host. To start the daemon from this machine, add `--start`:
+
+```sh
+tuios hosts test build --start    # start the daemon on build if it does not run
+tuios hosts sync build --start    # install tuios on build if needed, then start it
+```
+
+`hosts test --start` does not install tuios. On a host with no tuios, use
+`hosts sync --start`. See [`tuios hosts test`](CLI_REFERENCE.md#tuios-hosts-test).
+
+## Adding a Phone
+
+A phone connects to this machine over ssh and runs
+`tuios stdio-proxy --as NAME`. To give the phone its key with no copy and
+paste, use `tuios pair`:
+
+```sh
+tuios pair --name phone
+```
+
+1. Scan the QR code with the tuios app on the phone.
+2. Compare the check code and the key fingerprint on the screen with the ones
+   on the phone.
+3. Type `y` to accept the key.
+
+The phone must reach this machine, for example on the same Wi-Fi network or
+on your tailnet. The code works one time, for 5 minutes. Anyone who sees the
+code can try to pair until the phone does. Do not show the code on a shared
+screen.
+
+The key can only open a tuios link under the name `phone`. tuios writes a new
+`[hosts.phone]` table first, and then adds the key. The table sets what the
+phone may do. By default it allows `list` and `mail`:
+
+- `list` lets the phone read: listings, pane captures, screenshots, agent
+  state, the Inbox and the event stream.
+- `mail` lets the phone send and read agent mail.
+
+The phone cannot start programs, type into panes or answer prompts. To allow
+more, give `--allow`, for example `--allow list,mail,open,write`. See
+[`tuios pair`](CLI_REFERENCE.md#tuios-pair) for each flag and the protocol.
+
+To remove the phone, delete the line that ends in `tuios-pair:phone` from
+`~/.ssh/authorized_keys`, and the `[hosts.phone]` table from `config.toml`.
+
 ## Machines on a Tailnet
 
 If this machine is on a [Tailscale](https://tailscale.com) tailnet, tuios can
@@ -855,6 +968,58 @@ build = "root"
 For a script or an agent, `tuios hosts tailnet --json` gives every machine with
 `offered` and, when it is false, `skipped` saying which rule left it out.
 
+### Tailscale SSH check mode
+
+Tailscale SSH can hold a login until you approve it in a browser. This is
+"check" mode. ssh then waits, and Tailscale prints a link to open:
+
+```
+# Tailscale SSH requires an additional check.
+# To authenticate, visit: https://login.tailscale.com/a/l1d9c7e392d3020
+```
+
+tuios reads this link and shows it.
+
+- **The rail** shows "sign in" beside the host, in the colour of an agent that
+  needs you. Click "sign in", or move the cursor to it and press Enter, to open
+  the sign-in page in your browser. The notice names the domain of the page and
+  the host. A click on the name of the host still folds its group. Hover the
+  host to see why it waits. On an ssh or web client, tuios cannot start your
+  browser. It shows the address in a notice and puts it on your clipboard.
+- **Only a Tailscale address opens.** The link comes from ssh's error output,
+  and anything on the host can print there. tuios shows and opens it only when
+  it is https on `login.tailscale.com` or `controlplane.tailscale.com`, matched
+  exactly. For any other address, the rail says "The sign-in link from NAME is
+  not a Tailscale address, so tuios did not open it." Run ssh to the host in a
+  terminal to see it. With Headscale, give the origin of your server for that
+  host: `tailscale_login = "https://headscale.example"` in `[hosts.NAME]`.
+- **The daemon's link** waits up to 10 minutes on one page. It goes on when you
+  sign in, and the host comes up on the rail with no other step. When Tailscale
+  ends the wait, the link asks again and shows a new page. After you open a
+  page from the rail or with `tuios hosts signin`, the link asks again every few
+  seconds for two minutes.
+- **`tuios hosts`** shows the status "sign in", with the page to open and the
+  command that opens it. In `--json` the status stays `tailscale_check`, with
+  `approval_url`.
+- **`tuios hosts signin [NAME]`** opens the sign-in page of each host that
+  waits, or of the named host. With no desktop, as over ssh, it prints the
+  address. `--print` prints it and opens nothing. `--json` prints
+  `{"hosts":[{"host","url","opened","note"}]}`.
+- **`tuios hosts test`** and **`tuios hosts add`** report `tailscale_check`
+  with the link. Open it, approve the login, then run the command again.
+- **`tuios hosts sync`** on a terminal lists the link of each host that waits.
+  Then it asks to wait up to 5 minutes. Each host continues when you approve
+  its login. Without a terminal, or with `--json`, the host fails at once.
+  Its row has `"error_kind": "tailscale_check"` and `approval_url`.
+
+All ssh calls of one `hosts sync` run to a host use one shared connection.
+Thus one approval covers the whole run. The connection uses a private socket
+in `$XDG_RUNTIME_DIR` and stops when the run ends.
+
+If the tailnet policy refuses the login, tuios names the user it refused. The
+row has `"error_kind": "tailscale_policy"`. Change the user in the `addr` of the
+host in `[hosts]`, for example `addr = "ubuntu@ente"`.
+
 ## Copying
 
 Copying is the one gesture in a terminal with no result to look at: the text
@@ -928,8 +1093,9 @@ the dock shows one line for that pane. A one-line copy shows nothing. A click
 on an ask copies only the text that the dock showed. If the text changes
 first, click the new message.
 
-In each mode, the pane keeps its own copy. The program reads it back with an
-OSC 52 query.
+A pane that runs without the daemon keeps its own copy of the text. The
+program reads it back with an OSC 52 query. A pane under the daemon keeps no
+copy. An OSC 52 query in that pane always gets an empty answer.
 
 ```toml
 [appearance.selection]
@@ -984,8 +1150,12 @@ a pane that set its own `XDG_RUNTIME_DIR`), the command runs against the daemon
 
 ## Limitations
 
-- **Screen contents and scrollback never survive the daemon.** They are held in
-  the daemon's memory, not on disk. Only a detach preserves them.
+- **Screen contents and scrollback survive a daemon restart only as saved
+  history.** The daemon keeps them in memory and saves them to disk. A restored
+  pane shows the saved history above a divider, with a new shell under it. After
+  a crash, the history is as old as the last save. The setting
+  `persist_scrollback = false` turns the save off, and then only a detach keeps
+  them. A running program and its live screen never survive the daemon.
 - **Working directory capture needs Linux or macOS.** The daemon reads where
   each shell is from the process itself: `/proc/<pid>/cwd` on Linux, and
   `proc_pidinfo` (libproc) on macOS, which needs no cgo. On other platforms

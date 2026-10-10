@@ -3,6 +3,7 @@ package session
 import (
 	"log"
 	"runtime/debug"
+	"sync/atomic"
 	"time"
 )
 
@@ -29,15 +30,27 @@ var (
 // Multiple channel reads are coalesced into a single connection write to
 // reduce syscall overhead (30K+ reads/sec at 500fps doom fire → one large
 // write per batch instead of one per read).
-func (d *Daemon) streamPTYOutput(cs *connState, pty *PTY, outputCh <-chan ptyChunk) {
+//
+// sub is the subscription this goroutine owns. It is replaced only by
+// resumeAfterGap, and everything the goroutine releases it releases by
+// identity, never by client ID alone.
+func (d *Daemon) streamPTYOutput(cs *connState, pty *PTY, sub *ptySubscriber) {
 	// On any exit, stop receiving from the PTY and drop the subscription entry so
 	// the connState is left coherent: a later re-subscribe must not be blocked by
 	// a stale "already subscribed" guard (daemon_handlers.go), and no PTY keeps
 	// broadcasting into an unread channel.
+	//
+	// Both act only while they still refer to this goroutine's subscriber. A
+	// pane hidden and shown quickly unsubscribes and subscribes again while
+	// this goroutine is still blocked in a write. Cleaning up by client ID then
+	// removed the new subscription and its entry, so the new goroutine's
+	// channel was closed under it and the pane stopped updating.
 	defer func() {
-		pty.Unsubscribe(cs.clientID)
+		pty.unsubscribeSub(cs.clientID, sub)
 		cs.mu.Lock()
-		delete(cs.ptySubscriptions, pty.ID)
+		if cs.ptySubscriptions[pty.ID] == sub {
+			delete(cs.ptySubscriptions, pty.ID)
+		}
 		cs.mu.Unlock()
 	}()
 
@@ -46,7 +59,7 @@ func (d *Daemon) streamPTYOutput(cs *connState, pty *PTY, outputCh <-chan ptyChu
 	// 256 KiB for every client and pane pair, including panes that never
 	// print.
 	var batch []byte
-	sub := pty.subscriberFor(cs.clientID)
+	var outputCh <-chan ptyChunk = sub.ch
 	// take accounts for a chunk taken off the stream, so broadcast can tell
 	// how much this client still holds, and adds its bytes to the batch. A
 	// frame broadcast dropped for a newer one adds nothing.
@@ -160,7 +173,12 @@ func (d *Daemon) streamPTYOutput(cs *connState, pty *PTY, outputCh <-chan ptyChu
 			// by the time the channel is empty. Rebuild it from where it got
 			// to, so the client is handed what it missed instead of the rest
 			// of the stream painted over a hole.
-			if ch, next := pty.resumeAfterGap(cs.clientID); ch != nil {
+			if ch, next := pty.resumeAfterGap(cs.clientID, sub); ch != nil {
+				cs.mu.Lock()
+				if cs.ptySubscriptions[pty.ID] == sub {
+					cs.ptySubscriptions[pty.ID] = next
+				}
+				cs.mu.Unlock()
 				outputCh, sub = ch, next
 			}
 		}
@@ -254,8 +272,29 @@ func (d *Daemon) sendEncoded(cs *connState, msg *Message) error {
 	return err
 }
 
-func (d *Daemon) sendError(cs *connState, code int, message string) error {
-	return d.sendMessage(cs, MsgError, &ErrorPayload{
+// reply sends msgType as the answer to req, tagged with req's request id so
+// the client can tell it from the answer to any other request. Everything a
+// handler sends in answer to the message it is handling goes through here or
+// replyError; a broadcast or push that happens to share a type does not.
+//
+// A client matched replies by type alone before ids existed, so an error a
+// fire-and-forget subscribe drew was taken as the answer to whatever state
+// request was waiting, and the state that request was really answered with
+// went to the next one. See requestIDs on TUIClient.
+func (d *Daemon) reply(cs *connState, req *Message, msgType MessageType, payload any) error {
+	msg, err := NewMessage(msgType, payload)
+	if err != nil {
+		return err
+	}
+	if req != nil {
+		msg.ReqID = req.ReqID
+	}
+	return d.sendEncoded(cs, msg)
+}
+
+// replyError sends an error as the answer to req. See reply.
+func (d *Daemon) replyError(cs *connState, req *Message, code int, message string) error {
+	return d.reply(cs, req, MsgError, &ErrorPayload{
 		Code:    code,
 		Message: message,
 	})
@@ -276,15 +315,19 @@ func (d *Daemon) sendError(cs *connState, code int, message string) error {
 // all) is dropped on the floor. The window is a few instructions and has not
 // been caught in the act; it is closed here because it costs one lock to close
 // and nothing about it is bounded by how narrow it happens to be today.
-func (d *Daemon) sendAttachReply(cs *connState, payload *AttachedPayload) error {
+func (d *Daemon) sendAttachReply(cs *connState, req *Message, payload *AttachedPayload) error {
 	msg, err := NewMessage(MsgAttached, payload)
 	if err != nil {
 		return err
 	}
+	msg.ReqID = req.ReqID
 
 	cs.sendMu.Lock()
 	cs.mu.Lock()
 	cs.attached = true
+	// Written with the reply, under sendMu: a message sent to the client
+	// for this session after this point cannot overtake the reply.
+	cs.repliedSession = payload.SessionID
 	cs.mu.Unlock()
 	_ = cs.conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
 	err = WriteMessage(cs.conn, msg)
@@ -309,7 +352,13 @@ func (d *Daemon) broadcastToSession(sessionID string, msgType MessageType, paylo
 		debugLog("[DEBUG] broadcastToSession: encode: %v", err)
 		return
 	}
+	d.broadcastEncodedToSession(sessionID, msg, excludeClientID)
+}
 
+// broadcastEncodedToSession is broadcastToSession for a message already
+// encoded, so a caller can encode it before it takes a lock.
+func (d *Daemon) broadcastEncodedToSession(sessionID string, msg *Message, excludeClientID string) {
+	msgType := msg.Type
 	d.clientsMu.RLock()
 	defer d.clientsMu.RUnlock()
 
@@ -333,6 +382,11 @@ func (d *Daemon) broadcastToSession(sessionID string, msgType MessageType, paylo
 	}
 }
 
+// broadcastSendHeld runs in each queued broadcast after its turn comes and
+// before it is written. It is unset outside tests, which use it to hold the
+// queue while something else is sent.
+var broadcastSendHeld atomic.Pointer[func()]
+
 // queueBroadcast writes one already encoded broadcast to one client, off this
 // goroutine and in turn.
 //
@@ -352,6 +406,9 @@ func (d *Daemon) queueBroadcast(cs *connState, msg *Message, what string) {
 			}
 		}()
 		client.awaitBroadcastTurn(ticket)
+		if hook := broadcastSendHeld.Load(); hook != nil {
+			(*hook)()
+		}
 		if err := d.sendEncoded(client, msg); err != nil {
 			debugLog("[DEBUG] %s: failed to send to client %s: %v", what, client.clientID, err)
 		}

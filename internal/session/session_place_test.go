@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -30,6 +31,65 @@ func TestParseCwdReportAcceptsLocalPathsOnly(t *testing.T) {
 		got, ok := parseCwdReport(c.raw)
 		if ok != c.ok || got != c.want {
 			t.Errorf("parseCwdReport(%q) = %q, %v; want %q, %v", c.raw, got, ok, c.want, c.ok)
+		}
+	}
+}
+
+// TestHostNameSetIsNarrow pins which OSC 7 hosts count as this machine. It is
+// a security boundary: a report read as local can name the folder a new
+// window starts in. A short name matches only on macOS, only for a host name
+// with dots, and only as the whole first label. COMPUTERNAME matches as it is.
+func TestHostNameSetIsNarrow(t *testing.T) {
+	cases := []struct {
+		hostname, computer string
+		darwin             bool
+		report             string
+		local              bool
+	}{
+		{"box.lan", "", true, "box", true},
+		{"box.lan", "", true, "BOX.LAN", true},
+		{"box.lan", "", false, "box", false},
+		{"box", "", true, "box.lan", false},
+		{"box.lan", "", true, "box.other", false},
+		{"box.lan", "", true, "bo", false},
+		{"desktop-1234", "DESKTOP-NETBIOS", false, "desktop-netbios", true},
+		{"desktop-1234", "DESKTOP-NETBIOS", false, "desktop", false},
+		{"desktop-1234", "", false, "desktop-netbios", false},
+		{"", "", false, "localhost", true},
+	}
+	for _, c := range cases {
+		names := hostNameSet(c.hostname, c.computer, c.darwin)
+		if got := names[strings.ToLower(c.report)]; got != c.local {
+			t.Errorf("host %q, COMPUTERNAME %q, darwin %v: report %q local = %v, want %v",
+				c.hostname, c.computer, c.darwin, c.report, got, c.local)
+		}
+	}
+}
+
+// TestPickWindowCwdTrustsAReadableProcess pins which folder a new window
+// inherits. The record holds the pane's OSC 7 or OSC 9;9 report, which any
+// program in the pane can print, so it is used only when no process can be
+// read. A shell whose folder was deleted is readable, and Linux names its
+// folder "/x (deleted)": the window must not take the report then.
+func TestPickWindowCwdTrustsAReadableProcess(t *testing.T) {
+	proc, report := t.TempDir(), t.TempDir()
+	gone := filepath.Join(t.TempDir(), "gone")
+	cases := []struct {
+		name    string
+		procCwd string
+		procOK  bool
+		record  string
+		want    string
+	}{
+		{"the process folder wins over a report", proc, true, report, proc},
+		{"a deleted process folder does not fall back to the report", gone + " (deleted)", true, report, ""},
+		{"no readable process takes the report", "", false, report, report},
+		{"a report of a missing folder is not taken", "", false, gone, ""},
+		{"a relative report is not taken", "", false, "rel/dir", ""},
+	}
+	for _, c := range cases {
+		if got := pickWindowCwd(c.procCwd, c.procOK, c.record); got != c.want {
+			t.Errorf("%s: got %q, want %q", c.name, got, c.want)
 		}
 	}
 }
@@ -107,5 +167,81 @@ func TestGitBranchAgreesWithGitInit(t *testing.T) {
 	}
 	if got := gitBranch(repo); got != "from-git" {
 		t.Fatalf("gitBranch on a git-made checkout = %q, want from-git", got)
+	}
+}
+
+// TestParseCwdOnEachOS pins how a folder report becomes a path, for a daemon on
+// Windows and on any other OS, whatever OS the test runs on. It is issue #491:
+// PowerShell reports file://NOTE238/C:/dev/x, and tuios kept the slash in front
+// of the drive, so the folder read \C:\dev\x, which does not exist, and a new
+// window never started in it.
+//
+// The ways it could fail, written down before the code:
+//   - The slash in front of a drive stays: /C:/x reads as \C:\x on Windows.
+//   - Only the local report is fixed, and a report that names another machine
+//     keeps /C:/x, or is turned into a backslash path on a Windows daemon,
+//     which is no path on the machine that sent it.
+//   - A path with %20 or %25 is not decoded, or is decoded twice.
+//   - file:///C:/x, with no host, is not read as this machine.
+//   - A drive path is taken as a folder on Linux or macOS, where it is none.
+//   - A folder named C: (a top folder of /C:x) is read as a drive.
+//   - An OSC 9;9 path in back slashes, forward slashes or quotes is read in one
+//     form only, or a UNC path from OSC 9;9 is refused.
+//   - A UNC report, file://server/share/x, is read as a share on this machine.
+//     OSC 7 names the machine the shell runs on, so it is another machine.
+//   - A shell in a UNC folder reports file://HOST//server/share/x, and one of
+//     the two slashes in front of the server is lost.
+//   - A decoded control character (%00, %1b, %0a) reaches the rail or a
+//     command. A plain non-ASCII name must still pass.
+func TestParseCwdOnEachOS(t *testing.T) {
+	local := func(h string) bool {
+		h = strings.ToLower(h)
+		return h == "" || h == "localhost" || h == "note238"
+	}
+	cases := []struct {
+		goos, raw  string
+		path, host string
+		ok         bool
+	}{
+		{"windows", "file://NOTE238/C:/dev/tuios_0.8.5_Windows_x86_64", `C:\dev\tuios_0.8.5_Windows_x86_64`, "", true},
+		{"windows", "file:///C:/x", `C:\x`, "", true},
+		{"windows", "file://localhost/c:/x/", `C:\x`, "", true},
+		{"windows", "file:///C:", `C:\`, "", true},
+		{"windows", "file:///C:/", `C:\`, "", true},
+		{"windows", "file:///C:/My%20Docs/100%25", `C:\My Docs\100%`, "", true},
+		{"windows", "file:///C:/a/../b", `C:\b`, "", true},
+		{"windows", "file://NOTE238//server/share/x", `\\server\share\x`, "", true},
+		{"windows", "file://server/share/x", "/share/x", "server", true},
+		{"windows", "file://far-box/C:/dev/x", "C:/dev/x", "far-box", true},
+		{"windows", "file://far-box/home/u", "/home/u", "far-box", true},
+		{"windows", "file://far-box//server/share", "//server/share", "far-box", true},
+		{"windows", `C:\dev\x`, `C:\dev\x`, "", true},
+		{"windows", `"C:\dev\x"`, `C:\dev\x`, "", true},
+		{"windows", "C:/dev/x", `C:\dev\x`, "", true},
+		{"windows", `\\server\share\x`, `\\server\share\x`, "", true},
+		{"windows", "file:///C:x", "", "", false},
+		{"windows", "dev/x", "", "", false},
+		{"linux", "file://far-box/C:/dev/x", "C:/dev/x", "far-box", true},
+		{"linux", "file://NOTE238/C:/dev/x", "", "", false},
+		{"linux", "file:///C:/x", "", "", false},
+		{"linux", `C:\x`, "", "", false},
+		{"linux", "file:///C:x", "/C:x", "", true},
+		{"linux", "file:///home/u/My%20Docs", "/home/u/My Docs", "", true},
+		{"linux", "file://localhost/a/b/../c/", "/a/c", "", true},
+		{"linux", "file://server/share/x", "/share/x", "server", true},
+		{"darwin", "/Users/u", "/Users/u", "", true},
+		{"linux", "file://far-box", "", "", false},
+		{"linux", "file:///home/u/a%00b", "", "", false},
+		{"linux", "file://far-box/home/%1b[2Ju", "", "", false},
+		{"windows", "file:///C:/x%0a", "", "", false},
+		{"linux", "file:///home/u/caf%C3%A9", "/home/u/café", "", true},
+		{"linux", "", "", "", false},
+	}
+	for _, c := range cases {
+		path, host, ok := parseCwdFor(c.raw, c.goos, local)
+		if path != c.path || host != c.host || ok != c.ok {
+			t.Errorf("%s: parseCwdFor(%q) = %q, %q, %v; want %q, %q, %v",
+				c.goos, c.raw, path, host, ok, c.path, c.host, c.ok)
+		}
 	}
 }

@@ -31,7 +31,7 @@ func isScreenshotKey(msg tea.KeyPressMsg, o *app.OS) bool {
 	if o.KeybindRegistry == nil {
 		return false
 	}
-	return lookupAction(msg, o.KeybindRegistry.GetPrefixAction) == "prefix_screenshot"
+	return lookupAction(o, msg, o.KeybindRegistry.GetPrefixAction) == "prefix_screenshot"
 }
 
 // routeOverlayScreenshot runs the screenshot chord over an open overlay. It
@@ -50,7 +50,7 @@ func routeOverlayScreenshot(msg tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd, b
 		m, second := routeKey(msg, m)
 		return m, tea.Batch(first, second), true
 	}
-	if o.PrefixActive || !isLeaderKey(msg, &o.Settings) || !o.OverlayOnScreen() {
+	if o.PrefixActive || !isLeaderKey(msg, &o.Settings, o.HostBaseCode(msg)) || !o.OverlayOnScreen() {
 		return o, nil, false
 	}
 	held := msg

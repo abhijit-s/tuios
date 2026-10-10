@@ -47,27 +47,25 @@ func (e *Emulator) screenAlignmentPattern() {
 // saveCharsets records the character set selection alongside the cursor, which
 // is where DEC puts it: DECSC saves it and DECRC brings it back.
 func (e *Emulator) saveCharsets() {
-	e.savedCharsetIDs = e.charsetIDs
-	e.savedCharsets = e.charsets
-	e.savedGL, e.savedGR = e.gl, e.gr
+	x := &e.scr.savedExtra
+	x.charsetIDs = e.charsetIDs
+	x.charsets = e.charsets
+	x.gl, x.gr = e.gl, e.gr
 }
 
 // restoreCharsets is the DECRC half of saveCharsets.
 func (e *Emulator) restoreCharsets() {
-	e.charsetIDs = e.savedCharsetIDs
-	e.charsets = e.savedCharsets
-	e.gl, e.gr = e.savedGL, e.savedGR
+	x := &e.scr.savedExtra
+	e.charsetIDs = x.charsetIDs
+	for i, id := range e.charsetIDs {
+		if id == 0 {
+			e.charsetIDs[i] = 'B'
+		}
+	}
+	e.charsets = x.charsets
+	e.gl, e.gr = x.gl, x.gr
 	e.gsingle = 0
 }
-
-// decModeReverseWrap and decModeReverseWrapExt are the two spellings of reverse
-// wraparound. Nothing here acts on them, but a guest can set them and the modes
-// map is carried in a session snapshot, so a soft reset has to clear them or
-// they outlive it on both the daemon and the client.
-const (
-	decModeReverseWrap    = ansi.DECMode(45)
-	decModeReverseWrapExt = ansi.DECMode(1045)
-)
 
 // softReset performs a soft terminal reset as in [ansi.DECSTR].
 //
@@ -79,12 +77,13 @@ const (
 //
 // The list is the one DEC documents for the VT510, restricted to the state this
 // emulator actually keeps: the cursor enabled, insert/replace back to replace,
-// origin mode absolute, the keyboard unlocked, the keypad numeric, normal arrow
-// keys, the scroll region back to the full page, the left and right margins
-// with it, G0 to G3 and GL and GR back to their defaults, SGR back to normal,
-// and the saved cursor to home. The modes DEC also lists but this emulator has
-// no notion of, DECNRCM, DECSCA, DECSASD, DECKPM, DECRLM and DECPCTERM, are
-// left out rather than stored unread.
+// origin mode absolute, the keypad numeric, normal arrow keys, the scroll
+// region back to the full page, the left and right margins with it, G0 to G3
+// and GL and GR back to their defaults, SGR back to normal, and the saved
+// cursor to home, and DECSCA protection off for what is printed next. The
+// modes DEC also lists but this emulator has no notion of, KAM, DECNRCM,
+// DECSASD, DECKPM, DECRLM and DECPCTERM, are left out:
+// a guest cannot set them (see handleMode), so there is nothing to clear.
 //
 // Two things it deliberately does not do, both of which programs depend on: it
 // does not move the cursor, and it does not clear the screen.
@@ -104,12 +103,9 @@ func (e *Emulator) softReset() {
 	e.setMode(ansi.ModeTextCursorEnable, ansi.ModeSet)
 	e.setMode(ansi.ModeInsertReplace, ansi.ModeReset)
 	e.setMode(ansi.ModeOrigin, ansi.ModeReset)
-	e.setMode(ansi.ModeKeyboardAction, ansi.ModeReset)
 	e.setMode(ansi.ModeNumericKeypad, ansi.ModeReset)
 	e.setMode(ansi.ModeCursorKeys, ansi.ModeReset)
 	e.setMode(ansi.ModeLeftRightMargin, ansi.ModeReset)
-	e.setMode(decModeReverseWrap, ansi.ModeReset)
-	e.setMode(decModeReverseWrapExt, ansi.ModeReset)
 
 	// The region, and with it both pairs of margins.
 	e.scr.scroll = e.scr.buf.Bounds()
@@ -125,6 +121,8 @@ func (e *Emulator) softReset() {
 	// printed afterwards belong to somebody's URL.
 	e.scr.cur.Pen = uv.Style{}
 	e.scr.cur.Link = uv.Link{}
+	// DEC lists DECSCA among what a soft reset turns off.
+	e.scr.cur.Protected = false
 
 	// The saved cursor goes back to the origin with a default pen, so a DECRC
 	// after a soft reset lands somewhere defined.
@@ -148,6 +146,9 @@ func (e *Emulator) fullReset() {
 	e.colors = [256]color.Color{}
 	e.refreshPaletteClaims()
 
+	// Titles a guest saved with XTWINOPS 22 are not restored past a reset.
+	e.titleStack = nil
+
 	e.gl, e.gr = 0, 1
 	e.gsingle = 0
 	e.charsets = [4]CharSet{}
@@ -159,9 +160,14 @@ func (e *Emulator) fullReset() {
 	e.lastCluster, e.lastClusterWidth = "", 0
 	e.lastState = parser.GroundState
 
+	// xterm's RIS puts the key modifier resources back to their initial
+	// values, and modifyOtherKeys starts off.
+	e.modifyOtherKeys.Store(0)
+
 	// Reset kitty keyboard protocol state
 	if e.kittyKbd != nil {
 		e.kittyKbd.Reset()
+		e.kittyKbd.SelectScreen(e.scr == &e.scrs[1])
 		e.updateKittyKeyboardCache()
 	}
 }

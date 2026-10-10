@@ -6,6 +6,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"charm.land/lipgloss/v2"
 	"github.com/Gaurav-Gosain/tuios/internal/overlay"
@@ -66,20 +68,19 @@ const (
 
 var (
 
-	// MaxFPSCap is the ceiling the renderer is allowed to reach. The tick loop
-	// throttles actual work to NormalFPS; this is the upper bound so raising
-	// NormalFPS at runtime (including the "unlimited" setting, which pins it to
-	// this value) can take effect without a restart.
+	// MaxFPSCap is the highest max_fps tuios accepts, and the most a display
+	// sold today refreshes at.
 	//
-	// It is the renderer's own ceiling and not a number of our choosing. Bubble
-	// Tea clamps to 120 in NewProgram, so a larger value here was accepted by
-	// the setting, offered by the settings row, handed to tea.WithFPS and then
-	// quietly ignored: the tick loop really did run faster while the screen did
-	// not, so the setting said one thing and the display did another. Matching
-	// the renderer is the honest of the two fixes, because the other one is to
-	// keep offering a number and explain in the row that part of it does
-	// nothing.
-	MaxFPSCap = 120
+	// Bubble Tea clamps its own frame ticker to 120 in NewProgram, which is
+	// what this cap used to match: a larger value was accepted, handed to
+	// tea.WithFPS and quietly ignored. OS.BindProgram now sets the ticker after
+	// NewProgram, past that clamp, so every value up to this cap is one the
+	// screen really gets.
+	MaxFPSCap = 240
+
+	// DefaultFPS is the frame rate for max_fps = 0, and for "auto" when the
+	// display's rate cannot be found.
+	DefaultFPS = 60
 
 	// MinConfiguredFPS is the floor a configured max_fps is clamped to. Below it
 	// the UI stops feeling like it is responding to the keyboard at all.
@@ -95,8 +96,13 @@ var (
 // =============================================================================
 
 const (
-	// DockHeight is the height of the dock area at the bottom
-	DockHeight = 2
+	// DockFullHeight is the rows a full dock takes: the rule between the panes
+	// and the dock, and the row of pills.
+	DockFullHeight = 2
+
+	// DockCompactHeight is the rows a compact dock takes: the row of pills
+	// alone. See Settings.DockHeight.
+	DockCompactHeight = 1
 
 	// SidebarDefaultWidth is the preferred sidebar width on a wide screen.
 	// Before v0.8.0 it was 28.
@@ -450,7 +456,13 @@ const SidebarDefaultSections = "sessions:25,terminals,files:25,agents:34"
 // section the rail does not draw, and that is the only way to turn one off:
 // there is no second switch per section, because a switch cannot say where a
 // thing goes and two spacers would have no switch to share.
-var SidebarSectionNames = []string{"sessions", "terminals", "files", "agents", "git"}
+var SidebarSectionNames = []string{"sessions", "terminals", "files", "agents", "git", SidebarSectionCustom}
+
+// SidebarSectionCustom is the rail section whose rows are the output of a
+// command the user writes, configured in [appearance.sidebar.custom]. It is
+// one section and not a family of named ones, because the rail's sections are
+// a fixed enum that sizes its arrays, and one more value fits that as it is.
+const SidebarSectionCustom = "custom"
 
 // SidebarSectionSpacer is the layout's empty block. It draws nothing and takes
 // lines, which is how a person puts a gap between two sections or pushes what
@@ -707,64 +719,109 @@ func (s *Settings) GetDockPillRightChar() string {
 	return s.GetSidebarPillRightChar()
 }
 
-// GetDockModeCapLeft returns the mode chip's left cap.
+// GetDockModeCapLeft returns the mode chip's left cap, empty when the dock's
+// pills are flat.
 //
-// The chip sits at the head of a row of capped workspace pills, so a square
-// chip beside them reads as an unfinished pill rather than a different kind of
-// thing. It caps regardless of DockPillCaps, which is really about the
-// minimized run, where a cap on every entry turned the row into beads.
-func (s *Settings) GetDockModeCapLeft() string { return s.GetSidebarPillLeftChar() }
-
-// GetDockModeCapRight returns the mode chip's right cap.
-func (s *Settings) GetDockModeCapRight() string { return s.GetSidebarPillRightChar() }
-
-// GetDockWorkspaceCapLeft returns the workspace pill's left cap.
-//
-// The strip keeps its own accessor for the reason the rail does: DockPillCaps
-// is about the mode chip and the minimized run, where a cap on every entry
-// turned the row into beads. A workspace pill is a tab, and a tab wants the
-// rounded end that says where it starts and stops.
-//
-// Empty under ASCII. A half circle has no 7-bit stand-in: "[" is a bracket
-// drawn beside the pill rather than the pill's own edge, and it reads as
-// punctuation in a row that has none.
-func (s *Settings) GetDockWorkspaceCapLeft() string {
-	if s.UseASCIIOnly {
+// The mode chip, the workspace tabs and the minimized run all follow
+// DockPillCaps. The chip and the tabs once capped regardless of it, so
+// dock_pill_caps = false left the caps on the two pills a user sees most
+// (#451) while the settings page reported them off.
+func (s *Settings) GetDockModeCapLeft() string {
+	if !s.DockPillCaps {
 		return ""
 	}
 	return s.GetSidebarPillLeftChar()
 }
 
-// GetDockWorkspaceCapRight returns the workspace pill's right cap.
-func (s *Settings) GetDockWorkspaceCapRight() string {
-	if s.UseASCIIOnly {
+// GetDockModeCapRight returns the mode chip's right cap, empty when the dock's
+// pills are flat.
+func (s *Settings) GetDockModeCapRight() string {
+	if !s.DockPillCaps {
 		return ""
 	}
 	return s.GetSidebarPillRightChar()
 }
 
-// GetDockModeIconWindow returns the appropriate window mode icon based on UseASCIIOnly
+// GetDockWorkspaceCapLeft returns the workspace pill's left cap, empty when the
+// dock's pills are flat.
+//
+// Empty under ASCII too. A half circle has no 7-bit stand-in: "[" is a bracket
+// drawn beside the pill rather than the pill's own edge, and it reads as
+// punctuation in a row that has none.
+func (s *Settings) GetDockWorkspaceCapLeft() string {
+	if !s.DockPillCaps || s.UseASCIIOnly {
+		return ""
+	}
+	return s.GetSidebarPillLeftChar()
+}
+
+// GetDockWorkspaceCapRight returns the workspace pill's right cap, empty when
+// the dock's pills are flat.
+func (s *Settings) GetDockWorkspaceCapRight() string {
+	if !s.DockPillCaps || s.UseASCIIOnly {
+		return ""
+	}
+	return s.GetSidebarPillRightChar()
+}
+
+// DockModeIconMaxWidth is the widest icon, in cells, the mode pill takes from
+// appearance.dock_mode_icon_*. The pill shares the dock's left block with the
+// workspace strip, and an icon wider than this would take the strip's room.
+const DockModeIconMaxWidth = 8
+
+// DockModeIconDefault is the word that puts a mode icon back to the built-in
+// for the glyph set. The empty string cannot do it, because an empty icon is
+// a value: it hides the icon.
+const DockModeIconDefault = "default"
+
+// DockModeIconUsable reports whether value can stand as a mode pill icon: no
+// control characters, which would move the cursor or start an escape sequence
+// in the middle of the dock row, and at most DockModeIconMaxWidth cells. The
+// width is the one the dock layout measures with, so a wide glyph is counted
+// as the two cells it takes. The empty string is usable: it hides the icon.
+func DockModeIconUsable(value string) bool {
+	if !utf8.ValidString(value) {
+		return false
+	}
+	for _, r := range value {
+		if unicode.IsControl(r) {
+			return false
+		}
+	}
+	return lipgloss.Width(value) <= DockModeIconMaxWidth
+}
+
+// dockModeIcon is the icon for one mode: the configured one when it is set
+// and usable, and otherwise the built-in for the glyph set. The configured
+// value wins over use_ascii_only, since the person wrote it for the terminal
+// they have. The word default, written in config.toml by hand, reads as
+// unset, the way the settings page and set-config treat it.
+func (s *Settings) dockModeIcon(set *string, nerd, ascii string) string {
+	if set != nil && strings.TrimSpace(*set) != DockModeIconDefault && DockModeIconUsable(*set) {
+		return *set
+	}
+	if s.NerdFontsOff() {
+		return ascii
+	}
+	return nerd
+}
+
+// GetDockModeIconWindow returns the window mode icon: appearance.dock_mode_icon_window
+// when set, and otherwise the built-in for the glyph set.
 func (s *Settings) GetDockModeIconWindow() string {
-	if s.NerdFontsOff() {
-		return DockModeIconWindowASCII
-	}
-	return DockModeIconWindow
+	return s.dockModeIcon(s.DockModeIconWindow, DockModeIconWindow, DockModeIconWindowASCII)
 }
 
-// GetDockModeIconTerminal returns the appropriate terminal mode icon based on UseASCIIOnly
+// GetDockModeIconTerminal returns the terminal mode icon: appearance.dock_mode_icon_terminal
+// when set, and otherwise the built-in for the glyph set.
 func (s *Settings) GetDockModeIconTerminal() string {
-	if s.NerdFontsOff() {
-		return DockModeIconTerminalASCII
-	}
-	return DockModeIconTerminal
+	return s.dockModeIcon(s.DockModeIconTerminal, DockModeIconTerminal, DockModeIconTerminalASCII)
 }
 
-// GetDockModeIconTiling returns the appropriate tiling mode icon based on UseASCIIOnly
+// GetDockModeIconTiling returns the tiling mode icon: appearance.dock_mode_icon_tiling
+// when set, and otherwise the built-in for the glyph set.
 func (s *Settings) GetDockModeIconTiling() string {
-	if s.NerdFontsOff() {
-		return DockModeIconTilingASCII
-	}
-	return DockModeIconTiling
+	return s.dockModeIcon(s.DockModeIconTiling, DockModeIconTiling, DockModeIconTilingASCII)
 }
 
 // GetDockIconLeaveRunning returns the leave-running icon for the current glyph set.
@@ -1424,8 +1481,10 @@ var CopyEntries = []string{CopyEntryCursor, CopyEntryCenter}
 // says so on the dock when the text holds a line break or a control character. A write from any other pane waits for the
 // user to allow it, which is what ask does for every pane.
 //
-// Whatever the mode, the pane keeps its own copy, so the program that set it
-// reads it back with an OSC 52 query.
+// Whatever the mode, a pane that runs without the daemon keeps its own copy,
+// so the program that set it reads it back with an OSC 52 query. A pane under
+// the daemon keeps none: the daemon's emulator has no clipboard callback, so
+// every OSC 52 query there is answered with an empty string.
 const (
 	OSC52WriteOff     = "off"
 	OSC52WriteAsk     = "ask"
@@ -1436,4 +1495,14 @@ const (
 // OSC52WriteModes is every value appearance.selection.osc52_write takes.
 var OSC52WriteModes = []string{
 	OSC52WriteOff, OSC52WriteAsk, OSC52WriteFocused, OSC52WriteOn,
+}
+
+// DockHeight is the rows the dock takes when it is shown: one with
+// appearance.dock_compact, two without. It does not look at DockbarPosition,
+// so a caller that has to treat a hidden dock as no rows checks that itself.
+func (s *Settings) DockHeight() int {
+	if s.DockCompact {
+		return DockCompactHeight
+	}
+	return DockFullHeight
 }

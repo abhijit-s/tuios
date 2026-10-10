@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"net"
@@ -118,6 +119,12 @@ const (
 	// panes than the selector matches now. The hint lists the set and carries
 	// its token. See selector.go.
 	ErrVerbConfirmRequired = "confirm_required"
+	// ErrVerbNoTranscript reports an agent-transcript call for a pane that is
+	// not joined to a transcript, or whose transcript is gone.
+	ErrVerbNoTranscript = "no_transcript"
+	// ErrVerbUnsupportedHarness reports an agent-transcript call for a pane
+	// whose harness keeps no transcript this daemon can read.
+	ErrVerbUnsupportedHarness = "unsupported_harness"
 
 	// ErrVerbProtocolMismatch reports that the caller's protocol version is
 	// outside the range this daemon accepts. It is only ever produced by the
@@ -439,6 +446,14 @@ func init() {
 			examples:    []string{`{"id":1,"verb":"list-sessions"}`},
 			handler:     (*Daemon).verbListSessions,
 		},
+		"list-clients": {
+			description: "List every connection to the daemon and the session it is attached to.",
+			returns: []verbParam{
+				{Name: "clients", Type: "[]object", Description: "One row per connection: client_id, kernel peer pid, and current session name (empty while detached)."},
+			},
+			examples: []string{`{"id":1,"verb":"list-clients"}`},
+			handler:  (*Daemon).verbListClients,
+		},
 		"new-session": {
 			description: "Create a session in the daemon, with its first window. The session runs detached until a client attaches to it.",
 			params: []verbParam{
@@ -447,7 +462,7 @@ func init() {
 				{Name: "height", Type: "int", Description: "Nominal height in rows. An attached client replaces it with its own viewport.", Default: "24"},
 				{Name: "window", Type: "bool", Description: "Create the first window. Pass false for an empty session you place every window in yourself.", Default: "true"},
 				{Name: "window_name", Type: "string", Description: "Name for the first window. Omit to use the shell's title."},
-				{Name: "cwd", Type: "string", Description: "Directory to start the first window's shell in. Omit to inherit the daemon's."},
+				{Name: "cwd", Type: "string", Description: "Directory the session's windows start in: the first window, and any later one with no directory to inherit. Omit to use the daemon's."},
 				{Name: "command", Type: "[]string", Description: "Argv to exec as the first window's process instead of a shell. No shell parses it, so nothing needs quoting."},
 			},
 			returns: []verbParam{
@@ -466,6 +481,63 @@ func init() {
 				`{"id":1,"verb":"new-session","params":{"name":"empty","window":false}}`,
 			},
 			handler: (*Daemon).verbNewSession,
+		},
+		"switch-session": {
+			description: "Switch an attached client to another session in place, as the session switcher does. The client is the one named by client, else the one showing session, else the one showing the caller's own session from a pane, else the only one attached.",
+			params: []verbParam{
+				{Name: "name", Type: "string", Required: true, Description: "Session to switch to."},
+				{Name: "host", Type: "string", Description: "Machine from the client's [hosts] table that holds the session. Omit, or local, for this daemon."},
+				{Name: "create", Type: "bool", Description: "Create the session when it does not exist.", Default: "false"},
+				{Name: "cwd", Type: "string", Description: "With create, the directory the new session's windows start in."},
+				{Name: "session", Type: "string", Description: "Session the client to switch shows."},
+				{Name: "client", Type: "string", Description: "Id of the client to switch, from list-clients."},
+			},
+			returns: []verbParam{
+				{Name: "session", Type: "string", Description: "Session the client now shows."},
+				{Name: "host", Type: "string", Description: "Machine the session is on. Absent for this daemon."},
+				{Name: "client_id", Type: "string", Description: "Id of the client that switched."},
+				{Name: "created", Type: "bool", Description: "True when create made the session on this daemon."},
+				{Name: "already", Type: "bool", Description: "True when the client already showed the session. Nothing changed."},
+			},
+			examples: []string{
+				`{"id":1,"verb":"switch-session","params":{"name":"api"}}`,
+				`{"id":1,"verb":"switch-session","params":{"name":"api","create":true,"cwd":"/src/api"}}`,
+				`{"id":1,"verb":"switch-session","params":{"name":"api","host":"build","session":"work"}}`,
+			},
+			handler: (*Daemon).verbSwitchSession,
+		},
+		"detach-client": {
+			description: "Detach attached clients from their sessions, as tmux detach-client does. The session keeps running, and each detached client exits with a message. With client, that client. With session, every client of the session. With neither, the client used last in the caller's pane's session, else in the only session with a client. all_other keeps that one client and detaches the rest of its session.",
+			params: []verbParam{
+				{Name: "client", Type: "string", Description: "Id of the client to detach, from list-clients."},
+				{Name: "session", Type: "string", Description: "Session whose clients to detach."},
+				{Name: "all_other", Type: "bool", Description: "Keep the named client, or the client used last, and detach every other client of its session.", Default: "false"},
+			},
+			returns: []verbParam{
+				{Name: "detached", Type: "array", Description: "Ids of the clients that were detached."},
+			},
+			examples: []string{
+				`{"id":1,"verb":"detach-client","params":{"client":"c3"}}`,
+				`{"id":1,"verb":"detach-client","params":{"session":"work"}}`,
+				`{"id":1,"verb":"detach-client","params":{"session":"work","all_other":true}}`,
+			},
+			handler: (*Daemon).verbDetachClient,
+		},
+		"ssh-agent-path": {
+			description: "Report the session's ssh agent link: the path that new panes get as SSH_AUTH_SOCK while [daemon] ssh_agent is follow, and the client socket it points at now.",
+			params: []verbParam{
+				{Name: "session", Type: "string", Required: true, Description: "Session whose link to report."},
+			},
+			returns: []verbParam{
+				{Name: "session", Type: "string", Description: "Session name."},
+				{Name: "path", Type: "string", Description: "The link. It exists only while an attached client has an agent socket."},
+				{Name: "follow", Type: "bool", Description: "True when [daemon] ssh_agent is follow."},
+				{Name: "target", Type: "string", Description: "The client socket the link points at. Absent when there is no link."},
+			},
+			examples: []string{
+				`{"id":1,"verb":"ssh-agent-path","params":{"session":"work"}}`,
+			},
+			handler: (*Daemon).verbSSHAgentPath,
 		},
 		"new-worktree": {
 			description: "Create a git worktree of a repository and a session in it. The worktree goes under tuios's worktree directory, named by repository and branch. The branch is created from base when it does not exist.",
@@ -503,7 +575,7 @@ func init() {
 				{Name: "changes", Type: "bool", Description: "Run git status in every worktree and report the count of uncommitted changes, and the commits ahead of base. Off by default because it runs git.", Default: "false"},
 			},
 			returns: []verbParam{
-				{Name: "worktrees", Type: "[]object", Description: "One entry per worktree session: session, repo, repo_root, branch, path, base, group, managed, gone, state, harness, windows, attached, prompt_status, prompt_note, launched_from (the session whose pane ran the fan, only when a pane did), and with changes: changes and ahead."},
+				{Name: "worktrees", Type: "[]object", Description: "One entry per worktree session: session, repo, repo_root, branch, path, base, group, managed, gone, state, harness, windows, attached, prompt_status, prompt_note, launched_from (the session whose pane ran the fan, only when a pane did), pr (the branch's pull request as ship-status reports it, only when tuios knows of one), and with changes: changes and ahead."},
 				{Name: "total", Type: "int", Description: "How many entries."},
 			},
 			examples: []string{
@@ -662,10 +734,25 @@ func init() {
 			examples: []string{`{"id":1,"verb":"list-hosts"}`},
 			handler:  (*Daemon).verbListHosts,
 		},
+		"retry-host": {
+			description: "Ask the link to one host to dial again now instead of after its backoff. While the host waits for a Tailscale SSH sign-in, the link also dials again every few seconds for two minutes, so a new sign-in page shows up soon and the link comes up soon after the person signs in. A dial in progress is not stopped.",
+			params: []verbParam{
+				{Name: "host", Type: "string", Required: true, Description: "A host by name from the [hosts] config table."},
+			},
+			returns: []verbParam{
+				{Name: "host", Type: "string", Description: "The host."},
+				{Name: "status", Type: "string", Description: "The link state when the call was made."},
+				{Name: "approval_url", Type: "string", Description: "The Tailscale sign-in page, when the link waits for one and has it. Omitted otherwise."},
+				{Name: "approval_refused", Type: "bool", Description: "True when the link waits for a sign-in and the banner named an address that is not a Tailscale login origin. Omitted otherwise."},
+			},
+			examples: []string{`{"id":1,"verb":"retry-host","params":{"host":"build"}}`},
+			handler:  (*Daemon).verbRetryHost,
+		},
 		"open-host-connection": {
 			description: "Turn this connection into a connection to the daemon on one host. After the reply, every byte written here reaches that daemon and every byte it writes comes back. Send nothing until the reply has arrived.",
 			params: []verbParam{
 				{Name: "host", Type: "string", Description: "A host by name from the [hosts] config table."},
+				{Name: "ssh_auth_sock", Type: "string", Description: "The caller's SSH_AUTH_SOCK. With [daemon] ssh_agent = \"follow\", the agent link the link's ssh forwards points at it while this caller is the newest person attached."},
 			},
 			returns: []verbParam{
 				{Name: "host", Type: "string", Description: "The host the connection reaches."},
@@ -718,6 +805,7 @@ func init() {
 			params: []verbParam{
 				{Name: "peer", Type: "string", Description: "The machine's name: the one the hub gave for itself, or the one the proxy was pinned to with --as. Empty for none."},
 				{Name: "pinned", Type: "bool", Description: "The name came from stdio-proxy --as on this machine, not from the hub."},
+				{Name: "ssh_auth_sock", Type: "string", Description: "The SSH_AUTH_SOCK stdio-proxy runs with: the agent the link's ssh forwards. A client attached through the link uses it for ssh_agent = \"follow\"."},
 			},
 			returns: []verbParam{
 				{Name: "peer", Type: "string", Description: "The name the connection is held to."},
@@ -880,7 +968,7 @@ func init() {
 			handler:     (*Daemon).verbSessionInfo,
 		},
 		"list-windows": {
-			description: "List the windows in a session. Each window carries a host when its process runs on another machine, and omits it when the process is on this one. A window whose shell marks its commands with OSC 133 also carries at_prompt, command_seq, marks_commands (the shell has sent a command-start mark), prompt_marks_only when it ran a command without one, running_cmdline while a command runs, and last_cmdline, last_exit_code and last_duration_ms once one has finished. A pane given grants of its own carries them as grants; a pane on the default of [agents.permissions] omits it.",
+			description: "List the windows in a session. The list carries shell, the base name of the shell a new pane in the session runs. Each window carries a host when its process runs on another machine, and omits it when the process is on this one. A window whose shell marks its commands with OSC 133 also carries at_prompt, command_seq, marks_commands (the shell has sent a command-start mark), prompt_marks_only when it ran a command without one, running_cmdline while a command runs, and last_cmdline, last_exit_code and last_duration_ms once one has finished. A pane given grants of its own carries them as grants; a pane on the default of [agents.permissions] omits it. A pane whose process runs on this machine carries pid, the process it started, and tty, its terminal device. A zoomed window carries zoomed.",
 			params:      []verbParam{sessionParam},
 			examples:    []string{`{"id":1,"verb":"list-windows","params":{"session":"work"}}`},
 			handler:     (*Daemon).verbListWindows,
@@ -1032,6 +1120,7 @@ func init() {
 			params: []verbParam{
 				sessionParam,
 				{Name: "workspace", Type: "int", Required: true, Description: "Workspace number to show."},
+				{Name: "return_to", Type: "int", Description: "Workspace to show when this workspace loses its last pane, before any other. tuios xpanes sets it to the workspace that ran it.", Default: "0"},
 			},
 			returns: []verbParam{
 				{Name: "current_workspace", Type: "int", Description: "Workspace now showing."},
@@ -1045,7 +1134,7 @@ func init() {
 			description: "List every workspace with its name, how many windows it holds, and which one is showing.",
 			params:      []verbParam{sessionParam},
 			returns: []verbParam{
-				{Name: "workspaces", Type: "[]object", Description: "One row per workspace: workspace, name, window_count, focused_window_id, current."},
+				{Name: "workspaces", Type: "[]object", Description: "One row per workspace: workspace, name, window_count, focused_window_id, current, and focus_history, the windows focused there, newest first."},
 				{Name: "current_workspace", Type: "int", Description: "Workspace showing."},
 				{Name: "order", Type: "[]int", Description: "Display order, empty when the workspaces are in their plain ascending order."},
 			},
@@ -1076,10 +1165,10 @@ func init() {
 			handler: (*Daemon).verbSetLayout,
 		},
 		"run-command": {
-			description: "Run one tape command (the command names the keybindings use). Prefer a verb where one exists: a verb reports what changed, this reports only that the command ran.",
+			description: "Run one tape command, or any keybinding action by the name config.toml binds it to. Prefer a verb where one exists: a verb reports what changed, this reports only that the command ran.",
 			params: []verbParam{
 				sessionParam,
-				{Name: "command", Type: "string", Required: true, Description: `Tape command name, e.g. "ToggleZoom" or "SnapLeft". The keymap's name for the same action, e.g. "toggle_zoom", is accepted too.`},
+				{Name: "command", Type: "string", Required: true, Description: `Tape command name, e.g. "ToggleZoom" or "SnapLeft", or a keybinding action name, e.g. "toggle_spotlight" (tuios keybinds list prints them). An action runs on an attached client and takes no args.`},
 				{Name: "args", Type: "[]string", Description: "Arguments for the command."},
 			},
 			returns: []verbParam{
@@ -1170,6 +1259,91 @@ func init() {
 				`{"id":1,"verb":"run","params":{"session":"work","window":"build","command":"make lint","lines":40}}`,
 			},
 			handler: (*Daemon).verbRun,
+		},
+		"stream-pane": {
+			description: "Stream one pane as bytes, for a client that is not tuios. The reply is one JSON line, and after it the connection carries binary frames both ways: a type byte, a 4-byte big-endian length, then the payload. From the daemon: S snapshot (u64 seq, u16 cols, u16 rows, then bytes that paint the pane on a fresh emulator of that size), O output (u64 seq after the frame's last byte, then the pane's bytes), R resize (u64 seq, u16 cols, u16 rows), E error (JSON code and message, for a refused frame or a lease that was not renewed; the stream goes on), X exit (the reason: the pane closed, or the caller may no longer read it; the connection then closes). From the client: I input (at most 64 KiB of bytes typed into the pane, checked as send-text is), L lease (u16 cols, u16 rows, 0 0 to release; send it again every 10 seconds, or the lease ends after 30). Skip a frame type you do not know: read its length and drop that many bytes. At most 4 I frames wait for a pane that does not read, and the next gets E busy. The stream never changes the pane's size or the session's. A lease holds the pane at most at its size while the stream is open, and the pane goes back to the size its clients asked for when the lease ends.",
+			params: []verbParam{
+				sessionParam,
+				{Name: "window", Type: "string", Required: true, Description: "The pane to stream: a window id or name."},
+				{Name: "from_seq", Type: "int", Description: "The seq the client reached on an earlier stream of this pane. With boot_id, the stream resumes there when the daemon still holds the bytes after it."},
+				{Name: "boot_id", Type: "string", Description: "The boot_id of the stream from_seq came from. A different one means the daemon restarted, and the stream starts with a snapshot."},
+				{Name: "lease_cols", Type: "int", Description: "Hold the pane at most this many columns wide while the stream is open. Needs lease_rows. It needs what resize needs."},
+				{Name: "lease_rows", Type: "int", Description: "Hold the pane at most this many rows high while the stream is open. Needs lease_cols."},
+			},
+			returns: []verbParam{
+				{Name: "mode", Type: "string", Description: "resume: the first frames are output from from_seq. snapshot: the first frame is S.", Accepted: []string{"resume", "snapshot"}},
+				{Name: "seq", Type: "int", Description: "The stream position the first frame starts at."},
+				{Name: "cols", Type: "int", Description: "The pane's width at seq."},
+				{Name: "rows", Type: "int", Description: "The pane's height at seq."},
+				{Name: "boot_id", Type: "string", Description: "This daemon start. Send it back with from_seq to resume."},
+				{Name: "session", Type: "string", Description: "The pane's session."},
+				{Name: "window", Type: "string", Description: "The pane's window id."},
+				{Name: "title", Type: "string", Description: "The pane's title."},
+			},
+			examples: []string{
+				`{"id":1,"verb":"stream-pane","params":{"session":"work","window":"build"}}`,
+				`{"id":1,"verb":"stream-pane","params":{"session":"work","window":"build","from_seq":48211,"boot_id":"<from the last reply>","lease_cols":45,"lease_rows":20}}`,
+			},
+			handler: (*Daemon).verbStreamPane,
+		},
+		"attach-presence": {
+			description: "Hold the person's nonce on this connection without a screen. The reply carries human_nonce, which respond, reply-approval, answer-ask and dismiss-attention take as the person's, by the same rules as an attach nonce: only from outside every pane, over a link only on a stream the hub vouched for, and only from the process that holds it. The presence does not attach: it does not change the session size, focus or view a pane, or receive broadcasts. The connection serves other verbs as before, and the presence ends when it closes.",
+			params: []verbParam{
+				{Name: "session", Type: "string", Description: "The session the nonce is for. The nonce then acts only in that session. Omit it for every session."},
+			},
+			returns: []verbParam{
+				{Name: "human_nonce", Type: "string", Description: "The nonce. Send it from this process, as human_nonce."},
+				{Name: "client_id", Type: "string", Description: "This connection's client id, which answered_by reports."},
+				{Name: "session", Type: "string", Description: "The session, when one was named."},
+			},
+			examples: []string{`{"id":1,"verb":"attach-presence"}`},
+			handler:  (*Daemon).verbAttachPresence,
+		},
+		"register-push": {
+			description: "Register a phone's Web Push subscription, so the phone gets Inbox items while it sleeps. When an item of a kind the phone asked for opens, the daemon posts a payload encrypted for the phone (RFC 8291, aes128gcm) to its push service, signed with the daemon's VAPID key (RFC 8292), and posts a close when the item closes. The same device name replaces the phone it names, but not over a link. Each registration opens an Inbox item named phone NAME. Only the person: a live human_nonce from an attach or a presence with no session (a phone gets the Inbox of every session), and over a link the respond capability. At most 16 phones.",
+			params: []verbParam{
+				{Name: "endpoint", Type: "string", Required: true, Description: "The push service's address for the phone. https, or http on a loopback or private IP address when [notify.webpush] allow_insecure is true. A loopback or private address needs allow_insecure also with https, and the daemon checks the address a name resolves to when it connects."},
+				{Name: "p256dh", Type: "string", Required: true, Description: "The phone's public key: the uncompressed P-256 point (65 bytes), base64url."},
+				{Name: "auth", Type: "string", Required: true, Description: "The phone's authentication secret: 16 bytes, base64url."},
+				{Name: "device", Type: "string", Required: true, Description: "A name for the phone, 1 to 64 bytes. remove-push takes it. Over a link, the name of a registered phone is refused."},
+				{Name: "kinds", Type: "string[]", Description: "The Inbox kinds to push. Default: approval, plan, ask and question."},
+				{Name: "human_nonce", Type: "string", Required: true, Description: "The nonce of an attach, or of an attach-presence made with no session, from the same process."},
+			},
+			returns: []verbParam{
+				{Name: "device", Type: "string", Description: "The phone's name."},
+				{Name: "kinds", Type: "string[]", Description: "The kinds it gets."},
+				{Name: "replaced", Type: "bool", Description: "True when a phone of that name was registered before."},
+				{Name: "vapid_public_key", Type: "string", Description: "The daemon's VAPID public key, the uncompressed point, base64url: the applicationServerKey to subscribe with."},
+				{Name: "machine", Type: "string", Description: "This machine's name, as the payload carries it."},
+			},
+			examples: []string{`{"id":1,"verb":"register-push","params":{"endpoint":"https://push.example.net/s/abc","p256dh":"BNc...","auth":"tBH...","device":"pixel","human_nonce":"<from attach-presence>"}}`},
+			handler:  (*Daemon).verbRegisterPush,
+		},
+		"list-push": {
+			description: "List the phones registered with register-push, and the daemon's VAPID public key. A phone's endpoint is shown only as its origin. Only the person, by the rules of register-push.",
+			params: []verbParam{
+				{Name: "human_nonce", Type: "string", Required: true, Description: "The nonce of an attach, or of an attach-presence made with no session, from the same process."},
+			},
+			returns: []verbParam{
+				{Name: "devices", Type: "object[]", Description: "Each phone: device, kinds, service (the endpoint's origin), created, and last_ok or last_error when a push was tried."},
+				{Name: "vapid_public_key", Type: "string", Description: "The daemon's VAPID public key, base64url. A phone needs it before it subscribes."},
+				{Name: "machine", Type: "string", Description: "This machine's name."},
+			},
+			examples: []string{`{"id":1,"verb":"list-push","params":{"human_nonce":"<from attach-presence>"}}`},
+			handler:  (*Daemon).verbListPush,
+		},
+		"remove-push": {
+			description: "Remove a phone registered with register-push. Only the person, by the rules of register-push.",
+			params: []verbParam{
+				{Name: "device", Type: "string", Required: true, Description: "The phone's name."},
+				{Name: "human_nonce", Type: "string", Required: true, Description: "The nonce of an attach, or of an attach-presence made with no session, from the same process."},
+			},
+			returns: []verbParam{
+				{Name: "device", Type: "string", Description: "The phone removed."},
+				{Name: "removed", Type: "bool", Description: "Always true. An unknown name is refused with invalid_params."},
+			},
+			examples: []string{`{"id":1,"verb":"remove-push","params":{"device":"pixel","human_nonce":"<from attach-presence>"}}`},
+			handler:  (*Daemon).verbRemovePush,
 		},
 		"capture-pane": {
 			description: "Capture a pane's content.",
@@ -1434,7 +1608,7 @@ func init() {
 				{Name: "harness", Type: "string", Description: "Optional id of the harness the state is about, reported back by get-agent-state."},
 				{Name: "kind", Type: "string", Description: "What a needs_input state waits for: approval for a tool call waiting to be allowed, question for anything else. Only valid with needs_input. Omitted, it is guessed from message. Reported back by get-agent-state and list-agents as blocked_by.", Accepted: agentKindNames},
 				{Name: "agent_session_id", Type: "string", Description: "The harness's own id for the conversation, as a hook reports it. It is stored on the window for a later resume. It also turns on the nested-session guard: while the pane's harness is working or needs_input by its own report, a report for a different conversation or from a different harness is refused with reason foreign_session or foreign_harness."},
-				{Name: "transcript_path", Type: "string", Description: "The transcript file the harness is writing, as a hook reports it. For a harness whose manifest has a transcript reader, the window is joined to this exact file instead of a searched one. Kept in daemon memory only."},
+				{Name: "transcript_path", Type: "string", Description: "The transcript file the harness is writing, as a hook reports it. For a harness whose manifest has a transcript reader, the window is joined to this exact file instead of a searched one. It must be a regular file under the harness's transcript folder, and a process in a pane may name one only for its own pane. Kept in daemon memory only."},
 				{Name: "if_state", Type: "string", Description: "Comma-separated states. The report applies only when the window is in one of them now, and is otherwise refused with reason if_state.", Accepted: AgentStateNames},
 				{Name: "harness_pid", Type: "int", Description: "The pid of the harness process that ran the hook. With agent_session_id, a different session from the same harness process is a new conversation in that process (/clear or /resume, even after an interrupted turn that never reported Stop), so it takes the pane over instead of being refused as foreign_session. Kept in daemon memory only."},
 				{Name: "activity", Type: "object", Description: "One hook event of the pane's own agent, for its activity ring: event (prompt, tool, tool_done, tool_failed or turn_end), tool, target, text, files, ok and model. It is recorded whenever the report passes the identity guard, whether or not the state applies, and read back with agent-activity. It also sets the reserved metadata keys now (a tool call starting) and prompt (a prompt), and model when the harness named one. Display only. A hook sends it only to a daemon whose list-verbs lists it."},
@@ -1444,6 +1618,7 @@ func init() {
 				{Name: "applied", Type: "bool", Description: "Whether this report set the state."},
 				{Name: "reason", Type: "string", Description: "Why the report was not applied. Absent when it was.", Accepted: []string{agentRefusedOutranked, agentRefusedIfState, agentRefusedForeignSession, agentRefusedForeignHarness}},
 				{Name: "activity_recorded", Type: "bool", Description: "With activity: whether it went into the pane's activity ring. False for a report the identity guard refused. Absent without activity."},
+				{Name: "transcript_refused", Type: "string", Description: "Why the window was not joined to transcript_path. Absent when it was, or when no path was given."},
 			},
 			examples: []string{
 				`{"id":1,"verb":"set-agent-state","params":{"session":"work","state":"needs_input","message":"awaiting approval"}}`,
@@ -2064,44 +2239,46 @@ func init() {
 	// The verbs of the agent review, triage, queue and approval work, kept in
 	// a file of their own. See verb_protocol_agents.go.
 	maps.Copy(verbRegistry, agentWorkVerbs())
+	// The checkpoint verbs. See verb_checkpoint.go.
+	maps.Copy(verbRegistry, checkpointVerbs())
+	// The ship verbs. See verb_ship.go.
+	maps.Copy(verbRegistry, shipVerbs())
+	// The paste buffer verbs. See verb_buffers.go.
+	maps.Copy(verbRegistry, bufferVerbs())
 }
 
 // detectJSONClient inspects the first byte of the connection without consuming
 // it. A JSON verb-protocol client's first byte is '{' or leading whitespace; a
 // binary client's is the high byte of a big-endian length prefix (0x00/0x01 for
 // any sub-16MB frame), so the two never collide. It returns true when the
-// connection should be handled as JSON. On any read error it returns false and
-// lets the (short) binary path observe the same error and clean up.
-func (d *Daemon) detectJSONClient(cs *connState, br *bufio.Reader) bool {
-	conn := cs.conn
-	for {
-		select {
-		case <-d.ctx.Done():
-			return false
-		case <-cs.done:
-			return false
-		default:
-		}
-
-		_ = conn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
-		peeked, err := br.Peek(1)
-		if err != nil {
-			if ne, ok := err.(net.Error); ok && ne.Timeout() {
-				continue
-			}
-			// EOF or hard error: not JSON; the binary loop will re-observe it.
-			_ = conn.SetReadDeadline(time.Time{})
-			return false
-		}
-
-		_ = conn.SetReadDeadline(time.Time{})
-		switch peeked[0] {
-		case '{', ' ', '\t', '\n', '\r':
-			return true
-		default:
-			return false
-		}
+// connection should be handled as JSON. When nothing arrives within
+// firstByteDeadline it returns errFirstByteTimeout, and the caller closes the
+// connection. On any other read error it returns false and lets the (short)
+// binary path observe the same error and clean up.
+func (d *Daemon) detectJSONClient(cs *connState, br *bufio.Reader) (bool, error) {
+	select {
+	case <-d.ctx.Done():
+		return false, nil
+	case <-cs.done:
+		return false, nil
+	default:
 	}
+	// One deadline for the first byte, with no poll: shutdown and drop close
+	// the connection, which ends the wait. Every client speaks first, so a
+	// connection that stays silent this long is closed and gives its slot
+	// back. See frame_budget.go.
+	_ = cs.conn.SetReadDeadline(time.Now().Add(firstByteDeadline))
+	peeked, err := br.Peek(1)
+	_ = cs.conn.SetReadDeadline(time.Time{})
+	if err != nil {
+		var ne net.Error
+		if errors.As(err, &ne) && ne.Timeout() {
+			return false, errFirstByteTimeout
+		}
+		// EOF or hard error: not JSON; the binary loop will re-observe it.
+		return false, nil
+	}
+	return isJSONStart(peeked[0]), nil
 }
 
 // handleJSONConnection runs the read/dispatch/respond loop for a JSON client. It
@@ -2115,13 +2292,27 @@ func (d *Daemon) handleJSONConnection(cs *connState, br *bufio.Reader) {
 	_ = cs.conn.SetReadDeadline(time.Time{})
 
 	LogBasic("Client %s using JSON verb protocol", cs.clientID)
+	// A buffer upload the connection did not finish goes with it.
+	defer d.dropUploads(cs)
 
-	sc := bufio.NewScanner(br)
-	// Cap a single request line at the same 16MB ceiling as a binary frame so a
-	// runaway client cannot exhaust memory.
-	sc.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
+	// Each line is memory of its own, bounded and charged to the daemon's
+	// budget when it is large. See verb_lines.go.
+	lr := &verbLineReader{d: d, cs: cs, br: br}
+	defer lr.done()
 
-	for sc.Scan() {
+	for {
+		raw, err := lr.next()
+		if err != nil {
+			// The rest of the line cannot be read as a request, so the
+			// connection ends after the answer.
+			switch {
+			case errors.Is(err, errVerbLineBusy):
+				_ = d.writeVerbError(cs, nil, "", newVerbError(ErrVerbBusy, err.Error()+"; nothing was done. Try again."))
+			case errors.Is(err, errVerbLineTooLong):
+				_ = d.writeVerbError(cs, nil, "", newVerbError(ErrVerbInvalidRequest, err.Error()+"; nothing was done"))
+			}
+			return
+		}
 		select {
 		case <-d.ctx.Done():
 			return
@@ -2130,16 +2321,14 @@ func (d *Daemon) handleJSONConnection(cs *connState, br *bufio.Reader) {
 		default:
 		}
 
-		line := bytes.TrimSpace(sc.Bytes())
+		line := bytes.TrimSpace(raw)
 		if len(line) == 0 {
 			continue
 		}
-		// Copy the line: Scanner reuses its buffer on the next Scan, and a routed
-		// verb may block (routeToTUISync) while holding a reference to params.
-		lineCopy := make([]byte, len(line))
-		copy(lineCopy, line)
-
-		if err := d.dispatchVerbLine(cs, lineCopy); err != nil {
+		// The line is the reader's own copy, so a routed verb that blocks
+		// (routeToTUISync) may keep a reference to its params.
+		err = d.dispatchVerbLine(cs, line, lr.done)
+		if err != nil {
 			// A write failure means the connection is gone; stop.
 			return
 		}
@@ -2160,9 +2349,18 @@ func (d *Daemon) handleJSONConnection(cs *connState, br *bufio.Reader) {
 // response. It returns an error only when writing the response fails (the
 // connection is unusable); verb-level failures are returned to the client as an
 // error envelope, not as a Go error.
-func (d *Daemon) dispatchVerbLine(cs *connState, line []byte) error {
+//
+// release, when not nil, gives back the read budget the line holds. It is
+// called once the request envelope is decoded, before the verb runs, so a
+// verb that waits (a send-text into a pane that does not read, a routed verb)
+// does not hold the budget while it waits. See verb_lines.go.
+func (d *Daemon) dispatchVerbLine(cs *connState, line []byte, release func()) error {
 	var req verbRequest
-	if err := json.Unmarshal(line, &req); err != nil {
+	err := json.Unmarshal(line, &req)
+	if release != nil {
+		release()
+	}
+	if err != nil {
 		return d.writeVerbError(cs, nil, "", newVerbError(ErrVerbInvalidRequest, "malformed JSON request: "+err.Error()))
 	}
 

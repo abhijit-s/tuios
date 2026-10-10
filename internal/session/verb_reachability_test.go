@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Gaurav-Gosain/tuios/internal/pastebuf"
 	"github.com/Gaurav-Gosain/tuios/internal/testutil"
 )
 
@@ -56,6 +57,10 @@ var exampleOutcomes = map[string]exampleOutcome{
 	"apply-config#1":         {errCode: ErrVerbCommandFailed, why: "the fixture daemon reads no config file"},
 	"list-dock-components#1": {errCode: ErrVerbNeedsClient, why: "the dock is drawn by a client"},
 	"refresh-dock#0":         {errCode: ErrVerbNeedsClient, why: "the dock is drawn by a client"},
+	"switch-session#0":       {errCode: ErrVerbNeedsClient, why: "switch-session moves an attached client"},
+	"switch-session#1":       {errCode: ErrVerbNeedsClient, why: "switch-session moves an attached client"},
+	"switch-session#2":       {errCode: ErrVerbNeedsClient, why: "switch-session moves an attached client"},
+	"detach-client#0":        {errCode: ErrVerbInvalidParams, why: "the example names a client id, and the fixture has no attached client"},
 	"refresh-dock#1":         {errCode: ErrVerbNeedsClient, why: "the dock is drawn by a client"},
 	"pip#0":                  {errCode: ErrVerbNeedsClient, why: "the picture-in-picture view is drawn by a client"},
 	"pip#1":                  {errCode: ErrVerbNeedsClient, why: "the picture-in-picture view is drawn by a client"},
@@ -74,11 +79,19 @@ var exampleOutcomes = map[string]exampleOutcome{
 	"dismiss-attention#0": {errCode: ErrVerbNotHuman, why: "only a client attached right now may dismiss, and none is"},
 	// The same holds for answering an approval. The allowed path is proved in
 	// approvals_test.go.
-	"reply-approval#0": {errCode: ErrVerbNotHuman, why: "only a client attached right now may answer, and none is"},
-	"run-command#0":    {errCode: ErrVerbNeedsClient, why: "ToggleZoom is a client command"},
-	"set-layout#0":     {errCode: ErrVerbNeedsClient, why: "tiling is the client's arithmetic"},
-	"set-layout#1":     {errCode: ErrVerbNeedsClient, why: "the master-stack shape is laid out by a client"},
-	"split-window#0":   {errCode: ErrVerbNeedsClient, why: "a split is the client's arithmetic"},
+	"reply-approval#0":   {errCode: ErrVerbNotHuman, why: "only a client attached right now may answer, and none is"},
+	"agent-transcript#0": {errCode: ErrVerbNotHuman, why: "only a client attached right now may read a transcript, and none is"},
+	"agent-transcript#1": {errCode: ErrVerbNotHuman, why: "only a client attached right now may read a transcript, and none is"},
+	"agent-transcript#2": {errCode: ErrVerbNotHuman, why: "only a client attached right now may read a transcript, and none is"},
+	// The phones for Web Push are the person's, and the example's nonce is a
+	// placeholder. e2e/tui/webpush_test.go registers one with a real nonce.
+	"register-push#0": {errCode: ErrVerbNotHuman, why: "only the person may register a phone, with a live nonce"},
+	"list-push#0":     {errCode: ErrVerbNotHuman, why: "only the person may list the phones, with a live nonce"},
+	"remove-push#0":   {errCode: ErrVerbNotHuman, why: "only the person may remove a phone, with a live nonce"},
+	"run-command#0":   {errCode: ErrVerbNeedsClient, why: "ToggleZoom is a client command"},
+	"set-layout#0":    {errCode: ErrVerbNeedsClient, why: "tiling is the client's arithmetic"},
+	"set-layout#1":    {errCode: ErrVerbNeedsClient, why: "the master-stack shape is laid out by a client"},
+	"split-window#0":  {errCode: ErrVerbNeedsClient, why: "a split is the client's arithmetic"},
 
 	// The fixture has no agent panes, so no hook ever recorded a conversation
 	// to resume. Typing and dry runs are proved in agent_resume_test.go.
@@ -89,6 +102,7 @@ var exampleOutcomes = map[string]exampleOutcome{
 	// use is not configured. The connection itself is proved with two daemons
 	// in host_connection_test.go.
 	"open-host-connection#0": {errCode: ErrVerbUnknownHost, why: "no hosts are configured in the fixture"},
+	"retry-host#0":           {errCode: ErrVerbUnknownHost, why: "no hosts are configured in the fixture"},
 	// The host filter's example names a host; the fleet is proved with two
 	// daemons in host_fleet_test.go.
 	"list-attention#3": {errCode: ErrVerbUnknownHost, why: "no hosts are configured in the fixture"},
@@ -196,6 +210,10 @@ var exampleOutcomes = map[string]exampleOutcome{
 	// agent. The review verbs are proved in verb_review_test.go.
 	"review-diff#0": {errCode: ErrVerbSessionNotFound, why: "api-fan-retry-2 does not exist here"},
 	"send-review#0": {errCode: ErrVerbInvalidParams, why: "the fixture's build window runs no agent"},
+	// No agent finished a turn in the fixture, so no pane has a checkpoint.
+	// The checkpoints are proved in e2e/tui/checkpoint_test.go.
+	"checkpoint-diff#0":    {errCode: ErrVerbNoCheckpoint, why: "no agent finished a turn, so build has no checkpoint 2"},
+	"restore-checkpoint#0": {errCode: ErrVerbNoCheckpoint, why: "no agent finished a turn, so build has no checkpoint 1"},
 	// The fixture has no agent panes, so there is nothing to queue for,
 	// and so no entry to drop. The queue is proved in agent_queue_test.go.
 	"queue-prompt#0":  {errCode: ErrVerbInvalidParams, why: "the fixture's build window runs no agent"},
@@ -204,7 +222,16 @@ var exampleOutcomes = map[string]exampleOutcome{
 	"verify-fan#0":    {errCode: ErrVerbSessionNotFound, why: "api-fan-retry-1 does not exist here"},
 	"keep-fan#0":      {errCode: ErrVerbSessionNotFound, why: "api-fan-retry-1 does not exist here"},
 	"keep-fan#1":      {errCode: ErrVerbSessionNotFound, why: "api-fan-retry-1 does not exist here"},
-	"get-approval#0":  {errCode: ErrVerbInvalidParams, why: "no approval is held in the fixture"},
+	"keep-fan#2":      {errCode: ErrVerbSessionNotFound, why: "api-fan-retry-1 does not exist here"},
+	// The fixture's panes sit in the main checkout of a throwaway repository
+	// with no change, no worktree and no remote. The ship verbs are proved in
+	// e2e/tui/ship_test.go.
+	"ship-commit#0":  {errCode: ErrVerbNothingToCommit, why: "the fixture's repository has no change"},
+	"ship-merge#0":   {errCode: ErrVerbNotWorktree, why: "build is in the main checkout, not a worktree"},
+	"ship-merge#1":   {errCode: ErrVerbNotWorktree, why: "build is in the main checkout, not a worktree"},
+	"ship-push#0":    {errCode: ErrVerbNoRemote, why: "the fixture's repository has no remote"},
+	"ship-pr#0":      {errCode: ErrVerbNoRemote, why: "the fixture's repository has no remote"},
+	"get-approval#0": {errCode: ErrVerbInvalidParams, why: "no approval is held in the fixture"},
 	// The person's proof comes first, so the nonce the example names is
 	// what refuses it, as for dismiss-attention.
 	"mark-attention#0": {errCode: ErrVerbNotHuman, why: "only a client attached right now may snooze, and none is"},
@@ -400,6 +427,20 @@ func freshWorkSession(t *testing.T, d *Daemon) {
 		if _, err := sess.AddDaemonWindow(name, nil); err != nil {
 			t.Fatalf("add window %q: %v", name, err)
 		}
+	}
+	// The paste buffers the buffer examples name, fresh for each example
+	// since delete-buffer and paste-buffer with delete remove one.
+	d.buffers = pastebuf.New(pastebuf.DefaultLimit, pastebuf.DefaultMaxBytes)
+	for range 4 {
+		if _, err := d.buffers.Add("echo automatic", pastebuf.Owner{}); err != nil {
+			t.Fatalf("add a buffer: %v", err)
+		}
+		if _, err := d.buffers.Set("", "echo next", false, pastebuf.Owner{}, nil); err != nil {
+			t.Fatalf("set a buffer: %v", err)
+		}
+	}
+	if _, err := d.buffers.Set("deploy", "echo deploy", false, pastebuf.Owner{}, nil); err != nil {
+		t.Fatalf("set buffer deploy: %v", err)
 	}
 }
 

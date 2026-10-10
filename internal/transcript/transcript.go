@@ -28,8 +28,9 @@
 //     panic traceback prints argument words, and a slice header passed by value
 //     would put a pointer to that page in the trace.
 //
-// The only thing that leaves this package is a [Turn], which is one of three
-// constants.
+// The only things that leave this package are a [Turn], which is one of three
+// constants, and the offset a read stopped at, which says how far the file
+// grew.
 package transcript
 
 import (
@@ -38,6 +39,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"sync"
 )
 
 // Turn is what the transcript says about the agent's current turn. It is
@@ -128,10 +130,15 @@ const tailWindow = 128 << 10
 // distinguished from any other read failure.
 var ErrNoFile = errors.New("transcript: file does not exist")
 
-// Reader tails one transcript. It is not safe for concurrent use; one reader
-// belongs to one joined pane and is driven by that pane's watcher.
+// Reader tails one transcript. One reader belongs to one joined pane, and it is
+// safe for concurrent use: the session reads a pane from more than one goroutine
+// (the debounce callback, the read on join, the output-driven fallback), and
+// those reads share buf and off, so Read serializes them.
 type Reader struct {
 	path string
+	// mu serializes Read. A second read refilling or zeroing buf while the first
+	// decodes from it is a panic inside encoding/json.
+	mu sync.Mutex
 	// off is where the last read stopped, always immediately after a newline, so
 	// a resumed read never begins inside a record.
 	off int64
@@ -150,8 +157,21 @@ func NewReader(path string) *Reader { return &Reader{path: path} }
 // Path returns the file this reader tails.
 func (r *Reader) Path() string { return r.path }
 
+// Offset returns where the last read stopped: the end of the last complete
+// record it consumed. It says how far the file has grown and nothing about
+// what is in it.
+func (r *Reader) Offset() int64 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.off
+}
+
 // Skipped returns how many lines have failed to parse over this reader's life.
-func (r *Reader) Skipped() int { return r.skipped }
+func (r *Reader) Skipped() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.skipped
+}
 
 // Read consumes whatever has been appended since the last call and reports what
 // the newest usable record says.
@@ -170,7 +190,10 @@ func (r *Reader) Skipped() int { return r.skipped }
 //   - A read that begins mid-file begins mid-record. Everything up to and
 //     including the first newline is dropped in that case.
 func (r *Reader) Read() (Observation, bool, error) {
-	f, err := os.Open(r.path) //nolint:gosec // the path came from the agent's own hook or from the manifest's directory
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	f, err := OpenRegular(r.path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return Observation{}, false, ErrNoFile

@@ -636,6 +636,15 @@ func (s *Session) scanAgentDetection(
 	shell := agentBaseName(s.getShell())
 	now := time.Now().UnixNano()
 
+	// A program whose process group has ended has exited, which ends its OSC
+	// 7501 working, blocked and idle records. See
+	// PTY.endProgramStatusOfEndedGroups.
+	for _, r := range readings {
+		if pty := s.GetPTY(r.ptyID); pty != nil {
+			pty.endProgramStatusOfEndedGroups(r.info, r.running)
+		}
+	}
+
 	s.stateMu.RLock()
 	dry := s.detectionPass(s.state, readings, shell, now, false)
 	s.stateMu.RUnlock()

@@ -23,6 +23,7 @@ import (
 
 	"github.com/Gaurav-Gosain/tuios/internal/app"
 	"github.com/Gaurav-Gosain/tuios/internal/config"
+	"github.com/Gaurav-Gosain/tuios/internal/plural"
 	"github.com/Gaurav-Gosain/tuios/internal/served"
 	"github.com/Gaurav-Gosain/tuios/internal/session"
 	"github.com/Gaurav-Gosain/tuios/internal/terminal"
@@ -37,8 +38,8 @@ type SSHServerConfig struct {
 	Ephemeral      bool   // If true, don't use daemon (old behavior)
 	Version        string // For daemon handshake
 	// AuthorizedKeysPath names the file of public keys allowed to connect.
-	// Empty searches ~/.config/tuios/authorized_keys, then
-	// ~/.ssh/authorized_keys. See auth.go.
+	// Empty reads tuios/authorized_keys under the XDG config home, and only
+	// that: ~/.ssh/authorized_keys is read only when named here. See auth.go.
 	AuthorizedKeysPath string
 	// ShowKeys turns the key display overlay on in every served session. It is
 	// the --show-keys flag `tuios ssh` registers with the rest of the interface
@@ -177,7 +178,7 @@ func StartSSHServer(ctx context.Context, cfg *SSHServerConfig) error {
 	// hand it.
 	if authPlan.Authenticated() {
 		opts = append(opts, wish.WithPublicKeyAuth(publicKeyHandler(authPlan.Keys.Path)))
-		log.Printf("SSH authentication is on. %d key(s) from %s", len(authPlan.Keys.Keys), authPlan.Keys.Path)
+		log.Printf("SSH authentication is on. %s from %s", plural.Count(len(authPlan.Keys.Keys), "key"), authPlan.Keys.Path)
 	} else {
 		// Once, at startup. Not per connection: a line on every connect is a
 		// line nobody reads, and this one has to be read.
@@ -300,6 +301,7 @@ func tuiosSessionMiddleware() wish.Middleware {
 			opts := append(bubbletea.MakeOptions(sess), app.ProgramOptions()...)
 			opts = append(opts, tea.WithOutput(frames))
 			program := tea.NewProgram(model, opts...)
+			model.BindProgram(program)
 
 			ctx, cancel := context.WithCancel(sess.Context())
 			go func() {
@@ -321,6 +323,13 @@ func tuiosSessionMiddleware() wish.Middleware {
 			// the terminal state.
 			program.Kill()
 			cancel()
+			// An ssh client's terminal gets no reset when the session ends, so
+			// the OSC 7501 records this client left there are cleared here.
+			// A connection already gone takes the write as an error, and that
+			// is fine.
+			if seq := model.HostProgramStatusClear(); seq != "" {
+				_, _ = io.WriteString(sess, seq)
+			}
 
 			// Tear down after the program has fully stopped. In daemon mode
 			// this closes the daemon client, otherwise its read loop, socket,

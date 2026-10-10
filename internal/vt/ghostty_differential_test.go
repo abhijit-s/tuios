@@ -409,7 +409,8 @@ func TestGhosttyDiffDECRQM(t *testing.T) {
 		"\x1b[?47$p", "\x1b[?47h\x1b[?47$p",
 		"\x1b[?1016$p", "\x1b[?1016h\x1b[?1016$p",
 		"\x1b[?2048$p",
-		"\x1b[?2027$p", "\x1b[?2027l\x1b[?2027$p", "\x1bc\x1b[?2027$p",
+		// A mode neither backend defines.
+		"\x1b[?9999h\x1b[?9999$p",
 	} {
 		t.Run(fmt.Sprintf("%q", in), func(t *testing.T) {
 			p := newDiffPair(t, 20, 5)
@@ -418,6 +419,98 @@ func TestGhosttyDiffDECRQM(t *testing.T) {
 				t.Errorf("reply pure=%q ghostty=%q", a, g)
 			}
 		})
+	}
+
+	// Mode 2027 is answered differently on purpose, and each answer is true
+	// for its own backend. The pure emulator always measures by grapheme
+	// cluster, so it reports 3 (permanently set) and ignores a reset. The
+	// library honours a reset and stops clustering, so it reports 1 and then
+	// 2. See TestGhosttyGraphemeClusteringDefault for the layout half.
+	for _, tc := range []struct{ in, pure, gh string }{
+		{"\x1b[?2027$p", "\x1b[?2027;3$y", "\x1b[?2027;1$y"},
+		{"\x1b[?2027l\x1b[?2027$p", "\x1b[?2027;3$y", "\x1b[?2027;2$y"},
+		{"\x1bc\x1b[?2027$p", "\x1b[?2027;3$y", "\x1b[?2027;1$y"},
+	} {
+		t.Run(fmt.Sprintf("%q", tc.in), func(t *testing.T) {
+			p := newDiffPair(t, 20, 5)
+			p.write(t, []byte(tc.in))
+			if a, g := readReply(p.pure), readReply(p.gh); a != tc.pure || g != tc.gh {
+				t.Errorf("reply pure=%q ghostty=%q, want pure=%q ghostty=%q", a, g, tc.pure, tc.gh)
+			}
+		})
+	}
+}
+
+// TestGhosttyDiffPixelSizeReports compares the answers a guest reads its
+// pixel size from: XTWINOPS 14, 16 and 18 and the mode 2048 report, with no
+// cell size set and with the host's. libghostty sent none of them until the
+// size callback was wired, and a guest that waited for one waited for good
+// (issue #506). After 2048 is on, a new cell size must reach the guest too.
+func TestGhosttyDiffPixelSizeReports(t *testing.T) {
+	read := func(term Terminal) string {
+		got := make(chan string, 1)
+		go func() {
+			buf := make([]byte, 512)
+			n, _ := term.Read(buf)
+			got <- string(buf[:n])
+		}()
+		select {
+		case s := <-got:
+			return s
+		case <-time.After(2 * time.Second):
+			return ""
+		}
+	}
+	for _, cell := range [][2]int{{0, 0}, {8, 16}} {
+		for _, in := range []string{"\x1b[14t", "\x1b[16t", "\x1b[18t", "\x1b[?2048h"} {
+			t.Run(fmt.Sprintf("cell %dx%d %q", cell[0], cell[1], in), func(t *testing.T) {
+				p := newDiffPair(t, 20, 5)
+				p.pure.SetCellSize(cell[0], cell[1])
+				p.gh.SetCellSize(cell[0], cell[1])
+				p.write(t, []byte(in))
+				a, g := read(p.pure), read(p.gh)
+				if a != g {
+					t.Errorf("reply pure=%q ghostty=%q", a, g)
+				}
+				if strings.Contains(a, ";0;0t") || a == "" {
+					t.Errorf("reply %q has no pixel size", a)
+				}
+			})
+		}
+	}
+	t.Run("a new cell size while 2048 is on", func(t *testing.T) {
+		p := newDiffPair(t, 20, 5)
+		p.write(t, []byte("\x1b[?2048h"))
+		_, _ = read(p.pure), read(p.gh)
+		p.pure.SetCellSize(8, 16)
+		p.gh.SetCellSize(8, 16)
+		if a, g := read(p.pure), read(p.gh); a != g || a != "\x1b[48;5;20;80;160t" {
+			t.Errorf("reply pure=%q ghostty=%q, want both %q", a, g, "\x1b[48;5;20;80;160t")
+		}
+		// The same cell again sends nothing. The daemon sets the cell on
+		// every pane resize and every attach.
+		p.pure.SetCellSize(8, 16)
+		p.gh.SetCellSize(8, 16)
+		if a, g := readQuick(p.pure), readQuick(p.gh); a != "" || g != "" {
+			t.Errorf("the same cell twice sent pure=%q ghostty=%q, want nothing", a, g)
+		}
+	})
+}
+
+// readQuick is what term wrote back within a short wait, or "". The reader
+// it starts outlives a wait that saw nothing, so it is used last in a test.
+func readQuick(term Terminal) string {
+	got := make(chan string, 1)
+	go func() {
+		buf := make([]byte, 512)
+		n, _ := term.Read(buf)
+		got <- string(buf[:n])
+	}()
+	select {
+	case s := <-got:
+		return s
+	case <-time.After(300 * time.Millisecond):
+		return ""
 	}
 }
 

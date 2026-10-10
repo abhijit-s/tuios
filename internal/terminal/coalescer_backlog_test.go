@@ -54,15 +54,16 @@ func TestCoalescerPacesDownAPaneThatIsBehind(t *testing.T) {
 	}
 
 	w.queuedBytes.Store(catchUpBacklog)
-	if got := w.coalesceInterval(); got != catchUpCoalesceInterval {
-		t.Errorf("a pane at the backlog paced at %v, want %v", got, catchUpCoalesceInterval)
+	if got := w.coalesceInterval(); got != w.catchUpCoalesceInterval() {
+		t.Errorf("a pane at the backlog paced at %v, want %v", got, w.catchUpCoalesceInterval())
 	}
 
-	// Being behind outranks an expensive frame in the other direction too: the
-	// ceiling is not the answer here, the catch-up interval is.
+	// An expensive frame keeps its own, longer interval while the pane is
+	// behind: the catch-up interval is a floor, so it never draws a pane
+	// that is behind faster than what its frames cost allows.
 	w.ChargeRenderCost(time.Second)
-	if got := w.coalesceInterval(); got != catchUpCoalesceInterval {
-		t.Errorf("a pane both behind and expensive paced at %v, want %v", got, catchUpCoalesceInterval)
+	if got := w.coalesceInterval(); got != maxCoalesceInterval {
+		t.Errorf("a pane both behind and expensive paced at %v, want the %v ceiling", got, maxCoalesceInterval)
 	}
 
 	// And it lets go once the pane has caught up, so a pane is not left at 4fps
@@ -90,7 +91,8 @@ func TestPacedCoalescerStillEmitsWhileBehind(t *testing.T) {
 	// arms is the catch-up one.
 	w.queuedBytes.Store(catchUpBacklog * 4)
 
-	var signals []time.Time
+	// The signals as they arrive, each with its time.
+	signals := make(chan time.Time, 1024)
 	done := make(chan struct{})
 	drained := make(chan struct{})
 	go func() {
@@ -98,29 +100,47 @@ func TestPacedCoalescerStillEmitsWhileBehind(t *testing.T) {
 		for {
 			select {
 			case <-ptyData:
-				signals = append(signals, time.Now())
+				signals <- time.Now()
 			case <-done:
 				return
 			}
 		}
 	}()
+	defer func() {
+		close(done)
+		<-drained
+	}()
 
+	// The burst. lastNote is taken before the final noteOutput, not after
+	// the sleep that follows it: a signal for that output can land inside
+	// the sleep, and timed against the end of the sleep it looked early
+	// although it drew the final output (the CI failure saw one 4.5 us
+	// before such a lastNote).
+	var lastNote time.Time
 	deadline := time.Now().Add(600 * time.Millisecond)
 	for time.Now().Before(deadline) {
+		lastNote = time.Now()
 		w.noteOutput()
 		time.Sleep(time.Millisecond)
 	}
-	lastNote := time.Now()
 
-	time.Sleep(catchUpCoalesceInterval + 400*time.Millisecond)
-	close(done)
-	<-drained
-
-	if len(signals) == 0 {
-		t.Fatal("a pane paced down while behind raised no render signals at all")
-	}
-	if newest := signals[len(signals)-1]; !newest.After(lastNote) {
-		t.Errorf("last render signal came %v before the final output; the pane is left showing a stale frame",
-			lastNote.Sub(newest))
+	// Wait for a signal after the final output, for at most one catch-up
+	// interval and a margin. Each signal is its own condition: the wait ends
+	// on the one that matters, not on a fixed sleep.
+	timeout := time.After(w.catchUpCoalesceInterval() + 400*time.Millisecond)
+	seen := 0
+	for {
+		select {
+		case at := <-signals:
+			seen++
+			if at.After(lastNote) {
+				return
+			}
+		case <-timeout:
+			if seen == 0 {
+				t.Fatal("a pane paced down while behind raised no render signals at all")
+			}
+			t.Fatalf("no render signal came after the final output; the pane is left showing a stale frame")
+		}
 	}
 }

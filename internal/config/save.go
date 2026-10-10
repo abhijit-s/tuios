@@ -1,7 +1,9 @@
 package config
 
 import (
+	"bytes"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -146,7 +148,7 @@ func configFileHeader(configPath string) string {
 // touches memory only, which is what lets a caller that must not block do this
 // half of a save itself.
 func renderConfigFile(cfg *UserConfig, configPath string) ([]byte, error) {
-	data, err := toml.Marshal(cfg)
+	data, err := MarshalUserConfig(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal config: %w", err)
 	}
@@ -159,16 +161,68 @@ func renderConfigFile(cfg *UserConfig, configPath string) ([]byte, error) {
 	return []byte(sb.String()), nil
 }
 
+// MarshalUserConfig is cfg as TOML, the way every config file tuios writes is
+// encoded. It differs from toml.Marshal in one thing: a field may write its own
+// TOML, which is how max_fps comes out as a bare 144 or a quoted "auto" from
+// one field. toml.Marshal would quote both.
+func MarshalUserConfig(cfg *UserConfig) ([]byte, error) {
+	var buf bytes.Buffer
+	enc := toml.NewEncoder(&buf).SetIndentSymbol("  ").EnableMarshalerInterface()
+	if err := enc.Encode(cfg); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
 // writeConfigBytes puts already-rendered bytes at configPath, creating the
 // parent directory as needed.
+//
+// The bytes go to a temporary file beside the config and are renamed over
+// it, so a reader sees the old file or the new one and never part of one.
+// The config watcher reads the file 200 ms after the last change it saw. A
+// plain write truncates the file and then fills it, and a writer descheduled
+// between the two for longer than that (a loaded CI runner was enough) had
+// the watcher read an empty or cut file. That parsed, the defaults filled the
+// rest, and the dock or the rail of the running client moved back to its
+// default. The completed write that followed was then dropped as tuios's own
+// save, so the wrong settings stood.
+//
+// The content is noted as a self write before the rename, so the watcher that
+// sees the rename already knows it. A symlinked config is written through to
+// its target, so the link survives, and the file keeps its mode.
 func writeConfigBytes(data []byte, configPath string) error {
 	if err := os.MkdirAll(filepath.Dir(configPath), 0o750); err != nil {
 		return fmt.Errorf("failed to create config directory: %w", err)
 	}
-	if err := os.WriteFile(configPath, data, 0o600); err != nil {
+	target := configPath
+	if resolved, err := filepath.EvalSymlinks(configPath); err == nil {
+		target = resolved
+	}
+	mode := os.FileMode(0o600)
+	if info, err := os.Stat(target); err == nil {
+		mode = info.Mode().Perm()
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(target), ".config.toml.*")
+	if err != nil {
 		return fmt.Errorf("failed to write config file: %w", err)
 	}
+	tmpPath := tmp.Name()
+	_, werr := tmp.Write(data)
+	if werr == nil {
+		werr = tmp.Chmod(mode)
+	}
+	if cerr := tmp.Close(); werr == nil {
+		werr = cerr
+	}
+	if werr != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("failed to write config file: %w", werr)
+	}
 	noteSelfWrite(data)
+	if err := os.Rename(tmpPath, target); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("failed to write config file: %w", err)
+	}
 	return nil
 }
 
@@ -220,56 +274,91 @@ func WriteConfigFile(cfg *UserConfig, configPath string) error {
 	return writeConfigBytes(data, configPath)
 }
 
-// saveSeq numbers renders and saveDone the newest one that has landed, so a
-// write held up behind another cannot put an older config back.
+// saveSeq numbers renders, and keyGen holds the number of the newest save
+// that wrote each key, so a write held up behind another cannot put an older
+// value of a key back. saveMu guards keyGen and serialises the writes.
 var (
-	saveMu   sync.Mutex
-	saveSeq  atomic.Uint64
-	saveDone atomic.Uint64
+	saveMu  sync.Mutex
+	saveSeq atomic.Uint64
+	keyGen  = map[string]uint64{}
 )
 
-// RenderUserConfig reads cfg into the bytes of a config file and hands back the
-// function that writes them. The split exists because the caller is the Update
-// goroutine: rendering is memory and can happen there, the file write cannot.
+// RenderUserConfig reads cfg into the change a save makes and hands back the
+// function that writes it. The split exists because the caller is the Update
+// goroutine: reading the model is memory and can happen there, the file write
+// cannot.
 //
 // Reading cfg here rather than in the returned function is also what makes this
 // safe without a deep copy. The config is the model's own and goes on being
 // edited; a writer holding the pointer would be marshalling a struct changing
 // underneath it.
 //
+// The change is the difference between the config cfg was loaded from and cfg
+// now, so a save writes the keys the person changed and nothing else (see
+// include_write.go). The next save starts from here, so a change is written
+// once.
+//
 // The returned function is safe to call from anywhere and from several places at
 // once. Writes are serialised and stamped, so when two saves are in flight the
-// older one gives way rather than overwriting the newer.
-func RenderUserConfig(cfg *UserConfig) (func() error, error) {
+// older one gives way rather than overwriting the newer. Its WriteNote says
+// when a read-only file sent a change to another file.
+func RenderUserConfig(cfg *UserConfig) (func() (WriteNote, error), error) {
 	configPath, err := xdg.ConfigFile("tuios/config.toml")
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve config path: %w", err)
 	}
-	data, err := renderConfigFile(cfg, configPath)
+	data, err := MarshalUserConfig(cfg)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to marshal config: %w", err)
 	}
+	base := cfg.baseline
+	cfg.baseline = data
 	gen := saveSeq.Add(1)
-	return func() error {
+	return func() (WriteNote, error) {
 		saveMu.Lock()
 		defer saveMu.Unlock()
-		if gen < saveDone.Load() {
-			return nil
+		// An older save that lost the race is not dropped: it carries a change
+		// of its own, which the newer one does not repeat. It skips only the
+		// keys a newer save already wrote.
+		note, err := saveConfigData(configPath, base, data, gen)
+		if err != nil {
+			return note, &SaveError{Err: err, cfg: cfg, base: base}
 		}
-		if err := writeConfigBytes(data, configPath); err != nil {
-			return err
-		}
-		saveDone.Store(gen)
-		return nil
+		return note, nil
 	}, nil
 }
 
-// SaveUserConfig persists cfg to the user's config file at the standard XDG
-// location. Used by the in-app settings page to make live changes durable.
-func SaveUserConfig(cfg *UserConfig) error {
-	configPath, err := xdg.ConfigFile("tuios/config.toml")
-	if err != nil {
-		return fmt.Errorf("failed to resolve config path: %w", err)
+// SaveError is a save that failed. The change it carried is not in any file,
+// so RewindSave puts the config's baseline back and the next save writes the
+// change again.
+type SaveError struct {
+	Err  error
+	cfg  *UserConfig
+	base []byte
+}
+
+func (e *SaveError) Error() string { return e.Err.Error() }
+func (e *SaveError) Unwrap() error { return e.Err }
+
+// RewindSave undoes what RenderUserConfig did to cfg's baseline when the save
+// err came from failed. Call it on the goroutine that owns cfg. It does
+// nothing for another config or another error.
+func RewindSave(cfg *UserConfig, err error) {
+	var se *SaveError
+	if cfg == nil || !errors.As(err, &se) || se.cfg != cfg {
+		return
 	}
-	return WriteConfigFile(cfg, configPath)
+	cfg.baseline = se.base
+}
+
+// SaveUserConfig persists cfg to the user's config file at the standard XDG
+// location, the same way the settings page does.
+func SaveUserConfig(cfg *UserConfig) (WriteNote, error) {
+	write, err := RenderUserConfig(cfg)
+	if err != nil {
+		return WriteNote{}, err
+	}
+	note, err := write()
+	RewindSave(cfg, err)
+	return note, err
 }

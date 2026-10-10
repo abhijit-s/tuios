@@ -71,7 +71,7 @@ func (m *OS) GetOrCreateScrollingLayout() *layout.ScrollingLayout {
 	// laying its columns out with the old arithmetic until something happened
 	// to rebuild it. Every caller reaches the strip through here, so this is the
 	// one place that has to be right.
-	sl.Gap = m.PaneGap
+	sl.Gap = m.separatorGap()
 	sl.DefaultWidth = m.ScrollColumnWidthFraction()
 	sl.MaxProportion = float64(m.Settings.GetScrollColumnMax()) / 100
 	// A zoom on the strip is one column widened past the cap the others are
@@ -81,10 +81,10 @@ func (m *OS) GetOrCreateScrollingLayout() *layout.ScrollingLayout {
 	// the rest of the strip goes on running off the edges, which is the peek
 	// the other layouts build a canvas for.
 	sl.ZoomedCol, sl.ZoomProportion = -1, 0
-	if zw := m.zoomedWindow(); zw != nil && m.Settings.GetZoomSize() < 100 {
+	if zw := m.zoomedWindow(); zw != nil && m.zoomSize() < 100 {
 		if i := sl.ColumnContaining(m.GetWindowIntID(zw.ID)); i >= 0 {
 			sl.ZoomedCol = i
-			sl.ZoomProportion = float64(m.Settings.GetZoomSize()) / 100
+			sl.ZoomProportion = float64(m.zoomSize()) / 100
 		}
 	}
 	// Revealed after the geometry above, because the reveal measures columns
@@ -139,6 +139,7 @@ func (m *OS) scrollingSetPositionsAnimated(animate bool) {
 	// every column the user drags the host edge through: the exact storm the
 	// deferral exists to stop.
 	deferring := m.resizeDeferralActive()
+	borderless := m.panesBorderless()
 
 	// The slide that runs with animations off moves panes and never resizes
 	// them. A pass that changes a column's width is placed in one step instead,
@@ -172,13 +173,14 @@ func (m *OS) scrollingSetPositionsAnimated(animate bool) {
 		if m.noteDragSlot(win, rect) {
 			continue
 		}
-		// The strip has no dividers to share, so its panes always draw their own
-		// border. Settle that allowance before the rectangle, as placePane does:
-		// it decides how much of the rectangle the guest gets, so settling it
-		// afterwards announces the rectangle twice, once at each allowance.
-		borderChanged := win.Tiled
+		// Under shared borders the strip's panes give up their own border to
+		// the dividers drawn between the columns, as every tiler's do. Settle
+		// that allowance before the rectangle, as placePane does: it decides
+		// how much of the rectangle the guest gets, so settling it afterwards
+		// announces the rectangle twice, once at each allowance.
+		borderChanged := win.Tiled != borderless
 		if borderChanged {
-			win.Tiled = false
+			win.Tiled = borderless
 			win.InvalidateCache()
 		}
 		moved := win.X != rect.X || win.Y != rect.Y
@@ -196,10 +198,11 @@ func (m *OS) scrollingSetPositionsAnimated(animate bool) {
 		// now and the real one on the release, as before.
 		slide := animate && alreadyPlaced && !deferring && dur > 0 && (moved || resized)
 		// A changed allowance owes the guest a new box even at the same
-		// rectangle. A slide owes it too, and pays it when it lands: the
-		// snap's last step resizes against the size last announced, which
-		// counts the allowance.
-		if !slide && (borderChanged || resized) {
+		// rectangle, and owes it now: the pane stops or starts drawing its
+		// border on this frame, slide or not, so its guest's grid changes on
+		// this frame too. A resize alone is paid when a slide lands: the
+		// snap's last step resizes against the size last announced.
+		if borderChanged || (!slide && resized) {
 			m.resizePane(win, rect.W, rect.H, deferring)
 		}
 
@@ -313,6 +316,17 @@ func (m *OS) ScrollingMoveColumnRight() {
 func (m *OS) ScrollingCycleWidth() {
 	sl := m.GetOrCreateScrollingLayout()
 	sl.CycleWidth()
+	sl.ScrollToFocusedColumn(m.ScrollingViewWidth())
+	m.ScrollingSetPositions()
+}
+
+// ScrollingMaximizeColumn widens the focused column to its widest allowed
+// width. The widest allowed width is set by scroll_column_max: 90% by default,
+// 100% when the user has raised it. It is the one-key path to the 1.0 preset
+// the cycle width chain walks past 0.9 to reach.
+func (m *OS) ScrollingMaximizeColumn() {
+	sl := m.GetOrCreateScrollingLayout()
+	sl.MaximizeColumn()
 	sl.ScrollToFocusedColumn(m.ScrollingViewWidth())
 	m.ScrollingSetPositions()
 }
@@ -659,6 +673,60 @@ func (m *OS) adoptScrollStrip(strip *session.ScrollStripState, focusChanged bool
 	}
 }
 
+// ScrollingResizeColumnVisual sets the width of the column holding win while a
+// pointer drags it, and lays the strip out again on screen only: the panes
+// take their new rectangles now and their guests hear the size on release,
+// through PendingResizes. keepRight holds the column's right edge still, for a
+// drag on its left side, by scrolling the strip by the width the column gains.
+//
+// The width is held between the smallest pane and the strip's ceiling, the
+// same one the keyboard resize reads.
+//
+// The viewport is not clamped to the strip's right end until the release.
+// With the strip scrolled to that end, a column that shrinks leaves ground
+// past the last column, and the clamp would pull the strip left under the
+// pointer on every motion event: the column's left edge would move away from
+// the pointer, and a width measured from it would run away. Only a viewport
+// before the strip's start is held back here. The release lays the strip out
+// again through ScrollingSetPositions, which clamps it fully.
+func (m *OS) ScrollingResizeColumnVisual(win *terminal.Window, width int, keepRight bool) {
+	sl := m.GetOrCreateScrollingLayout()
+	viewW := m.ScrollingViewWidth()
+	width = max(min(width, sl.MaxColumnWidth(viewW)), config.DefaultWindowWidth)
+	col := sl.ColumnContaining(m.GetWindowIntID(win.ID))
+	if col < 0 {
+		return
+	}
+	oldWidth := sl.ResolveColumnWidth(col, viewW)
+	sl.Columns[col].FixedWidth = width
+	sl.Columns[col].Proportion = 0
+	if keepRight && oldWidth > 0 {
+		sl.ViewportX += width - oldWidth
+	}
+	sl.ViewportX = max(sl.ViewportX, 0)
+	stripLeft := m.PaneLeft()
+	for winID, rect := range sl.ComputePositions(viewW, m.PaneHeight(), m.PaneTop()) {
+		w := m.GetWindowByIntID(winID)
+		if w == nil {
+			continue
+		}
+		w.X = stripLeft + rect.X
+		w.Y = rect.Y
+		// The width only, without ResizeVisual or Resize: the emulator keeps
+		// its size until the release.
+		w.Width = rect.W
+		w.MarkPositionDirty()
+		w.InvalidateCache()
+	}
+	// Every window stacked in the column takes the new width, so every one
+	// of them owes its guest the size on release, not only the one dragged.
+	for _, wid := range sl.Columns[col].WindowIDs {
+		if w := m.GetWindowByIntID(wid); w != nil {
+			m.PendingResizes[w.ID] = [2]int{width, w.Height}
+		}
+	}
+}
+
 // scrollingResizeColumn changes the focused column's width by delta pixels.
 func (m *OS) scrollingResizeColumn(delta int) {
 	sl := m.GetOrCreateScrollingLayout()
@@ -666,9 +734,13 @@ func (m *OS) scrollingResizeColumn(delta int) {
 		return
 	}
 	col := &sl.Columns[sl.FocusedCol]
-	// Get current width and apply delta, capped at 90% of the content width
+	// Cap at scroll_column_max, not the nine tenths the strip used to write
+	// here: somebody who set scroll_column_max = 100 wants a full-width column
+	// from the resize keys, not a stuck one at 90%. The other layouts'
+	// resize_width_N actions accept up to 90, which mirrors that ceiling; the
+	// strip's wider is what a pane on a strip needs to take the screen.
 	viewW := m.ScrollingViewWidth()
-	maxWidth := viewW * 9 / 10
+	maxWidth := sl.MaxColumnWidth(viewW)
 	currentWidth := sl.ResolveColumnWidth(sl.FocusedCol, viewW)
 	newWidth := max(min(currentWidth+delta, maxWidth), 20)
 	col.FixedWidth = newWidth

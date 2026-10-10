@@ -5,30 +5,32 @@ import (
 	"log"
 	"os"
 	"strings"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/Gaurav-Gosain/tuios/internal/app"
 	"github.com/Gaurav-Gosain/tuios/internal/config"
 	"github.com/Gaurav-Gosain/tuios/internal/input"
+	"github.com/Gaurav-Gosain/tuios/internal/plural"
 	"github.com/Gaurav-Gosain/tuios/internal/tape"
+	"github.com/Gaurav-Gosain/tuios/internal/terminal"
 	"github.com/Gaurav-Gosain/tuios/internal/theme"
 )
 
 func runTapeInteractive(tapeFile string) error {
-	content, err := os.ReadFile(tapeFile)
+	script, err := tape.LoadFile(tapeFile)
 	if err != nil {
 		return fmt.Errorf("failed to read tape file: %w", err)
 	}
-
-	commands, parseErrors := tape.ParseFile(string(content))
-	if len(parseErrors) > 0 {
+	if len(script.Errors) > 0 {
 		fmt.Fprintf(os.Stderr, "Tape parsing errors:\n")
-		for _, err := range parseErrors {
-			fmt.Fprintf(os.Stderr, "  %s\n", err)
+		for _, err := range script.Errors {
+			fmt.Fprintf(os.Stderr, "  %s: %s\n", tapeFile, err)
 		}
-		return fmt.Errorf("failed to parse tape file")
+		return fmt.Errorf("the tape file has errors, listed above. Fix them, then run it again")
 	}
+	commands := script.Commands
 
 	fmt.Printf("Preparing tape script: %s\n", tapeFile)
 	fmt.Printf("Total commands: %d\n", len(commands))
@@ -77,6 +79,7 @@ func runTapeInteractive(tapeFile string) error {
 	initialOS.ScriptExecutor = tape.NewCommandExecutor(initialOS)
 
 	p := tea.NewProgram(initialOS, app.ProgramOptions()...)
+	initialOS.BindProgram(p)
 
 	// A quit the event loop cannot carry out still has to end the process;
 	// finish runs once the cleanup below is done. See armSignalQuit.
@@ -84,43 +87,40 @@ func runTapeInteractive(tapeFile string) error {
 
 	finalModel, err := p.Run()
 
+	failure := ""
 	if finalOS, ok := finalModel.(*app.OS); ok {
+		failure = finalOS.ScriptFailure
 		finalOS.Cleanup()
+		_, _ = os.Stdout.WriteString(finalOS.HostProgramStatusClear())
 	}
 
-	fmt.Print("\033c")
-	fmt.Print("\033[?1000l")
-	fmt.Print("\033[?1002l")
-	fmt.Print("\033[?1003l")
-	fmt.Print("\033[?1004l")
-	fmt.Print("\033[?1006l")
-	fmt.Print("\033[?25h")
-	fmt.Print("\033[?47l")
-	fmt.Print("\033[0m")
-	fmt.Print("\r\n")
-	_ = os.Stdout.Sync()
+	terminal.ResetTerminal()
 	finish()
 
 	if err != nil {
 		return fmt.Errorf("program error: %w", err)
+	}
+	if failure != "" {
+		return fmt.Errorf("the tape stopped at %s: %s", tapeFile, failure)
 	}
 
 	return nil
 }
 
 func validateTapeFile(tapeFile string) error {
-	content, err := os.ReadFile(tapeFile)
+	script, err := tape.LoadFile(tapeFile)
 	if err != nil {
 		return fmt.Errorf("failed to read tape file: %w", err)
 	}
 
-	commands, parseErrors := tape.ParseFile(string(content))
+	commands, parseErrors := script.Commands, script.Errors
 	if len(parseErrors) > 0 {
 		fmt.Fprintf(os.Stderr, "Parsing errors found:\n")
+		// file:line, column: the shape an editor's error list can jump to.
 		for _, err := range parseErrors {
-			fmt.Fprintf(os.Stderr, "  ✗ %s\n", err)
+			fmt.Fprintf(os.Stderr, "  ✗ %s: %s\n", tapeFile, err)
 		}
-		return fmt.Errorf("tape file has parsing errors")
+		return fmt.Errorf("the tape file has errors, listed above. Fix them, then validate it again")
 	}
 
 	checkmark := lipgloss.NewStyle().Foreground(lipgloss.Color("10")).Render("✓")
@@ -164,13 +164,26 @@ func validateTapeFile(tapeFile string) error {
 	return nil
 }
 
-func listTapeFiles() error {
+func listTapeFiles(asJSON bool) error {
 	files, err := app.LoadTapeFiles()
 	if err != nil {
 		return fmt.Errorf("failed to load tape files: %w", err)
 	}
 
 	tapeDir, _ := app.GetTapeDirectory()
+	if asJSON {
+		type tapeRow struct {
+			Name     string    `json:"name"`
+			Path     string    `json:"path"`
+			Size     int64     `json:"size"`
+			Modified time.Time `json:"modified"`
+		}
+		rows := make([]tapeRow, 0, len(files))
+		for _, f := range files {
+			rows = append(rows, tapeRow{Name: f.Name, Path: f.Path, Size: f.Size, Modified: f.Modified})
+		}
+		return printJSON(map[string]any{"dir": tapeDir, "tapes": rows})
+	}
 
 	headerStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("4")).Bold(true)
 	pathStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
@@ -197,7 +210,7 @@ func listTapeFiles() error {
 			dateStyle.Render(dateStr))
 	}
 
-	fmt.Printf("\n%d tape(s) found\n", len(files))
+	fmt.Printf("\n%s found\n", plural.Count(len(files), "tape"))
 	return nil
 }
 
@@ -225,7 +238,7 @@ func deleteTapeFile(name string) error {
 	}
 
 	if targetFile == nil {
-		return fmt.Errorf("tape file '%s' not found", name)
+		return fmt.Errorf("no tape file named %q. Run 'tuios tape list' to see the tape files", name)
 	}
 
 	fmt.Printf("Delete '%s'? (yes/no): ", targetFile.Name)
@@ -262,7 +275,7 @@ func showTapeFile(name string) error {
 	}
 
 	if targetFile == nil {
-		return fmt.Errorf("tape file '%s' not found", name)
+		return fmt.Errorf("no tape file named %q. Run 'tuios tape list' to see the tape files", name)
 	}
 
 	content, err := os.ReadFile(targetFile.Path)

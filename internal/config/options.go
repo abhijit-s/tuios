@@ -69,9 +69,22 @@ type Option struct {
 	// Such an option takes the empty string as a value, which clears it, so
 	// it can go back to following once it has been set.
 	Follows string `json:"follows,omitempty"`
+	// DefaultClears marks a string option whose Default is a word rather than
+	// a value. Writing that word clears the field back to unset, and an unset
+	// field reads back as it. It is for an option where the empty string is a
+	// value of its own: an empty mode icon hides the icon, so the empty string
+	// cannot also be the way back to the built-in.
+	DefaultClears bool `json:"default_clears,omitempty"`
+	// Icon marks a string option whose value is drawn in the dock as an icon.
+	// A value with a control character, or wider than DockModeIconMaxWidth
+	// cells, is refused, because it would break the dock row's layout.
+	Icon bool `json:"icon,omitempty"`
 	// BoxSize marks a string option whose value is a size in cells (60) or
 	// percent (80%), read by ParseBoxSize. An empty value means the default.
 	BoxSize bool `json:"box_size,omitempty"`
+	// Auto marks an int option that also takes the word "auto". Its config
+	// field is a string type, such as FPSLimit, that can hold either.
+	Auto bool `json:"auto,omitempty"`
 }
 
 // UnsetText is how a reader is told an option is unset and what it follows,
@@ -139,6 +152,16 @@ var optionSpecs = []Option{
 		Accepted:    LinkModes, Default: LinksAll,
 	},
 	{
+		Path: "appearance.link_click", Type: OptionString, Section: "appearance",
+		Description: "The click that opens a link: ctrl or shift, ctrl only, shift only, or none",
+		Accepted:    LinkClickModes, Default: LinkClickBoth,
+	},
+	{
+		Path: "appearance.link_opener", Type: OptionString, Section: "appearance",
+		Description: "The command that opens a web link. If this is empty, tuios uses $BROWSER, then the system opener.",
+		Default:     "",
+	},
+	{
 		Path: "appearance.hide_window_buttons", Type: OptionBool, Section: "appearance",
 		Description: "Hide the minimize, maximize and close buttons",
 		Default:     "false",
@@ -199,9 +222,19 @@ var optionSpecs = []Option{
 		Accepted:    KittyPlaceholderModes, Default: KittyPlaceholdersAuto,
 	},
 	{
+		Path: "appearance.image_symbols", Type: OptionString, Section: "appearance",
+		Description: "Draw pane images as block glyphs when the terminal has no graphics: auto, octant, sextant, quadrant, half, off",
+		Accepted:    ImageSymbolModes, Default: ImageSymbolsAuto,
+	},
+	{
 		Path: "appearance.new_window_inherit_cwd", Type: OptionBool, Section: "appearance",
 		Description: "A new window starts in the focused pane's working directory",
 		Default:     "true",
+	},
+	{
+		Path: "appearance.new_window_follow_ssh", Type: OptionBool, Section: "appearance",
+		Description: "A split or new window of a pane that runs ssh runs the same ssh",
+		Default:     "false",
 	},
 	{
 		Path: "appearance.click_to_type", Type: OptionString, Section: "appearance",
@@ -272,7 +305,7 @@ var optionSpecs = []Option{
 	},
 	{
 		Path: "appearance.shared_borders", Type: OptionBool, Section: "appearance",
-		Description: "Share one border between adjacent tiled panes",
+		Description: "Draw one border between neighbouring tiled panes, in every layout",
 		Default:     "false",
 	},
 	{
@@ -302,9 +335,11 @@ var optionSpecs = []Option{
 	},
 	{
 		Path: "appearance.max_fps", Type: OptionInt, Section: "appearance",
-		Description: fmt.Sprintf("Highest frame rate tuios draws at. 0 uses 60. The range is %d to %d.",
-			MinConfiguredFPS, MaxFPSCap),
-		Default: "0", Min: 0, Max: MaxFPSCap,
+		Description: fmt.Sprintf("Highest frame rate tuios draws at. Your terminal and monitor can show fewer frames. "+
+			"A value above what they can show does not make tuios smoother. "+
+			"0 uses %d. auto uses the refresh rate of your display. The range is %d to %d.",
+			DefaultFPS, MinConfiguredFPS, MaxFPSCap),
+		Default: "0", Min: 0, Max: MaxFPSCap, Auto: true,
 	},
 	{
 		Path: "appearance.session_colors", Type: OptionBool, Section: "appearance",
@@ -394,6 +429,11 @@ var optionSpecs = []Option{
 		Path: "appearance.zoom_follows_focus", Type: OptionBool, Section: "appearance",
 		Description: "Hand the zoom to the pane the focus lands on, so moving focus while zoomed shows the pane you moved to",
 		Default:     "true",
+	},
+	{
+		Path: "appearance.zoom_borderless", Type: OptionBool, Section: "appearance",
+		Description: "Show a zoomed pane on the whole pane region with no border or title bar. Zoom size and zoom max width do not apply.",
+		Default:     "false",
 	},
 	{
 		Path: "appearance.zoom_animation", Type: OptionBool, Section: "appearance",
@@ -530,8 +570,33 @@ var optionSpecs = []Option{
 		Default:     "true",
 	},
 	{
+		Path: "appearance.dock_workspace_label_max", Type: OptionInt, Section: "dock",
+		Description: "Cells a workspace pill's label may span before the pill cuts it (0 draws the whole name and scrolls the strip instead)",
+		Default:     "12", Min: 0, Max: 200,
+	},
+	{
 		Path: "appearance.dock_pill_caps", Type: OptionBool, Section: "dock",
-		Description: "Draw powerline caps on the dock's pills instead of flat ends",
+		Description: "Draw rounded caps on every dock pill: the mode chip, the workspace tabs and the minimized windows. Off draws flat pills",
+		Default:     "true",
+	},
+	{
+		Path: "appearance.dock_mode_icon_window", Type: OptionString, Section: "dock",
+		Description: "Icon in the mode pill in window mode. An empty value shows no icon. default uses the icon of the glyph set",
+		Default:     DockModeIconDefault, DefaultClears: true, Icon: true,
+	},
+	{
+		Path: "appearance.dock_mode_icon_terminal", Type: OptionString, Section: "dock",
+		Description: "Icon in the mode pill in terminal mode. An empty value shows no icon. default uses the icon of the glyph set",
+		Default:     DockModeIconDefault, DefaultClears: true, Icon: true,
+	},
+	{
+		Path: "appearance.dock_mode_icon_tiling", Type: OptionString, Section: "dock",
+		Description: "Icon in the mode pill while tiling is on. An empty value shows no icon. default uses the icon of the glyph set",
+		Default:     DockModeIconDefault, DefaultClears: true, Icon: true,
+	},
+	{
+		Path: "appearance.dock_compact", Type: OptionBool, Section: "dock",
+		Description: "Draw the dock as one row with no rule. The panes get one more row",
 		Default:     "false",
 	},
 	{
@@ -702,6 +767,11 @@ var optionSpecs = []Option{
 		Path: "appearance.sidebar.show_counts", Type: OptionBool, Section: "sidebar",
 		Description: "Show the window count on each session row",
 		Default:     "true",
+	},
+	{
+		Path: "appearance.sidebar.show_numbers", Type: OptionBool, Section: "sidebar",
+		Description: "Show the switch number ahead of each session name",
+		Default:     "false",
 	},
 	{
 		Path: "appearance.sidebar.show_agents", Type: OptionBool, Section: "sidebar",
@@ -1206,6 +1276,19 @@ var optionSpecs = []Option{
 		Default:     "false",
 	},
 
+	// [panes]. Read each time display_panes opens.
+	{
+		Path: "panes.label_keys", Type: OptionString, Section: "panes",
+		Description: "Keys the pane labels are made of, first pane first. Letters a to z and digits",
+		Default:     PanesDefaultLabelKeys,
+	},
+	{
+		Path: "panes.navigator_layout", Type: OptionString, Section: "panes",
+		Description: "How the pane navigator lists the panes when it opens",
+		Accepted:    NavigatorLayouts,
+		Default:     NavigatorLayoutTree,
+	},
+
 	// [scratch]. Read each time toggle_scratch creates or shows the scratch
 	// terminal. A show resizes the popup to the size in force.
 	{
@@ -1223,6 +1306,31 @@ var optionSpecs = []Option{
 		Path: "launcher.gui_command", Type: OptionString, Section: "launcher",
 		Description: "Command that starts a graphical desktop entry instead of a pane. The entry's argv is added to it. Use a command that takes an argv, such as \"tuios-wayland launch --\" or \"niri msg action spawn --\". Do not use one that joins its arguments into a shell line, such as \"swaymsg exec --\" or \"hyprctl dispatch exec\".",
 		Default:     "",
+	},
+	// [workspaces]. The daemon reads it when it starts and when the file
+	// changes.
+	{
+		Path: "workspaces.return_when_empty", Type: OptionBool, Section: "workspaces",
+		Description: "When the last pane on the workspace on screen closes, show the workspace you came from. Off shows the splash screen",
+		Default:     "true",
+	},
+	// [paste_buffers]. The daemon reads it when it starts and when the file
+	// changes, and so does a client with no daemon.
+	{
+		Path: "paste_buffers.limit", Type: OptionInt, Section: "selection",
+		Description: "How many yanks to keep to paste again. When it is full, the oldest goes. 0 keeps none.",
+		Default:     "20", Min: 0, Max: 1000,
+	},
+	{
+		Path: "paste_buffers.max_kb", Type: OptionInt, Section: "selection",
+		Description: "Most KiB all paste buffers hold together, at most 262144 (256 MiB). When it is full, the oldest go. 0 uses 16384.",
+		Default:     "16384", Min: 0, Max: 262144,
+	},
+	// Read by the client on each switch, so a change applies at once.
+	{
+		Path: "workspaces.new_window_when_empty", Type: OptionBool, Section: "workspaces",
+		Description: "When you switch to a workspace with no panes, open a new pane there. It starts in the folder of the pane you came from",
+		Default:     "false",
 	},
 }
 
@@ -1295,6 +1403,10 @@ func (o Option) checkValue(value string) error {
 		return fmt.Errorf("%s: no glyph set named %q; call list-glyphs for the ones there are, "+
 			"or write %s.json in the glyphs directory first", o.Path, value, value)
 	}
+	if o.Icon && value != o.Default && !DockModeIconUsable(value) {
+		return fmt.Errorf("%s: %q is not a usable icon; use at most %d cells and no control characters",
+			o.Path, value, DockModeIconMaxWidth)
+	}
 	if o.BoxSize && strings.TrimSpace(value) != "" {
 		if _, _, err := ParseBoxSize(value); err != nil {
 			return fmt.Errorf("%s: %w", o.Path, err)
@@ -1330,6 +1442,12 @@ func SetOptionValue(cfg *UserConfig, path, value string) error {
 		return nil
 	}
 
+	// An option whose default is a word clears on that word, back to unset.
+	if opt.DefaultClears && strings.TrimSpace(value) == opt.Default && field.Kind() == reflect.Pointer {
+		field.SetZero()
+		return nil
+	}
+
 	switch opt.Type {
 	case OptionBool:
 		parsed, err := parseOptionBool(value)
@@ -1341,12 +1459,31 @@ func SetOptionValue(cfg *UserConfig, path, value string) error {
 		}
 		optionTarget(field).SetBool(parsed)
 	case OptionInt:
+		if opt.Auto && strings.EqualFold(strings.TrimSpace(value), FPSAuto) {
+			if optionKind(field) != reflect.String {
+				return fmt.Errorf("%s: registry says int or auto, config field is %s", path, optionKind(field))
+			}
+			optionTarget(field).SetString(FPSAuto)
+			return nil
+		}
 		parsed, err := strconv.Atoi(strings.TrimSpace(value))
 		if err != nil {
+			if opt.Auto {
+				return fmt.Errorf("%s: %q is not a whole number or auto", path, value)
+			}
 			return fmt.Errorf("%s: %q is not a whole number", path, value)
 		}
 		if opt.Max > 0 && (parsed < opt.Min || parsed > opt.Max) {
 			return fmt.Errorf("%s: %d is outside %d..%d", path, parsed, opt.Min, opt.Max)
+		}
+		if opt.Auto && optionKind(field) == reflect.String {
+			// 0 is stored as the empty value, the one spelling a reload gives.
+			stored := ""
+			if parsed != 0 {
+				stored = strconv.Itoa(parsed)
+			}
+			optionTarget(field).SetString(stored)
+			return nil
 		}
 		if optionKind(field) != reflect.Int {
 			return fmt.Errorf("%s: registry says int, config field is %s", path, optionKind(field))
@@ -1388,6 +1525,17 @@ func GetOptionValue(cfg *UserConfig, path string) (string, bool) {
 	case reflect.Int:
 		return strconv.FormatInt(field.Int(), 10), true
 	case reflect.String:
+		if opt.Auto {
+			// An auto-or-int option reads back as the int or "auto", never
+			// as the empty string an unset field holds.
+			if v := strings.TrimSpace(field.String()); v != "" {
+				if strings.EqualFold(v, FPSAuto) {
+					return FPSAuto, true
+				}
+				return v, true
+			}
+			return opt.Default, true
+		}
 		return field.String(), true
 	default:
 		return "", false

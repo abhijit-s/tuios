@@ -38,6 +38,7 @@ import (
 //
 // Not implemented: %output carries no bytes, since the daemon's event stream
 // says that a pane printed and not what (read the pane with capture-pane).
+// docs/TMUX_SHIM.md, "What real %output needs", has the plan for it.
 // The flow control of tmux 3.2 (%pause, %continue, %extended-output,
 // refresh-client -A and -f pause-after), format subscriptions (refresh-client
 // -B, %subscription-changed), %pane-mode-changed, %client-session-changed,
@@ -75,7 +76,7 @@ var lifecycleEvents = []string{
 var readOnlyCommands = []string{
 	"list-sessions", "list-windows", "list-panes", "list-clients", "has-session",
 	"display-message", "capture-pane", "show-options", "show-window-options",
-	"refresh-client", "detach-client",
+	"refresh-client", "detach-client", "show-buffer", "list-buffers", "show-environment",
 }
 
 // control is one control-mode client.
@@ -107,6 +108,9 @@ type control struct {
 func (s *Shim) runControl(full []string, g Global, words []string, detail []string) int {
 	s.control = true
 	c := &control{s: s, out: s.Stdout, pending: map[string]bool{}, outcome: OutcomeOK, detail: detail}
+	// Commands without a target act on the session the client attached
+	// to, not on the session the caller runs in.
+	s.attached = c.session
 	if g.Control == 2 {
 		// -CC: the DCS that tells iTerm2 a control client starts.
 		fmt.Fprint(c.out, "\x1bP1000p")
@@ -148,7 +152,7 @@ func (c *control) line(format string, args ...any) {
 func (c *control) command(argv []string, flags int) bool {
 	s := c.s
 	name := argv[0]
-	if full, ok := aliases[name]; ok {
+	if full, err := lookupCommand(name); err == nil {
 		name = full
 	}
 	c.num++
@@ -162,12 +166,16 @@ func (c *control) command(argv []string, flags int) bool {
 	switch {
 	case name == "attach-session":
 		outcome, err = c.attach(argv[1:])
-	case name == "detach-client":
+	case name == "detach-client" && len(argv) == 1:
+		// With no flags it is the control client detaching itself. With
+		// flags it names tuios clients, which the default case detaches.
 		c.quit = true
 		outcome = OutcomeOK
 	case name == "refresh-client":
 		outcome = OutcomeIgnored
-	case c.readOnly && !slices.Contains(readOnlyCommands, name):
+	case c.readOnly && (name == "detach-client" || !slices.Contains(readOnlyCommands, name)):
+		// A bare detach-client was answered above. One that names clients
+		// changes who is attached, which a read-only client may not.
 		outcome, err = OutcomeError, errors.New("client is read-only")
 	default:
 		s.created = ""
@@ -556,31 +564,76 @@ func windowName(sv *sessionView, ws int) string {
 	return vars["window_name"]
 }
 
-// layoutOf is a tmux layout string for panes: the checksum, then the
-// bounding box with each pane's size, offset and number. tuios places panes
-// freely, so the one container lists every pane rather than a split tree.
+// layoutOf is a tmux layout string for panes (window_layout): the checksum,
+// then a tree of cells, each its size and offset, a leaf ending in its pane's
+// number. Tiled panes are cut into the split tree tmux would hold: columns
+// ({...}) where a vertical line crosses no pane, else rows ([...]). Panes no
+// straight line separates, such as overlapping floating windows, are listed
+// in one container at their own positions, which is the closest a tmux
+// layout can say.
 func layoutOf(panes []*pane) string {
 	if len(panes) == 0 {
 		return ""
 	}
+	body := layoutCell(panes)
+	return fmt.Sprintf("%04x,%s", layoutChecksum(body), body)
+}
+
+func layoutCell(panes []*pane) string {
 	cell := func(w, h, x, y int) string {
 		return strconv.Itoa(w) + "x" + strconv.Itoa(h) + "," + strconv.Itoa(x) + "," + strconv.Itoa(y)
 	}
-	var body string
 	if len(panes) == 1 {
 		p := panes[0]
-		body = cell(p.Width, p.Height, p.X, p.Y) + "," + strconv.FormatUint(uint64(p.Num), 10)
-	} else {
-		minX, minY, maxX, maxY := panes[0].X, panes[0].Y, 0, 0
-		var kids []string
-		for _, p := range panes {
-			minX, minY = min(minX, p.X), min(minY, p.Y)
-			maxX, maxY = max(maxX, p.X+p.Width), max(maxY, p.Y+p.Height)
-			kids = append(kids, cell(p.Width, p.Height, p.X, p.Y)+","+strconv.FormatUint(uint64(p.Num), 10))
-		}
-		body = cell(maxX-minX, maxY-minY, minX, minY) + "{" + strings.Join(kids, ",") + "}"
+		return cell(p.Width, p.Height, p.X, p.Y) + "," + strconv.FormatUint(uint64(p.Num), 10)
 	}
-	return fmt.Sprintf("%04x,%s", layoutChecksum(body), body)
+	minX, minY, maxX, maxY := bounds(panes)
+	head := cell(maxX-minX, maxY-minY, minX, minY)
+	join := func(groups [][]*pane, open, close string) string {
+		kids := make([]string, len(groups))
+		for i, g := range groups {
+			kids[i] = layoutCell(g)
+		}
+		return head + open + strings.Join(kids, ",") + close
+	}
+	if cols := cutPanes(panes, func(p *pane) (int, int) { return p.X, p.X + p.Width }); len(cols) > 1 {
+		return join(cols, "{", "}")
+	}
+	if rows := cutPanes(panes, func(p *pane) (int, int) { return p.Y, p.Y + p.Height }); len(rows) > 1 {
+		return join(rows, "[", "]")
+	}
+	leaves := make([][]*pane, len(panes))
+	for i, p := range panes {
+		leaves[i] = []*pane{p}
+	}
+	return join(leaves, "{", "}")
+}
+
+// cutPanes splits panes into the groups that lines across one axis separate:
+// span gives a pane's start and end on that axis. One group means no line
+// separates them.
+func cutPanes(panes []*pane, span func(*pane) (int, int)) [][]*pane {
+	sorted := slices.Clone(panes)
+	slices.SortStableFunc(sorted, func(a, b *pane) int {
+		sa, _ := span(a)
+		sb, _ := span(b)
+		return sa - sb
+	})
+	var groups [][]*pane
+	end := 0
+	for _, p := range sorted {
+		s, e := span(p)
+		if len(groups) == 0 || s < end {
+			if len(groups) == 0 {
+				groups = append(groups, nil)
+			}
+			groups[len(groups)-1] = append(groups[len(groups)-1], p)
+		} else {
+			groups = append(groups, []*pane{p})
+		}
+		end = max(end, e)
+	}
+	return groups
 }
 
 // layoutChecksum is tmux's layout checksum (layout_checksum in layout.c).

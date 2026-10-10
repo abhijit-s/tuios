@@ -89,9 +89,11 @@ In order of preference, because the order is also the order of cost:
   going to redraw anyway. The types are the hook events
   (`after-focus-change`, `after-agent-state`, `after-workspace-switch`,
   `after-new-window`, `after-close-window`, `after-layout-change`,
-  `after-attach`, `after-detach`, `after-resize`) and their event-hub spellings
-  (`window-focused`, `agent-state`, `workspace-switched`, `window-created`,
-  `window-closed`, `layout-changed`, `attached`, `detached`, `resized`).
+  `after-attach`, `after-detach`, `after-resize`) and other names for them.
+  `window-focused`, `agent-state`, `workspace-switched`, `window-created` and
+  `window-closed` are the names `tuios subscribe` uses. `layout-changed`,
+  `attached`, `detached` and `resized` are names only the dock knows: the
+  daemon sends no event by those names.
   Several at once: `refresh = "event:after-focus-change,after-new-window"`.
 - **`push`** keeps your command running and takes each line it writes as an
   update. Bring your own `inotifywait`, `upower --monitor`, or a loop around
@@ -154,6 +156,39 @@ monitor.
 
 Anything that has to happen while nothing is attached is a hook, not a
 component.
+
+## The rail's custom section
+
+The same contract draws a section of the rail. Put `custom` in
+`appearance.sidebar.sections` and write the table:
+
+```toml
+[appearance.sidebar]
+sections = "sessions:25,terminals,custom:35,agents:30"
+
+[appearance.sidebar.custom]
+title   = "Brief"
+command = "~/.config/tuios/dock/brief.sh"
+refresh = "event:window-focused,agent-state"
+```
+
+Three differences from a dock cell. Every line of stdout is a row, cut to the
+rail's width and to the section's lines. There is no `push`: a command that
+stays running keeps the environment it started with, and the rows are about
+the focused pane, so events re-run the command with fresh values instead,
+and an event that lands mid-run costs one more run after it. And the
+environment says where the rows go: `TUIOS_RAIL_SECTION=custom`,
+`TUIOS_RAIL_WIDTH`, `TUIOS_RAIL_HEIGHT` (a ceiling), `TUIOS_ACTIVE_PANE_ID`
+and `TUIOS_ACTIVE_PANE_CWD`, beside `TUIOS_SESSION` and `TUIOS_SOCKET`.
+The command does not run while the rail is hidden or folded, so
+`TUIOS_RAIL_WIDTH` is never `0`, and it runs again when the rail opens.
+
+Everything else is the dock's: the timeout, the bounded read, the sanitiser,
+the empty section on failure, the five-failure stop, and
+`tuios list-dock-components`, which lists it as `rail/custom` on side `rail`.
+`tuios refresh-dock rail/custom` re-runs it. The table is read from the
+config file only; `set-config` can place the section and cannot set its
+command.
 
 ## The recipes
 

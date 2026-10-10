@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"image/color"
 	"io"
@@ -10,6 +11,7 @@ import (
 	"maps"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"reflect"
 	"runtime"
 	"slices"
@@ -26,6 +28,9 @@ import (
 
 	"github.com/Gaurav-Gosain/tuios/internal/config"
 	"github.com/Gaurav-Gosain/tuios/internal/guestenv"
+	"github.com/Gaurav-Gosain/tuios/internal/layout"
+	"github.com/Gaurav-Gosain/tuios/internal/memtrim"
+	"github.com/Gaurav-Gosain/tuios/internal/progstatus"
 	"github.com/Gaurav-Gosain/tuios/internal/ptyspawn"
 	"github.com/Gaurav-Gosain/tuios/internal/vt"
 )
@@ -199,6 +204,12 @@ type WindowState struct {
 	// AgentQueued and never set by a client. Additive: zero, which is what an
 	// older daemon sends, means none.
 	AgentSubagents int `json:"agent_subagents,omitzero"`
+	// ProgramStatus is the pane's OSC 7501 records (the Program Status
+	// Protocol), the root first, with title and msg already made safe to
+	// draw. Daemon-owned like AgentMeta and never set by a client. Additive:
+	// an older peer drops it on decode, and nil, which is what an older
+	// daemon sends, means the pane reported nothing. See program_status.go.
+	ProgramStatus []ProgramStatusRecord `json:"program_status,omitempty"`
 	// Popup marks a transient floating pane that runs one command and closes
 	// when the command exits. It is session state, not a client's own, for the
 	// two reasons IsFloating and Zoomed are: a peer that does not know the pane
@@ -367,6 +378,22 @@ type SessionState struct {
 	// so a client sync that omits it must not clear it. False is what every
 	// older client and every state file written before this reads back as.
 	Global bool `json:"global,omitempty"`
+	// StartDir is the session's start directory (see Session.startDir), as
+	// it was when the state was saved. ResurrectionState stamps it, and a
+	// restore sets it again, so a session made with tuios new --cwd keeps
+	// its directory across a daemon restart. Only the save reads this field:
+	// a client push may carry a copy of it into canonical state, and
+	// ResurrectionState writes the in-memory value over that copy before
+	// every save. Empty in state written before it existed, and such a
+	// session starts its new windows where the daemon did.
+	StartDir string `json:"start_dir,omitempty"`
+	// LastUsed is when the person last used the session, in unix
+	// nanoseconds (see Session.lastUsed), as it was when the state was saved.
+	// ResurrectionState stamps it and a restore sets it again, so a bare
+	// attach after a daemon restart still lands on the session the person
+	// used last. Only the save and the restore read it. Zero in state written
+	// before it existed, and for a session nobody has used.
+	LastUsed int64 `json:"last_used,omitempty"`
 	// Worktree is the daemon's record of the git worktree this session's
 	// directory is, or nil for a session that is not in one. Daemon-owned and
 	// omitted when nil, which is what every older client and state file reads.
@@ -441,6 +468,14 @@ type SessionState struct {
 	// panes split the height equally, which is what every client did before the
 	// field existed, so an older peer that never sends it changes nothing.
 	WorkspaceStackRatio map[int]float64 `json:"workspace_stack_ratio,omitempty"`
+	// WorkspaceMasterSplits is the size of every other master-stack pane a
+	// user resized, keyed by workspace: the masters' shares, the stack's, and
+	// the grid's rows and cells. See layout.MasterSplits. It is session state
+	// for the reason WorkspaceMasterRatio is and follows the same rules. A
+	// workspace with no entry shares that space equally, which is what every
+	// client did before the field existed, so an older peer that never sends
+	// it changes nothing.
+	WorkspaceMasterSplits map[int]layout.MasterSplits `json:"workspace_master_splits,omitempty"`
 	// WorkspaceMasterLayout is each workspace's master-stack shape: where the
 	// masters go and how many there are. Only MsgMasterLayout writes it (see
 	// master_layout.go); a push never carries it, and retainDaemonExclusive
@@ -554,6 +589,11 @@ type SessionState struct {
 	// numbered below one it has already applied. Zero is a daemon that does
 	// not number them. Wire only, like PushSeen.
 	SnapshotSeq uint64 `json:"-"`
+	// changeSeq is the session's change count when this copy was taken. See
+	// Session.changeSeq. It is unexported, so it never goes on the wire or to
+	// disk: it orders the copies the daemon sends, and only the daemon reads
+	// it.
+	changeSeq uint64
 	// Options is a daemon-owned key/value store for session options set through
 	// the JSON verb protocol (set-option / get-option). It is additive: older
 	// clients and older on-disk state simply omit it. Keys are advisory names;
@@ -719,6 +759,12 @@ type paneIO interface {
 // PTY represents a daemon-managed pseudo-terminal.
 type PTY struct {
 	ID string
+	// largeSlot is the pane's one slot for a write of more than largeFrame
+	// bytes, and largeSince when the write holding it took it, in unix
+	// nanoseconds, or 0. See Write.
+	largeSlot     chan struct{}
+	largeSlotOnce sync.Once
+	largeSince    atomic.Int64
 	// sessionID is the session the pane belongs to, which a nesting probe
 	// seen in its output is recorded against. See nest_probe.go.
 	sessionID string
@@ -846,6 +892,20 @@ type PTY struct {
 	// streamMu, which readOutput also holds to close.
 	vtClosed bool
 
+	// askedW and askedH are the size the session's clients last asked this
+	// pane to be, and leases the size leases held on it, by holder. Both are
+	// guarded by streamMu. See pane_lease.go.
+	askedW, askedH int
+	leases         map[string]paneLease
+	// leaseAt is when a lease last resized the pane, and leaseTimer the
+	// resize put off until leaseInterval has passed since. Both guarded by
+	// streamMu.
+	leaseAt    time.Time
+	leaseTimer *time.Timer
+	// spawnW and spawnH are the size the pane was made at, which is the
+	// size of the stream before its first resize mark. Set once.
+	spawnW, spawnH int
+
 	// winsizeMu serializes writes of the real PTY's window size, and guards
 	// the cell size in pixels they are computed from. Resize takes it under
 	// streamMu; UpdatePixelDimensions takes it alone. It is held across the
@@ -932,6 +992,20 @@ type PTY struct {
 	// agent_notify.go.
 	agentNotify atomic.Pointer[paneNotification]
 
+	// progStatus holds the pane's OSC 7501 records (program_status.go). The
+	// emulator callback writes it under the terminal lock; the store has its
+	// own leaf lock and calls nothing. progStatusDirty says it changed since
+	// the vtWriter last handed it on.
+	progStatus      progstatus.Store
+	progStatusDirty atomic.Bool
+	// chunkGroup is the foreground process group the PTY reader read for the
+	// chunk the vtWriter is writing now, plus one, and 0 when it read none.
+	// See PTY.reportGroup.
+	chunkGroup atomic.Int64
+	// progStatusApplyMu orders the copies of the records into the session
+	// state. See Session.applyProgramStatus.
+	progStatusApplyMu sync.Mutex
+
 	// title is the last title this PTY's application set. The daemon reads every
 	// byte of every window, so this is the freshest title anyone holds: a client
 	// only sees the windows it is subscribed to, and its copy of the title stops
@@ -1007,6 +1081,12 @@ func (p *PTY) takeAgentProgress() (vt.ProgressState, bool) {
 // Session represents a persistent TUIOS session.
 // The daemon manages PTYs and stores state; the client runs the TUI.
 type Session struct {
+	// attachMu serialises attaches to the session from the moment a client
+	// is placed on it through its reply. exclusiveSeq is the attachSeq of the
+	// newest attach that detaches the others. See detach_client.go.
+	attachMu     sync.Mutex
+	exclusiveSeq atomic.Uint64
+
 	// Identity
 	ID string
 	// name is the session's one name: what the daemon lists, addresses it by,
@@ -1017,6 +1097,14 @@ type Session struct {
 	// persistMu serializes writes of the state file with a rename, which moves
 	// the file. See persist.
 	persistMu sync.Mutex
+	// startDir is the directory a new local window starts in when nothing
+	// else names one: no cwd from the caller and no focused pane to inherit
+	// from. tuios new --cwd and the new-session verb's cwd set it, so every
+	// window of a session made for a project starts in the project, not in
+	// whatever directory the daemon was started from. Empty keeps the
+	// daemon's own directory. Saved as SessionState.StartDir and set again
+	// on a restore, so it survives a daemon restart.
+	startDir atomic.Pointer[string]
 
 	// PTYs managed by this session
 	ptys   map[string]*PTY
@@ -1071,6 +1159,15 @@ type Session struct {
 	// Version, so a move by one client is invisible to focusMovedVersion, and a
 	// stale push from another client built at that version may predate it.
 	clientFocusMoved map[string]int
+	// workspaceTrail is the workspaces the session has shown, oldest first,
+	// each at most once, guarded by stateMu. When the workspace on screen
+	// loses its last pane the session goes back along it. See
+	// empty_workspace.go.
+	workspaceTrail []int
+	// returnTo is, by workspace, the workspace to show first when that one
+	// loses its last pane, guarded by stateMu. tuios xpanes sets it to the
+	// workspace that ran it.
+	returnTo map[int]int
 	// treeOps holds the recent Versions that were tree ops, with the client
 	// connection that sent each, at its version modulo the length, guarded by
 	// stateMu. A fixed ring, so it never grows. See missedMutationLocked and
@@ -1091,6 +1188,10 @@ type Session struct {
 	// counts as a focus move even when the focus it names is the one already
 	// held: the verb is a later intent than any push in flight.
 	focusIntent bool
+	// focusNeutral is set by a mutation inside mutateState that must not
+	// count as a focus move, so a stale push still keeps its own focus. Only
+	// a FocusIfShown window sets it. See ExecuteCommandPayload.FocusIfShown.
+	focusNeutral bool
 
 	// stateDirty is set by every change to the session's structure and consumed
 	// by the resurrection saver, which is how a new window reaches disk in a
@@ -1117,17 +1218,24 @@ type Session struct {
 	stateSink   func(*SessionState)
 	stateSinkMu sync.RWMutex
 
-	// pushMu serializes state-sink deliveries and pushedVersion records the
-	// highest version already delivered. Snapshots are taken under stateMu but
-	// delivered without it, so two concurrent mutations can reach the sink in
-	// either order; this drops the loser rather than letting a client see the
-	// daemon go backwards.
-	pushMu        sync.Mutex
-	pushedVersion int
+	// changeSeq counts every change to the state, guarded by stateMu. It is
+	// bumped by noteStateChangeLocked, so a client push counts as well as a
+	// daemon-side mutation. Version cannot order the copies sent to clients:
+	// a client push keeps it the same, so two different states share it.
+	changeSeq uint64
+
+	// pushMu serializes the state deliveries to clients, and deliveredSeq
+	// records the changeSeq of the newest state delivered. Snapshots are taken
+	// under stateMu but delivered without it, so two changes can reach the
+	// clients in either order. pushMu drops the older one rather than let a
+	// client see the daemon go backwards. Every delivery goes through it: the
+	// state sink, a client push forwarded to its peers, and the attach repair.
+	pushMu       sync.Mutex
+	deliveredSeq uint64
 
 	// broadcastFP is the fingerprint of the state last forwarded to this
 	// session's peers on a client sync, and broadcastFPSet says whether there
-	// is one. See NoteBroadcastFingerprint.
+	// is one. See deliverPush.
 	broadcastFP    uint64
 	broadcastFPSet bool
 
@@ -1151,6 +1259,16 @@ type Session struct {
 	// goroutine on every keystroke and read from whichever goroutine is
 	// answering a session listing.
 	lastActive time.Time
+	// lastUsed is when the person last used this session: a key, a click or a
+	// wheel turn at the terminal of a client attached to it (see
+	// session_used.go). It is what a bare attach picks by. lastActive is not,
+	// because a window an agent opens and keys a script sends bump it, so an
+	// orchestrator would pull the person's attach away from the session they
+	// were typing in. Zero until the person uses the session. activeMu
+	// guards it too.
+	lastUsed time.Time
+	// usedMarked is when TouchUsed last marked the session for a save.
+	usedMarked time.Time
 	activeMu   sync.Mutex
 
 	// Configuration
@@ -1241,6 +1359,9 @@ type Session struct {
 	// sixel. Read from the VT's DA1 handler, so it is atomic. See
 	// SetSixelAdvertised.
 	sixelAdvertised atomic.Bool
+	// kittyAdvertised says a kitty image a pane draws will be shown. Read
+	// from the VT callback, so it is atomic. See SetKittyAdvertised.
+	kittyAdvertised atomic.Bool
 	// fed is the link manager a window on another machine is opened over. It is
 	// nil unless the daemon installed one, and every reader checks. See
 	// remote_pane.go.
@@ -1287,6 +1408,16 @@ func (s *Session) SetKittyAnimation(ok bool) { s.kittyAnimation.Store(ok) }
 // protocol is shown a placeholder box where the image is.
 func (s *Session) SetSixelAdvertised(ok bool) { s.sixelAdvertised.Store(ok) }
 
+// SetKittyAdvertised records whether a kitty image a pane draws will be
+// shown: true while any attached client's terminal draws kitty graphics.
+// Daemon.refreshTreeOps counts it with SetSixelAdvertised, by the same rule.
+//
+// It decides whether the daemon answers a guest's kitty graphics query (see
+// kittyQueryResponse). A client whose terminal has no kitty graphics drops
+// the image, so a guest told OK draws nothing where it would have drawn a
+// text fallback.
+func (s *Session) SetKittyAdvertised(ok bool) { s.kittyAdvertised.Store(ok) }
+
 // SixelAdvertised reports what SetSixelAdvertised last recorded.
 func (s *Session) SixelAdvertised() bool { return s.sixelAdvertised.Load() }
 
@@ -1322,10 +1453,18 @@ type SessionConfig struct {
 	// reaches the next pane. Nil, or an empty answer, means $SHELL and then
 	// the platform default.
 	PreferredShell func() string
+	// ReturnWhenEmpty reports workspaces.return_when_empty. The manager
+	// stamps it with its own getter, so a config reload reaches every
+	// session. Nil means on.
+	ReturnWhenEmpty func() bool
 	// HerdrEnv returns the herdr protocol variables a pane with the given
 	// window id that runs the given command is started with, nil for none.
 	// See Manager.HerdrEnv.
 	HerdrEnv func(sessionID, windowID string, workspace int, command []string) []string
+	// AgentEnv returns SSH_AUTH_SOCK naming the session's ssh agent link
+	// while [daemon] ssh_agent is follow, nil otherwise. The manager stamps
+	// it. See ssh_agent_follow.go.
+	AgentEnv func(sessionID string) []string
 	// PaneToken returns the token a pane with the given window id is started
 	// with, exported as TUIOS_PANE_TOKEN. The manager stamps it with its own.
 	// Nil, or an empty answer, leaves the variable unset. See pane_token.go.
@@ -1348,6 +1487,33 @@ type SessionConfig struct {
 	restoreID string
 }
 
+// SetStartDir sets the directory new local windows start in when nothing
+// else names one. See Session.startDir.
+func (s *Session) SetStartDir(dir string) {
+	s.startDir.Store(&dir)
+}
+
+// absStartDir is dir made absolute, for the paths that set a start
+// directory from a request. The directory is saved, so a relative one would
+// mean another folder after a restart in another directory.
+func absStartDir(dir string) string {
+	if dir == "" {
+		return ""
+	}
+	if abs, err := filepath.Abs(dir); err == nil {
+		return abs
+	}
+	return dir
+}
+
+// StartDir is the directory set with SetStartDir, or "".
+func (s *Session) StartDir() string {
+	if p := s.startDir.Load(); p != nil {
+		return *p
+	}
+	return ""
+}
+
 // historyPolicy is the session's HistoryPolicy, off when none was stamped.
 func (s *Session) historyPolicy() HistoryPolicy {
 	if s.config == nil || s.config.history == nil {
@@ -1362,26 +1528,87 @@ func (s *Session) historyPolicy() HistoryPolicy {
 // The focused pane's live shell is asked rather than the Cwd on the window
 // record: that field is filled when resurrection state is saved, so it says
 // where the pane was the last time the daemon wrote state, not where the user
-// has since cd'd to. Reading the process is what makes a window opened from a
-// project land in the project. The record is the fallback for a pane whose
-// process cannot be read, which is every pane on a platform with no procfs
-// equivalent, and "" is the fallback after that, meaning the daemon's own
-// directory exactly as before.
+// has since cd'd to. The shell's process comes first, then the record, which a
+// snapshot fills with the shell's OSC 7 report; see windowCwd. "" is the
+// fallback after that, and the caller then uses the session's start directory.
 func (s *Session) inheritedCwd() string {
 	if s.config == nil || !s.config.InheritCwd {
 		return ""
 	}
-	state := s.GetState()
-	win, ok := findWindowState(state, state.FocusedWindowID)
+	return s.windowCwd(s.GetState().FocusedWindowID)
+}
+
+// windowCwd is the directory of the window id's pane, or "" when the window is
+// gone or no answer names a folder that exists here. The answers, best first:
+//
+//   - The folder of the shell's process. It cannot be spoofed. Any program in
+//     the pane can print an OSC 7 report, and a shell without OSC 7 hooks
+//     never corrects one, so a report must not win over the process.
+//   - The folder the window record holds, only when no process can be read
+//     (see pickWindowCwd). In a snapshot it is the shell's
+//     OSC 7 report when there is one (see fillLiveFacts). On native Windows
+//     no process can be read, so this is the only live answer there (#491).
+//
+// Each answer must be a folder that exists. A shell can report a folder it
+// deleted, and a record can hold one from before a restart. A window that
+// inherits such a folder starts in the daemon's folder, so it is skipped and
+// the caller falls back to the session's start folder.
+func (s *Session) windowCwd(id string) string {
+	win, ok := findWindowState(s.GetState(), id)
 	if !ok {
 		return ""
 	}
+	var procCwd string
+	var procOK bool
 	if pty := s.GetPTY(win.PTYID); pty != nil {
-		if cwd, ok := pty.ProcessCwd(); ok && cwd != "" {
+		procCwd, procOK = pty.ProcessCwd()
+	}
+	return pickWindowCwd(procCwd, procOK, win.Cwd)
+}
+
+// pickWindowCwd is the rule windowCwd applies to what it read: the process
+// folder when the process could be read, else the record. The record is only
+// for a process that cannot be read at all, as on Windows. A process that can
+// be read but sits in a folder that is gone (Linux reads "/x (deleted)")
+// gives "", so the caller uses the start folder. Taking the record there
+// would let an OSC 7 or OSC 9;9 report, which any program in the pane can
+// print, choose the folder in place of the shell.
+func pickWindowCwd(procCwd string, procOK bool, record string) string {
+	if procOK {
+		if isLocalDir(procCwd) {
+			return procCwd
+		}
+		return ""
+	}
+	if isLocalDir(record) {
+		return record
+	}
+	return ""
+}
+
+// isLocalDir reports whether dir is an absolute path to a folder that exists
+// on this machine.
+func isLocalDir(dir string) bool {
+	if dir == "" || !filepath.IsAbs(dir) {
+		return false
+	}
+	info, err := os.Stat(dir)
+	return err == nil && info.IsDir()
+}
+
+// cwdFrom is the directory a new window named by ExecuteCommandPayload.CwdFrom
+// starts in: the window's own, else the session's start directory. An empty
+// id, from a switch that left no pane, is the start directory too. A window
+// whose process runs on another machine gives the start directory, since
+// its paths mean nothing here. It does not fall back to the focused pane,
+// which on the workspace the client just switched to is no pane at all.
+func (s *Session) cwdFrom(id string) string {
+	if win, ok := findWindowState(s.GetState(), id); id != "" && ok && win.Host == "" {
+		if cwd := s.windowCwd(id); cwd != "" {
 			return cwd
 		}
 	}
-	return win.Cwd
+	return s.StartDir()
 }
 
 // scrollbackLines is the history depth a new pane in this session keeps.
@@ -1524,10 +1751,10 @@ func (s *Session) publishState(snap *SessionState) {
 
 	s.pushMu.Lock()
 	defer s.pushMu.Unlock()
-	if snap.Version <= s.pushedVersion {
+	if snap.changeSeq <= s.deliveredSeq {
 		return
 	}
-	s.pushedVersion = snap.Version
+	s.deliveredSeq = snap.changeSeq
 	// A daemon-side push reaches the clients by a different road than a client
 	// sync does, so what the peers hold afterwards is not what the sync
 	// suppressor last recorded. Forget the record rather than try to keep it in
@@ -1538,23 +1765,155 @@ func (s *Session) publishState(snap *SessionState) {
 	fn(snap)
 }
 
-// NoteBroadcastFingerprint records fp as the state about to be forwarded to
-// this session's peers, and reports whether that forward is worth making.
+// resendState hands the session's current state to one client that missed a
+// broadcast of it, in the same order as publishState delivers, so the copy can
+// never arrive behind a newer state the client was already sent.
 //
-// It answers false only when fp is exactly what was forwarded last time, which
-// means every peer already holds this state and the message would tell them
-// nothing. See the call site in handleUpdateState for why a suppressed sync
-// costs a peer nothing.
-func (s *Session) NoteBroadcastFingerprint(fp uint64) bool {
-	s.pushMu.Lock()
-	defer s.pushMu.Unlock()
-	if s.broadcastFPSet && s.broadcastFP == fp {
-		return false
+// The attach repair used to take a snapshot and queue it with no order
+// against publishState. A mutation published between the two reached the
+// client first, and the older snapshot followed it. The client adopted the
+// older state last: a client attaching beside a current one put the current
+// one's tree ops back on, at a Version below the one that turned them off.
+//
+// The snapshot is taken outside pushMu, because fillLiveFacts takes the pane
+// locks and publishState never holds pushMu across those. Under pushMu it is
+// checked against what was delivered, by change count. Older than that, it is
+// taken again. Newer, it is a change whose own delivery has not run yet, so it
+// goes to every client through the sink and the late delivery is dropped as
+// stale. The same, it goes to send alone.
+//
+// The check used to compare Version. A client push keeps Version the same, so
+// a peer's push forwarded between the snapshot and the check passed as the
+// same state, and the older snapshot followed it to the client.
+func (s *Session) resendState(send func(*SessionState)) {
+	s.stateSinkMu.RLock()
+	fn := s.stateSink
+	s.stateSinkMu.RUnlock()
+	for {
+		snap := s.GetState()
+		if hook := stateResendSnapshotTaken.Load(); hook != nil {
+			(*hook)()
+		}
+		s.pushMu.Lock()
+		if snap.changeSeq < s.deliveredSeq {
+			s.pushMu.Unlock()
+			continue
+		}
+		if snap.changeSeq > s.deliveredSeq && fn != nil {
+			s.deliveredSeq = snap.changeSeq
+			s.forgetBroadcastFingerprint()
+			fn(snap)
+		} else {
+			send(snap)
+		}
+		s.pushMu.Unlock()
+		return
 	}
-	s.broadcastFP = fp
-	s.broadcastFPSet = true
-	return true
 }
+
+// stateResendSnapshotTaken runs in resendState between the snapshot and the
+// check against what was delivered. It is unset outside tests, which use it
+// to land a mutation in that window on purpose.
+var stateResendSnapshotTaken atomic.Pointer[func()]
+
+// pushSends is what deliverPush may send for one snapshot, made ready
+// before pushMu is taken: the messages are encoded and the fingerprint is
+// taken, so pushMu is held only to queue them. toSender answers the client
+// that pushed, and is nil when its push was not reconciled. toPeers sends to
+// every client but that one, and is nil when there are none. fp is the
+// snapshot's fingerprint, read only with toPeers.
+type pushSends struct {
+	toSender func()
+	toPeers  func()
+	fp       uint64
+}
+
+// deliverPush hands the state after a client push to the clients that need
+// it, in the same order as publishState and resendState deliver. snap is the
+// merged state, taken after the push, and pushSeq is the change count the
+// push itself made. prepare makes the sends for a snapshot ready. withPeers
+// false asks it for the reply alone.
+//
+// Both sends used to run outside pushMu with no check. Two clients pushing at
+// once could forward in the opposite order to the one their pushes landed in,
+// and a peer adopted the older state last. A push forwarded inside an attach
+// repair let the repair's older snapshot follow it, because a push keeps
+// Version the same and the repair compared Version. The reply to the sender
+// was written straight to its socket, ahead of an older state already queued
+// to it, and the older state landed last.
+//
+// Under pushMu, the snapshot is checked against what was delivered, by change
+// count. A forward to the peers no newer than that is dropped: every peer
+// already has a state at least as new on its way.
+//
+// The reply is not dropped. A client whose push was reconciled drops every
+// state built before its push (see TUIClient.PredatesOwnPush), so the reply
+// may be the only state it takes, and what was delivered may not have reached
+// it: a forward the fingerprint suppressed counts as delivered and sends
+// nothing. An older reply is taken again, as in resendState. One at the count
+// delivered goes to the sender alone, behind what is queued to it.
+//
+// A snapshot newer than the push carries a later change whose own delivery
+// has not run yet. It goes to every client through the sink, the sender
+// included, and the late delivery is dropped as stale. Otherwise the reply
+// goes to the sender, and the snapshot to the peers unless they already hold
+// it.
+func (s *Session) deliverPush(snap *SessionState, pushSeq uint64, prepare func(snap *SessionState, withPeers bool) pushSends) {
+	if snap == nil {
+		return
+	}
+	s.stateSinkMu.RLock()
+	fn := s.stateSink
+	s.stateSinkMu.RUnlock()
+	sends := prepare(snap, true)
+	if sends.toSender == nil && sends.toPeers == nil {
+		return
+	}
+
+	s.pushMu.Lock()
+	for snap.changeSeq < s.deliveredSeq && sends.toSender != nil {
+		// Taken again outside pushMu, which is never held across the pane
+		// locks. The peers have a newer state on its way, so the new
+		// snapshot is for the sender alone.
+		s.pushMu.Unlock()
+		snap = s.GetState()
+		sends = prepare(snap, false)
+		s.pushMu.Lock()
+	}
+	defer s.pushMu.Unlock()
+	if snap.changeSeq <= s.deliveredSeq {
+		if sends.toSender != nil {
+			sends.toSender()
+		}
+		return
+	}
+	s.deliveredSeq = snap.changeSeq
+	if snap.changeSeq > pushSeq && fn != nil {
+		s.forgetBroadcastFingerprint()
+		fn(snap)
+		return
+	}
+	if sends.toSender != nil {
+		sends.toSender()
+	}
+	if sends.toPeers == nil {
+		return
+	}
+	// A merge that landed on the state already forwarded is not sent again.
+	// See the call site in handleUpdateState for why a suppressed sync costs
+	// a peer nothing.
+	if s.broadcastFPSet && s.broadcastFP == sends.fp {
+		return
+	}
+	s.broadcastFP = sends.fp
+	s.broadcastFPSet = true
+	sends.toPeers()
+}
+
+// statePushSnapshotTaken runs in handleUpdateState between the merged
+// snapshot and its forward to the peers. It is unset outside tests, which
+// use it to land another change in that window on purpose.
+var statePushSnapshotTaken atomic.Pointer[func()]
 
 // forgetBroadcastFingerprint drops the record, so the next client sync is
 // forwarded whatever it says. pushMu must already be held: publishState holds
@@ -1768,6 +2127,8 @@ func (s *Session) createPTY(width, height int, sp ptySpawn) (*PTY, error) {
 		terminal:     terminal,
 		width:        width,
 		height:       height,
+		spawnW:       width,
+		spawnH:       height,
 		outputBuffer: make([]byte, 64*1024), // 64KB ring buffer
 		subscribers:  make(map[string]*ptySubscriber),
 		paceWake:     make(chan struct{}, 1),
@@ -1832,8 +2193,15 @@ func (s *Session) createPTY(width, height int, sp ptySpawn) (*PTY, error) {
 			pty.emit(SessionEvent{Type: EventNotification, Title: title, Body: body})
 		},
 		// A shell's OSC 133 marks: recorded under the track's own leaf lock
-		// and published at once, like the bell. See shell_commands.go.
-		SemanticMark: pty.noteShellMark,
+		// and published at once, like the bell. See shell_commands.go. A
+		// prompt also ends the working and blocked OSC 7501 records.
+		SemanticMark: func(m vt.SemanticMarker) {
+			pty.noteProgramStatusMark(m)
+			pty.noteShellMark(m)
+		},
+		// An OSC 7501 report, or a full reset: stored at once, in order with
+		// the prompt marks, and handed on by the vtWriter after the write.
+		ProgramStatus: pty.noteProgramStatus,
 	})
 
 	// DA1 and XTSMGRAPHICS answer from what the attached clients can show.
@@ -1927,6 +2295,42 @@ func (s *Session) LastActive() time.Time {
 	s.activeMu.Lock()
 	defer s.activeMu.Unlock()
 	return s.lastActive
+}
+
+// TouchUsed records that the person used the session now. Only a
+// MsgSessionUsed report from a client that may act as the person calls it
+// (see session_used.go). A window spawn, a routed command, a tape and a
+// restore do not. It bumps LastActive too.
+//
+// The saver writes every session every 30 seconds anyway. A use marks the
+// session dirty at most once per usedSaveGap, so the first use after an idle
+// spell reaches disk within about two seconds. See usedSaveGap.
+func (s *Session) TouchUsed() {
+	now := time.Now()
+	s.activeMu.Lock()
+	s.lastUsed, s.lastActive = now, now
+	save := now.Sub(s.usedMarked) >= usedSaveGap
+	if save {
+		s.usedMarked = now
+	}
+	s.activeMu.Unlock()
+	if save {
+		s.stateDirty.Store(true)
+	}
+}
+
+// LastUsed is when the person last used the session, zero when never.
+func (s *Session) LastUsed() time.Time {
+	s.activeMu.Lock()
+	defer s.activeMu.Unlock()
+	return s.lastUsed
+}
+
+// setLastUsed puts back the time a saved session was last used, on restore.
+func (s *Session) setLastUsed(t time.Time) {
+	s.activeMu.Lock()
+	s.lastUsed = t
+	s.activeMu.Unlock()
 }
 
 // GetPTY returns a PTY by ID.
@@ -2215,8 +2619,9 @@ func (s *Session) snapshotStateLocked() *SessionState {
 	// SetWorktree replacing the whole pointer, but the fan prompt writes the
 	// status fields through the pointer under stateMu, and the snapshot is
 	// encoded for the wire after stateMu is released. Copying the record here
-	// is what makes the snapshot a snapshot. WorktreeInfo is all value fields,
-	// so one level is the whole of it.
+	// is what makes the snapshot a snapshot. WorktreeInfo is value fields
+	// apart from Verify and PR, which are only ever replaced whole, so one
+	// level is the whole of it.
 	if s.state.Worktree != nil {
 		wt := *s.state.Worktree
 		stateCopy.Worktree = &wt
@@ -2248,6 +2653,9 @@ func (s *Session) snapshotStateLocked() *SessionState {
 	if s.state.WorkspaceStackRatio != nil {
 		stateCopy.WorkspaceStackRatio = maps.Clone(s.state.WorkspaceStackRatio)
 	}
+	if s.state.WorkspaceMasterSplits != nil {
+		stateCopy.WorkspaceMasterSplits = cloneMasterSplits(s.state.WorkspaceMasterSplits)
+	}
 	if s.state.WorkspaceMasterLayout != nil {
 		stateCopy.WorkspaceMasterLayout = maps.Clone(s.state.WorkspaceMasterLayout)
 	}
@@ -2260,6 +2668,7 @@ func (s *Session) snapshotStateLocked() *SessionState {
 	// Taken under the state lock, so a copy with a higher number shows the
 	// state at least as late as one with a lower number.
 	stateCopy.SnapshotSeq = s.snapSeq.Add(1)
+	stateCopy.changeSeq = s.changeSeq
 	// WorkspaceTrees, WindowToBSPID, PaneGeometry and ScrollStrip are left
 	// aliased on purpose: the daemon only ever replaces those whole, never
 	// writes into what they point at, so a snapshot that shares them is reading
@@ -2390,6 +2799,11 @@ func (s *Session) ResurrectionState() *SessionState {
 		s.refreshWorktree(state.Windows[0].Cwd)
 	}
 	state.SessionID = s.ID
+	state.StartDir = s.StartDir()
+	state.LastUsed = 0
+	if used := s.LastUsed(); !used.IsZero() {
+		state.LastUsed = used.UnixNano()
+	}
 	return state
 }
 
@@ -2462,7 +2876,7 @@ func (s *Session) ForgetPush(origin string) {
 // finished turn seen: a client running inside a pane is an agent looking, and
 // finished_unread is about whether the person has. See human_origin.go.
 func (s *Session) UpdateStateFrom(state *SessionState, seen bool) bool {
-	accepted, _ := s.updateStateFrom(state, seen)
+	accepted, _, _ := s.updateStateFrom(state, seen)
 	return accepted
 }
 
@@ -2470,8 +2884,9 @@ func (s *Session) UpdateStateFrom(state *SessionState, seen bool) bool {
 // built before a tree op another client sent. Such a push is accepted, because
 // it cannot undo a tree op (see missedMutationLocked). But the client that
 // sent it has not seen that tree, and a client is never sent its own push
-// back, so the caller answers it with the session's state.
-func (s *Session) updateStateFrom(state *SessionState, seen bool) (accepted, behind bool) {
+// back, so the caller answers it with the session's state. seq is the change
+// count the push made (see Session.changeSeq).
+func (s *Session) updateStateFrom(state *SessionState, seen bool) (accepted, behind bool, seq uint64) {
 	s.stateMu.Lock()
 	defer s.stateMu.Unlock()
 
@@ -2544,7 +2959,7 @@ func (s *Session) updateStateFrom(state *SessionState, seen bool) (accepted, beh
 	s.TouchActive()
 	s.noteStateChangeLocked()
 	s.emitLifecycleLocked(before)
-	return accepted, behind
+	return accepted, behind, s.changeSeq
 }
 
 // pushOwnsFocusLocked reports whether a stale push from origin, built at base,
@@ -2598,9 +3013,9 @@ func (s *Session) mutateStateLocked(fn func(state *SessionState) error) (*Sessio
 
 	before := snapshotLifecycle(s.state)
 	focusBefore := focusViewOf(s.state)
-	s.focusIntent = false
+	s.focusIntent, s.focusNeutral = false, false
 	if err := fn(s.state); err != nil {
-		s.focusIntent = false
+		s.focusIntent, s.focusNeutral = false, false
 		return nil, err
 	}
 	s.noteAgentTurnsLocked(before, time.Now().UnixNano())
@@ -2612,10 +3027,10 @@ func (s *Session) mutateStateLocked(fn func(state *SessionState) error) (*Sessio
 	// this point is reconciled by UpdateState rather than winning by arriving
 	// last.
 	s.state.Version++
-	if s.focusIntent || !focusBefore.sameFocus(focusViewOf(s.state)) {
+	if !s.focusNeutral && (s.focusIntent || !focusBefore.sameFocus(focusViewOf(s.state))) {
 		s.focusMovedVersion = s.state.Version
 	}
-	s.focusIntent = false
+	s.focusIntent, s.focusNeutral = false, false
 	s.noteStateChangeLocked()
 	s.emitLifecycleLocked(before)
 	return s.snapshotStateLocked(), nil
@@ -2838,6 +3253,7 @@ func (s *Session) windowSummaries() []WindowSummary {
 			AgentMeta:     w.AgentMeta,
 			AgentQueued:   w.AgentQueued,
 			Subagents:     w.AgentSubagents,
+			ProgramStatus: w.ProgramStatus,
 			ForegroundCmd: fg,
 			Workspace:     w.Workspace,
 			Scratch:       w.Scratch,
@@ -2909,12 +3325,25 @@ func (s *Session) buildEnvFor(windowID string, workspace int, restored bool, ext
 		}
 		env = append(kept, extra...)
 	}
+	// The session's agent link replaces the daemon's SSH_AUTH_SOCK, unless the
+	// caller gave the pane one of its own (a split that follows ssh does).
+	if s.config != nil && s.config.AgentEnv != nil && !slices.ContainsFunc(extra, func(kv string) bool {
+		return strings.HasPrefix(kv, "SSH_AUTH_SOCK=")
+	}) {
+		if agent := s.config.AgentEnv(s.ID); len(agent) > 0 {
+			env = slices.DeleteFunc(env, func(kv string) bool { return strings.HasPrefix(kv, "SSH_AUTH_SOCK=") })
+			env = append(env, agent...)
+		}
+	}
 
-	term := "xterm-256color"
-	if s.config != nil && s.config.Term != "" {
+	// The TERM the session's first client named, checked against this
+	// machine's terminfo: a client's xterm-kitty is no use to a pane on a host
+	// with no entry for it. See guestenv.PaneTerm.
+	term := ""
+	if s.config != nil {
 		term = s.config.Term
 	}
-	env = append(env, "TERM="+term)
+	env = append(env, "TERM="+guestenv.PaneTerm(term))
 
 	colorTerm := "truecolor"
 	if s.config != nil && s.config.ColorTerm != "" {
@@ -3011,6 +3440,10 @@ type ptySubscriber struct {
 	// stream used to be a silent hole the client painted the rest of the
 	// stream on top of, until the next workspace switch replaced the screen.
 	gapped atomic.Bool
+	// missed says the catch-up could not start where the subscriber asked,
+	// because the ring had already rolled past that position. Set once, by
+	// subscribeLocked.
+	missed bool
 
 	// framesWaiting counts the frames on ch that the stream goroutine has not
 	// taken. skipped counts the frames dropped for newer ones. See
@@ -3048,6 +3481,11 @@ type ptyChunk struct {
 	// frame is one whole kitty graphics frame instead of data. See
 	// kitty_frames.go.
 	frame *queuedFrame
+	// end is the stream position just after the chunk's last byte, set on
+	// output and frames, zero on a resize. A stream-pane subscriber reads it
+	// to number what it sends (verb_stream_pane.go); the attach stream does
+	// not need it.
+	end int64
 }
 
 // size is how many bytes the chunk holds.
@@ -3100,9 +3538,17 @@ func (p *PTY) SubscribeFromSnapshot(clientID string, fromSeq int64) <-chan ptyCh
 }
 
 func (p *PTY) subscribe(clientID string, fromSeq int64, fromSnapshot bool) <-chan ptyChunk {
+	return p.subscribeSub(clientID, fromSeq, fromSnapshot).ch
+}
+
+// subscribeSub is Subscribe returning the subscriber itself. A stream
+// goroutine holds on to it, so that when the goroutine ends it releases its
+// own subscription and not a newer one the same client has made since.
+func (p *PTY) subscribeSub(clientID string, fromSeq int64, fromSnapshot bool) *ptySubscriber {
 	p.subscribersMu.Lock()
 	defer p.subscribersMu.Unlock()
-	return p.subscribeLocked(clientID, fromSeq, fromSnapshot)
+	p.subscribeLocked(clientID, fromSeq, fromSnapshot)
+	return p.subscribers[clientID]
 }
 
 // subscriberFor returns the client's stream, or nil when it has none. The
@@ -3113,15 +3559,18 @@ func (p *PTY) subscriberFor(clientID string) *ptySubscriber {
 	return p.subscribers[clientID]
 }
 
-// resumeAfterGap rebuilds a gapped stream once it has drained. The new stream
-// resumes at the position the old one reached, so the client is handed what
-// it missed from the ring, behind a clear when the ring has rolled past it. It
-// returns nil when the stream is not gapped or still holds chunks.
-func (p *PTY) resumeAfterGap(clientID string) (<-chan ptyChunk, *ptySubscriber) {
+// resumeAfterGap rebuilds the gapped stream cur once it has drained. The new
+// stream resumes at the position the old one reached, so the client is handed
+// what it missed from the ring, behind a clear when the ring has rolled past
+// it. It returns nil when cur is not gapped, still holds chunks, or is no
+// longer the client's stream: a client that unsubscribed and subscribed again
+// while cur's goroutine was still draining has a new stream, and rebuilding
+// over it would close the channel its new goroutine reads.
+func (p *PTY) resumeAfterGap(clientID string, cur *ptySubscriber) (<-chan ptyChunk, *ptySubscriber) {
 	p.subscribersMu.Lock()
 	defer p.subscribersMu.Unlock()
 	sub, ok := p.subscribers[clientID]
-	if !ok || !sub.gapped.Load() || len(sub.ch) > 0 {
+	if !ok || sub != cur || !sub.gapped.Load() || len(sub.ch) > 0 {
 		return nil, nil
 	}
 	close(sub.ch)
@@ -3167,6 +3616,7 @@ func (p *PTY) subscribeLocked(clientID string, fromSeq int64, fromSnapshot bool)
 	endSeq := bufStart + int64(ringEnd)
 	start := 0
 	rolled := fromSeq > 0 && fromSeq < bufStart
+	sub.missed = fromSeq < bufStart
 	if fromSeq > bufStart {
 		start = min(int(fromSeq-bufStart), ringEnd)
 	}
@@ -3233,7 +3683,7 @@ func (p *PTY) subscribeLocked(clientID string, fromSeq int64, fromSnapshot bool)
 			seg = append(seg, prefix...)
 			prefix = nil
 			seg = append(seg, p.outputBuffer[segStart:end]...)
-			send(ptyChunk{data: seg})
+			send(ptyChunk{data: seg, end: bufStart + int64(end)})
 			segStart = end
 		}
 		for _, m := range p.resizeMarks {
@@ -3272,11 +3722,27 @@ func (p *PTY) subscribeLocked(clientID string, fromSeq int64, fromSnapshot bool)
 // Unsubscribe removes a subscriber and returns the stream position it reached,
 // to hand back to Subscribe when the client returns.
 func (p *PTY) Unsubscribe(clientID string) int64 {
+	return p.unsubscribe(clientID, nil)
+}
+
+// unsubscribeSub is Unsubscribe for one stream: it removes the client's
+// subscriber only while that is still sub. A stream goroutine ends some time
+// after the client has let its subscription go, and by then the client may
+// have subscribed again. Removing by client ID alone took the new
+// subscription with it, and the pane stopped updating until it was hidden and
+// shown once more.
+func (p *PTY) unsubscribeSub(clientID string, sub *ptySubscriber) {
+	p.unsubscribe(clientID, sub)
+}
+
+// unsubscribe removes the client's subscriber, when only is nil or is that
+// subscriber.
+func (p *PTY) unsubscribe(clientID string, only *ptySubscriber) int64 {
 	p.subscribersMu.Lock()
 	defer p.subscribersMu.Unlock()
 
 	sub, ok := p.subscribers[clientID]
-	if !ok {
+	if !ok || (only != nil && sub != only) {
 		return 0
 	}
 	// Closing lets the streaming goroutine drain what is still queued, so every
@@ -3289,13 +3755,108 @@ func (p *PTY) Unsubscribe(clientID string) int64 {
 }
 
 // Write sends input to the PTY.
+//
+// Input of more than largeFrame bytes, such as a paste, takes the pane's one
+// slot for a large write. A second large write waits for the slot, so large
+// writes into a pane that reads go in one after another, however many queue.
+// It is refused with errPaneInputBusy once the write holding the slot has
+// held it longer than paneWriteWait: the pane is not reading. The clock is
+// the holder's, not the waiter's, so a write queued behind several others
+// into a pane that reads slowly is not taken for one into a pane that does
+// not read. A pane whose program does not read its input blocks the write,
+// and the write holds the input's memory while it waits, so one waiting
+// write per pane bounds that memory to the largest input, 16 MiB, for each
+// pane, plus the writes waiting for the slot, each until the pane has not
+// read for paneWriteWait. Every path that types into a pane comes through here:
+// client input, send-text, paste-buffer, send-keys, submit-prompt and
+// respond. Only a caller that may already write to the pane can make it hold
+// that memory. See frame_budget.go.
 func (p *PTY) Write(data []byte) (int, error) {
 	if p.pty == nil {
 		return 0, fmt.Errorf("PTY not available")
 	}
+	if len(data) > largeFrame {
+		if err := p.takeLargeSlot(); err != nil {
+			return 0, err
+		}
+		defer p.giveLargeSlot()
+	}
 	p.flushWinsize()
 	return p.pty.Write(data)
 }
+
+// paneWriteWait is how long the write holding a pane's large write slot may
+// hold it before the next large write is refused. A variable so a test can
+// shorten it.
+var paneWriteWait = 5 * time.Second
+
+// largeSlotCh is the pane's slot for a large write.
+func (p *PTY) largeSlotCh() chan struct{} {
+	p.largeSlotOnce.Do(func() { p.largeSlot = make(chan struct{}, 1) })
+	return p.largeSlot
+}
+
+// takeLargeSlot takes the pane's large write slot, waiting as Write says.
+//
+// The wait runs out paneWriteWait after the current holder took the slot,
+// and starts over each time the slot passes to another write. Timing the
+// wait from the waiter's own start instead refused the sixth of six queued
+// 1 MiB writes into cat on a slow machine (go test -race on a CI runner):
+// the five ahead of it took longer than paneWriteWait in total, while each
+// one went in well within it.
+func (p *PTY) takeLargeSlot() error {
+	slot := p.largeSlotCh()
+	var timer *time.Timer
+	defer func() {
+		if timer != nil {
+			timer.Stop()
+		}
+	}()
+	for {
+		select {
+		case slot <- struct{}{}:
+			p.largeSince.Store(time.Now().UnixNano())
+			return nil
+		default:
+		}
+		// 0 means the holder is between taking the slot and recording when,
+		// or is giving it back: either way it has only just held it.
+		since := time.Now()
+		if ns := p.largeSince.Load(); ns != 0 {
+			since = time.Unix(0, ns)
+		}
+		wait := time.Until(since.Add(paneWriteWait))
+		if wait <= 0 {
+			return errPaneInputBusy
+		}
+		if timer == nil {
+			timer = time.NewTimer(wait)
+		} else {
+			timer.Reset(wait)
+		}
+		select {
+		case slot <- struct{}{}:
+			p.largeSince.Store(time.Now().UnixNano())
+			return nil
+		case <-timer.C:
+			// Look again: the slot may have passed to another write, whose
+			// own paneWriteWait starts now.
+		}
+	}
+}
+
+// giveLargeSlot gives the slot back.
+func (p *PTY) giveLargeSlot() {
+	p.largeSince.Store(0)
+	<-p.largeSlotCh()
+}
+
+// largeWriteWaiting reports whether a large write holds the pane's slot.
+func (p *PTY) largeWriteWaiting() bool { return p.largeSince.Load() != 0 }
+
+// errPaneInputBusy refuses a large input to a pane that has not read the
+// last one.
+var errPaneInputBusy = errors.New("the pane has not read the last large input yet")
 
 // Size returns the current PTY dimensions.
 func (p *PTY) Size() (width, height int) {
@@ -3384,6 +3945,18 @@ func (p *PTY) Resize(width, height int) error {
 	// no client was drawing.
 	p.streamMu.Lock()
 	defer p.streamMu.Unlock()
+	// The size the clients ask for is kept apart from the size the pane
+	// takes, because a lease (pane_lease.go) can hold the pane smaller, and
+	// the pane goes back to the size asked for when the lease ends.
+	if width > 0 && height > 0 {
+		p.askedW, p.askedH = width, height
+	}
+	width, height = p.leasedSizeLocked(width, height)
+	return p.resizeStreamLocked(width, height)
+}
+
+// resizeStreamLocked is Resize with streamMu held and the lease applied.
+func (p *PTY) resizeStreamLocked(width, height int) error {
 	p.terminalMu.Lock()
 	unchanged := width > 0 && height > 0 && p.width == width && p.height == height
 	oldW, oldH := p.width, p.height
@@ -3459,15 +4032,21 @@ func (p *PTY) GetTerminalState(maxScrollback, have int) *TerminalState {
 // GetTerminalState followed by Pack, without building every cell of the screen
 // and the history as a CellState first: for a screen that was 1.4 MB of
 // garbage per request, allocated under terminalMu.
+//
+// The history rows are copied in their encoded form under terminalMu and
+// packed after it is released, so the pane's output waits for a copy of a
+// few bytes a cell and not for the packing: 1000 rows of a 207-column pane
+// held it for about 50 ms.
 func (p *PTY) GetTerminalStatePacked(maxScrollback, have int) *TerminalState {
 	p.terminalMu.RLock()
-	defer p.terminalMu.RUnlock()
-
 	if p.terminal == nil {
+		p.terminalMu.RUnlock()
 		return nil
 	}
-	state := terminalStateOf(p.terminal, p.terminal.Width(), p.terminal.Height(), maxScrollback, have, true)
+	state, finish := beginTerminalState(p.terminal, p.terminal.Width(), p.terminal.Height(), maxScrollback, have, true)
 	state.Seq = p.vtSeq
+	p.terminalMu.RUnlock()
+	finish()
 	return state
 }
 
@@ -3489,15 +4068,32 @@ func TerminalStateOf(t vt.Terminal, width, height, maxScrollback, have int) *Ter
 // terminalStateOf is TerminalStateOf, with the cells packed as they are read
 // when packed is set (see GetTerminalStatePacked).
 func terminalStateOf(t vt.Terminal, width, height, maxScrollback, have int, packed bool) *TerminalState {
+	state, finish := beginTerminalState(t, width, height, maxScrollback, have, packed)
+	finish()
+	return state
+}
+
+// beginTerminalState is terminalStateOf in two halves. It reads the emulator
+// and returns the state with finish, which completes it without reading the
+// emulator again, so a caller can release the emulator's lock before it calls
+// finish. The state is complete only once finish has run.
+func beginTerminalState(t vt.Terminal, width, height, maxScrollback, have int, packed bool) (*TerminalState, func()) {
 	state := &TerminalState{
 		Width:         width,
 		Height:        height,
 		CursorX:       t.CursorPosition().X,
 		CursorY:       t.CursorPosition().Y,
+		PendingWrap:   t.CursorPendingWrap(),
 		ScrollbackLen: t.ScrollbackLen(),
 		IsAltScreen:   t.IsAltScreen(),        // Capture alt screen state for mouse event forwarding
 		Modes:         t.GetModes(),           // Capture terminal modes (mouse tracking, bracketed paste, etc.)
 		KittyKbdStack: t.KittyKeyboardStack(), // Capture kitty keyboard protocol flag stack
+		// The main screen's stack, under a program on the alternate one.
+		KittyKbdMainStack: t.KittyKeyboardMainStack(),
+		// Set once by an editor at start, like the kitty flags, so it
+		// cannot be recovered from the output buffer either.
+		ModifyOtherKeys:      t.ModifyOtherKeys(),
+		ModifyOtherKeysKnown: true,
 	}
 
 	// None of these is recoverable from the cells. They are what the guest set
@@ -3517,6 +4113,25 @@ func terminalStateOf(t vt.Terminal, width, height, maxScrollback, have int, pack
 	ids, gl, gr := t.Charsets()
 	state.Charsets = []int{int(ids[0]), int(ids[1]), int(ids[2]), int(ids[3]), gl, gr}
 
+	// What DECSCA protects, which only a selective erase reads, and the
+	// character REP repeats. Neither shows in a cell until the guest sends
+	// the sequence that uses it.
+	state.PenProtected = t.CursorProtected()
+	state.Protected = runsToWire(t.ProtectedCells(false))
+	if state.IsAltScreen {
+		state.MainProtected = runsToWire(t.ProtectedCells(true))
+	}
+	state.LastPrinted = t.LastPrinted()
+	state.LastPrintedKnown = true
+
+	// The cursor DECSC saved, which DECRC puts back. A shell's screen under a
+	// full-screen program has one too: entering the alternate screen with
+	// 1049 saved it, and leaving puts the shell's cursor back from it.
+	state.SavedCursor = savedCursorToWire(t.SavedCursor(false))
+	if state.IsAltScreen {
+		state.MainSavedCursor = savedCursorToWire(t.SavedCursor(true))
+	}
+
 	// The cursor shape is set once, by a shell's prompt or by an editor
 	// changing mode, and is long out of the output buffer's reach by the time
 	// anyone reattaches. Without it here a pane that asked for a bar comes back
@@ -3528,8 +4143,9 @@ func terminalStateOf(t vt.Terminal, width, height, maxScrollback, have int, pack
 	// thousand per screen, for what is usually a few dozen distinct colours.
 	colors := colorWireCache{}
 	first, end := scrollbackWindow(t.ScrollbackLen(), maxScrollback, have)
+	finish := func() {}
 	if packed {
-		packStateCells(t, state, colors, first, end)
+		finish = packStateCells(t, state, colors, first, end)
 	} else {
 		stateCells(t, state, colors, first, end)
 	}
@@ -3538,7 +4154,7 @@ func terminalStateOf(t vt.Terminal, width, height, maxScrollback, have int, pack
 		screen[y] = screenRowFlags(t, y)
 	}
 	state.ScreenWraps, state.ScreenPads = rowFlagBits(screen)
-	return state
+	return state, finish
 }
 
 // rowFlags is one row's soft-wrap and padding flags (vt.Terminal's
@@ -3658,14 +4274,8 @@ func stateCells(t vt.Terminal, state *TerminalState, colors colorWireCache, firs
 	// merely starts a new array.
 	state.Scrollback = make([][]CellState, 0)
 	var pool []CellState
-	var flags []rowFlags
-	defer func() { state.ScrollbackWraps, state.ScrollbackPads = rowFlagBits(flags) }()
-	for i := first; i < end; i++ {
-		line := t.ScrollbackLine(i)
-		if line == nil {
-			continue
-		}
-		flags = append(flags, historyRowFlags(t, i))
+	end = min(end, t.ScrollbackLen())
+	t.ScrollbackRows(first, end, func(i int, line uv.Line) bool {
 		if cap(pool) < len(line) {
 			pool = make([]CellState, max(len(line), width*(end-i)))
 		}
@@ -3675,7 +4285,13 @@ func stateCells(t vt.Terminal, state *TerminalState, colors colorWireCache, firs
 			row[x] = colors.cellState(&line[x])
 		}
 		state.Scrollback = append(state.Scrollback, row)
+		return true
+	})
+	var flags []rowFlags
+	for i := first; i < end; i++ {
+		flags = append(flags, historyRowFlags(t, i))
 	}
+	state.ScrollbackWraps, state.ScrollbackPads = rowFlagBits(flags)
 }
 
 // packStateCells is stateCells followed by Pack, done a row at a time through
@@ -3683,59 +4299,82 @@ func stateCells(t vt.Terminal, state *TerminalState, colors colorWireCache, firs
 // packed in the order Pack packs them (screen, scrollback, main screen), which
 // is what makes the style table, and so every byte, the same as Pack's.
 // TestDirectPackMatchesPack holds it to that.
-func packStateCells(t vt.Terminal, state *TerminalState, colors colorWireCache, first, end int) {
+//
+// It packs the screen and copies what the rest needs from the emulator, and
+// returns finish, which packs the history and the main screen from those
+// copies without reading the emulator. The history is copied in its encoded
+// form, a few bytes a cell, rather than decoded: 1000 rows of a 207-column
+// pane read through ScrollbackLine were 23 MB of cells, and the line cache
+// kept the last 256 of them.
+func packStateCells(t vt.Terminal, state *TerminalState, colors colorWireCache, first, end int) (finish func()) {
 	width, height := state.Width, state.Height
 	p := newRowPacker()
 	row := make([]CellState, width)
-	grid := func(at func(x, y int) *uv.Cell) []byte {
-		b := newPackedRows(height * 32)
-		for y := range height {
-			for x := range width {
-				if cell := at(x, y); cell != nil {
-					row[x] = colors.cellState(cell)
-				} else {
-					row[x] = CellState{}
-				}
+	readRow := func(at func(x, y int) *uv.Cell, y int, row []CellState) {
+		for x := range width {
+			if cell := at(x, y); cell != nil {
+				row[x] = colors.cellState(cell)
+			} else {
+				row[x] = CellState{}
 			}
-			b.add(p, row[:width])
 		}
-		return b.blob()
 	}
 
-	state.PackedScreen = grid(t.CellAt)
-
-	b := newPackedRows((end - first) * 32)
-	var flags []rowFlags
-	for i := first; i < end; i++ {
-		line := t.ScrollbackLine(i)
-		if line == nil {
-			continue
-		}
-		flags = append(flags, historyRowFlags(t, i))
-		if cap(row) < len(line) {
-			row = make([]CellState, len(line))
-		}
-		r := row[:len(line)]
-		// A history row is mostly blank tail, and the packer drops that tail
-		// anyway, so only the cells before it are converted. The rest are
-		// written as the blank the packer compares against, which keeps the
-		// bytes identical to Pack's.
-		used := usedCells(line)
-		for x := range used {
-			r[x] = colors.cellState(&line[x])
-		}
-		for x := used; x < len(r); x++ {
-			r[x] = blankCellState
-		}
-		b.add(p, r)
+	b := newPackedRows(height * 32)
+	for y := range height {
+		readRow(t.CellAt, y, row)
+		b.add(p, row[:width])
 	}
-	state.PackedScrollback = b.blob()
-	state.ScrollbackWraps, state.ScrollbackPads = rowFlagBits(flags)
+	state.PackedScreen = b.blob()
 
+	end = min(end, t.ScrollbackLen())
+	history := t.CopyScrollback(first, end)
+	// The main screen under an alternate one is packed after the history,
+	// so its cells are read now.
+	var main []CellState
 	if state.IsAltScreen {
-		state.PackedMain = grid(t.MainCellAt)
+		main = make([]CellState, width*height)
+		for y := range height {
+			readRow(t.MainCellAt, y, main[y*width:(y+1)*width])
+		}
 	}
-	state.Styles = p.styles
+
+	return func() {
+		n := history.Len()
+		b := newPackedRows(n * 32)
+		flags := make([]rowFlags, n)
+		history.Rows(0, n, func(i int, line uv.Line) bool {
+			flags[i] = newRowFlags(history.Wrapped(i), history.Padded(i))
+			if cap(row) < len(line) {
+				row = make([]CellState, len(line))
+			}
+			r := row[:len(line)]
+			// A history row is mostly blank tail, and the packer drops that
+			// tail anyway, so only the cells before it are converted. The
+			// rest are written as the blank the packer compares against,
+			// which keeps the bytes identical to Pack's.
+			used := usedCells(line)
+			for x := range used {
+				r[x] = colors.cellState(&line[x])
+			}
+			for x := used; x < len(r); x++ {
+				r[x] = blankCellState
+			}
+			b.add(p, r)
+			return true
+		})
+		state.PackedScrollback = b.blob()
+		state.ScrollbackWraps, state.ScrollbackPads = rowFlagBits(flags)
+
+		if main != nil {
+			b := newPackedRows(height * 32)
+			for y := range height {
+				b.add(p, main[y*width:(y+1)*width])
+			}
+			state.PackedMain = b.blob()
+		}
+		state.Styles = p.styles
+	}
 }
 
 // blankCellState is a never-written cell as the wire holds it: the cell the
@@ -3790,6 +4429,19 @@ func ApplyTerminalState(t vt.Terminal, state *TerminalState) {
 	if state.Width > t.Width() || state.Height > t.Height() {
 		t.Resize(max(state.Width, t.Width()), max(state.Height, t.Height()))
 	}
+	// A client bigger than the snapshot is brought down to its size. The
+	// snapshot's cells, and the stream that resumes on top of it, were laid
+	// out at that size until the stream says otherwise (MsgPTYResized), so the
+	// client has to wrap and scroll where the daemon does. Left wider, a
+	// pending wrap at the snapshot's last column was not at the client's
+	// margin: the next character went one column right instead of to the next
+	// row, and every line after it wrapped somewhere else. Left taller, a line
+	// feed on the snapshot's last row moved the cursor down instead of
+	// scrolling. primePaneFromDaemon sizes the emulator to the snapshot before
+	// it gets here; this covers every other caller.
+	if state.Width > 0 && state.Height > 0 && (state.Width < t.Width() || state.Height < t.Height()) {
+		t.Resize(state.Width, state.Height)
+	}
 
 	// Sending ESC[?1049h instead would clear the buffer it is switching to.
 	//
@@ -3812,6 +4464,20 @@ func ApplyTerminalState(t vt.Terminal, state *TerminalState) {
 	// client encodes keys in legacy form for a pane that negotiated the
 	// protocol.
 	t.RestoreKittyKeyboardState(state.KittyKbdStack)
+	// Each screen has its own stack, and the one above is the alternate
+	// screen's while a program runs there. Without the main one a client
+	// that attached under the program left the shell's flags behind when it
+	// quit.
+	t.RestoreKittyKeyboardMainStack(state.KittyKbdMainStack)
+	// modifyOtherKeys is the other way a guest asks for keys the legacy
+	// encoding cannot tell apart (vim sends CSI > 4 ; 2 m once at start). It
+	// is applied when it is off too: an emulator that survived a workspace
+	// switch still holds the level of an editor that quit while the pane was
+	// hidden, and Ctrl+C then reached the shell as CSI 27 ; 5 ; 99 ~. An older
+	// daemon reports nothing, and the level the emulator has stays.
+	if state.ModifyOtherKeysKnown || state.ModifyOtherKeys > 0 {
+		t.RestoreModifyOtherKeys(state.ModifyOtherKeys)
+	}
 
 	// The rendition the guest left in force, which paints everything that
 	// arrives after this snapshot. Without it the stream resuming on top of a
@@ -3839,6 +4505,22 @@ func ApplyTerminalState(t vt.Terminal, state *TerminalState) {
 	}
 	if state.CursorShape > 0 {
 		t.RestoreCursorStyle(decscusrStyle(state.CursorShape))
+	}
+	// DECSCA on the pen. An older daemon says nothing, which reads as off:
+	// it could not report protection, and off is what a fresh emulator has.
+	t.RestoreCursorProtected(state.PenProtected)
+	// The character REP repeats. Taken only from a daemon that reports it,
+	// so a surviving emulator keeps its own against an older one.
+	if state.LastPrintedKnown {
+		t.RestoreLastPrinted(state.LastPrinted)
+	}
+	// The cursors DECSC saved, after the alternate screen switch above, so
+	// each lands on the screen it was saved on.
+	if sc := state.SavedCursor; sc != nil {
+		t.RestoreSavedCursor(false, savedCursorFromWire(t, *sc))
+	}
+	if sc := state.MainSavedCursor; sc != nil && state.IsAltScreen {
+		t.RestoreSavedCursor(true, savedCursorFromWire(t, *sc))
 	}
 
 	// The scrollback goes back first, and it is the main screen's either way:
@@ -3911,6 +4593,7 @@ func ApplyTerminalState(t vt.Terminal, state *TerminalState) {
 		// written from wherever this client's emulator happened to be left,
 		// which on a pane rebuilt from nothing is the top left corner.
 		t.RestoreCursorPosition(state.CursorX, state.CursorY)
+		t.RestoreCursorPendingWrap(state.PendingWrap)
 	}
 
 	// The shell's screen under a running full-screen program. Quitting the
@@ -3918,6 +4601,15 @@ func ApplyTerminalState(t vt.Terminal, state *TerminalState) {
 	// vim was open across a switch came back correct and went blank the moment
 	// vim exited, because the buffer underneath had nothing in it.
 	grid(state.PackedMain, t.SetMainCell)
+
+	// Protection after the cells, because writing a cell leaves it
+	// unprotected. It is replaced whole on every route: a surviving emulator
+	// held protection for what its cells showed before, and a snapshot with
+	// none, an older daemon's included, means no cell is protected.
+	t.RestoreProtectedCells(false, runsFromWire(state.Protected))
+	if state.IsAltScreen {
+		t.RestoreProtectedCells(true, runsFromWire(state.MainProtected))
+	}
 
 	// The soft-wrap flags, last, because writing cells does not touch them.
 	// A surviving emulator's rows held flags for what they showed before, and
@@ -4061,15 +4753,15 @@ func (p *PTY) captureContentRaw(scrollback, ansi bool) string {
 				sb.WriteString(content)
 				return sb.String()
 			}
-			for i := range scrollbackLen {
-				line := p.terminal.ScrollbackLine(i)
+			p.terminal.ScrollbackRows(0, scrollbackLen, func(_ int, line uv.Line) bool {
 				if ansi {
 					sb.WriteString(line.Render())
 				} else {
 					sb.WriteString(line.String())
 				}
 				sb.WriteByte('\n')
-			}
+				return true
+			})
 			sb.WriteString(content)
 			content = sb.String()
 		}
@@ -4142,11 +4834,18 @@ type TerminalState struct {
 	// has consumed exactly the first Seq bytes the pane ever produced. A client
 	// restoring this state subscribes from Seq, so it receives what came after
 	// the snapshot and not what the snapshot already shows.
-	Seq           int64       `json:"seq,omitempty"`
-	Width         int         `json:"width"`
-	Height        int         `json:"height"`
-	CursorX       int         `json:"cursor_x"`
-	CursorY       int         `json:"cursor_y"`
+	Seq     int64 `json:"seq,omitempty"`
+	Width   int   `json:"width"`
+	Height  int   `json:"height"`
+	CursorX int   `json:"cursor_x"`
+	CursorY int   `json:"cursor_y"`
+	// PendingWrap says the guest has just printed into the last column and
+	// the cursor waits there with a wrap pending, so the next character it
+	// prints starts the next row. Without it a snapshot taken at that moment
+	// restored a cursor that printed over the last cell, and everything the
+	// stream delivered after the snapshot landed one column out. Absent from
+	// an older daemon, which reads as no wrap pending, as before.
+	PendingWrap   bool        `json:"pending_wrap,omitempty"`
 	ScrollbackLen int         `json:"scrollback_len"`
 	IsAltScreen   bool        `json:"is_alt_screen,omitempty"` // Alternate screen buffer active (for mouse event forwarding)
 	Pen           *StyleState `json:"pen,omitempty"`           // Graphic rendition in force: what the guest's next output is painted with
@@ -4165,11 +4864,22 @@ type TerminalState struct {
 	// because zero then means "this snapshot does not say", which is what a
 	// client restoring from an older daemon gets, and it leaves the pane on the
 	// default instead of forcing a blinking block onto it.
-	CursorShape   int           `json:"cursor_shape,omitempty"`
-	Modes         map[int]bool  `json:"modes,omitempty"`           // Terminal modes (mouse tracking, bracketed paste, etc.)
-	KittyKbdStack []int         `json:"kitty_kbd_stack,omitempty"` // Kitty keyboard protocol flag stack, base entry first
-	Screen        [][]CellState `json:"screen"`
-	Scrollback    [][]CellState `json:"scrollback,omitempty"`
+	CursorShape   int          `json:"cursor_shape,omitempty"`
+	Modes         map[int]bool `json:"modes,omitempty"`           // Terminal modes (mouse tracking, bracketed paste, etc.)
+	KittyKbdStack []int        `json:"kitty_kbd_stack,omitempty"` // Kitty keyboard protocol flag stack, base entry first
+	// ModifyOtherKeys is the xterm modifyOtherKeys level the guest set with
+	// XTMODKEYS, 0 to 2. ModifyOtherKeysKnown says the daemon reported it:
+	// a level of 0 is then the guest turning it off, which a client emulator
+	// that kept an older level has to take, and not an older daemon that
+	// says nothing.
+	// KittyKbdMainStack is the main screen's kitty keyboard flag stack,
+	// carried only while the alternate screen is active, when KittyKbdStack
+	// is the alternate screen's.
+	KittyKbdMainStack    []int         `json:"kitty_kbd_main_stack,omitempty"`
+	ModifyOtherKeys      int           `json:"modify_other_keys,omitempty"`
+	ModifyOtherKeysKnown bool          `json:"modify_other_keys_known,omitempty"`
+	Screen               [][]CellState `json:"screen"`
+	Scrollback           [][]CellState `json:"scrollback,omitempty"`
 	// MainScreen is the normal screen, carried only while the alternate one is
 	// active. It is the shell's screen underneath a full-screen program, which
 	// quitting that program puts back on display. The alternate screen needs no
@@ -4206,6 +4916,103 @@ type TerminalState struct {
 	// no padding: the line keeps a blank, and no text is lost.
 	ScreenPads     []byte `json:"screen_pads,omitempty"`
 	ScrollbackPads []byte `json:"scrollback_pads,omitempty"`
+
+	// PenProtected says DECSCA protects what the guest prints next from a
+	// selective erase (DECSED, DECSEL). Protected lists the cells of the
+	// active screen it protected, as runs of three ints: row, column and
+	// length. MainProtected is the same for the screen under an active
+	// alternate one. A client without them erased protected cells the next
+	// time the guest sent a selective erase. A peer from before these fields
+	// sends none of them, which reads as nothing protected.
+	PenProtected  bool  `json:"pen_protected,omitempty"`
+	Protected     []int `json:"protected,omitempty"`
+	MainProtected []int `json:"main_protected,omitempty"`
+
+	// LastPrinted is the character REP (CSI b) repeats, as the guest sent
+	// it. LastPrintedKnown says the daemon reported it, so an empty one
+	// means nothing has been printed since a reset, and not an older daemon
+	// that says nothing.
+	LastPrinted      string `json:"last_printed,omitempty"`
+	LastPrintedKnown bool   `json:"last_printed_known,omitempty"`
+
+	// SavedCursor is what DECSC saved on the active screen, which DECRC puts
+	// back. MainSavedCursor is the main screen's, carried while the
+	// alternate one is active: entering it with 1049 saved the shell's
+	// cursor there, and leaving puts it back. A peer from before these
+	// fields sends neither, and the client keeps the saved cursor it has.
+	SavedCursor     *SavedCursorState `json:"saved_cursor,omitempty"`
+	MainSavedCursor *SavedCursorState `json:"main_saved_cursor,omitempty"`
+}
+
+// SavedCursorState is a saved cursor on the wire (vt.SavedCursor).
+type SavedCursorState struct {
+	X           int         `json:"x,omitempty"`
+	Y           int         `json:"y,omitempty"`
+	Pen         *StyleState `json:"pen,omitempty"`
+	PendingWrap bool        `json:"pending_wrap,omitempty"`
+	Origin      bool        `json:"origin,omitempty"`
+	Protected   bool        `json:"protected,omitempty"`
+	// Charsets is the character set selection DECSC saved, in the layout of
+	// TerminalState.Charsets.
+	Charsets []int `json:"charsets,omitempty"`
+}
+
+func savedCursorToWire(c vt.SavedCursor) *SavedCursorState {
+	pen := styleToWire(c.Pen, c.Link)
+	return &SavedCursorState{
+		X:           c.X,
+		Y:           c.Y,
+		Pen:         &pen,
+		PendingWrap: c.PendingWrap,
+		Origin:      c.Origin,
+		Protected:   c.Protected,
+		Charsets: []int{int(c.Charsets[0]), int(c.Charsets[1]), int(c.Charsets[2]),
+			int(c.Charsets[3]), c.GL, c.GR},
+	}
+}
+
+func savedCursorFromWire(t vt.Terminal, s SavedCursorState) vt.SavedCursor {
+	c := vt.SavedCursor{
+		X:           s.X,
+		Y:           s.Y,
+		PendingWrap: s.PendingWrap,
+		Origin:      s.Origin,
+		Protected:   s.Protected,
+		Charsets:    [4]byte{'B', 'B', 'B', 'B'},
+	}
+	if s.Pen != nil {
+		c.Pen, c.Link = styleFromWire(t, *s.Pen)
+	}
+	if len(s.Charsets) == 6 {
+		for i := range 4 {
+			c.Charsets[i] = byte(s.Charsets[i])
+		}
+		c.GL, c.GR = s.Charsets[4], s.Charsets[5]
+	}
+	return c
+}
+
+// runsToWire flattens protected runs into the wire's triples, or nil when
+// there are none.
+func runsToWire(runs []vt.CellRun) []int {
+	if len(runs) == 0 {
+		return nil
+	}
+	out := make([]int, 0, 3*len(runs))
+	for _, r := range runs {
+		out = append(out, r.Y, r.X, r.N)
+	}
+	return out
+}
+
+// runsFromWire reads the wire's triples back. A trailing partial triple is
+// dropped; the emulator clips each run to its own grid.
+func runsFromWire(flat []int) []vt.CellRun {
+	runs := make([]vt.CellRun, 0, len(flat)/3)
+	for i := 0; i+2 < len(flat); i += 3 {
+		runs = append(runs, vt.CellRun{Y: flat[i], X: flat[i+1], N: flat[i+2]})
+	}
+	return runs
 }
 
 // wrapBits packs soft-wrap flags into the wire's bitset, or nil when none is
@@ -4481,6 +5288,10 @@ func (p *PTY) Close() error {
 	// No held window size may be written once the descriptor is closed.
 	p.closeWinsize()
 
+	// The pane's emulator and scrollback are garbage now. A burst of closes
+	// is one trim, once the daemon settles. See memtrim.
+	memtrim.Request()
+
 	// Close PTY. This unblocks readOutput's pending Read, which then closes
 	// vtWriteChan so vtWriter exits.
 	if p.pty != nil {
@@ -4515,6 +5326,16 @@ func (p *PTY) ShellPID() int {
 		return 0
 	}
 	return p.cmd.Process.Pid
+}
+
+// TTYName returns the path of the pane's terminal device, such as /dev/pts/3.
+// It is empty for a pane on another machine, and on a platform whose PTY has
+// no device name (ConPTY).
+func (p *PTY) TTYName() string {
+	if named, ok := p.pty.(interface{ SlaveName() string }); ok {
+		return named.SlaveName()
+	}
+	return ""
 }
 
 // IsExited returns true if the shell process has exited.
@@ -4575,6 +5396,12 @@ func (p *PTY) readOutput() {
 			data := make([]byte, n)
 			copy(data, buf[:n])
 
+			// Who holds the foreground, read first and only for a chunk
+			// holding an OSC 7501 report: a program that reports and exits
+			// at once may already be gone a moment later. See
+			// PTY.reportGroup.
+			reportGroup := p.readerReportGroup(data)
+
 			// The raw stream, when TUIOS_PTY_LOG asks for it. Taken here,
 			// before anything reads or reorders it, so what lands in the file
 			// is what the program wrote.
@@ -4611,7 +5438,7 @@ func (p *PTY) readOutput() {
 			// the leaf terminal lock and never waits on this loop, so there is
 			// nothing here to deadlock against.
 			select {
-			case p.vtWriteChan <- vtChunk{data: data, seq: seq}:
+			case p.vtWriteChan <- vtChunk{data: data, seq: seq, group: reportGroup}:
 			case <-p.ctx.Done():
 				p.streamMu.Unlock()
 				return
@@ -4641,6 +5468,10 @@ type vtChunk struct {
 	data          []byte
 	seq           int64
 	width, height int // both > 0 marks a resize rather than output
+	// group is the foreground process group the reader read for a chunk
+	// holding an OSC 7501 report, plus one; 0 for any other chunk. See
+	// PTY.reportGroup.
+	group int64
 }
 
 // vtWriter is a single persistent goroutine that feeds the daemon's VT
@@ -4666,9 +5497,11 @@ func (p *PTY) vtWriter() {
 			continue
 		}
 		p.terminalMu.Lock()
+		p.chunkGroup.Store(chunk.group)
 		if p.terminal != nil {
 			_, _ = p.terminal.Write(chunk.data)
 		}
+		p.chunkGroup.Store(0)
 		// Recorded under the same lock the emulator is written and read under,
 		// so a state snapshot and the position it was taken at can never
 		// disagree. That pairing is what lets a client be resumed exactly where
@@ -4677,6 +5510,7 @@ func (p *PTY) vtWriter() {
 		focusOn := p.terminal != nil && p.terminal.FocusReportingEnabled()
 		p.terminalMu.Unlock()
 		p.noteFocusReporting(focusOn)
+		p.flushProgramStatus()
 	}
 }
 
@@ -4803,6 +5637,13 @@ func (p *PTY) noteExit(code int) {
 	p.exitedMu.Unlock()
 
 	debugLog("[DEBUG] PTY %s: process exited with code %d", p.ID[:8], p.exitCode)
+
+	// The process attached to the terminal exited: its working and blocked
+	// OSC 7501 records go, and done and error stay.
+	if p.progStatus.DropTransient() {
+		p.progStatusDirty.Store(true)
+		p.flushProgramStatus()
+	}
 
 	// Notify callback (used by daemon to inform clients)
 	if p.onExit != nil {

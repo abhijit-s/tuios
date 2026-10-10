@@ -2,13 +2,16 @@ package session
 
 import (
 	"io"
-	"net/url"
 	"os"
+	"path"
 	"path/filepath"
-	"regexp"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
+
+	"github.com/Gaurav-Gosain/tuios/internal/lazyre"
+	"github.com/Gaurav-Gosain/tuios/internal/winpath"
 )
 
 // A session's place.
@@ -44,7 +47,16 @@ type placeRecord struct {
 	// is not this one: the pane is running ssh and the shell on the far end
 	// reported its folder. Empty otherwise. It holds while the program that
 	// made the report holds the terminal; see Session.checkPaneCwd.
-	elsewhere atomic.Pointer[string]
+	//
+	// The folder that report named is kept with the machine in one value, so
+	// a reader never pairs one report's machine with another's folder. An ssh
+	// split starts the new pane there; see ssh_follow.go.
+	elsewhere atomic.Pointer[elsewhereReport]
+}
+
+// elsewhereReport is an OSC 7 report that named another machine.
+type elsewhereReport struct {
+	host, dir string
 }
 
 // setCwd records a directory the shell reported (an OSC 7 payload or a bare
@@ -68,7 +80,9 @@ func (r *placeRecord) announce(raw string) bool {
 		return false
 	}
 	if host != "" {
-		return r.setElsewhere(host)
+		changed := r.Elsewhere() != host
+		r.elsewhere.Store(&elsewhereReport{host: host, dir: path})
+		return changed
 	}
 	moved := r.setElsewhere("")
 	if !r.announced.Swap(true) {
@@ -83,10 +97,18 @@ func (r *placeRecord) announce(raw string) bool {
 // Elsewhere is the machine the pane's shell last reported a folder on, when
 // that is not this one.
 func (r *placeRecord) Elsewhere() string {
+	host, _ := r.ElsewhereReport()
+	return host
+}
+
+// ElsewhereReport is the machine and the folder of the last report from
+// another machine, both from the same report. Both are empty when there is
+// none.
+func (r *placeRecord) ElsewhereReport() (host, dir string) {
 	if p := r.elsewhere.Load(); p != nil {
-		return *p
+		return p.host, p.dir
 	}
-	return ""
+	return "", ""
 }
 
 // setElsewhere records the machine, or clears it, and says whether it changed.
@@ -94,7 +116,11 @@ func (r *placeRecord) setElsewhere(host string) bool {
 	if r.Elsewhere() == host {
 		return false
 	}
-	r.elsewhere.Store(&host)
+	if host == "" {
+		r.elsewhere.Store(nil)
+	} else {
+		r.elsewhere.Store(&elsewhereReport{host: host})
+	}
 	return true
 }
 
@@ -173,6 +199,51 @@ var localHostname = sync.OnceValue(func() string {
 	return strings.ToLower(h)
 })
 
+// localHostNames is every name a shell on this machine may put in an OSC 7
+// report, lower case. A shell does not ask Go for the name, so the name it
+// reports can differ from os.Hostname:
+//
+//   - PowerShell on Windows reports $env:COMPUTERNAME, the NetBIOS name. Go
+//     reads the DNS host name, which can differ and is not cut to 15
+//     characters. Read as another machine, every report from such a shell
+//     was dropped, and a new window did not inherit its folder (#491).
+//   - On macOS, os.Hostname often gives the full name, such as box.lan, and
+//     many prompts report the short name, box (hostname -s).
+//
+// So the set holds the host name and COMPUTERNAME, which is set only on
+// Windows. On macOS alone it also holds the host name's first label. That is
+// the narrow form of the short-name rule: only on darwin, and only a report
+// with no dots matches, since a first label has none. On Linux the host name
+// is usually the short name already, and a short name that matched there
+// could be another machine's.
+var localHostNames = sync.OnceValue(func() map[string]bool {
+	return hostNameSet(localHostname(), os.Getenv("COMPUTERNAME"), runtime.GOOS == "darwin")
+})
+
+// hostNameSet is localHostNames for the given host name and COMPUTERNAME.
+// With shortName set it adds the host name's first label when the name has
+// dots.
+func hostNameSet(hostname, computerName string, shortName bool) map[string]bool {
+	names := map[string]bool{"localhost": true}
+	for _, name := range []string{hostname, computerName} {
+		if name = strings.ToLower(strings.TrimSpace(name)); name != "" {
+			names[name] = true
+		}
+	}
+	hostname = strings.ToLower(strings.TrimSpace(hostname))
+	if short, _, ok := strings.Cut(hostname, "."); shortName && ok && short != "" {
+		names[short] = true
+	}
+	return names
+}
+
+// IsLocalHostName reports whether host, from an OSC 7 report or a file://
+// address, names this machine. An empty host does.
+func IsLocalHostName(host string) bool {
+	host = strings.ToLower(host)
+	return host == "" || localHostNames()[host]
+}
+
 // parseCwdReport reads a local absolute path out of what a shell reported. OSC 7
 // carries a file://host/path URI; a bare absolute path is accepted too, which is
 // what the spawn directory and some prompts are. Anything else, including a
@@ -194,25 +265,50 @@ func ParseCwdAnnouncement(raw string) (path, host string, ok bool) {
 // parseCwdAnnouncement reads a report the way parseCwdReport does, and keeps one
 // that names another machine. host is that machine, empty for this one.
 func parseCwdAnnouncement(raw string) (path, host string, ok bool) {
+	return parseCwdFor(raw, runtime.GOOS, IsLocalHostName)
+}
+
+// parseCwdFor is parseCwdAnnouncement for a daemon that runs goos, with
+// isLocal judging the host. It is pure so every OS's rules are tested on any.
+func parseCwdFor(raw, goos string, isLocal func(string) bool) (dir, host string, ok bool) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return "", "", false
 	}
 	if !strings.HasPrefix(raw, "file://") {
-		if filepath.IsAbs(raw) {
-			return filepath.Clean(raw), "", true
+		// An OSC 9;9 report quotes its path, as Windows Terminal's
+		// PowerShell snippet does: "C:\Users\x".
+		if len(raw) >= 2 && raw[0] == '"' && raw[len(raw)-1] == '"' {
+			raw = raw[1 : len(raw)-1]
 		}
+		dir, ok := winpath.ForOS(raw, goos)
+		return dir, "", ok
+	}
+	h, p, ok := winpath.FileURL(raw)
+	if !ok {
 		return "", "", false
 	}
-	u, err := url.Parse(raw)
-	if err != nil || u.Path == "" {
-		return "", "", false
+	if !isLocal(h) {
+		// Bounded: it is shown on a rail row, and the pane wrote it. The path
+		// is another machine's, so it is not converted for this one: it stays
+		// in forward slashes, which is what ssh to that machine reads, and
+		// filepath on a Windows daemon would turn /home/u into \home\u.
+		return cleanSlashPath(p), ClampDisplayText(h), true
 	}
-	if h := strings.ToLower(u.Hostname()); h != "" && h != "localhost" && h != localHostname() {
-		// Bounded: it is shown on a rail row, and the pane wrote it.
-		return filepath.Clean(u.Path), ClampDisplayText(u.Hostname()), true
+	// A native Windows shell reports /C:/x, and an MSYS2 or Cygwin shell
+	// /c/Users/x. ForOS makes both a Windows path on Windows, and refuses a
+	// drive path everywhere else.
+	dir, ok = winpath.ForOS(p, goos)
+	return dir, "", ok
+}
+
+// cleanSlashPath cleans a forward-slash path from another machine, and keeps
+// the two leading slashes of a UNC path, which path.Clean would fold into one.
+func cleanSlashPath(p string) string {
+	if strings.HasPrefix(p, "//") && !strings.HasPrefix(p, "///") {
+		return "/" + path.Clean(p)
 	}
-	return filepath.Clean(u.Path), "", true
+	return path.Clean(p)
 }
 
 // dirLabel is the short form of a directory for a row: its base name, or "~"
@@ -317,11 +413,11 @@ func isHex(s string) bool {
 }
 
 // generatedSessionName matches the names GenerateSessionName hands out.
-var generatedSessionName = regexp.MustCompile(`^session-[0-9]+$`)
+var generatedSessionName = lazyre.New(`^session-[0-9]+$`)
 
 // IsGeneratedSessionName reports whether a session name is one tuios made up
 // rather than one a person chose. A surface labels such a session by where it
 // is, because "session-3" says nothing and a directory says something.
 func IsGeneratedSessionName(name string) bool {
-	return generatedSessionName.MatchString(name)
+	return generatedSessionName().MatchString(name)
 }

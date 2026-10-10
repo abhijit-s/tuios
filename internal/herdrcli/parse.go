@@ -13,6 +13,10 @@ import (
 // internal/session/herdr_api.go).
 const Version = "0.9.3"
 
+// protocolVersion is herdr's private protocol at Version, which the daemon
+// reports in a pong (herdrTargetProtocol in internal/session/herdr_api.go).
+const protocolVersion = 22
+
 // Output is what a call prints when it is answered.
 type Output int
 
@@ -32,6 +36,15 @@ const (
 	OutLocal
 	// OutText sends nothing. Text is printed on stdout and the exit code is 0.
 	OutText
+	// OutStatus pings the socket and prints herdr's status report. Text is
+	// the scope: "", "server" or "client". Params["json"] asks for JSON.
+	OutStatus
+	// OutSessions pings the socket and prints herdr's session list: the one
+	// tuios daemon behind the socket. Params["json"] asks for JSON.
+	OutSessions
+	// OutPluginConfigDir sends nothing. Text is a plugin id, and its config
+	// folder is made and printed, as herdr plugin config-dir does.
+	OutPluginConfigDir
 )
 
 // Call is one parsed herdr command: the request it sends and how its answer
@@ -99,6 +112,9 @@ func Parse(args []string, getenv Env, cwd string) (*Call, *UsageError) {
 	if flags, _, _ := splitDashDash(rest); slices.Contains(flags, "--help") || slices.Contains(flags, "-h") {
 		return &Call{Output: OutText, Text: groupHelp[group]}, nil
 	}
+	if group == "status" {
+		return statusCall(rest)
+	}
 	if len(rest) == 0 {
 		return nil, &UsageError{Msg: groupHelp[group], Code: 2}
 	}
@@ -130,21 +146,21 @@ var groups = map[string]groupParser{
 	"notification": parseNotification,
 	"api":          parseAPI,
 	"server":       parseServer,
+	"terminal":     parseTerminal,
+	"status":       parseStatus,
+	"session":      parseSession,
+	"plugin":       parsePlugin,
 }
 
 // localGroups are herdr's commands that do their work on herdr's own
 // machine, with what tuios says about each.
 var localGroups = map[string]string{
-	"status":      "herdr status reads herdr's own client and server. tuios does not run them. Run tuios ls for tuios's sessions",
 	"completion":  "tuios's herdr front has no shell completions",
 	"completions": "tuios's herdr front has no shell completions",
 	"config":      "herdr config edits herdr's own config.toml. tuios does not read it",
 	"channel":     "herdr channel picks herdr's update channel. tuios does not update herdr",
 	"machine":     "herdr machine manages herdr's SSH machines. Use tuios hosts",
-	"session":     "herdr session manages herdr's named servers. Use tuios ls and tuios attach",
-	"terminal":    "herdr terminal attaches herdr's client protocol, which tuios does not serve",
 	"update":      "herdr update installs herdr. tuios does not update herdr",
-	"plugin":      "tuios does not host herdr plugins. Run the plugin's command in a tuios pane: its herdr calls reach tuios",
 	"integration": "herdr integration installs herdr's agent hooks. Use tuios integration",
 }
 

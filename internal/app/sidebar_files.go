@@ -724,6 +724,9 @@ func (m *OS) recordWindowCwd(windowID, raw string) {
 	}
 	if w.Pty != nil {
 		w.CwdHost = host
+		if host != "" {
+			w.CwdElsewhereDir = dir
+		}
 	}
 	if host == "" {
 		w.Cwd = dir
@@ -877,6 +880,12 @@ func (m *OS) fileViewOpen(dir, name string, isDir bool) tea.Cmd {
 		}
 		return cmd
 	}
+	return m.copyFilePath(full)
+}
+
+// copyFilePath puts a path from the listing on the clipboard. A file row's
+// open and the copy_path action both end here, so the two copy the same way.
+func (m *OS) copyFilePath(full string) tea.Cmd {
 	m.ShowNotification("Copied the path.", "success", m.Settings.NotificationDuration)
 	return tea.SetClipboard(full)
 }

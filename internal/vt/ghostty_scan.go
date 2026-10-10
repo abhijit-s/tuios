@@ -1,5 +1,10 @@
 package vt
 
+import (
+	"unicode"
+	"unicode/utf8"
+)
+
 // ghosttyScanner deliberately ignores 8-bit C1 introducers and terminators
 // (0x90, 0x9c, 0x9d, 0x9f): those bytes occur inside UTF-8 continuations, and
 // a UTF-8 terminal that honored them would tear multibyte characters apart.
@@ -88,6 +93,69 @@ type ghosttyScanner struct {
 	// dcsParams holds DCS parameter and intermediate bytes until the final
 	// byte decides whether the body is sixel.
 	dcsParams []byte
+	// oscBEL says the OSC handed to the hook ended with BEL rather than ST,
+	// so a reply can end the same way.
+	oscBEL bool
+
+	// lastPrint is the last character printed in the ground state, which is
+	// what REP repeats: the library keeps it where no query reaches. A
+	// character that takes no column of its own (a combining mark, a joiner,
+	// a selector) joins the one before it and is not recorded, as the
+	// library records it. Zero means nothing printed since a reset.
+	lastPrint rune
+	// u8 holds the bytes of a UTF-8 character still arriving, and u8want
+	// how many it has in all.
+	u8     [4]byte
+	u8n    int
+	u8want int
+}
+
+// notePrint records a ground-state byte of a UTF-8 character toward
+// lastPrint.
+func (s *ghosttyScanner) notePrint(b byte) {
+	switch {
+	case b&0xc0 == 0x80:
+		if s.u8n == 0 || s.u8n >= s.u8want {
+			s.u8n = 0
+			return
+		}
+		s.u8[s.u8n] = b
+		s.u8n++
+		if s.u8n == s.u8want {
+			r, size := utf8.DecodeRune(s.u8[:s.u8n])
+			s.u8n = 0
+			// A C1 control sent as UTF-8 (U+0080 to U+009F) is a control,
+			// not a character REP can repeat.
+			if (r != utf8.RuneError || size > 1) && (r < 0x80 || r > 0x9f) && !joinsPrevious(r) {
+				s.lastPrint = r
+			}
+		}
+	default:
+		s.u8[0] = b
+		s.u8n = 1
+		switch {
+		case b&0xe0 == 0xc0:
+			s.u8want = 2
+		case b&0xf0 == 0xe0:
+			s.u8want = 3
+		case b&0xf8 == 0xf0:
+			s.u8want = 4
+		default:
+			s.u8n = 0
+		}
+	}
+}
+
+// joinsPrevious reports whether r takes no column of its own and joins the
+// character before it.
+func joinsPrevious(r rune) bool {
+	switch {
+	case r == 0x200d, r >= 0xfe00 && r <= 0xfe0f, r >= 0xe0100 && r <= 0xe01ef:
+		return true
+	case r < 0x300:
+		return false
+	}
+	return unicode.In(r, unicode.Mn, unicode.Me, unicode.Cf)
 }
 
 func newGhosttyScanner(hooks ghosttyScanHooks) *ghosttyScanner {
@@ -130,8 +198,17 @@ func (s *ghosttyScanner) Scan(p []byte) {
 			case 0x1b:
 				s.state = gsEsc
 			default:
-				if b < 0x20 && s.hooks.Ctrl != nil {
-					s.hooks.Ctrl(b)
+				switch {
+				case b < 0x20:
+					if s.hooks.Ctrl != nil {
+						s.hooks.Ctrl(b)
+					}
+				case b < 0x7f:
+					// REP's character, one store for ASCII, which is
+					// nearly every byte a pane prints.
+					s.lastPrint = rune(b)
+				case b >= 0x80:
+					s.notePrint(b)
 				}
 				s.emit(b)
 			}
@@ -224,12 +301,34 @@ func (s *ghosttyScanner) Scan(p []byte) {
 				s.endOsc(b)
 			case 0x1b:
 				s.state = gsOscEsc
+			case 0x18, 0x1a:
+				// CAN and SUB cancel the string, as in the DEC parser the
+				// pure emulator and libghostty both follow: nothing is
+				// dispatched, and what follows is ordinary text.
+				s.resetSeq()
+				s.emit(b)
+				s.state = gsGround
 			default:
+				if b < 0x20 {
+					// Any other C0 control inside an OSC string is ignored,
+					// as in the DEC parser, so a hook reads the payload the
+					// pure emulator reads.
+					continue
+				}
 				s.buffer(b)
 			}
 		case gsOscEsc:
 			if b == '\\' {
 				s.endOsc('\\')
+			} else if oscNumber(s.seq) == 7501 { // progstatus.Command
+				// The pure emulator's parser ends the string at the ESC and
+				// dispatches it, then reads the ESC as a new sequence. An
+				// OSC 7501 report is read the same way here, so the two
+				// backends agree on which reports apply. The OSC is never
+				// forwarded, so nothing changes for libghostty.
+				s.endOsc('\\')
+				s.state = gsEsc
+				i--
 			} else {
 				// ESC aborts the string and starts a new sequence. The
 				// withheld payload is dropped on both sides: the sink never
@@ -332,6 +431,7 @@ func (s *ghosttyScanner) Scan(p []byte) {
 // re-emitted verbatim with its original terminator.
 func (s *ghosttyScanner) endOsc(term byte) {
 	forward := true
+	s.oscBEL = term == 0x07
 	if s.hooks.OSC != nil && !s.overflow {
 		s.flushOut()
 		forward = s.hooks.OSC(oscNumber(s.seq), s.seq)

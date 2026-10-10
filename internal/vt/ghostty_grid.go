@@ -32,6 +32,11 @@ type ghosttyCellDecoder struct {
 	styleMask         uint64
 	wideLSB, wideMask uint64
 	linkBit           uint64
+	// protBit is DECSCA's bit, when hasProt says the manifest names one. A
+	// library without it reads every cell as unprotected rather than
+	// giving up the fast decoder.
+	protBit uint64
+	hasProt bool
 }
 
 func newGhosttyCellDecoder() ghosttyCellDecoder {
@@ -98,6 +103,9 @@ func newGhosttyCellDecoder() ghosttyCellDecoder {
 	d.styleLSB, d.styleMask = styleID.LSB, (1<<styleID.Width)-1
 	d.wideLSB, d.wideMask = wide.LSB, (1<<wide.Width)-1
 	d.linkBit = link.LSB
+	if prot, ok := get("protected"); ok {
+		d.protBit, d.hasProt = prot.LSB, true
+	}
 	d.ok = true
 	return d
 }
@@ -108,6 +116,7 @@ type decodedCell struct {
 	styleID uint16
 	wide    gh.CellWide
 	link    bool
+	prot    bool
 }
 
 func (d *ghosttyCellDecoder) decode(v uint64) decodedCell {
@@ -117,6 +126,7 @@ func (d *ghosttyCellDecoder) decode(v uint64) decodedCell {
 		styleID: uint16((v >> d.styleLSB) & d.styleMask),
 		wide:    gh.CellWide((v >> d.wideLSB) & d.wideMask),
 		link:    (v>>d.linkBit)&1 != 0,
+		prot:    d.hasProt && (v>>d.protBit)&1 != 0,
 	}
 }
 
@@ -138,6 +148,9 @@ func decodeCellSlow(c *gh.Cell) decodedCell {
 	}
 	if h, err := c.HasHyperlink(); err == nil {
 		out.link = h
+	}
+	if p, err := c.Protected(); err == nil {
+		out.prot = p
 	}
 	return out
 }
@@ -302,6 +315,9 @@ func (t *GhosttyTerminal) syncRowLocked(buf *grid, y int) {
 			}
 		}
 		buf.SetCell(x, y, out)
+		if dc.prot {
+			buf.setProtected(x, y, out.Width, true)
+		}
 	}
 	// Rows narrower than the shadow (after a resize race) blank the rest.
 	for x := n; x < t.width; x++ {
@@ -339,6 +355,13 @@ func (t *GhosttyTerminal) styleFor(styleID uint16, x int) uv.Style {
 // overrides first and the user's theme second, and pass through as indices
 // when nothing claimed them.
 func (t *GhosttyTerminal) convertStyle(gs *gh.Style) uv.Style {
+	return t.convertStyleIn(gs, nil)
+}
+
+// convertStyleIn is convertStyle with the palette taken from pal, a copy made
+// under the lock, so a reader that holds no lock can convert. A nil pal reads
+// the terminal's own palette, which needs the lock.
+func (t *GhosttyTerminal) convertStyleIn(gs *gh.Style, pal *ghosttyPalette) uv.Style {
 	var s uv.Style
 	if gs.Bold() {
 		s.Attrs |= uv.AttrBold
@@ -373,20 +396,26 @@ func (t *GhosttyTerminal) convertStyle(gs *gh.Style) uv.Style {
 	case gh.UnderlineDashed:
 		s.Underline = ansi.UnderlineDashed
 	}
-	s.Fg = t.resolveStyleColor(gs.FgColor())
-	s.Bg = t.resolveStyleColor(gs.BgColor())
-	s.UnderlineColor = t.resolveStyleColor(gs.UnderlineColor())
+	s.Fg = t.resolveStyleColor(gs.FgColor(), pal)
+	s.Bg = t.resolveStyleColor(gs.BgColor(), pal)
+	s.UnderlineColor = t.resolveStyleColor(gs.UnderlineColor(), pal)
 	return s
 }
 
 // resolveStyleColor applies the pure emulator's paletteEntry rule.
-func (t *GhosttyTerminal) resolveStyleColor(sc gh.StyleColor) color.Color {
+func (t *GhosttyTerminal) resolveStyleColor(sc gh.StyleColor, pal *ghosttyPalette) color.Color {
 	switch sc.Tag {
 	case gh.StyleColorRGB:
 		return color.RGBA{R: sc.RGB.R, G: sc.RGB.G, B: sc.RGB.B, A: 0xff}
 	case gh.StyleColorPalette:
 		i := int(sc.Palette)
-		if c := t.paletteEntryLocked(i); c != nil {
+		var c color.Color
+		if pal != nil {
+			c = pal[i]
+		} else {
+			c = t.paletteEntryLocked(i)
+		}
+		if c != nil {
 			return c
 		}
 		if i < 16 {
@@ -414,6 +443,19 @@ func (t *GhosttyTerminal) paletteEntryLocked(i int) color.Color {
 		return t.themePal[i]
 	}
 	return nil
+}
+
+// ghosttyPalette is a copy of every paletteEntryLocked answer.
+type ghosttyPalette [256]color.Color
+
+// paletteLocked copies the palette, for a reader that converts styles after
+// it lets go of the lock.
+func (t *GhosttyTerminal) paletteLocked() *ghosttyPalette {
+	var pal ghosttyPalette
+	for i := range pal {
+		pal[i] = t.paletteEntryLocked(i)
+	}
+	return &pal
 }
 
 // hyperlinkAt fetches the hyperlink URI for an active-screen cell.
@@ -464,10 +506,10 @@ func (t *GhosttyTerminal) CursorPen() (uv.Style, uv.Link) {
 	if err != nil || gs == nil {
 		return uv.Style{}, uv.Link{}
 	}
-	// The pen's hyperlink is not exposed; snapshot restore loses an open
-	// OSC 8 link on the pen (not on cells), which the differential harness
-	// tolerates.
-	return t.convertStyle(gs), uv.Link{}
+	// The pen's hyperlink is not exposed as data, so it is read from a
+	// formatter that emits it.
+	link, _ := t.penExtrasLocked()
+	return t.convertStyle(gs), link
 }
 
 func (t *GhosttyTerminal) Bounds() uv.Rectangle {

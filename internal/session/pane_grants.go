@@ -696,9 +696,20 @@ func (d *Daemon) checkGrants(cs *connState, verb string, params json.RawMessage)
 		}
 		return nil, deny("the pane runs here for another machine and has no session on this one; its reports go to that machine")
 	}
+	if readsBuffers(verb) && !pa.grants.Has(GrantRead) {
+		return nil, deny(verb + " reads the paste buffers, which needs the read grant")
+	}
 	var reach func(target string) string
 	switch kind {
 	case scopeOpen:
+		return params, nil
+	case scopeBufferRead:
+		// Checked above. The buffers belong to no session.
+		return params, nil
+	case scopeBufferWrite:
+		if !pa.grants.Has(GrantWrite) {
+			return nil, deny(verb + " changes the paste buffers, which needs the write grant")
+		}
 		return params, nil
 	case scopeDeny, scopeGlobal:
 		return nil, deny(verb + " needs the admin grant")
@@ -823,6 +834,7 @@ var typingVerbs = map[string]bool{
 	"run":          true,
 	"queue-prompt": true,
 	"send-review":  true,
+	"paste-buffer": true,
 }
 
 // holdTypingTarget holds a typing call from a pane without admin to the pane
@@ -1030,14 +1042,16 @@ func (d *Daemon) refuseMultifocusInto(cs *connState, sess *Session, command stri
 
 // typingTapeCommands are the tape commands that press keys or type, in the
 // focused pane or the window manager, and the ones that do so by other means:
-// Source runs another tape file, and LoadLayout types a cd line into panes.
+// Source runs another tape file, LoadLayout types a cd line into panes, and
+// an Action can be a command key that runs a program.
 var typingTapeCommands = map[tape.CommandType]bool{
 	tape.CommandTypeType: true, tape.CommandTypeEnter: true, tape.CommandTypeSpace: true,
 	tape.CommandTypeBackspace: true, tape.CommandTypeDelete: true, tape.CommandTypeTab: true,
 	tape.CommandTypeEscape: true, tape.CommandTypeUp: true, tape.CommandTypeDown: true,
 	tape.CommandTypeLeft: true, tape.CommandTypeRight: true, tape.CommandTypeHome: true,
 	tape.CommandTypeEnd: true, tape.CommandTypeKeyCombo: true, tape.CommandTypeSource: true,
-	tape.CommandTypeLoadLayout: true,
+	tape.CommandTypeLoadLayout: true, tape.CommandTypeAction: true, tape.CommandTypePress: true,
+	tape.CommandTypeRun: true,
 }
 
 // refuseTapeTyping checks a run-command from the caller on cs. The attached
@@ -1070,7 +1084,7 @@ func (d *Daemon) refuseTapeTyping(cs *connState, p *ExecuteCommandPayload) strin
 // into every pane of a session, creates and closes windows and kills
 // sessions, so only a pane holding admin may use it past the hello.
 func (d *Daemon) checkGrantMessage(cs *connState, t MessageType) *verbError {
-	if t == MsgHello || cs == nil || cs.viaLink || cs.paneOnly {
+	if t == MsgHello || t == MsgPing || cs == nil || cs.viaLink || cs.paneOnly {
 		return nil
 	}
 	if cs.paneBound.Load() == nil && !d.manager.grants.mayMatter() {

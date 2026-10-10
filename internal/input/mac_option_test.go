@@ -41,7 +41,7 @@ func TestMacOptionChordsReachTheirBinding(t *testing.T) {
 		// Option as Meta / Esc+: the terminal sends ESC n and nothing is composed.
 		{"esc-prefixed meta", tea.KeyPressMsg{Code: 'n', Mod: tea.ModAlt}, false, "terminal_next_window"},
 		// No Kitty protocol and no Option-as-Meta: the dead key spills its
-		// tilde with no modifier at all.
+		// tilde with no modifier at all. The default reads it as the chord.
 		{"composed glyph, bare", tea.KeyPressMsg{Code: '˜', Text: "˜"}, false, "terminal_next_window"},
 		// Kitty protocol, no alternate-key reporting: Ghostty and kitty set the
 		// Alt bit but still report the composed codepoint.
@@ -73,8 +73,47 @@ func TestMacOptionChordsReachTheirBinding(t *testing.T) {
 		if tc.main {
 			lookup = registry.GetAction
 		}
-		if got := lookupAction(tc.msg, lookup); got != tc.want {
+		if got := lookupAction(nil, tc.msg, lookup); got != tc.want {
 			t.Errorf("%s (%q): resolved to %q, want %q", tc.what, tc.msg.String(), got, tc.want)
+		}
+	}
+}
+
+// A composed character with no Alt modifier runs the chord it stands for by
+// default, since Terminal.app and iTerm2 ship with Option composing. With
+// keybindings.option_glyphs = "type" it is text (issue #566), and with
+// keyboard_layout = "other" the US table behind it is off.
+func TestBareOptionGlyphsFollowTheConfig(t *testing.T) {
+	onDarwin(t)
+	bare := []struct {
+		msg  tea.KeyPressMsg
+		want string
+	}{
+		{tea.KeyPressMsg{Code: '˜', Text: "˜"}, "terminal_next_window"},
+		{tea.KeyPressMsg{Code: 'π', Text: "π"}, "terminal_prev_window"},
+	}
+	for _, tc := range []struct {
+		layout, glyphs string
+		runs           bool
+	}{
+		{"", "", true},
+		{"", config.OptionGlyphsType, false},
+		{"", config.OptionGlyphsBind, true},
+		{config.KeyboardLayoutOther, config.OptionGlyphsBind, false},
+	} {
+		cfg := config.DefaultConfig()
+		cfg.Keybindings.KeyboardLayout = tc.layout
+		cfg.Keybindings.OptionGlyphs = tc.glyphs
+		registry := config.NewKeybindRegistry(cfg)
+		for _, b := range bare {
+			want := ""
+			if tc.runs {
+				want = b.want
+			}
+			if got := lookupAction(nil, b.msg, registry.GetTerminalModeAction); got != want {
+				t.Errorf("layout %q, option_glyphs %q: %q resolved to %q, want %q",
+					tc.layout, tc.glyphs, b.msg.String(), got, want)
+			}
 		}
 	}
 }
@@ -96,7 +135,7 @@ func TestComposedGlyphsAreNotChordsOffDarwin(t *testing.T) {
 		{Code: 'π', Text: "π"},
 		{Code: '¬', Text: "¬"},
 	} {
-		if got := lookupAction(msg, registry.GetTerminalModeAction); got != "" {
+		if got := lookupAction(nil, msg, registry.GetTerminalModeAction); got != "" {
 			t.Errorf("%q resolved to %q off darwin, want no action", msg.String(), got)
 		}
 	}

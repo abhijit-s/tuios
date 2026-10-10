@@ -155,7 +155,22 @@ func reachSections(t *testing.T) []bindingSection {
 		{name: "inbox", binds: k.Inbox, modes: bothModes, newOS: reachInboxOS},
 		{name: "inbox_peek", binds: k.InboxPeek, modes: bothModes, newOS: reachInboxPeekOS},
 		{name: "mail", binds: k.Mail, modes: bothModes, newOS: reachMailOS},
+		// Copy mode owns the keyboard in either mode while a pane is in it.
+		{name: "copy_mode", binds: k.CopyMode, modes: bothModes, newOS: reachCopyModeOS},
 	}
+}
+
+// reachCopyModeOS is a client whose focused pane is in copy mode, which is the
+// only state the copy_mode section answers in.
+func reachCopyModeOS(t *testing.T) *app.OS {
+	t.Helper()
+	o, _ := osWithFocusedPane(t, config.DefaultConfig(), app.WindowManagementMode)
+	w := o.GetFocusedWindow()
+	w.EnterCopyMode()
+	if !w.InCopyMode() {
+		t.Fatal("copy mode did not start on the test pane")
+	}
+	return o
 }
 
 // reachInboxOS is a client with the Inbox open on an approval and a question.
@@ -400,6 +415,13 @@ var actionsWithNoDefaultBinding = map[string]string{
 	"set_session_accent":    "context menu row",
 	"workspace_pill_switch": "context menu row",
 	"settings_sidebar":      "rail mouse row",
+	"rename_workspace":      "user binding",
+
+	// ssh-aware splits. The palette lists each one, and a user binds a key
+	// or sets appearance.new_window_follow_ssh to make the ordinary keys follow.
+	"split_ssh_horizontal": "palette row and user binding",
+	"split_ssh_vertical":   "palette row and user binding",
+	"new_window_ssh":       "palette row and user binding",
 
 	// Debug and tape surfaces reached from their own prefix, whose actions are
 	// separate names. These are the bodies both share.
@@ -441,11 +463,23 @@ var actionsWithNoDefaultBinding = map[string]string{
 	"scroll_move_right":  "user binding",
 	// Workspace cycling. The numbered keys and the switcher cover the default
 	// surface; a user who wants h/l cycle binds these.
-	"next_workspace":     "user binding",
-	"prev_workspace":     "user binding",
+	"next_workspace": "user binding",
+	"prev_workspace": "user binding",
+	// Session jumping ships unbound for the same reason; the switcher and the
+	// rail cover it by default, and opt+N is a user binding.
+	"switch_session_1":   "user binding",
+	"switch_session_2":   "user binding",
+	"switch_session_3":   "user binding",
+	"switch_session_4":   "user binding",
+	"switch_session_5":   "user binding",
+	"switch_session_6":   "user binding",
+	"switch_session_7":   "user binding",
+	"switch_session_8":   "user binding",
+	"switch_session_9":   "user binding",
 	"scroll_cycle_width": "user binding",
 	"scroll_consume":     "user binding",
 	"scroll_expel":       "user binding",
+	"scroll_maximize":    "user binding",
 
 	// BSP has one split it does not ship a key for.
 	"smart_split": "user binding",
@@ -662,7 +696,7 @@ func modeName(m app.Mode) string {
 func TestEveryDescribedActionIsHandled(t *testing.T) {
 	handled := map[string]bool{app.HoldModeAction: true}
 	k := config.DefaultConfig().Keybindings
-	for _, section := range []map[string][]string{k.Inbox, k.InboxPeek, k.Mail, k.SidebarAgents} {
+	for _, section := range []map[string][]string{k.Inbox, k.InboxPeek, k.Mail, k.SidebarAgents, k.CopyMode} {
 		for action := range section {
 			handled[action] = true
 		}

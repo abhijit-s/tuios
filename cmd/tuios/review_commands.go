@@ -10,6 +10,7 @@ import (
 	"strings"
 	"text/tabwriter"
 
+	"github.com/Gaurav-Gosain/tuios/internal/plural"
 	"github.com/Gaurav-Gosain/tuios/internal/review"
 	"github.com/spf13/cobra"
 )
@@ -199,9 +200,9 @@ func reviewHeading(res reviewDiffResult, on string) string {
 	}
 	line := fmt.Sprintf("Review of %s, pane %s%s, %s: %d %s, +%d -%d",
 		plainLine(res.Session), shortWindowID(res.Window), on, against,
-		res.Totals.Files, pluralWord(res.Totals.Files, "file", "files"), res.Totals.Added, res.Totals.Removed)
+		res.Totals.Files, plural.Word(res.Totals.Files, "file", "files"), res.Totals.Added, res.Totals.Removed)
 	if n := len(res.Notes); n > 0 {
-		line += fmt.Sprintf(", %d %s", n, pluralWord(n, "note", "notes"))
+		line += fmt.Sprintf(", %d %s", n, plural.Word(n, "note", "notes"))
 	}
 	return line
 }
@@ -212,12 +213,18 @@ func reviewHeading(res reviewDiffResult, on string) string {
 // each is printed with its control characters left out.
 func printReview(w io.Writer, res reviewDiffResult, on string, stat bool) error {
 	fmt.Fprintln(w, reviewHeading(res, on))
-	if len(res.Files) == 0 {
+	return printDiffFiles(w, res.Files, res.Notes, stat)
+}
+
+// printDiffFiles writes the list of changed files, then unless stat each
+// file's hunks with the notes under the lines they are on.
+func printDiffFiles(w io.Writer, files []review.File, notes []review.Note, stat bool) error {
+	if len(files) == 0 {
 		_, err := fmt.Fprintln(w, "Nothing changed.")
 		return err
 	}
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	for _, f := range res.Files {
+	for _, f := range files {
 		name := plainLine(f.Path)
 		if f.OldPath != "" {
 			name = plainLine(f.OldPath) + " -> " + name
@@ -239,25 +246,25 @@ func printReview(w io.Writer, res reviewDiffResult, on string, stat bool) error 
 		return nil
 	}
 	notesOn := map[string][]review.Note{}
-	for _, n := range res.Notes {
+	for _, n := range notes {
 		notesOn[n.Path] = append(notesOn[n.Path], n)
 	}
-	for _, f := range res.Files {
+	for _, f := range files {
 		if len(f.Hunks) == 0 {
 			continue
 		}
 		fmt.Fprintf(w, "\n%s\n", plainLine(f.Path))
-		notes := notesOn[f.Path]
+		onFile := notesOn[f.Path]
 		for _, h := range f.Hunks {
 			fmt.Fprintln(w, plainLine(h.Header))
-			for _, n := range notes {
+			for _, n := range onFile {
 				if n.IsHunk() && n.HunkHeader == h.Header {
 					fmt.Fprintln(w, noteLine(n))
 				}
 			}
 			for _, l := range h.Lines {
 				fmt.Fprintln(w, diffLine(l))
-				for _, n := range notes {
+				for _, n := range onFile {
 					if n.IsHunk() {
 						continue
 					}
@@ -345,18 +352,18 @@ func newReviewNoteCommand() *cobra.Command {
 		Short: "Leave a review note on a line of a pane's changes",
 		Long: `Leave a note on a line of what the agent in a pane changed, for 'tuios review
 send' to pass to the agent. FILE is relative to the repository root and LINE
-is the line on the new side; --side old puts it on a removed line, numbered as
+is the line on the new side. --side old puts it on a removed line, numbered as
 in the base. With --hunk, name the file alone and the hunk by its header
 ("@@ -88,4 +100,6 @@") for a note on the whole hunk.
 
-The note keeps the line's text, so it follows the line when the file changes;
-one whose line is gone is marked outdated. A note is at most 1000 bytes. A
+The note keeps the line's text, so it follows the line when the file changes.
+A note whose line is gone is marked outdated. A note is at most 1000 bytes. A
 worktree holds at most 200 notes.
 
 'tuios review note --edit ID TEXT...' replaces a note's text and 'tuios
 review note --remove ID' drops one. From inside a pane only the notes that
-pane wrote can be changed; from a shell, any but the ones left from the
-attached client.`,
+pane wrote can be changed. From a shell, every note can be changed except
+the ones left from the attached client.`,
 		Example: `  tuios review note api/retry.go:42 'log the attempt number here too'
   tuios review note -w build --hunk '@@ -88,4 +100,6 @@' api/retry.go 'wrap with context'
   tuios review note --edit n3 'wrap it with the attempt number'
@@ -474,9 +481,9 @@ func runReviewNote(w io.Writer, sessionName, window string, params map[string]an
 		fmt.Fprintf(w, "Removed note %v%s.\n", params["id"], t.on())
 		return nil
 	case "clear":
-		fmt.Fprintf(w, "Removed %d %s%s.", res.Removed, pluralWord(res.Removed, "note", "notes"), t.on())
+		fmt.Fprintf(w, "Removed %d %s%s.", res.Removed, plural.Word(res.Removed, "note", "notes"), t.on())
 		if len(res.Notes) > 0 {
-			fmt.Fprintf(w, " %d written by others %s kept.", len(res.Notes), pluralWord(len(res.Notes), "was", "were"))
+			fmt.Fprintf(w, " %d written by others %s kept.", len(res.Notes), plural.Word(len(res.Notes), "was", "were"))
 		}
 		fmt.Fprintln(w)
 		return nil
@@ -538,7 +545,7 @@ one. It says "from the person" only when sent from the attached client.`,
 	cmd.Flags().StringVarP(&sessionName, "session", "s", "", "Session of the pane (default: this pane's, else the most recently active)")
 	cmd.Flags().StringVarP(&window, "window", "w", "", "The agent's pane, by name or id (default: the focused pane)")
 	cmd.Flags().StringArrayVar(&ids, "id", nil, "Send only this note. Repeatable")
-	cmd.Flags().BoolVar(&now, "now", false, "Send only if the agent is at rest now; never queue")
+	cmd.Flags().BoolVar(&now, "now", false, "Send only if the agent is at rest now. Never queue")
 	cmd.Flags().BoolVar(&jsonOutput, "json", false, "Output result as JSON")
 	_ = cmd.RegisterFlagCompletionFunc("session", completeSessionNames)
 	return cmd
@@ -578,7 +585,7 @@ func runReviewSend(w io.Writer, sessionName, window string, ids []string, now, j
 	if err := json.Unmarshal(raw, &res); err != nil {
 		return fmt.Errorf("failed to parse response: %w", err)
 	}
-	fmt.Fprintf(w, "%d review %s in one message. %s\n", res.Notes, pluralWord(res.Notes, "note", "notes"),
+	fmt.Fprintf(w, "%d review %s in one message. %s\n", res.Notes, plural.Word(res.Notes, "note", "notes"),
 		describeQueued(res.QueuedID, window, res.Position, res.Delivering)+t.on())
 	if len(res.Withheld) > 0 {
 		ids := make([]string, len(res.Withheld))
@@ -586,7 +593,7 @@ func runReviewSend(w io.Writer, sessionName, window string, ids []string, now, j
 			ids[i] = plainLine(id)
 		}
 		fmt.Fprintf(w, "Withheld %s %s: %s. Edit a note to make it yours, or remove it.\n",
-			pluralWord(len(ids), "note", "notes"), strings.Join(ids, ", "), plainLine(res.Reason))
+			plural.Word(len(ids), "note", "notes"), strings.Join(ids, ", "), plainLine(res.Reason))
 	}
 	return nil
 }

@@ -2,6 +2,7 @@ package app
 
 import (
 	"image/color"
+	"slices"
 	"strings"
 	"time"
 
@@ -305,12 +306,26 @@ func (m *OS) renderDockString() (string, int) {
 
 	var leftB strings.Builder
 	leftX := 0
+	// The spotlight chip follows the mode pill, or opens the block when the
+	// plan has no mode pill. See spotlight_exit.go.
+	chip := m.spotlightChip()
+	chipW := lipgloss.Width(chip)
+	m.recordSpotlightChip(0, 0, dockY)
+	if chip != "" && !m.dockPlan.Has(config.DockComponentMode) {
+		m.recordSpotlightChip(leftX, chipW, dockY)
+		leftB.WriteString(chip)
+		leftX += chipW
+	}
 	for _, name := range m.dockPlan.Left {
 		var chunk string
 		custom := false
 		switch name {
 		case config.DockComponentMode:
 			chunk = styledModeText
+			if chip != "" {
+				m.recordSpotlightChip(leftX+lipgloss.Width(chunk), chipW, dockY)
+				chunk += chip
+			}
 		case config.DockComponentWorkspaces:
 			// Both dock paths render through here, so the tab hit rects are the
 			// drawn geometry rather than a second guess at it.
@@ -355,7 +370,6 @@ func (m *OS) renderDockString() (string, int) {
 	// notifRule is the run of hairline the message burns down over, drawn into
 	// the right-hand end of the separator row below. Empty when nothing is live.
 	var notifRule string
-	focusedWindow := m.GetFocusedWindow()
 
 	// The message is built against the room the left block and the dock items
 	// have actually left, not against an estimate, so its width needs no
@@ -369,27 +383,21 @@ func (m *OS) renderDockString() (string, int) {
 	// columns below, once the block's own first column is known.
 	var rightCustom []dockCustomHit
 
-	inCopyMode := focusedWindow.CopyModeVisible() && m.dockPlan.Has(config.DockComponentCopyHelp)
+	legend := m.dockModeLegend()
 	switch {
 	case hasNotif:
 		// What the tick compares against to tell whether the burn has moved.
 		m.notifDrawn = notif.drawn
-		// The message outranks the help line for its duration. Copy mode is a
-		// mode the user is holding and can read the keys for again in a moment;
-		// a message is a thing that just happened and will not be repeated.
+		// The message outranks the legend for its duration. A mode is a thing
+		// the user is holding and can read the keys for again in a moment; a
+		// message is a thing that just happened and will not be repeated.
 		rightInfo = notif.Text
 		notifRule = notif.Rule
 		rightWidth = notif.Width
-	case inCopyMode:
-		// Take the longest help tier that fits; the copy-mode keys are worth a
-		// dock's width but not worth spilling off the end of it.
-		tiers := m.copyModeHelp(focusedWindow)
-		for i, tier := range tiers {
-			rightInfo = renderCopyModeHelp(tier, pal)
-			if lipgloss.Width(rightInfo) <= rightWidth || i == len(tiers)-1 {
-				break
-			}
-		}
+	case len(legend) > 0:
+		// The legend is fitted to the room by dropping whole keys, so the
+		// cut below never reaches it.
+		rightInfo = renderModeLegend(legend, rightWidth, pal)
 	default:
 		rightInfo, rightCustom = m.renderDockRightCells(rightWidth, sysInfoStyle)
 	}
@@ -532,11 +540,16 @@ func (m *OS) renderDockString() (string, int) {
 			hairline.Render(strings.Repeat(sepChar, renderWidth-notifX0-ruleWidth))
 	}
 
-	dockbarYPos := m.GetRenderHeight() - config.DockHeight
+	// A compact dock is the bar alone. The rule, and the burn a message draws
+	// on it, are not drawn.
+	dockbarYPos := m.GetRenderHeight() - m.Settings.DockHeight()
 	dockbarParts := []string{separator, dockBar}
+	if m.Settings.DockCompact {
+		dockbarParts = dockbarParts[1:]
+	}
 	if m.Settings.DockbarPosition == "top" {
 		dockbarYPos = 0
-		dockbarParts[0], dockbarParts[1] = dockbarParts[1], dockbarParts[0]
+		slices.Reverse(dockbarParts)
 	}
 
 	fullDock := lipgloss.JoinVertical(lipgloss.Left, dockbarParts...)

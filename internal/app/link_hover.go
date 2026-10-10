@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"github.com/Gaurav-Gosain/tuios/internal/config"
+	"github.com/Gaurav-Gosain/tuios/internal/hints"
 	"github.com/Gaurav-Gosain/tuios/internal/terminal"
 	uv "github.com/charmbracelet/ultraviolet"
 )
@@ -34,7 +35,11 @@ type PaneLink struct {
 	// pane, and a run is meaningless against any other.
 	WindowID string
 	// URL is the address the link points at, exactly as the program wrote it.
+	// For a marked link it is the OSC 8 target, never the visible text.
 	URL string
+	// Params are the OSC 8 parameters of a marked link, id= included. Two
+	// runs with the same URL and an id= in the same Params are one link.
+	Params string
 	// Marked says the address came from OSC 8, so the program declared it. A
 	// bare URL found in plain text is not marked, and the two are treated
 	// differently by nothing except this field and the config that finds them.
@@ -64,7 +69,7 @@ func (l PaneLink) Contains(x, y int) bool {
 // The pointer moving from one cell of a link to the next must not repaint the
 // pane, and this is what tells the two apart.
 func (l PaneLink) Same(o PaneLink) bool {
-	return l.WindowID == o.WindowID && l.URL == o.URL &&
+	return l.WindowID == o.WindowID && l.URL == o.URL && l.Params == o.Params &&
 		l.Y0 == o.Y0 && l.X0 == o.X0 && l.Y1 == o.Y1 && l.X1 == o.X1
 }
 
@@ -154,6 +159,7 @@ func markedLinkAt(window *terminal.Window, x, y, maxX int) (PaneLink, bool) {
 	return PaneLink{
 		WindowID: window.ID,
 		URL:      want.URL,
+		Params:   want.Params,
 		Marked:   true,
 		Y0:       y0, X0: x0, Y1: y1, X1: x1,
 		Row: y, Col: x,
@@ -181,13 +187,18 @@ type linkCellRef struct{ X, Y int }
 // The rows are joined when the emulator says the row above wrapped onto this
 // one (see paneRowWraps). A line that fills the pane and then ends is not
 // joined to the next, however full its last column is.
+//
+// The line is read from the emulator, not from the viewport: a URL that wraps
+// past the top or the bottom of what is shown, as one does in a pane scrolled
+// back to the middle of it, still opens its whole address. Only the run that
+// gets underlined stops at the viewport's edge.
 func bareLinkAt(window *terminal.Window, x, y, maxX int) (PaneLink, bool) {
 	h := window.ContentHeight()
 
 	// Walk up to the first row of the wrapped line, then collect it and every
 	// row the wrap carried it onto.
 	top := y
-	for top > 0 && top > y-linkWrapRows && paneRowWraps(window, top-1) {
+	for top > y-linkWrapRows && paneRowWraps(window, top-1) {
 		top--
 	}
 
@@ -195,7 +206,7 @@ func bareLinkAt(window *terminal.Window, x, y, maxX int) (PaneLink, bool) {
 	var refs []linkCellRef
 	var byteAt []int
 	cursor := -1
-	for row := top; row < h && row <= y+linkWrapRows; row++ {
+	for row := top; row <= y+linkWrapRows; row++ {
 		text, rowBytes := paneRowText(window, row, maxX)
 		base := b.Len()
 		b.WriteString(text)
@@ -218,7 +229,7 @@ func bareLinkAt(window *terminal.Window, x, y, maxX int) (PaneLink, bool) {
 		return PaneLink{}, false
 	}
 
-	s, e, ok := ScanBareURL(b.String(), cursor)
+	s, e, ok := hints.URLAt(b.String(), cursor)
 	if !ok {
 		return PaneLink{}, false
 	}
@@ -237,13 +248,55 @@ func bareLinkAt(window *terminal.Window, x, y, maxX int) (PaneLink, bool) {
 		return PaneLink{}, false
 	}
 
-	return PaneLink{
+	link := PaneLink{
 		WindowID: window.ID,
 		URL:      b.String()[s:e],
 		Y0:       refs[first].Y, X0: refs[first].X,
 		Y1: refs[last].Y, X1: refs[last].X,
 		Row: y, Col: x,
-	}, true
+	}
+	// The run is what gets underlined, so it stops at the viewport's edge.
+	if link.Y0 < 0 {
+		link.Y0, link.X0 = 0, 0
+	}
+	if link.Y1 >= h {
+		link.Y1, link.X1 = h-1, maxX-1
+	}
+	return link, true
+}
+
+// paneRowSource maps viewport row y to the row of the emulator that holds
+// it: a scrollback line (sbIdx >= 0) or a row of the live screen (screenY >=
+// 0). y may lie outside the viewport, above its first row or below its last,
+// so a reader can follow a wrapped line past the edge of what is shown. ok is
+// false when no such row exists.
+//
+// Above the live screen is the scrollback, except on the alternate screen,
+// which has none of its own: the main screen's history is not the line the
+// alternate screen's first row continues.
+//
+// The caller must hold the window's I/O read lock.
+func paneRowSource(window *terminal.Window, y int) (sbIdx, screenY int, ok bool) {
+	if window.Terminal == nil {
+		return -1, -1, false
+	}
+	offset := max(window.ScrollbackOffset, 0)
+	if y >= offset {
+		screenY = y - offset
+		if screenY >= window.Terminal.Height() {
+			return -1, -1, false
+		}
+		return -1, screenY, true
+	}
+	if offset == 0 && window.Terminal.IsAltScreen() {
+		return -1, -1, false
+	}
+	n := window.ScrollbackLen()
+	sbIdx = n - offset + y
+	if sbIdx < 0 || sbIdx >= n {
+		return -1, -1, false
+	}
+	return sbIdx, -1, true
 }
 
 // paneRowWraps reports whether viewport row y carries on to row y+1 because
@@ -253,48 +306,43 @@ func bareLinkAt(window *terminal.Window, x, y, maxX int) (PaneLink, bool) {
 // followed by a newline fills the row the same way, and joining it to the
 // next line made one address out of two.
 //
+// y may lie outside the viewport (see paneRowSource). The newest scrollback
+// line reports whether it wrapped onto the screen's first row.
+//
 // The caller must hold the window's I/O read lock.
 func paneRowWraps(window *terminal.Window, y int) bool {
-	if window.Terminal == nil || y < 0 {
+	sbIdx, screenY, ok := paneRowSource(window, y)
+	if !ok {
 		return false
 	}
-	if offset := window.ScrollbackOffset; offset > 0 {
-		if y < offset {
-			idx := window.ScrollbackLen() - offset + y
-			wrapped, known := window.Terminal.ScrollbackSoftWrapped(idx)
-			return known && wrapped
-		}
-		y -= offset
+	var wrapped, known bool
+	if sbIdx >= 0 {
+		wrapped, known = window.Terminal.ScrollbackSoftWrapped(sbIdx)
+	} else {
+		wrapped, known = window.Terminal.RowSoftWrapped(screenY)
 	}
-	wrapped, known := window.Terminal.RowSoftWrapped(y)
 	return known && wrapped
 }
 
 // paneCellAt reads one viewport cell, from the scrollback ring when the pane is
 // scrolled back and from the live screen otherwise. It is the same mapping the
 // render loop walks, kept here so the cells the pointer lands on are the cells
-// the user is looking at.
+// the user is looking at. y may lie outside the viewport (see paneRowSource).
 //
 // The caller must hold the window's I/O read lock.
 func paneCellAt(window *terminal.Window, x, y int) *uv.Cell {
-	if window.ScrollbackOffset > 0 {
-		if y < window.ScrollbackOffset {
-			idx := window.ScrollbackLen() - window.ScrollbackOffset + y
-			if idx < 0 || idx >= window.ScrollbackLen() {
-				return nil
-			}
-			line := window.ScrollbackLine(idx)
-			if x >= len(line) {
-				return nil
-			}
-			return &line[x]
-		}
-		y -= window.ScrollbackOffset
-	}
-	if window.Terminal == nil || y < 0 || y >= window.Terminal.Height() {
+	sbIdx, screenY, ok := paneRowSource(window, y)
+	if !ok || x < 0 {
 		return nil
 	}
-	return window.Terminal.CellAt(x, y)
+	if sbIdx >= 0 {
+		line := window.ScrollbackLine(sbIdx)
+		if x >= len(line) {
+			return nil
+		}
+		return &line[x]
+	}
+	return window.Terminal.CellAt(x, screenY)
 }
 
 // paneRowText renders one viewport row as plain text and returns, per column,

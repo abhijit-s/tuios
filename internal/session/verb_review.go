@@ -40,7 +40,7 @@ import (
 //     types (queueOriginRefusal), and refuses a pane on needs_input then.
 //   - Who wrote a note, and who sent a message, is the daemon's reading of the
 //     connection (reviewAuthor), never a parameter: human only with a live
-//     human_nonce (verifyAnyHumanNonce, which refuses any process in a pane).
+//     human_nonce (humanNonceFor, which refuses any process in a pane).
 //   - A note is typed into its pane when it is sent, whoever sends it, so a
 //     pane without admin may add or edit a note only on a pane it could type
 //     into itself (reviewNoteTargetRefusal, the typingRefusal rule). When the
@@ -91,25 +91,45 @@ type reviewRepo struct {
 // window is empty, and the repository under it: the session's worktree when
 // the pane is in it, else the repository holding the pane's directory.
 func (d *Daemon) reviewTarget(sessionName, window string) (*Session, WindowState, reviewRepo, *verbError) {
-	sess, verr := d.resolveVerbSession(sessionName)
+	sess, target, verr := d.resolveVerbPane(sessionName, window)
 	if verr != nil {
 		return nil, WindowState{}, reviewRepo{}, verr
+	}
+	repo, verr := d.paneRepo(sess, target)
+	if verr != nil {
+		return nil, WindowState{}, reviewRepo{}, verr
+	}
+	return sess, target, repo, nil
+}
+
+// resolveVerbPane resolves a session and a window in it, the focused one when
+// window is empty.
+func (d *Daemon) resolveVerbPane(sessionName, window string) (*Session, WindowState, *verbError) {
+	sess, verr := d.resolveVerbSession(sessionName)
+	if verr != nil {
+		return nil, WindowState{}, verr
 	}
 	state := sess.GetState()
 	if window == "" {
 		id, err := focusedWindowID(state)
 		if err != nil {
-			return nil, WindowState{}, reviewRepo{}, mapResolveErr(err, sess)
+			return nil, WindowState{}, mapResolveErr(err, sess)
 		}
 		window = id
 	}
 	idx, err := findWindowStateIndex(state.Windows, window)
 	if err != nil {
-		return nil, WindowState{}, reviewRepo{}, mapResolveErr(err, sess)
+		return nil, WindowState{}, mapResolveErr(err, sess)
 	}
-	target := state.Windows[idx]
+	return sess, state.Windows[idx], nil
+}
+
+// paneRepo is the repository under a pane: the session's worktree when the
+// pane is in it, else the repository holding the pane's directory. A pane on
+// another machine has its repository there, and is refused.
+func (d *Daemon) paneRepo(sess *Session, target WindowState) (reviewRepo, *verbError) {
 	if target.Host != "" {
-		return nil, WindowState{}, reviewRepo{}, hintedVerbError(ErrVerbNotRepo, "window "+shortWindowID(target.ID)+" runs on "+echoName(target.Host)+", and its repository is there, not here", &VerbHint{
+		return reviewRepo{}, hintedVerbError(ErrVerbNotRepo, "window "+shortWindowID(target.ID)+" runs on "+echoName(target.Host)+", and its repository is there, not here", &VerbHint{
 			Command: "tuios worktree pull " + target.Host + ":<session>",
 			Detail:  "Nothing was read. Reviewing a pane on another machine is not supported yet: attach to that machine and review it there, or bring its work here with tuios worktree pull and review that.",
 		})
@@ -129,7 +149,7 @@ func (d *Daemon) reviewTarget(sessionName, window string) (*Session, WindowState
 				recorded = b
 			}
 		}
-		return sess, target, reviewRepo{root: canonRoot(wt.Path), repoRoot: wt.RepoRoot, recorded: recorded, info: wt}, nil
+		return reviewRepo{root: canonRoot(wt.Path), repoRoot: wt.RepoRoot, recorded: recorded, info: wt}, nil
 	}
 	if cwd != "" {
 		if _, common, root, ok := gitstate.Locate(cwd); ok {
@@ -137,10 +157,10 @@ func (d *Daemon) reviewTarget(sessionName, window string) (*Session, WindowState
 			if filepath.Base(common) == ".git" {
 				repoRoot = filepath.Dir(common)
 			}
-			return sess, target, reviewRepo{root: canonRoot(root), repoRoot: repoRoot}, nil
+			return reviewRepo{root: canonRoot(root), repoRoot: repoRoot}, nil
 		}
 	}
-	return nil, WindowState{}, reviewRepo{}, hintedVerbError(ErrVerbNotRepo, "no git repository is under window "+shortWindowID(target.ID), &VerbHint{
+	return reviewRepo{}, hintedVerbError(ErrVerbNotRepo, "no git repository is under window "+shortWindowID(target.ID), &VerbHint{
 		Param:  "window",
 		Detail: "Nothing was read. Review a pane whose directory is inside a git repository, or a worktree session.",
 	})
@@ -397,8 +417,8 @@ type reviewAuthor struct {
 	pane string
 }
 
-func (d *Daemon) reviewAuthorOf(cs *connState, nonce, verb string) (reviewAuthor, *verbError) {
-	human := nonce != "" && d.verifyAnyHumanNonce(nonce, cs)
+func (d *Daemon) reviewAuthorOf(cs *connState, nonce, sessionID, verb string) (reviewAuthor, *verbError) {
+	_, human := d.humanNonceFor(nonce, sessionID, cs)
 	if nonce != "" && !human {
 		return reviewAuthor{}, hintedVerbError(ErrVerbNotHuman, "human_nonce does not belong to a client attached right now", &VerbHint{
 			Param:  "human_nonce",
@@ -479,11 +499,16 @@ func (d *Daemon) verbReviewNote(cs *connState, params json.RawMessage) (any, *ve
 	if (p.Action == "edit" || p.Action == "remove") && p.ID == "" {
 		return nil, invalidParam("id", "id is required: the note to "+p.Action+" (see review-note list)")
 	}
-	author, verr := d.reviewAuthorOf(cs, p.HumanNonce, "review-note")
+	if p.HumanNonce != "" && !d.humanNonceHeld(p.HumanNonce, cs) {
+		if _, verr := d.reviewAuthorOf(cs, p.HumanNonce, "", "review-note"); verr != nil {
+			return nil, verr
+		}
+	}
+	sess, target, repo, verr := d.reviewTarget(p.Session, p.Window)
 	if verr != nil {
 		return nil, verr
 	}
-	sess, target, repo, verr := d.reviewTarget(p.Session, p.Window)
+	author, verr := d.reviewAuthorOf(cs, p.HumanNonce, sess.ID, "review-note")
 	if verr != nil {
 		return nil, verr
 	}

@@ -322,7 +322,7 @@ func (m *OS) GetCanvas(render bool) *frameCanvas {
 		layers = append(layers, frame)
 	}
 
-	// Add shared border separator overlay when active (not in scrolling mode)
+	// Add the shared-border dividers when the panes have given up their own borders
 	if m.panesBorderless() {
 		if sepLayers := m.renderSeparatorOverlay(); len(sepLayers) > 0 {
 			layers = append(layers, sepLayers...)
@@ -704,6 +704,7 @@ func (m *OS) composeFrame() string {
 	// is drawn, so a pane that is not drawn would otherwise hold hints open,
 	// and the fast path off, for good.
 	m.closeStaleHints()
+	m.PaneLabelsOpen()
 	if window, ok := m.fullscreenFastWindow(); ok && !fastPathDisabled {
 		// The fast path draws no rail, so no working row is on screen and the
 		// shimmer's clock must not go on asking for frames.
@@ -722,6 +723,9 @@ func (m *OS) composeFrame() string {
 		}
 	}
 	canvas := m.GetCanvas(true)
+	// Image glyphs before the spotlight, so the beam shades them like text.
+	// A frame with a modal had them drawn before its scrim (compose.go).
+	m.drawImageSymbols(canvas)
 	// The spotlight goes here and nowhere else: after every pane's cached layer
 	// has been consumed, before the canvas becomes a string. The saver owns the
 	// whole screen while it runs, so the two never draw in one frame.
@@ -757,7 +761,7 @@ func (m *OS) fullscreenFastWindow() (*terminal.Window, bool) {
 	if m.screensaver.active {
 		return nil, false
 	}
-	if m.ShowHelp || m.ShowCommandPalette || m.ShowLauncher || m.ShowSessionSwitcher || m.ShowAgentMail || m.ShowInbox || m.ShowWorkspaceSwitcher || m.ShowLayoutPicker || m.ShowHostPicker ||
+	if m.ShowHelp || m.ShowCommandPalette || m.ShowLauncher || m.ShowSessionSwitcher || m.ShowAgentMail || m.ShowInbox || m.ShowWorkspaceSwitcher || m.buffers.open || m.navigator.open || m.ShowLayoutPicker || m.ShowHostPicker ||
 		m.ShowQuitMenu || m.ShowScrollbackBrowser || m.ShowLogs || m.msgView.open || m.ShowCacheStats ||
 		m.ShowAggregateView || m.ShowTapeManager || m.ShowTapeReview || m.ShowSettings || m.ShowThemePicker || m.ShowEffectPicker ||
 		m.ShowKeybindManager || m.ShowAccentPicker || m.PrefixActive || m.ContextMenu != nil ||
@@ -787,6 +791,10 @@ func (m *OS) fullscreenFastWindow() (*terminal.Window, bool) {
 	// Hints mode is a canvas pass too (hints_render.go), for as long as the
 	// labels are up.
 	if m.hints != nil {
+		return nil, false
+	}
+	// So are the pane labels (pane_labels_render.go).
+	if m.paneLabels != nil {
 		return nil, false
 	}
 	// The celebration is a pass over the canvas too, for the second or so it
@@ -844,6 +852,14 @@ func (m *OS) fullscreenFastWindow() (*terminal.Window, bool) {
 	// does not silently lose it. At the live tail there is no thumb, so a deep
 	// scrollback no longer costs the fast path.
 	if windowNeedsScrollbar(window, &m.Settings) {
+		return nil, false
+	}
+	// The fast path stacks the box and this client's dock with nothing
+	// between them. When another client on the session reserves more rows
+	// than this one draws (a full dock beside a compact one, or any dock
+	// beside a hidden one), the layout leaves a blank band this frame would
+	// not have, and every row under it would be drawn one or more rows off.
+	if own := m.OwnLayoutReserve(); m.GetTopMargin() != own.Top || m.GetBottomMargin() != own.Bottom {
 		return nil, false
 	}
 	rw, topMargin, usableH := m.GetRenderWidth(), m.GetTopMargin(), m.GetUsableHeight()
@@ -949,6 +965,9 @@ func (m *OS) chargeRenderCost(d time.Duration) {
 
 func (m *OS) View() tea.View {
 	var view tea.View
+	// composed is set when this call composed a frame that differs from the
+	// last one.
+	var composed bool
 
 	// The last frame of a remote client that lost its session or its daemon.
 	// It leaves the alternate screen so the reason stays on the user's terminal
@@ -978,11 +997,7 @@ func (m *OS) View() tea.View {
 		return m.crashView()
 	}
 
-	// Fast path: return cached content when frame-skip determined nothing changed.
-	// This avoids the expensive GetCanvas → ultraviolet render pipeline on idle ticks.
-	if m.renderSkipped && m.cachedViewContent != "" {
-		view.SetContent(m.cachedViewContent)
-	} else {
+	compose := func() bool {
 		// A resize drag applies the new geometry to the windows immediately but
 		// defers the matching BSP ratio sync, because the sync is whole-tree
 		// work and motion events outnumber frames. The separator overlay reads
@@ -1003,9 +1018,16 @@ func (m *OS) View() tea.View {
 			// the next one: the panic is in the compositor, so the next frame
 			// would fail the same way and the user would sit in front of a
 			// screen that never changed.
-			return m.crashView()
+			return false
+		}
+		// A frame to flush: the frame ticker runs at the frame rate again.
+		// It goes out now rather than at its next tick, unless it equals the
+		// last one; see below.
+		if content != m.cachedViewContent {
+			composed = true
 		}
 		m.cachedViewContent = content
+		m.noteFrame()
 		// This frame carries the beam at the pointer's newest position, so the
 		// skipped move it was waiting for has been drawn. Cleared here rather
 		// than on the motion path so a frame composed for any other reason (a
@@ -1013,6 +1035,20 @@ func (m *OS) View() tea.View {
 		m.spotlightMotionPending = false
 		m.zenHidden = m.zenBordersHidden(false)
 		view.SetContent(content)
+		return true
+	}
+
+	// Fast path: return cached content when frame-skip determined nothing changed.
+	// This avoids the expensive GetCanvas → ultraviolet render pipeline on idle ticks.
+	//
+	// The cursor is read fresh on every frame, the skipped ones too, so a
+	// cached frame can carry a picture-in-picture box placed for where the
+	// cursor was. Such a frame is composed again rather than reused: the box
+	// must never cover the cursor the same frame shows.
+	if m.renderSkipped && m.cachedViewContent != "" && !m.pipCoversCursor(m.getRealCursor()) {
+		view.SetContent(m.cachedViewContent)
+	} else if !compose() {
+		return m.crashView()
 	}
 
 	view.AltScreen = true
@@ -1036,6 +1072,28 @@ func (m *OS) View() tea.View {
 	view.DisableBracketedPasteMode = false
 	view.KeyboardEnhancements = m.keyboardEnhancements()
 	view.Cursor = m.getRealCursor()
+	// The emulator's cursor can move between the read the composed frame
+	// placed the picture-in-picture box by and the read above, since pane
+	// output is written on another goroutine. When the move took it under the
+	// box, the frame is composed once more, around the cursor it will show.
+	if m.pipCoversCursor(view.Cursor) {
+		if !compose() {
+			return m.crashView()
+		}
+		view.Cursor = m.getRealCursor()
+	}
+	// The title of the terminal tuios runs in, when a tool set one through
+	// herdr's client.window_title.set. Empty leaves the title alone.
+	view.WindowTitle = m.ClientTitle
+
+	// A composed frame goes out now rather than at the next tick. One equal
+	// to the last, with the cursor where it was, has nothing to write: that
+	// is every frame a pane streaming kitty graphics composes, and asking
+	// for it cost a timer and a wakeup each.
+	if cur := cursorState(view.Cursor); composed || cur != m.frameRate.lastCursor {
+		m.frameRate.lastCursor = cur
+		m.kickFlush()
+	}
 
 	// Flush graphics AFTER setting view content. bubbletea will render the
 	// text first, then we write graphics. This keeps them in the same frame
@@ -1098,7 +1156,7 @@ func (m *OS) flushGraphicsForView() {
 	// of the drag. Hiding keeps the image data resident, so the gesture ending
 	// puts it back with no round trip to whatever drew it.
 	hideImages := m.Resizing || m.ShowHelp || m.ShowCommandPalette || m.ShowLauncher || m.ShowSessionSwitcher || m.ShowAgentMail || m.ShowInbox ||
-		m.ShowWorkspaceSwitcher || m.ShowLayoutPicker || m.ShowHostPicker || m.ShowQuitMenu || m.ShowScrollbackBrowser ||
+		m.ShowWorkspaceSwitcher || m.buffers.open || m.navigator.open || m.ShowLayoutPicker || m.ShowHostPicker || m.ShowQuitMenu || m.ShowScrollbackBrowser ||
 		m.ShowLogs || m.msgView.open || m.ShowCacheStats || m.ShowAggregateView ||
 		m.ShowSettings || m.ShowThemePicker || m.ShowKeybindManager || m.ShowAccentPicker || m.ShowTapeManager || m.ShowTapeReview ||
 		m.ShotPreview.Open || m.review.open

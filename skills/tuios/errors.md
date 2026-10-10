@@ -13,17 +13,20 @@ Over the socket every failure carries a stable code in the error envelope:
 `needs_client`, `option_not_found`, `command_failed`, `timeout`, `not_ready`,
 `agent_blocked`, `prompt_stalled`, `loop_refused`, `rate_limited`,
 `no_keyboard`, `forbidden`, `not_human`, `prompt_changed`, `not_resumable`,
-`no_shell_integration`, `not_at_prompt`, `confirm_required`,
+`no_shell_integration`, `not_at_prompt`, `confirm_required`, `no_transcript`,
+`unsupported_harness`,
 `protocol_mismatch`, `unknown_host`, `host_unreachable`, `host_refused`,
 `unknown_pane`, `not_worktree`, `worktree_dirty`, `git_failed`,
-`repo_not_found`, `not_repo`, `no_notes`, `queue_full`,
-`risk_unacknowledged`, `agents_disabled`, `internal`. `internal` is a failure inside the daemon
+`repo_not_found`, `not_repo`, `no_notes`, `no_checkpoint`, `nothing_to_commit`,
+`merge_conflict`, `checkout_dirty`, `no_remote`, `gh_unavailable`, `queue_full`,
+`no_buffer`, `risk_unacknowledged`, `agents_disabled`, `busy`, `too_many_connections`,
+`internal`. `internal` is a failure inside the daemon
 that none of the others names; its message says what went wrong. The CLI folds
 the same information into its messages.
 
 ## What each asks of you
 
-Not one of these is a timeout. Retrying one unchanged fails the same way.
+Not one of these is a timeout. Retrying one unchanged fails the same way, except `busy` and `too_many_connections`, which clear when other requests finish or other connections close.
 
 | Code | What to do |
 | --- | --- |
@@ -37,15 +40,25 @@ Not one of these is a timeout. Retrying one unchanged fails the same way.
 | `rate_limited` | Stop sending. Two agents are probably answering each other. |
 | `no_keyboard` | `human` has no pane. Use `ask-human` or mail to `human`. |
 | `queue_full` | The pane already holds `[agents.queue] max` queued messages. Wait for the agent to take them, or drop one with `tuios queue rm`. |
+| `no_buffer` | From the paste buffer verbs: no buffer has that name, or there are no buffers. Nothing was read, pasted or deleted. `tuios list-buffers` shows the names. |
+| `busy` | The daemon had no room for the request now: other large requests held its memory, or the pane has not read the last large input. Nothing was done. Try again after a short wait. |
+| `too_many_connections` | The daemon already serves as many connections as it takes, and closed yours. Nothing was done. Close some clients or commands, then try again. |
 | `agents_disabled` | The person turned the agent features off with `[agents] enabled = false`, and the verb is one of them. Nothing was done. Do not retry. Tell the person. |
 | `not_repo` | From `review-diff` and `review-note`: no git repository is under the pane, or its process runs on another machine. Nothing was read. |
 | `no_notes` | From `send-review`: no unsent notes. Add one with `tuios review note`, or name sent ones with `--id` to send them again. |
+| `no_checkpoint` | From `checkpoint-diff` and `restore-checkpoint`: the pane has no checkpoint by that number. The hint lists the ones it has. Nothing was changed. |
+| `nothing_to_commit` | From `ship-commit`: the work tree has no change. From `ship-push` and `ship-pr`: the branch has no commit. Nothing was changed. |
+| `merge_conflict` | From `ship-merge`: the merge conflicted and was undone. The hint lists the files. Rebase the branch in the worktree, resolve them there, and merge again. |
+| `checkout_dirty` | From `ship-merge`: the main checkout has changes, a merge in progress, or another branch checked out. Nothing was merged. Tell the person. Do not clean their checkout. |
+| `no_remote` | From `ship-push` and `ship-pr`: no remote, or not the one named. Nothing was pushed. |
+| `gh_unavailable` | From `ship-pr` and `ship-status`: gh is not installed or not logged in. Nothing was pushed. Tell the person to run `gh auth login`. |
 | `forbidden` | Your pane's grants (`tuios --skill grants`), a link's policy on another machine, or sending as `human` from a pane. The message names what was needed. Tell the person; do not look for another way. |
 | `not_human` | Only the person may do this: `dismiss-attention`, `respond` (unless your pane holds `respond`) and `reply-approval`. Change your own state, or ask the person. |
 | `prompt_changed` | The prompt moved or was answered before `respond` landed. Nothing was pressed. |
 | `not_resumable` | The pane has no conversation `resume-agent` can bring back. Nothing was typed. |
 | `no_shell_integration`, `not_at_prompt` | From `run`: the shell sends no OSC 133 marks, or is busy. Nothing was typed. Use `send-text` and a marker, or `wait-for command-finished`. |
-| `confirm_required` | A write by selector. The hint lists the panes and a token; check them, then call again with `--confirm`. |
+| `confirm_required` | A write by selector, or a `ship-push` or `ship-pr`. The hint lists the panes, or what would be sent, and a token. Check them, then call again with the token. |
+| `no_transcript`, `unsupported_harness` | From `agent-transcript`: the pane is not joined to a transcript, or its harness keeps none this daemon reads. Read the pane with `capture-pane`. |
 | `protocol_mismatch` | The caller's protocol version is outside what this daemon accepts. Use a matching tuios. |
 | `unknown_host` | No host by that name. Names are matched exactly and never guessed. |
 | `host_unreachable` | The host is not answering: its link is down or does not answer. Nothing was queued except mail. `tuios hosts` says why. |

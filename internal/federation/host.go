@@ -3,10 +3,11 @@ package federation
 import (
 	"errors"
 	"fmt"
-	"regexp"
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/Gaurav-Gosain/tuios/internal/lazyre"
 )
 
 // LocalHostName is the reserved name for the daemon a caller is already talking
@@ -47,6 +48,16 @@ type Host struct {
 	// SSHOptions are extra arguments placed before the address. They are the
 	// escape hatch for a host that needs a flag ssh_config cannot carry.
 	SSHOptions []string
+	// TailscaleLogin is a sign-in origin allowed besides Tailscale's own,
+	// such as a Headscale server ("https://headscale.example"). See
+	// SignInURLAllowed.
+	TailscaleLogin string
+	// ControlPath, when set, makes every ssh to the host share one
+	// connection through a master socket at this path. It is never read from
+	// the config file: a command that runs several ssh calls against a host
+	// sets it for its own run, so one Tailscale SSH approval covers them all.
+	// The caller owns the path and stops the master with StopSharingArgs.
+	ControlPath string
 }
 
 func (h Host) connectTimeout() time.Duration {
@@ -67,7 +78,7 @@ func (h Host) command() string {
 // name becomes a qualifier in `host:target` addresses, so a name carrying a
 // colon or a space would make an address ambiguous, and an address that can be
 // read two ways is how a caller reaches the wrong machine.
-var hostNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
+var hostNamePattern = lazyre.New(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 
 // ErrUnknownHost reports a name that is not in the configured table. It is
 // final: section 3 refuses fuzzy matching across hosts, because silently
@@ -95,7 +106,7 @@ func NewTable(hosts []Host) (*Table, []error) {
 		case name == LocalHostName:
 			problems = append(problems, fmt.Errorf("host %q was ignored, because %q is the reserved name for this machine", name, LocalHostName))
 			continue
-		case !hostNamePattern.MatchString(name):
+		case !hostNamePattern().MatchString(name):
 			problems = append(problems, fmt.Errorf("host %q was ignored, because a host name accepts only letters, digits, dot, dash and underscore", name))
 			continue
 		case strings.TrimSpace(h.Addr) == "":

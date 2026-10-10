@@ -358,6 +358,15 @@ type Window struct {
 	// HasNewOutput is set when new data is written to the terminal.
 	// Used by MarkTerminalsWithNewContent to avoid unconditional dirty-marking.
 	HasNewOutput atomic.Bool
+	// HasGraphicsOutput is set instead of HasNewOutput for a write that was
+	// only kitty graphics commands leaving every cell as it was, while the
+	// cursor is hidden: a frame of a guest that streams images. See
+	// graphicsOnly.
+	HasGraphicsOutput atomic.Bool
+
+	// frameInterval is the coalescer's floor in nanoseconds, 0 for the
+	// default. See SetFrameInterval.
+	frameInterval atomic.Int64
 
 	// coalesceSignal is the renderCoalescer's own render-trigger flag.
 	// outputWriter (daemon panes) or the PTY reader (local panes) sets it after
@@ -435,6 +444,9 @@ type Window struct {
 	// AgentSubagents is how many subagents the pane's agent is running, as the
 	// daemon synced it. Zero for none, and from a daemon that counts none.
 	AgentSubagents int
+	// ProgramStatus is the pane's OSC 7501 records, as the daemon synced them,
+	// the root first. Replaced whole on every sync and never edited in place.
+	ProgramStatus []sessiontree.ProgramRecord
 	// AgentStateAt is when the pane entered AgentState (Unix nanoseconds), as
 	// the daemon stamped it. The rail shows the elapsed time so a pane waiting
 	// on input reads differently from one that just started working.
@@ -470,6 +482,10 @@ type Window struct {
 	// when that is not the machine the pane runs on: the pane is running ssh.
 	// Empty otherwise. Only the daemon reports it.
 	CwdHost string
+	// CwdElsewhereDir is the folder that report from CwdHost named. An ssh
+	// split starts the new pane there. Only a client that runs the pane
+	// itself sets it.
+	CwdElsewhereDir string
 
 	// Host is the machine the pane's process runs on, empty for this one.
 	//
@@ -529,6 +545,17 @@ type SearchCache struct {
 	Matches   []SearchMatch
 	CacheTime time.Time
 	Valid     bool
+
+	// What the search was made over, so the next one can tell whether it
+	// may search only the lines this one matched. See narrowedLines in
+	// internal/input. CaseSensitive is the setting it ran with. Capped is
+	// set when it stopped at MaxSearchMatches, so Matches may not be all
+	// of them. HistoryGen and HistoryLen are the history's generation and
+	// length.
+	CaseSensitive bool
+	Capped        bool
+	HistoryGen    uint64
+	HistoryLen    int
 }
 
 // CopyMode holds all state for vim-style copy/scrollback mode
@@ -648,10 +675,6 @@ func newWindowBase(id, title string, x, y, width, height, z int, ptyDataChan cha
 	// than read from a package global: one server process holds several
 	// sessions and they need not agree about it.
 	terminal := vt.NewWithScrollback(terminalWidth, terminalHeight, scrollbackLines)
-
-	// Set cell size for XTWINOPS terminal size reporting
-	// Using 10x20 pixels as reasonable defaults for a typical monospace font
-	terminal.SetCellSize(10, 20)
 
 	window := &Window{
 		Width:         width,

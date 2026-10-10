@@ -753,14 +753,20 @@ file (`t=t`) or a shared memory object (`t=s`). A path means something only on
 the machine it was written on, so where it gets read decides whether it works.
 
 - **Standalone.** The pane and tuios are on one machine. When the host
+  terminal draws no kitty graphics, `a=q` gets no answer. When the host
   terminal can read files there (the capability probe's `i=2` answer), tuios
   hands it the path. When it cannot (a browser, an SSH client), tuios reads the
   file itself and sends the bytes inline. The `a=q` answer says which: file
   media are refused when the host cannot read files, so a guest that asks,
   such as icat, streams the bytes instead.
 - **Daemon.** The daemon answers `a=q` itself, before any client sees the
-  query, so it answers for the one thing it knows: whether the path will be
-  read on the machine it names a file on. File media are refused for a pane
+  query, from what the attached clients told it. While no attached client's
+  host draws kitty graphics, the query gets no answer, which is what a
+  terminal without kitty graphics gives. The rule is the one DA1 follows for
+  sixel (see below): any attached client that shows the image is enough, and
+  with no client attached the last answer stands. Otherwise the answer says
+  whether the path will be read on the machine it names a file on. File
+  media are refused for a pane
   whose process runs on another machine over a link, and while any client
   attached over a link is drawing the session. Everywhere else they are
   accepted, and each client handles the path as in standalone. Direct
@@ -808,11 +814,21 @@ and over the next pane, with nothing to take it back.
   the guess.
 - `tuios-web` draws with xterm.js and its image addon, which does both sixel and
   kitty graphics.
+- A terminal whose XTVERSION answer names xterm.js (VS Code, Netcatty, Tabby,
+  Hyper) gets neither sixel nor kitty graphics, whatever it answers to the
+  graphics queries. A local one is also recognised by `TERM_PROGRAM=vscode`.
+  An answer that misses the startup probe is read when it arrives, and an SSH
+  client is asked XTVERSION before DA1. Its image addon writes every image into the cells
+  under it. Text does not erase it there, a second placement with the same ids
+  adds a second picture, and a delete leaves a grey placeholder, so tuios could
+  not move or clear a pane's picture (issue 567). The picture is drawn as
+  block glyphs instead (`internal/app/cell_bound_images.go`).
 - `TUIOS_SIXEL_GRAPHICS=1` or `0` overrides all of these.
 
 A pane is told it can draw sixel (DA1 attribute 4, and an answer to
 XTSMGRAPHICS for 256 colour registers and the pane's size in pixels) only when
-its picture will be shown: the host draws sixel or kitty graphics. In daemon
+its picture will be shown: the host draws sixel or kitty graphics, or the
+client draws images as block glyphs (see below), which is the default. In daemon
 mode the daemon's emulator answers, from the clients attached to the session:
 yes while any of them will show the picture (`Session.SetSixelAdvertised`).
 chafa, lsix, timg, yazi and notcurses choose between sixel and a text fallback
@@ -853,7 +869,29 @@ the frame's text in the same write:
   row, where a sixel would scroll the screen.
 - On a host with kitty graphics and no sixel, as a kitty image with one
   placement per rectangle, cropped with a source rectangle.
-- On a host with neither, the cells show a dim box with "image" in it.
+- On a host with neither, as block glyphs (`internal/app/sixel_symbols.go`,
+  `internal/mosaic`): one glyph with a foreground and a background colour per
+  image cell. Each cell is split into sub-cells (2x4 for octants, 2x3 for
+  sextants, 2x2 for quadrants, 1x2 for half blocks), each the average of the
+  pixels under it in linear light, and the sub-cells are split into the two
+  groups whose OKLab means leave the least error. The part a pane shows when
+  the image arrives is drawn on its PTY reader, and the rest by the frame pass
+  as it comes into view, within a drawing budget per pane and, on the frame
+  pass, one budget shared by every pane. The images the pass draws count as on
+  screen, so eviction spares them. The frame pass puts
+  the glyphs on the canvas before the scrim and the spotlight, and gives them
+  the pane's dim, so they shade like text. At 256 colours the
+  sub-cells are dithered with a 4x4 Bayer matrix and snapped to the xterm
+  palette. At 16 colours they are always half blocks, dithered to the ANSI
+  colours with dark backgrounds only, and a picture whose fidelity falls
+  under `mosaic.MinFidelity` shows the box. `appearance.image_symbols` picks
+  the set: `auto` reads `TERM` (octants on kmscon, half blocks on the Linux
+  console, quadrants elsewhere). `off` shows a dim box with "image" in it,
+  and the pane is told no sixel. A host that answers for sixel or kitty
+  graphics never gets glyphs.
+
+  This is how a picture reaches the Linux console under kmscon, which has no
+  image protocol. See [KMSCON-GRAPHICS.md](KMSCON-GRAPHICS.md).
 
 Each marker becomes a space with the conceal attribute. It draws nothing, but a
 cell that stops being part of an image changes, the renderer rewrites it, and a
@@ -875,15 +913,15 @@ tuios mode does not change the result, because every client shows images to
 its own terminal: standalone, daemon, an SSH client (its DA1 answer decides)
 and tuios-web (a sixel host) all take the same path.
 
-| Program | Sixel host (foot, WezTerm, xterm, mlterm, Konsole, Windows Terminal, tuios-web) | Kitty host without sixel (kitty, Ghostty) | Host with neither |
+| Program | Sixel host (foot, WezTerm, xterm, mlterm, Konsole, Windows Terminal, tuios-web) | Kitty host without sixel (kitty, Ghostty) | Host with neither (kmscon, plain SSH) |
 | --- | --- | --- | --- |
-| chafa | tested: sixel | expected: chafa draws kitty graphics | expected: chafa's text |
-| timg | tested: sixel | expected: timg draws kitty graphics | expected: timg's text |
-| lsix | tested: sixel | expected: sent as kitty graphics | expected: lsix refuses to run |
-| yazi | tested: sixel preview | expected: yazi draws kitty graphics | expected: no preview picture |
-| a sixel file (`cat`), img2sixel | tested: sixel | tested: sent as kitty graphics | tested: placeholder box |
+| chafa | tested: sixel | expected: chafa draws kitty graphics | tested: sixel, drawn as glyphs |
+| timg | tested: sixel | expected: timg draws kitty graphics | expected: sixel, drawn as glyphs |
+| lsix | tested: sixel | expected: sent as kitty graphics | expected: sixel, drawn as glyphs |
+| yazi | tested: sixel preview | expected: yazi draws kitty graphics | expected: sixel preview, drawn as glyphs |
+| a sixel file (`cat`), img2sixel | tested: sixel | tested: sent as kitty graphics | tested: drawn as glyphs |
 | viu | no sixel in common builds: text | expected: viu draws kitty graphics | expected: viu's text |
-| notcurses, matplotlib sixel backends | expected: sixel | expected: sent as kitty graphics | expected: text or placeholder box |
+| notcurses, matplotlib sixel backends | expected: sixel | expected: sent as kitty graphics | expected: drawn as glyphs |
 
 img2sixel 1.10.5 on the test machine writes nothing for any input, so its row
 was tested with a sixel file of the same form.

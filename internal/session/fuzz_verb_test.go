@@ -44,7 +44,7 @@ import (
 // fuzzReadVerbs are the verbs that only read, and on a daemon with no sessions
 // answer from memory. Every other verb is fuzzed up to its handler.
 var fuzzReadVerbs = []string{
-	"hello", "list-verbs", "list-hooks", "list-dock-components", "list-sessions",
+	"hello", "list-verbs", "list-hooks", "list-dock-components", "list-sessions", "list-clients",
 	"session-info", "list-windows", "get-window", "list-workspaces", "capture-pane",
 	"list-options", "get-option", "list-themes", "list-glyphs", "get-agent-state",
 	"explain-agent-screen", "list-agents", "list-attention", "peek-prompt",
@@ -159,7 +159,7 @@ func FuzzVerbDispatch(f *testing.F) {
 		conn := &captureConn{}
 		cs := &connState{conn: conn, clientID: "fuzz", done: make(chan struct{})}
 		errc := make(chan error, 1)
-		go func() { errc <- fuzzDaemon.dispatchVerbLine(cs, line) }()
+		go func() { errc <- fuzzDaemon.dispatchVerbLine(cs, line, nil) }()
 		select {
 		case err := <-errc:
 			if err != nil {

@@ -203,6 +203,10 @@ func (m *OS) overlayRowHover(kind string, idx int) {
 		m.InboxSelect(idx)
 	case "workspace":
 		m.WorkspaceSwitcherSelected = idx
+	case overlayKindBuffers:
+		m.BufferChooserSelect(idx)
+	case "navigator":
+		m.NavigatorSelect(idx)
 	case "aggregate":
 		m.AggregateViewSelected = idx
 	case "layout":
@@ -277,6 +281,10 @@ func (m *OS) OverlayMouseWheel(x, y int, up bool) bool {
 	case "workspace":
 		n := len(FilterWorkspaceItems(m.WorkspaceSwitcherItems, m.WorkspaceSwitcherQuery))
 		m.WorkspaceSwitcherMove(wheelDelta(up), n)
+	case overlayKindBuffers:
+		m.BufferChooserMove(wheelDelta(up))
+	case "navigator":
+		m.NavigatorMove(wheelDelta(up))
 	case "layout":
 		m.LayoutPickerMove(wheelDelta(up))
 	case "hostpicker":
@@ -361,6 +369,10 @@ func (m *OS) overlayRowClick(kind string, row overlayRowHit, lx, ly int) tea.Cmd
 				// A click anywhere on a text row opens its inline editor.
 				m.SettingsBeginEdit()
 				return nil
+			case controlStatus:
+				// A status row has nothing to step, so a click anywhere on it
+				// is the row's enter.
+				return m.SettingsActivate()
 			case controlColor:
 				// And anywhere on a colour row, swatch included, opens its picker.
 				// The row's rect is the one the renderer recorded as it drew, so
@@ -431,6 +443,15 @@ func (m *OS) overlayRowClick(kind string, row overlayRowHit, lx, ly int) tea.Cmd
 	case "workspace":
 		m.WorkspaceSwitcherSelected = row.Idx
 		m.WorkspaceSwitcherActivate(row.Idx)
+	case overlayKindBuffers:
+		return m.BufferChooserActivate(row.Idx)
+	case "navigator":
+		// A click on a session or a workspace row folds it, and a click on
+		// a pane goes to it, as enter does.
+		m.NavigatorSelect(row.Idx)
+		if !m.NavigatorClickFolds(row.Idx) {
+			m.NavigatorActivate(row.Idx)
+		}
 	case "aggregate":
 		// The picker used to return no hit rows at all, so the one overlay whose
 		// entire purpose is choosing a window was the one that could not be
@@ -550,6 +571,10 @@ func (m *OS) closeOverlay(kind string) {
 		m.CloseInbox()
 	case "workspace":
 		m.CloseWorkspaceSwitcher()
+	case overlayKindBuffers:
+		m.CloseBufferChooser()
+	case "navigator":
+		m.CloseNavigator()
 	case overlayKindShot:
 		// Click-away keeps the file. Only esc discards, because a click that
 		// lands outside a panel is as often a miss as an intention, and a

@@ -37,7 +37,18 @@ func (m *OS) separatorSplits() []layout.SplitLine {
 		return nil
 	}
 	if m.UseScrollingLayout {
-		return nil
+		// The strip runs past the screen on both sides, so its dividers are
+		// read off the panes like master-stack's and then cut to the content
+		// region: a column half scrolled away has half a divider on screen,
+		// and none of it may land on the sidebar or the dock.
+		bounds := m.GetBSPBounds()
+		var splits []layout.SplitLine
+		for _, s := range layout.SplitsBetween(m.tiledPaneRects(), m.separatorGap()) {
+			if clipped, ok := clipSplit(s, bounds); ok {
+				splits = append(splits, clipped)
+			}
+		}
+		return splits
 	}
 	if !m.UseBSPLayout {
 		return layout.SplitsBetween(m.tiledPaneRects(), m.separatorGap())
@@ -197,7 +208,7 @@ func (m *OS) dividerLines(bounds layout.Rect) ([]dividerLine, []paneLayer) {
 	// column of ground while master-stack drew a two-column rule. It also left
 	// layout.SplitsBetween (written for exactly this) reachable only from a
 	// test.
-	if !m.UseScrollingLayout && !m.transitioning() {
+	if !m.transitioning() {
 		splits := m.separatorSplits()
 		lines := make([]dividerLine, len(splits))
 		for i, s := range splits {
@@ -298,9 +309,10 @@ func (m *OS) chromeRules(bounds layout.Rect) chromeRules {
 	if !m.Settings.BorderJoinsChromeRules() {
 		return r
 	}
-	switch m.Settings.DockbarPosition {
-	case "hidden":
-	case "top":
+	switch {
+	case m.Settings.DockbarPosition == "hidden" || m.Settings.DockCompact:
+		// A compact dock draws no rule to join.
+	case m.Settings.DockbarPosition == "top":
 		r.top = bounds.Y - 1
 	default:
 		r.bottom = bounds.Y + bounds.H

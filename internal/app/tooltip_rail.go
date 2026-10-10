@@ -1,12 +1,13 @@
 package app
 
 import (
-	"strconv"
 	"strings"
 	"time"
 
 	"charm.land/lipgloss/v2"
+	"github.com/Gaurav-Gosain/tuios/internal/federation"
 	"github.com/Gaurav-Gosain/tuios/internal/overlay"
+	"github.com/Gaurav-Gosain/tuios/internal/plural"
 	"github.com/Gaurav-Gosain/tuios/internal/sessiontree"
 	"github.com/Gaurav-Gosain/tuios/internal/theme"
 )
@@ -30,6 +31,10 @@ func (m *OS) sidebarTooltipTrack(x, y int) {
 	// each and their headers move with the section budget.
 	if h, ok := m.sidebarRowAt(x, y); ok && sidebarAddKind(h.Kind) {
 		m.tooltipTrack(tooltipRailAdd, int(h.Kind))
+		return
+	}
+	if h, ok := m.sidebarRowAt(x, y); ok && (h.Kind == sidebarRowHost || h.Kind == sidebarRowHostSignIn) && m.hostWaitsForSignIn(h.SessionID) {
+		m.tooltipTrack(tooltipRailHost, h.Y0)
 		return
 	}
 	m.tooltipClear()
@@ -84,6 +89,37 @@ func (m *OS) renderRailAddTooltip() *lipgloss.Layer {
 	return tooltipLayer(label, x, row, renderW, "sidebar-tooltip")
 }
 
+// hostSignInTooltip is what the header of a machine that waits for a
+// Tailscale sign-in says when it is hovered.
+const hostSignInTooltip = federation.SignInSentence
+
+// renderRailHostTooltip composes the label for a machine header that waits
+// for a sign-in. It opens beside the rail on the header's own line, as the add
+// control's label does.
+func (m *OS) renderRailHostTooltip() *lipgloss.Layer {
+	if !m.tooltipVisible(tooltipRailHost) {
+		return nil
+	}
+	m.Tooltip.Shown = true
+	row := -1
+	for _, h := range m.SidebarHits {
+		if h.Kind == sidebarRowHost && h.Y0 == m.Tooltip.Key && m.hostWaitsForSignIn(h.SessionID) {
+			row = h.Y0
+			break
+		}
+	}
+	if row < 0 {
+		return nil
+	}
+	railW, renderW := m.GetSidebarWidth(), m.GetRenderWidth()
+	label := tooltipLabel(hostSignInTooltip, max(renderW-railW-1, 1), theme.UI())
+	x := railW
+	if m.Settings.SidebarPosition == "right" {
+		x = renderW - railW - lipgloss.Width(label)
+	}
+	return tooltipLayer(label, x, row, renderW, "sidebar-tooltip")
+}
+
 // sidebarTooltipBadgeLabel is what the alarm badge says in words. Empty when
 // nothing is blocked, which is also when the badge is not drawn.
 func sidebarTooltipBadgeLabel(info sidebarStripBadgeInfo) string {
@@ -94,7 +130,7 @@ func sidebarTooltipBadgeLabel(info sidebarStripBadgeInfo) string {
 	if info.State == "needs_input" {
 		words = agentNeedsYou(info.Count)
 	}
-	return strconv.Itoa(info.Count) + " " + plural("agent", info.Count) + " " + words
+	return plural.Count(info.Count, "agent") + " " + words
 }
 
 // sidebarTooltipSessionLabel is what a session cell says in words: the two
@@ -105,7 +141,7 @@ func sidebarTooltipSessionLabel(s sessiontree.Node) string {
 	if overlay.UseASCII() {
 		sep = " - "
 	}
-	label := printableTitle(s.Title) + sep + strconv.Itoa(s.WindowCount) + " " + plural("terminal", s.WindowCount)
+	label := printableTitle(s.Title) + sep + plural.Count(s.WindowCount, "terminal")
 	if sidebarAttention(s.AgentState) {
 		loud := agentStateIndicator(s.AgentState) + " " + sidebarStateWords(s.AgentState)
 		if age := agentElapsed(s.AgentState, s.StateAt, time.Now()); age != "" {
@@ -201,14 +237,6 @@ func agentNeedsYou(n int) string {
 		return "needs you"
 	}
 	return "need you"
-}
-
-// plural appends an s past one, so the label reads as a sentence.
-func plural(word string, n int) string {
-	if n == 1 {
-		return word
-	}
-	return word + "s"
 }
 
 // renderRailTooltip composes the hovered strip row's label as its own layer.

@@ -90,6 +90,13 @@ const (
 	// scopeLaunch starts new sessions. Refused under read_only, and under
 	// scope own for a caller in no pane, whose launches it could not reach.
 	scopeLaunch
+	// scopeBufferRead reads the paste buffers, which every session shares
+	// and which hold whatever the person copied. Refused under scope own; a
+	// pane needs the read grant.
+	scopeBufferRead
+	// scopeBufferWrite changes the paste buffers. Refused under read_only
+	// and under scope own; a pane needs the write grant.
+	scopeBufferWrite
 )
 
 // verbScopes classifies every verb. A verb missing here is treated as
@@ -109,6 +116,7 @@ var verbScopes = map[string]scopeKind{
 	"apply-config": scopeDeny,
 
 	"list-sessions":      scopeGlobal,
+	"list-clients":       scopeGlobal,
 	"list-attention":     scopeGlobal,
 	"list-worktrees":     scopeGlobal,
 	"list-hosts":         scopeGlobal,
@@ -118,16 +126,24 @@ var verbScopes = map[string]scopeKind{
 	"list-glyphs":        scopeGlobal,
 	"list-hooks":         scopeGlobal,
 
-	"session-info":         scopeRead,
-	"list-windows":         scopeRead,
-	"get-window":           scopeRead,
-	"list-workspaces":      scopeRead,
-	"capture-pane":         scopeRead,
+	"session-info":    scopeRead,
+	"list-windows":    scopeRead,
+	"get-window":      scopeRead,
+	"list-workspaces": scopeRead,
+	"capture-pane":    scopeRead,
+	"stream-pane":     scopeRead,
+	// A restricted connection is automation, never the person.
+	"attach-presence": scopeDeny,
+	// The phones for Web Push are the person's, like attach-presence.
+	"register-push":        scopeDeny,
+	"list-push":            scopeDeny,
+	"remove-push":          scopeDeny,
 	"get-agent-state":      scopeRead,
 	"list-agents":          scopeRead,
 	"wait-for":             scopeRead,
 	"subscribe":            scopeRead,
 	"peek-prompt":          scopeRead,
+	"ssh-agent-path":       scopeRead,
 	"read-agent-messages":  scopeRead,
 	"explain-agent-screen": scopeRead,
 	"list-options":         scopeRead,
@@ -156,14 +172,21 @@ var verbScopes = map[string]scopeKind{
 	"refresh-dock":         scopeDeny,
 	"pip":                  scopeDeny,
 	"new-session":          scopeDeny,
+	// switch-session moves a client and detach-client takes clients off
+	// their sessions: client-level actions, like attach.
+	"switch-session":       scopeDeny,
+	"detach-client":        scopeDeny,
 	"new-worktree":         scopeDeny,
 	"remove-worktree":      scopeDeny,
 	"open-host-connection": scopeDeny,
-	"open-pane":            scopeDeny,
-	"resize-pane":          scopeDeny,
-	"pane-cwd":             scopeDeny,
-	"pane-agent":           scopeDeny,
-	"pane-calls":           scopeDeny,
+	// retry-host is the person's act from the rail or from 'tuios hosts
+	// signin'. A restricted caller has no reason to make a link dial.
+	"retry-host":  scopeDeny,
+	"open-pane":   scopeDeny,
+	"resize-pane": scopeDeny,
+	"pane-cwd":    scopeDeny,
+	"pane-agent":  scopeDeny,
+	"pane-calls":  scopeDeny,
 	// paste-image is the person's act and paste-pane-image the owning
 	// daemon's. Neither is for a restricted caller.
 	"paste-image":          scopeDeny,
@@ -196,6 +219,9 @@ var verbScopes = map[string]scopeKind{
 	"dismiss-attention":    scopeDeny,
 	"request-approval":     scopeDeny,
 	"reply-approval":       scopeDeny,
+	// The conversation is the person's to read. A restricted connection is
+	// automation, never the person.
+	"agent-transcript": scopeDeny,
 
 	// From the host policy and dropped-link work: the link handshake,
 	// ending a hosted pane, and passing on held mail are for a link
@@ -235,6 +261,42 @@ var verbScopes = map[string]scopeKind{
 	"verify-fan":     scopeLaunch,
 	"keep-fan":       scopeDeny,
 	"mark-attention": scopeDeny,
+
+	// From the checkpoint work (verb_checkpoint.go). Listing and reading a
+	// pane's checkpoints are reads of its session. A restore writes the
+	// files the pane's agent works on, which the handler holds to the panes
+	// the caller could type into.
+	"list-checkpoints":   scopeRead,
+	"checkpoint-diff":    scopeRead,
+	"restore-checkpoint": scopeWrite,
+
+	// From the ship work (verb_ship.go). A commit and a merge write the
+	// files a pane's agent works on, as a restore does. A push and a pull
+	// request send work off this machine: they are writes here, and the
+	// handler also asks the person in the Inbox for any caller on a
+	// restricted connection. The status is a read.
+	"ship-commit": scopeWrite,
+	"ship-merge":  scopeWrite,
+	"ship-push":   scopeWrite,
+	"ship-pr":     scopeWrite,
+	"ship-status": scopeRead,
+
+	// The paste buffers (verb_buffers.go). They are shared by every session,
+	// so a caller restricted to its own session reaches none of them.
+	// paste-buffer types into a pane, and it also reads a buffer: see
+	// readsBuffers.
+	"list-buffers":  scopeBufferRead,
+	"show-buffer":   scopeBufferRead,
+	"set-buffer":    scopeBufferWrite,
+	"delete-buffer": scopeBufferWrite,
+	"paste-buffer":  scopeWrite,
+}
+
+// readsBuffers reports whether a verb reads the paste buffers. paste-buffer
+// does: it types a buffer's text into a pane, and the caller can read that
+// pane back.
+func readsBuffers(verb string) bool {
+	return verbScopes[verb] == scopeBufferRead || verb == "paste-buffer"
 }
 
 // verbRestrictConnection narrows what this connection may do from now on.
@@ -283,6 +345,11 @@ func (d *Daemon) verbRestrictConnection(cs *connState, params json.RawMessage) (
 		}
 	}
 	cs.scope.Store(next)
+	// A restricted connection is automation, never the person, so a
+	// presence it held ends here (human_sender.go, "Nonce scope").
+	cs.mu.Lock()
+	cs.presenceNonce, cs.presenceSession = "", ""
+	cs.mu.Unlock()
 	LogBasic("Client %s restricted: scope=%s read_only=%v pane=%q via=%q", cs.clientID, scopeName(next), next.readOnly, shortWindowID(next.window), next.via)
 
 	res := map[string]any{
@@ -351,16 +418,15 @@ func (d *Daemon) sessionOfWindow(id string) string {
 }
 
 // sessionHoldingWindow is the local session holding a window, nil for none.
+// It runs on every verb a pane calls, so it reads each session's windows in
+// place rather than copying its state.
 func (d *Daemon) sessionHoldingWindow(id string) *Session {
 	if id == "" {
 		return nil
 	}
 	for _, sess := range d.manager.AllSessions() {
-		st := sess.GetState()
-		for i := range st.Windows {
-			if st.Windows[i].ID == id {
-				return sess
-			}
+		if sess.holdsWindowID(id) {
+			return sess
 		}
 	}
 	return nil
@@ -523,11 +589,17 @@ func (d *Daemon) checkScope(cs *connState, verb string, params json.RawMessage) 
 	if sc.readOnly && (kind == scopeWrite || kind == scopeLaunch) {
 		return nil, scopeForbidden(verb, "the connection is read-only, and "+verb+" types into a pane or starts one")
 	}
+	if sc.readOnly && kind == scopeBufferWrite {
+		return nil, scopeForbidden(verb, "the connection is read-only, and "+verb+" changes the paste buffers")
+	}
 	if !sc.own {
 		return params, nil
 	}
 	if kind == scopeGlobal {
 		return nil, scopeForbidden(verb, "it reads every session, and the connection is restricted to its own")
+	}
+	if kind == scopeBufferWrite || readsBuffers(verb) {
+		return nil, scopeForbidden(verb, "every session shares the paste buffers, and the connection is restricted to its own")
 	}
 	own := d.sessionNameByID(sc.sessionID)
 	if own == "" {

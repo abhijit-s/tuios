@@ -11,6 +11,8 @@ import (
 
 	uv "github.com/charmbracelet/ultraviolet"
 	gh "go.mitchellh.com/libghostty"
+
+	"github.com/Gaurav-Gosain/tuios/internal/cellsize"
 )
 
 // GhosttyTerminal implements Terminal on top of libghostty-vt. libghostty
@@ -97,12 +99,27 @@ type GhosttyTerminal struct {
 	cbq []func()
 
 	// Shadow state libghostty does not expose.
-	charsetIDs       [4]byte
-	gl, gr           int
-	savedCharsets    [4]byte
-	savedGL, savedGR int
-	scrollRegion     uv.Rectangle
-	kittyKbd         *kittyKeyboardState
+	charsetIDs   [4]byte
+	gl, gr       int
+	scrollRegion uv.Rectangle
+	// savedCur is what DECSC saved on each screen, main first. The library
+	// keeps it where no query reaches, so the scanner reads the cursor as
+	// each save goes past (saveCursorShadowLocked).
+	savedCur [2]SavedCursor
+	// penProtected follows DECSCA on the pen, for savedCur. CursorProtected
+	// asks the library instead.
+	penProtected bool
+	// savedLRMM is the value XTSAVE (CSI ? 69 s) last saved for DECLRMM,
+	// which XTRESTORE (CSI ? 69 r) puts back. The library keeps its own
+	// copy. This one lets the margin copy follow a restore that turns the
+	// mode off, because the hook runs before the library has read the
+	// restore and cannot ask it for the result.
+	savedLRMM bool
+	kittyKbd  *kittyKeyboardState
+	// modifyOtherKeys mirrors the XTMODKEYS level the guest set, for the
+	// input path. libghostty keeps its own copy for its key encoder, which
+	// tuios does not use.
+	modifyOtherKeys atomic.Int32
 
 	// Lock-free getter caches, refreshed after every write.
 	cachedHasMouse   atomic.Bool
@@ -110,6 +127,9 @@ type GhosttyTerminal struct {
 	cachedCellMotion atomic.Bool
 	cachedMouseSGR   atomic.Bool
 	cachedMousePx    atomic.Bool
+	cachedMouseUTF8  atomic.Bool
+	cachedMouseURXVT atomic.Bool
+	cachedMouseX10   atomic.Bool // mode 9 alone: presses only
 	cachedAltScreen  atomic.Bool
 	cachedSyncOutput atomic.Bool
 	syncSetAtNanos   atomic.Int64
@@ -184,7 +204,6 @@ func newGhosttyTerminal(w, h, maxLines int) *GhosttyTerminal {
 		styleCache:      make(map[uint16]uv.Style),
 		scrollCache:     make(map[int]uv.Line),
 		charsetIDs:      defaultCharsetIDs,
-		savedCharsets:   defaultCharsetIDs,
 		pipe:            newBufPipe(),
 		kittyKbd:        newKittyKeyboardState(),
 		kittyMain:       NewKittyState(),
@@ -193,6 +212,7 @@ func newGhosttyTerminal(w, h, maxLines int) *GhosttyTerminal {
 		cursorStyle:     defaultCursorStyle,
 		cursorSteady:    defaultCursorSteady,
 	}
+	t.savedCur = [2]SavedCursor{{Charsets: defaultCharsetIDs}, {Charsets: defaultCharsetIDs}}
 	t.bufs[0] = newGrid(w, h)
 	// bufs[1] is made by bufAt on the first switch to the alternate screen.
 	t.scrollRegion = uv.Rect(0, 0, w, h)
@@ -288,8 +308,24 @@ func newGhosttyTerminal(w, h, maxLines int) *GhosttyTerminal {
 		}),
 		// XTVERSION names tuios. The library's default, "libghostty", is the
 		// name of a terminal the pane is not in: yazi reads it as Ghostty and
-		// draws kitty graphics on a host that may only draw sixel.
-		gh.WithXtversion(func(_ *gh.Terminal) string { return "tuios" }),
+		// draws kitty graphics on a host that may only draw sixel. The text
+		// is the one the pure emulator sends, version included.
+		gh.WithXtversion(func(_ *gh.Terminal) string { return XTVersionName() }),
+		// XTWINOPS 14, 16 and 18 and the mode 2048 report are answered only
+		// when this is set: without it the library sends nothing, and a guest
+		// that waits for its pixel size waits for good. The size is the one
+		// the pure emulator answers with, from the host cell or the fallback
+		// cell (issue #506). The library calls this from inside a write or a
+		// resize, which hold t.mu, so the fields are read without it.
+		gh.WithSizeReport(func(_ *gh.Terminal) (gh.SizeReportSize, bool) {
+			cw, ch := cellsize.Or(t.cellW, t.cellH)
+			return gh.SizeReportSize{
+				Rows:       clampU16(t.height),
+				Columns:    clampU16(t.width),
+				CellWidth:  uint32(cw),
+				CellHeight: uint32(ch),
+			}, true
+		}),
 		gh.WithDeviceAttributes(func(_ *gh.Terminal) (gh.DeviceAttributes, bool) {
 			return ghosttyDeviceAttributes(t.sixelOn()), true
 		}),
@@ -342,8 +378,8 @@ func newGhosttyTerminal(w, h, maxLines int) *GhosttyTerminal {
 const (
 	// defaultCellWidth/Height match the pure emulator's assumptions until
 	// the host reports real pixel metrics via SetCellSize.
-	defaultCellWidth  = 10
-	defaultCellHeight = 20
+	defaultCellWidth  = cellsize.FallbackWidth
+	defaultCellHeight = cellsize.FallbackHeight
 	// maxSemanticMarkers matches the pure emulator's marker list bound.
 	maxSemanticMarkers = 1000
 )
@@ -497,7 +533,11 @@ func (t *GhosttyTerminal) SetCellSize(width, height int) {
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if t.closed.Load() {
+	// The same cell again is nothing. The library sends a 2048 report on
+	// every resize, and the daemon sets the cell on every pane resize and
+	// every attach, so passing it through sent a guest a report for a size
+	// it already had.
+	if t.closed.Load() || (width == t.cellW && height == t.cellH) {
 		return
 	}
 	t.cellW, t.cellH = width, height
@@ -551,6 +591,11 @@ func (t *GhosttyTerminal) refreshCachesLocked() {
 	px, _ := t.term.Mode(gh.ModeSGRPixelsMouse)
 	t.cachedMouseSGR.Store(sgr)
 	t.cachedMousePx.Store(px)
+	utf8Mouse, _ := t.term.Mode(gh.ModeUTF8Mouse)
+	urxvt, _ := t.term.Mode(gh.ModeURxvtMouse)
+	t.cachedMouseUTF8.Store(utf8Mouse)
+	t.cachedMouseURXVT.Store(urxvt)
+	t.cachedMouseX10.Store(x10 && !normal && !button && !any)
 
 	alt47, _ := t.term.Mode(gh.ModeAltScreenLegacy)
 	alt1047, _ := t.term.Mode(gh.ModeAltScreen)
@@ -650,10 +695,35 @@ func (t *GhosttyTerminal) KittyKeyboardFlags() int {
 	return int(t.cachedKittyFlags.Load())
 }
 
+// ModifyOtherKeys returns the modifyOtherKeys level the guest set.
+func (t *GhosttyTerminal) ModifyOtherKeys() int {
+	t.ensureRestored()
+	return int(t.modifyOtherKeys.Load())
+}
+
+// RestoreModifyOtherKeys puts back a level saved from another emulator. The
+// library is told too, so it answers a query with the same level.
+func (t *GhosttyTerminal) RestoreModifyOtherKeys(level int) {
+	if level < 0 || level > 2 {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	r := t.pendingRestore()
+	r.modifyOtherKeys = level
+	r.hasModifyOtherKeys = true
+}
+
 func (t *GhosttyTerminal) KittyKeyboardStack() []int {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	return append([]int(nil), t.kittyKbd.stack...)
+	return append([]int(nil), t.kittyKbd.Stack()...)
+}
+
+func (t *GhosttyTerminal) KittyKeyboardMainStack() []int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return append([]int(nil), t.kittyKbd.MainStack()...)
 }
 
 func (t *GhosttyTerminal) ApplicationCursorKeys() bool {

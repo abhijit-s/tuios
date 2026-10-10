@@ -37,9 +37,25 @@ something for someone: there is a control they can adjust.
 Tables are not scalar options and are edited in config.toml:
 `[appearance.sidebar.agent_row]` (which tokens an agent row draws, their looks
 and value rules; `now`, `context`, `subagents` and `prompt` read what the hooks
-and status line feed, and `meta` leaves those keys out), `[dock]`, `[hooks]`, `[hosts]`, `[agents.approvals]`,
+and status line feed, and `meta` leaves those keys out), `[dock]`, `[appearance.sidebar.custom]`, `[hooks]`, `[hosts]`, `[notify]`, `[agents.approvals]`, `[agents.checkpoints]`,
 `[agents.permissions]`, `[agents] herdr_protocol` and the keybindings. The file is watched; a hook the
 daemon runs needs `tuios kill-server` to take effect.
+
+The config can be more than one file. config.toml can name more files in a
+top-level `include = [...]` list, and the `*.toml` files in `config.d` next to
+it are read too. config.toml wins over all of them. Before you edit a table by
+hand, find the file that sets it:
+
+```sh
+tuios config files                     # every file, in merge order, read-only ones marked
+tuios config origin hosts              # the file that sets each key under [hosts]
+```
+
+Edit that file, not config.toml. `set-config`, `tuios hosts add` and
+`tuios keybinds unbind` already write only the changed key, to the file that
+holds it. They never write a read-only file: the change goes to the last
+writable file, and they say so. config.toml wins over every other file, so do
+not copy a value into it that another file already sets.
 
 A change to `[agents.permissions]` or `[hosts]` that gives panes or other
 machines more waits for the person, and the Inbox says so. The person applies
@@ -48,11 +64,22 @@ command is refused. Do not edit config.toml to widen what you hold: it waits
 for the person, and the change tells them what you did.
 
 `agents.enabled` is the person's switch for every agent feature. When it is
-false, every agent verb fails with `agents_disabled`: agent state, mail, the
-Inbox, approvals, `start-agent` and `fan`. A pane without `respond` then types
-only into a pane it opened or a pane whose shell is at its prompt. Only the
-person can change this option: `set-config` from a pane gets `forbidden`. If an agent verb fails with
-`agents_disabled`, tell the person and stop.
+false, every agent verb fails with `agents_disabled`. Only the person can
+change it: `set-config` from a pane gets `forbidden`. `tuios --skill
+agents-off` says what still works.
+
+`appearance.dock_compact` draws the dock as one row with no rule. The panes get
+one more row. It works with the dock at the top and at the bottom.
+
+`appearance.zoom_borderless` shows a zoomed pane on the whole pane region with
+no border and no title bar. The pane's program gets the full size. With it on,
+`zoom_size` and `zoom_max_width` have no effect.
+
+`appearance.dock_mode_icon_window`, `dock_mode_icon_terminal` and
+`dock_mode_icon_tiling` set the icon in the dock's mode pill. An empty value
+shows no icon, and `default` puts back the icon of the glyph set. An icon can
+be at most 8 cells wide, with no control characters. To remove the whole pill,
+remove `"mode"` from `[dock] left`.
 
 `daemon.window_size` sets the size of a session with more than one client:
 `smallest` (the default), `largest`, or `latest`, the client that last had
@@ -62,6 +89,16 @@ client smaller than the session shows the part around the focused pane's
 cursor, so a pane can be wider than a person's screen. Change it only when the
 person asks.
 
+`daemon.ssh_agent = "follow"` keeps a link for each session to the ssh agent
+socket of the client that attached or used it last. New panes get
+`SSH_AUTH_SOCK` set to the link. A shell that started earlier keeps its old
+value: `p=$(tuios ssh-agent-path 2>/dev/null) && export SSH_AUTH_SOCK="$p"` points
+it at the link, and leaves the value alone when the option is off.
+Through a host, it needs the option on both machines and agent forwarding
+on the link (`ssh_options = ["-A"]` or `ForwardAgent yes`), which tuios never
+turns on by itself. The option is in the file only. Do not change it, or the
+forwarding, unless the person asks.
+
 Hints mode (`Ctrl+B F`, the `hints` action) labels the URLs, paths, hashes and
 addresses in the focused pane, and a typed label copies one. The
 `hints_all_panes` action, or the `hints.all_panes` option, labels every pane
@@ -69,6 +106,54 @@ on the workspace. `hints.builtins`, `hints.alphabet`, `hints.open`,
 `hints.dim` and `hints.all_panes` are options. `hints.patterns`
 is a list of Go regular expressions in the file. It is for the person at the
 keyboard: to read a pane, use `capture-pane`.
+
+The pane labels (`Ctrl+B Q`, the `display_panes` action) put a large label
+on each pane of the workspace, and a typed label focuses that pane.
+`panes.label_keys` sets the keys (default `1234567890`). It is for the person
+at the keyboard: to focus a pane, use `focus-window`.
+
+The pane navigator (`Ctrl+B /`, the `choose_tree` action) is a tree of every
+session, workspace and pane, with a preview and a search over names, folders,
+commands and screen text. `panes.navigator_layout` sets the layout it opens in:
+`tree` (default), `flat` or `cards`. It is for the person at the keyboard: a script reads
+the same rows with `tuios list-windows --all --text N --json`.
+
+## What the person sees
+
+These are for the person at the keyboard. Know them so you can answer a
+question about the screen. Do not change them unless the person asks.
+
+- `appearance.max_fps` is the highest frame rate the client draws at: 10 to
+  240, `0` for 60, or `auto` for the display's refresh rate.
+- The spotlight (`B` in window mode, `Ctrl+B B` anywhere) dims the screen
+  outside a beam. The dock shows a Spotlight chip with the key that turns it
+  off. `[spotlight]` options set its size and dimming. It changes nothing a
+  pane prints, so `capture-pane` is unaffected.
+- Copy mode, multi copy mode and hints mode show a legend of their
+  keys in the dock while the mode is open.
+- A dock message that is too long ends with `more`. A click on it, or
+  `Ctrl+B N` for the last message, opens the message view with the whole text.
+  A notice you post with `send-agent-message` to the session can show there.
+- `Ctrl+click` on a link opens it. `appearance.links`,
+  `appearance.link_click` and `appearance.link_opener` set which links,
+  which click and which opener.
+- The rail's custom section shows the rows a command prints. The person sets
+  it in `[appearance.sidebar.custom]` in the file, and places it with
+  `appearance.sidebar.sections`. `set-config` cannot set its command.
+  `tuios refresh-dock rail/custom` runs it again, and `list-dock-components`
+  lists it as `rail/custom`.
+- In the rail's files section, `Y` or the folder menu's Copy path copies a
+  path to the person's clipboard.
+- When the last pane on the workspace on screen closes, the session shows
+  the workspace the person came from: the one that ran `xpanes`, else the
+  ones shown before, else the lowest with panes. `workspaces.return_when_empty
+  = false` keeps the empty workspace on screen.
+- `workspaces.new_window_when_empty = true` opens a pane when the person
+  switches to an empty workspace by key or click. `move_and_follow`,
+  `xpanes`, `select-workspace` and `run-command` switches open none.
+- `Ctrl+B =` (or `tuios set-layout --equalize`) gives tiled panes equal
+  shares. In the master-stack layout it puts the master back at its
+  configured ratio.
 
 ## Ricing: the four surfaces
 
@@ -78,6 +163,12 @@ keyboard: to read a pane, use `capture-pane`.
 | **Shape** | the characters the chrome is drawn with | `appearance.glyphs`, `list-glyphs` |
 | **Spacing** | ground between panes, padding inside overlay panels | `appearance.gap`, `appearance.panel_padding` |
 | **Composition** | what a window title, a workspace tab and the clock carry | `window_title_format`, `dock_workspace_tab_format`, `clock_format` |
+
+The dock's workspace tabs take two composition knobs of their own:
+`dock_workspace_tab_format` is the format string each tab prints, and
+`appearance.dock_workspace_label_max` caps the label in cells, so one long
+name cannot push the other pills off the bar. The cap is 12; `0` draws the
+whole name and lets the strip scroll.
 
 The options `list-options` prints are scalars, and spacing and composition are
 set with them like any other. Colour and shape are names from an open set, each standing for a
@@ -284,8 +375,8 @@ fact about the person's config). `collisions` are keys bound twice in one scope;
 Tab, Ctrl+M and Enter, and Ctrl+[ and Esc are the same byte unless the terminal
 disambiguates them.
 
-A modifier has more than one spelling. `opt+` and `option+` mean `alt+` (macOS
-only), `cmd+` and `command+` mean `super+`, and `control+` means `ctrl+`. The
+A modifier has more than one spelling. `opt+` and `option+` mean `alt+` on every
+platform, `cmd+` and `command+` mean `super+`, and `control+` means `ctrl+`. The
 leader, every binding table, `explain`, `free` and `unbind` read all spellings
 as one key. `explain` and `doctor` show the spelling tuios matches, for example
 `opt+f12 (tuios reads it as alt+f12)`.
@@ -297,6 +388,14 @@ WezTerm or foot. Latin layouts (AZERTY, QWERTZ, Dvorak) match the key that is
 typed, with or without `ctrl`: Dvorak `ctrl+b` is the leader, and showkeys and
 the recorder name it `ctrl+b`.
 `keybinds explain` checks the key as written, so give it the Latin key.
+
+A shifted digit has US aliases: `opt+shift+7` also matches `opt+&`. A binding
+written for the key itself wins over an alias, and `explain` lists an alias
+match as `on a US layout`. Set `keybindings.keyboard_layout = "other"` to turn
+the aliases off on AZERTY and other layouts. On macOS a character that Option
+composed runs the Option binding it stands for on a US
+layout. Set `keybindings.option_glyphs = "type"` to send it to the pane
+instead.
 
 ```sh
 tuios keybinds unbind close_window w   # one key off one action
@@ -351,3 +450,11 @@ line of stderr on the dock. The command runs on the machine of the tuios
 client, with the command-key variables (`TUIOS_SESSION`,
 `TUIOS_ACTIVE_PANE_ID`, `TUIOS_ACTIVE_PANE_CWD`). In multi copy mode it runs
 once, on the text `y` copies in the current format.
+
+tmux paste buffers are tuios paste buffers. Each yank is also kept as a buffer
+in the daemon, which every client and session shares. `PREFIX ]` pastes the
+newest (`paste_buffer`), and `PREFIX #` lists them to choose one
+(`choose_buffer`): tmux's `=` is equalize splits here. `[paste_buffers]`
+`limit` (default 20, counts only the buffers tuios named, 0 keeps none) and `max_kb` (default 16384, which is 16 MiB) bound them.
+`tuios list-buffers`, `show-buffer`, `set-buffer`, `delete-buffer` and
+`paste-buffer` work on the same buffers, as does `tmux` under the shim.

@@ -82,6 +82,18 @@ jobs:
       - name: Build
         run: go build ./...
 
+      - name: Example tapes validate
+        # Every example under examples/ is held to the parser the release
+        # ships. A tape the parser grew stricter about fails here, in the
+        # change that made it stricter, instead of on a reader's machine.
+        run: |
+          go build -o "$RUNNER_TEMP/tuios" ./cmd/tuios
+          status=0
+          for f in examples/*.tape; do
+            "$RUNNER_TEMP/tuios" tape validate "$f" > /dev/null || status=1
+          done
+          exit $status
+
       - name: Test
         # No -race here. internal/app takes over ten minutes under the detector
         # on a developer machine and longer on a runner, and a job that times
@@ -92,6 +104,30 @@ jobs:
         # cache key does not see, which is how a mutation sweep can come back
         # green on code that no longer exists.
         run: go test ./... -count=1 -timeout 20m
+
+  windows:
+    name: go test (windows)
+    if: github.event_name != 'schedule'
+    runs-on: windows-latest
+    # The packages whose Windows code runs only on Windows: the herdr link
+    # (hardlink, copy and a running link), the PATHEXT lookup and the job
+    # object for plugin processes, the stop event kill-server sets, and the
+    # herdr command line the link runs. The whole suite has never run on
+    # Windows and does not run here.
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: |
+            go.sum
+            .github/workflows/go-test.yml
+
+      - name: Test
+        run: go test -count=1 -timeout 10m ./internal/shimlink/ ./internal/herdrplugin/ ./internal/stopevent/ ./internal/herdrcli/
 
   race:
     name: go test -race ./...

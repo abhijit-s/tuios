@@ -148,6 +148,7 @@ func (r *KeybindRegistry) TerminalModeSwallowed() []Swallow {
 func terminalSafeAction(action string) bool {
 	return strings.HasPrefix(action, "switch_workspace_") ||
 		strings.HasPrefix(action, "move_and_follow_") ||
+		strings.HasPrefix(action, "switch_session_") ||
 		action == "next_session" || action == "prev_session"
 }
 
@@ -229,9 +230,10 @@ var GuestPrograms = []GuestProgram{
 		Name:  "wlterm",
 		Comms: []string{"wlterm"},
 		Keys: map[string]string{
-			"ctrl+b": "prefix",
+			"ctrl+\\": "tapped twice, quits wlterm",
+			"ctrl+b":  "prefix, in wlterm -multi only",
 		},
-		Note: "Another ctrl+b prefix, and a compositor in a pane also wants key releases.",
+		Note: "The default single-app mode has no prefix and sends every key to the app. A compositor in a pane also wants key releases.",
 	},
 	{
 		Name:  "vim / neovim",

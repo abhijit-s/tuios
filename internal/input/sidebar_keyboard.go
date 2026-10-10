@@ -44,7 +44,7 @@ func HandleSidebarKey(msg tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
 	// under the cursor is what decides which of the two answers. On every other
 	// row the lookup finds nothing and the rail's own binding runs, unchanged.
 	if o.SidebarCursorOnFile() {
-		if act := lookupAction(msg, o.KeybindRegistry.GetSidebarFilesAction); act != "" {
+		if act := lookupAction(o, msg, o.KeybindRegistry.GetSidebarFilesAction); act != "" {
 			o.NoteAction(act)
 			return o, handleSidebarFileAction(act, o)
 		}
@@ -55,7 +55,7 @@ func HandleSidebarKey(msg tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
 	// the rail's binding for it, so r and x keep renaming and opening the menu
 	// until reply and cancel are built.
 	if o.SidebarCursorOnAgent() {
-		if act := lookupAction(msg, o.KeybindRegistry.GetSidebarAgentsAction); act != "" {
+		if act := lookupAction(o, msg, o.KeybindRegistry.GetSidebarAgentsAction); act != "" {
 			if cmd, handled := o.SidebarAgentAction(act); handled {
 				o.NoteAction(act)
 				return o, cmd
@@ -63,7 +63,7 @@ func HandleSidebarKey(msg tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
 		}
 	}
 
-	action := lookupAction(msg, o.KeybindRegistry.GetSidebarAction)
+	action := lookupAction(o, msg, o.KeybindRegistry.GetSidebarAction)
 	if action == "" {
 		// A global bind, on a key the rail does not bind itself.
 		//
@@ -229,6 +229,8 @@ func handleSidebarFileAction(action string, o *app.OS) tea.Cmd {
 		return o.SidebarFileOpen()
 	case sidebarActFileEdit:
 		return o.SidebarFileEdit()
+	case sidebarActFileCopyPath:
+		return o.SidebarFileCopyPath()
 	case sidebarActFileCreate:
 		o.SidebarFileCreate()
 	case sidebarActFileRename:

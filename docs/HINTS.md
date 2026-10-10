@@ -7,7 +7,9 @@ Hints mode can also put labels on all panes at the same time. See
 
 ## Use it
 
-1. Press `Ctrl+B F`. The labels show and the rest of the pane goes dim.
+1. Press `Ctrl+B F`. The labels show and the rest of the pane goes dim. The
+   mode pill in the dock shows `HINTS`, and the other end of the dock shows
+   the keys.
 2. Type a label. tuios copies the text and closes hints mode.
 
 | Keys | What it does |
@@ -16,6 +18,7 @@ Hints mode can also put labels on all panes at the same time. See
 | the label with `Shift`, such as `A` | Copy the text and type it into the pane |
 | the label with `Ctrl`, such as `Ctrl+A` | Open a URL or a path |
 | `backspace` | Remove the last letter you typed |
+| `?` | Close hints mode and show all of its keys in the help |
 | `esc`, or the leader key | Close hints mode |
 | `q` | Close hints mode, when `q` is not a label letter |
 | `Ctrl+C`, `Ctrl+G` | Close hints mode, when `c` or `g` is not a label letter |
@@ -96,6 +99,16 @@ all_panes = true
 
 `path` and `email` accept letters in all scripts, with accents and
 combining marks. The other built-in patterns use only ASCII.
+
+A URL ends at a space, a quote, a backtick or an angle bracket. A `)` or a
+`]` ends the URL when the URL did not open it. A pair that the URL opens
+stays in it, as in `https://en.wikipedia.org/wiki/Go_(language)`. tuios
+removes `.,;:!?` from the end. So the markdown badge
+`[![x](https://a.example/b.svg)](https://a.example/c)` gives two URLs. The
+pointer uses the same rules to find a link.
+
+A path that starts with `/` must not come directly after `<`, a letter, a
+digit or `_`. So `</p>` in HTML is not a path.
 
 Hints mode reads only the text on the screen. If you scroll the pane back, it
 reads the lines you scrolled to. A URL that wraps onto the next row is one

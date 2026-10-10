@@ -362,7 +362,27 @@ func diffReplaySplit(s vtgen.Script, seed uint64) (found divergence) {
 // filter goes too.
 func diffFilter(s vtgen.Script) vtgen.Script {
 	out := make(vtgen.Script, 0, len(s))
+	cols, rows := diffFuzzCols, diffFuzzRows
+	protected := false
 	for _, seq := range s {
+		// A cell DECSCA 1 protected keeps its protection through a reflow
+		// on the library and loses it on the pure emulator, so a later
+		// selective erase differs. Pinned by TestGhosttyDivergence_ProtectionLost.
+		// Only a resize that can reflow is dropped: one that changes the
+		// width, or one that adds rows, which pulls history back. RIS ends it,
+		// because it clears every cell.
+		if p, r := strings.LastIndex(seq.Bytes, "\x1b[1\"q"), strings.LastIndex(seq.Bytes, "\x1bc"); p > r {
+			protected = true
+		} else if r >= 0 {
+			protected = false
+		}
+		if seq.Kind == "resize" {
+			reflows := seq.Cols != cols || seq.Rows > rows
+			if protected && reflows {
+				continue
+			}
+			cols, rows = seq.Cols, seq.Rows
+		}
 		// SGR 21 is double underline to ghostty and nothing to the pure
 		// emulator. Pinned by TestGhosttyKnownDivergences/sgr21-double-underline.
 		if seq.Kind == "sgr" && sgrHasParam(seq.Bytes, "21") {
@@ -379,6 +399,13 @@ func diffFilter(s vtgen.Script) vtgen.Script {
 		// the pure emulator, which clusters whatever the mode says. Pinned by
 		// TestGhosttyGraphemeClusteringDefault.
 		if seq.Kind == "mode" && strings.Contains(seq.Bytes, "2027") {
+			continue
+		}
+		// The library ignores DECSTR, and the pure emulator runs it. Pinned by
+		// TestGhosttyDivergence_DECSTRIgnored, and for DECSCA, which a soft
+		// reset stops on the pure emulator only, by
+		// TestGhosttyDivergence_ProtectionLost.
+		if seq.Bytes == "\x1b[!p" {
 			continue
 		}
 		out = append(out, seq)
@@ -835,44 +862,104 @@ func TestGhosttyDivergence_ControlCodePointsPrinted(t *testing.T) {
 //
 // The pure emulator used to leave DECSED and DECSEL unhandled, so CSI ? 2 J
 // cleared the screen on the library backend and did nothing on the pure one.
-// It now erases as ED and EL do, which agrees with the library wherever no
-// cell is protected, and the first two cases hold the backends together
-// there.
-//
-// DECSCA is still unimplemented on the pure emulator, so a selective erase
-// clears cells a guest marked protected. The library keeps them, as xterm
-// does, and the library is the right one. The third case pins that
-// divergence on a protected cell.
+// Then it erased as ED and EL do, which agreed with the library wherever no
+// cell was protected, but DECSCA was unimplemented, so a selective erase
+// cleared cells a guest marked protected. It implements DECSCA now, and the
+// backends agree on protected cells too.
 func TestGhosttyDivergence_SelectiveErase(t *testing.T) {
-	agree := []struct {
+	cases := []struct {
 		name, in string
 		at       int
+		want     string
 	}{
-		{"DECSED erases on both when nothing is protected", "ABCD\x1b[H\x1b[?2J", 0},
-		{"DECSEL erases on both when nothing is protected", "abcdef\x1b[H\x1b[?0K", 0},
+		{"DECSED erases on both when nothing is protected", "ABCD\x1b[H\x1b[?2J", 0, " "},
+		{"DECSEL erases on both when nothing is protected", "abcdef\x1b[H\x1b[?0K", 0, " "},
 		// Column 2 holds an unprotected character, which both must clear.
-		{"DECSED clears an unprotected cell next to protected ones", "\x1b[1\"qAB\x1b[2\"qCD\x1b[H\x1b[?2J", 2},
+		{"DECSED clears an unprotected cell next to protected ones", "\x1b[1\"qAB\x1b[2\"qCD\x1b[H\x1b[?2J", 2, " "},
+		// Column 0 holds a character written under DECSCA 1.
+		{"DECSED keeps a protected cell on both", "\x1b[1\"qAB\x1b[2\"qCD\x1b[H\x1b[?2J", 0, "A"},
+		{"DECSEL keeps a protected cell on both", "ab\x1b[1\"qC\x1b[0\"q\x1b[H\x1b[?2K", 2, "C"},
+		{"ED erases a protected cell on both", "\x1b[1\"qAB\x1b[0\"q\x1b[H\x1b[2J", 0, " "},
 	}
-	for _, tc := range agree {
+	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			p := probeBoth(t, tc.in, tc.at, 0)
-			if p.pureCell != " " || p.ghCell != " " {
-				t.Errorf("%q: cell (%d,0) pure=%q ghostty=%q, want both erased", tc.in, tc.at, p.pureCell, p.ghCell)
+			if p.pureCell != tc.want || p.ghCell != tc.want {
+				t.Errorf("%q: cell (%d,0) pure=%q ghostty=%q, want both %q", tc.in, tc.at, p.pureCell, p.ghCell, tc.want)
 			}
 		})
 	}
+}
 
-	t.Run("DECSCA does not protect on the pure emulator", func(t *testing.T) {
-		// Column 0 holds a character written under DECSCA 1.
-		p := probeBoth(t, "\x1b[1\"qAB\x1b[2\"qCD\x1b[H\x1b[?2J", 0, 0)
-		if p.pureCell != " " {
-			t.Fatalf("the pure emulator now keeps a protected cell (%q); DECSCA works, "+
-				"so TestConform_SelectiveErase needs updating and so does this entry", p.pureCell)
+// TestGhosttyDivergence_ProtectionLost pins the two places the pure emulator
+// lets DECSCA protection go where the library keeps it.
+//
+// A reflow drops it: the pure emulator lays the main screen out again on a
+// change of width and builds new rows, which carry no protection. The library
+// keeps the protected bit in each cell through its own reflow. A guest that
+// protects cells and is then resized loses them to its next selective erase
+// on the pure backend.
+//
+// A soft reset stops it on the pure emulator, as DEC lists for DECSTR. The
+// library does not implement DECSTR (TestGhosttyDivergence_DECSTRIgnored),
+// so the pen keeps protecting there.
+func TestGhosttyDivergence_ProtectionLost(t *testing.T) {
+	t.Run("a reflow drops the protection on the pure emulator", func(t *testing.T) {
+		p := newDiffPair(t, 40, 12)
+		// A row longer than the new width, so the narrowing reflows it.
+		p.write(t, []byte("\x1b[1\"qP\x1b[0\"q"+strings.Repeat("x", 35)))
+		p.pure.Resize(30, 12)
+		p.gh.Resize(30, 12)
+		p.write(t, []byte("\x1b[?2J"))
+		if got := p.pure.CellAt(0, 0).Content; got != "" && got != " " {
+			t.Fatalf("the pure emulator keeps protection through a reflow (cell %q); this entry goes", got)
 		}
-		if p.ghCell != "A" {
-			t.Errorf("ghostty no longer keeps the protected cell (cell %q); update this entry", p.ghCell)
+		if got := p.gh.CellAt(0, 0).Content; got != "P" {
+			t.Errorf("ghostty no longer keeps protection through a reflow (cell %q); update this entry", got)
 		}
 	})
+	t.Run("a soft reset stops protecting on the pure emulator", func(t *testing.T) {
+		p := probeBoth(t, "\x1b[1\"q\x1b[!pA\x1b[1;1H\x1b[?2K", 0, 0)
+		if p.pureCell != " " {
+			t.Fatalf("the pure emulator protects after DECSTR (cell %q); this entry goes", p.pureCell)
+		}
+		if p.ghCell != "A" {
+			t.Errorf("ghostty stops protecting after DECSTR (cell %q); update this entry", p.ghCell)
+		}
+	})
+}
+
+// TestDiffFilterDropsOnlyAReflowAfterProtection holds the filter to the one
+// divergence it is for. A script that protects a cell, reflows and erases
+// selectively diverges as it is, and agrees once filtered. Without the
+// protection, or with a resize that cannot reflow, or after a reset, the
+// filter keeps the resize.
+func TestDiffFilterDropsOnlyAReflowAfterProtection(t *testing.T) {
+	long := strings.Repeat("x", 35)
+	protect := vtgen.Seq{Kind: "erase", Bytes: "\x1b[1\"qP\x1b[0\"q" + long, Desc: "DECSCA character protection 1"}
+	plain := vtgen.Seq{Kind: "text", Bytes: "P" + long, Desc: "text"}
+	narrow := vtgen.Seq{Kind: "resize", Cols: 30, Rows: diffFuzzRows, Desc: "resize to 30"}
+	shorter := vtgen.Seq{Kind: "resize", Cols: diffFuzzCols, Rows: diffFuzzRows - 2, Desc: "resize shorter"}
+	reset := vtgen.Seq{Kind: "erase", Bytes: "\x1bc", Desc: "RIS full reset"}
+	erase := vtgen.Seq{Kind: "erase", Bytes: "\x1b[H\x1b[?2J", Desc: "DECSED"}
+
+	script := vtgen.Script{protect, narrow, erase}
+	if !diffReplay(script).found() {
+		t.Fatal("protect, reflow and erase do not diverge, so the filter has nothing to drop; it goes")
+	}
+	if d := diffReplay(diffFilter(script)); d.found() {
+		t.Errorf("the filtered script still diverges: %v", d)
+	}
+
+	keeps := func(name string, s vtgen.Script) {
+		t.Helper()
+		if got := diffFilter(s); len(got) != len(s) {
+			t.Errorf("%s: the filter dropped %d steps it is not for", name, len(s)-len(got))
+		}
+	}
+	keeps("no protection", vtgen.Script{plain, narrow, erase})
+	keeps("a resize that cannot reflow", vtgen.Script{protect, shorter, erase})
+	keeps("a reset before the resize", vtgen.Script{protect, reset, narrow, erase})
 }
 
 // TestGhosttyDivergence_BackgroundColourErase pins which operations carry the
@@ -922,27 +1009,94 @@ func TestGhosttyDivergence_BackgroundColourErase(t *testing.T) {
 	}
 }
 
-// TestGhosttyDivergence_LeftRightMarginReset pins what happens to the
-// left and right margins when DECLRMM is switched back off.
+// TestGhosttyLeftRightMarginResetAgrees pins what happens to the left and
+// right margins when DECLRMM is switched back off.
 //
-// Resetting mode 69 disables left and right margin support, and the margins
-// go back to the full width with it. The pure emulator does that. The library
-// keeps the margins it was given, so a pane that ever enabled DECLRMM keeps
-// dead columns on its left for the rest of its life. The pure emulator is the
-// side that matches the DEC documentation.
-func TestGhosttyDivergence_LeftRightMarginReset(t *testing.T) {
+// Resetting mode 69 gives the margins back to the full width, on both
+// backends: the pure emulator in csi_mode.go, the library in its own mode
+// handler. This entry used to say the library kept them. It was reading the
+// Go-side copy of the margins, which did keep them, and that copy is what the
+// reattach snapshot carries. So a pane that turned DECLRMM off and on again
+// came back after a reattach with margins its guest no longer had.
+//
+// The probe prints past column 20 after the mode is set again. Kept margins
+// would wrap it there.
+func TestGhosttyLeftRightMarginResetAgrees(t *testing.T) {
 	p := newDiffPair(t, 40, 12)
-	p.write(t, []byte("\x1b[?69h\x1b[5;20s\x1b[?69l"))
+	p.write(t, []byte("\x1b[?69h\x1b[5;20s\x1b[?69l\x1b[?69h"))
 
 	full := uv.Rect(0, 0, 40, 12)
-	if got := p.pure.ScrollRegion(); got != full {
-		t.Errorf("pure scroll region = %v, want the full screen %v", got, full)
+	for name, term := range map[string]Terminal{"pure": p.pure, "ghostty": p.gh} {
+		if got := term.ScrollRegion(); got != full {
+			t.Errorf("%s scroll region = %v, want the full screen %v", name, got, full)
+		}
 	}
-	if got := p.gh.ScrollRegion(); got == full {
-		t.Fatalf("ghostty now clears the margins on DECLRMM reset; delete this entry")
-	} else {
-		t.Logf("ghostty keeps %v after DECLRMM reset, where the full screen is %v", got, full)
+
+	p.write(t, []byte("\x1b[1;7H"+strings.Repeat("x", 30)))
+	for name, term := range map[string]Terminal{"pure": p.pure, "ghostty": p.gh} {
+		if got := diffRowText(term, 0); got != "      "+strings.Repeat("x", 30) {
+			t.Errorf("%s row 0 = %q: the text wrapped at a margin the guest turned off", name, got)
+		}
 	}
+}
+
+// TestGhosttyDivergence_DECSTRIgnored pins the soft reset.
+//
+// The pure emulator runs DECSTR: the scroll region goes back to the full page,
+// with the rest of the DEC list (see softReset). libghostty does not implement
+// it. Its stream parser logs "ignoring unimplemented CSI p with intermediates"
+// and does nothing, so the region stays where the guest put it. The pure
+// emulator is the side that matches DEC and xterm.
+//
+// The Go-side copy of the region on the ghostty backend has to follow the
+// library, not the pure emulator: the reattach snapshot carries that copy,
+// and a client that restores the full page under a guest that still scrolls
+// rows 3 to 10 scrolls the wrong rows. The probe makes the library show which
+// region it is using: a line feed on row 10 scrolls rows 3 to 10 when the
+// region survived, and moves the cursor down a row when it did not.
+func TestGhosttyDivergence_DECSTRIgnored(t *testing.T) {
+	p := newDiffPair(t, 40, 12)
+	var fill strings.Builder
+	for i := 1; i <= 12; i++ {
+		if i > 1 {
+			fill.WriteString("\r\n")
+		}
+		fmt.Fprintf(&fill, "L%d", i)
+	}
+	p.write(t, []byte("\x1b[H"+fill.String()+"\x1b[3;10r\x1b[!p"))
+
+	if got, want := p.pure.ScrollRegion(), uv.Rect(0, 0, 40, 12); got != want {
+		t.Errorf("pure scroll region after DECSTR = %v, want the full page %v", got, want)
+	}
+	if got, want := p.gh.ScrollRegion(), uv.Rect(0, 2, 40, 8); got != want {
+		if got == uv.Rect(0, 0, 40, 12) {
+			t.Fatalf("the ghostty copy of the region says the full page after DECSTR, %v; "+
+				"if the library now runs DECSTR too, this entry goes", got)
+		}
+		t.Errorf("ghostty scroll region after DECSTR = %v, want rows 3 to 10, %v", got, want)
+	}
+
+	p.write(t, []byte("\x1b[10;1H\n"))
+	if got := diffRowText(p.pure, 2); got != "L3" {
+		t.Errorf("pure row 2 = %q, want L3: a line feed under the full page does not scroll", got)
+	}
+	if got := diffRowText(p.gh, 2); got != "L4" {
+		t.Errorf("ghostty row 2 = %q, want L4: the library kept rows 3 to 10 and scrolled them", got)
+	}
+}
+
+// diffRowText is one row of the screen, trailing blanks trimmed.
+func diffRowText(term Terminal, y int) string {
+	var sb strings.Builder
+	for x := range term.Width() {
+		c := term.CellAt(x, y)
+		if c == nil || c.Content == "" {
+			sb.WriteByte(' ')
+			continue
+		}
+		sb.WriteString(c.Content)
+	}
+	return strings.TrimRight(sb.String(), " ")
 }
 
 // TestGhosttyDivergence_OrphanCombiningMark pins what a combining mark with

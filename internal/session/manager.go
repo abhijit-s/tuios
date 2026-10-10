@@ -7,6 +7,7 @@ import (
 	"sort"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/Gaurav-Gosain/tuios/internal/config"
 	"github.com/Gaurav-Gosain/tuios/internal/guestenv"
@@ -41,6 +42,12 @@ type Manager struct {
 	// reaches the next pane of a session that already exists. It is atomic so
 	// a spawn never needs m.mu.
 	preferredShell atomic.Pointer[string]
+	// stayOnEmpty is workspaces.return_when_empty turned off. The zero value
+	// is the default, on. Every session reads it through ReturnWhenEmpty.
+	stayOnEmpty atomic.Bool
+	// sshAgentFollow is [daemon] ssh_agent = "follow": a new pane gets
+	// SSH_AUTH_SOCK naming its session's agent link. See ssh_agent_follow.go.
+	sshAgentFollow atomic.Bool
 	// herdrSocket is the herdr protocol socket the daemon listens on, "" when
 	// it does not. herdrMode is [agents] herdr_protocol. Both are read at
 	// spawn time through HerdrEnv. See herdr_compat.go.
@@ -140,6 +147,16 @@ func (m *Manager) SetNewWindowInheritCwd(v bool) {
 // Empty means $SHELL and then the platform default.
 func (m *Manager) SetPreferredShell(shell string) {
 	m.preferredShell.Store(&shell)
+}
+
+// SetReturnWhenEmpty sets workspaces.return_when_empty for every session.
+func (m *Manager) SetReturnWhenEmpty(on bool) {
+	m.stayOnEmpty.Store(!on)
+}
+
+// ReturnWhenEmpty is what SetReturnWhenEmpty last set, true when nothing did.
+func (m *Manager) ReturnWhenEmpty() bool {
+	return !m.stayOnEmpty.Load()
 }
 
 // PreferredShell is what SetPreferredShell last set, or "".
@@ -275,8 +292,14 @@ func (m *Manager) CreateSession(name string, cfg *SessionConfig, width, height i
 	if cfg.PaneToken == nil {
 		cfg.PaneToken = m.PaneToken
 	}
+	if cfg.ReturnWhenEmpty == nil {
+		cfg.ReturnWhenEmpty = m.ReturnWhenEmpty
+	}
 	if cfg.HerdrEnv == nil {
 		cfg.HerdrEnv = m.HerdrEnv
+	}
+	if cfg.AgentEnv == nil {
+		cfg.AgentEnv = m.agentEnv
 	}
 	if cfg.history == nil {
 		cfg.history = m.history
@@ -544,15 +567,65 @@ func (m *Manager) AllSessions() []*Session {
 	return out
 }
 
-// GetDefaultSession returns the first/default session, creating one if none exist.
+// MostRecentSession returns the most recently active session, or nil when
+// there is none. It is the session every command that leaves its session out
+// acts on.
+func (m *Manager) MostRecentSession() *Session {
+	return mostRecentSession(m.AllSessions(), false)
+}
+
+// LastUsedSession returns the session the person used last, or nil when there
+// is none. It is the one a bare attach lands on. A session the person never
+// used ranks below every one they did, and sessions tied there are ranked as
+// MostRecentSession ranks them.
+func (m *Manager) LastUsedSession() *Session {
+	return mostRecentSession(m.AllSessions(), true)
+}
+
+// mostRecentSession picks the session with the latest LastActive, or with
+// byUse the latest LastUsed and then the latest LastActive. It compares the
+// full-precision times: SessionInfo truncates them to whole seconds, so two
+// sessions used in the same second tied and the pick fell to list order. A
+// tie that remains goes to the newer session, then to the lower name, so the
+// answer never depends on map order.
+func mostRecentSession(sessions []*Session, byUse bool) *Session {
+	var best *Session
+	var bestUsed, bestActive time.Time
+	for _, s := range sessions {
+		var used time.Time
+		if byUse {
+			used = s.LastUsed()
+		}
+		active := s.LastActive()
+		if best == nil || newerPick(used, bestUsed, active, bestActive, s, best) {
+			best, bestUsed, bestActive = s, used, active
+		}
+	}
+	return best
+}
+
+// newerPick reports whether s, used and active at the times given, ranks
+// above best: the later use, then the later activity, then the newer
+// session, then the lower name.
+func newerPick(used, bestUsed, active, bestActive time.Time, s, best *Session) bool {
+	switch {
+	case !used.Equal(bestUsed):
+		return used.After(bestUsed)
+	case !active.Equal(bestActive):
+		return active.After(bestActive)
+	case !s.Created.Equal(best.Created):
+		return s.Created.After(best.Created)
+	}
+	return s.Name() < best.Name()
+}
+
+// GetDefaultSession returns the session the person used last, creating one if
+// none exist. It used to return the first session a range over the map gave,
+// which Go randomises, so a bare attach landed on any session at all.
 func (m *Manager) GetDefaultSession(cfg *SessionConfig, width, height int) (*Session, error) {
-	m.mu.RLock()
-	// Return first session if any exist
-	for _, session := range m.sessions {
-		m.mu.RUnlock()
+	if session := m.LastUsedSession(); session != nil {
 		return session, nil
 	}
-	m.mu.RUnlock()
 
 	// No sessions, create default with generated name
 	name := m.GenerateSessionName()

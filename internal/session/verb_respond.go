@@ -153,6 +153,13 @@ func (d *Daemon) lookAtPrompt(sess *Session, windowID string) (promptLook, *verb
 		look.reason = "the pane is not waiting on a prompt: its state is " + w.AgentState.Name()
 		return look, nil
 	}
+	if agentBlockedBy(w) == harness.PromptKindAuth {
+		// A login, a token or a credential. Nothing is read off the screen
+		// and nothing can be typed from the Inbox: a secret is typed in the
+		// pane that asks for it, where the person can see what asks.
+		look.reason = "the pane waits for a login, which is answered in the pane"
+		return look, nil
+	}
 	reg := d.agentMatcher.registry
 	hid := w.AgentHarness
 	if reg == nil || hid == "" {
@@ -372,8 +379,8 @@ func peekResult(sess *Session, look promptLook, now time.Time) map[string]any {
 // mayRespond reports whether the caller may answer a prompt as the person:
 // a verified attach nonce, or the respond_from_shell grant for a caller the
 // kernel names outside every pane.
-func (d *Daemon) mayRespond(cs *connState, nonce string) bool {
-	if d.verifyAnyHumanNonce(nonce, cs) {
+func (d *Daemon) mayRespond(cs *connState, nonce, sessionID string) bool {
+	if _, ok := d.humanNonceFor(nonce, sessionID, cs); ok {
 		return true
 	}
 	return d.respondFromShell && cs != nil && cs.peerPID > 0 && d.mayActAsHuman(cs)
@@ -422,7 +429,7 @@ func (d *Daemon) verbRespond(cs *connState, params json.RawMessage) (any, *verbE
 	// A pane the person gave the respond grant may answer for them in the
 	// sessions it may write to. See pane_grants.go.
 	byPane := ""
-	if !d.mayRespond(cs, p.HumanNonce) {
+	if !d.mayRespond(cs, p.HumanNonce, sess.ID) {
 		if !d.paneMayRespond(cs, sess.Name()) {
 			return nil, hintedVerbError(ErrVerbNotHuman, "respond is for the person at an attached client", &VerbHint{
 				Param:  "human_nonce",
@@ -472,10 +479,10 @@ func (d *Daemon) verbRespond(cs *connState, params json.RawMessage) (any, *verbE
 	}
 	if reply.Text != "" {
 		if _, werr := submitPrompt(d.ctx, pty, reply.Text, d.inputProfileFor(sess, w.ID)); werr != nil {
-			return nil, newVerbError(ErrVerbInternal, werr.Error())
+			return nil, promptWriteError(werr)
 		}
 	} else if _, werr := pty.Write(reply.Keys); werr != nil {
-		return nil, newVerbError(ErrVerbInternal, werr.Error())
+		return nil, promptWriteError(werr)
 	}
 	slot.answered = look.id
 	if byPane != "" {

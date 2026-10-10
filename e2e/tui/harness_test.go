@@ -51,7 +51,7 @@
 // starts the child with setsid and tears down the whole process group, so the
 // daemon and its panes are reaped even when a test fails.
 //
-// # Two harness footguns this file works around
+// # Harness footguns this file works around
 //
 //  1. WaitStable can report stability against a pre-action frame: called right
 //     after sending input, its quiet window can elapse before tuios has reacted.
@@ -63,26 +63,25 @@
 //     keys. enterTerminalMode handles both. An *attached* client is the other way
 //     round and boots into terminal mode; windowManagementMode is the fix.
 //
-//  3. tuitest's own emulator panics on a scroll region wider than the screen,
-//     which takes the whole test binary with it. Three lines reproduce it:
+//  3. An emulator panic in tuitest takes the whole test binary with it. A
+//     panic in its pump goroutine cannot be recovered by the test, so every
+//     result not yet printed is lost and t.Cleanup never runs. It killed an
+//     850 second fuzz campaign and every finding in it.
+//
+//     The panic that did it is fixed. tuitest used to panic on a scroll region
+//     past the bottom of the screen after a shrink, which a client is entitled
+//     to emit when a frame lands after the PTY shrank. These three lines
+//     reproduced it, and they pass against the tuitest this module pins
+//     (re-run on 2026-10-08):
 //
 //     term := tuitest.StartT(t, []string{"/bin/sh"}, tuitest.WithSize(80, 24))
 //     term.Resize(80, 10)
 //     term.SendKeys(`printf '\033[1;24r\033[3S'`, tuitest.Enter)
 //
-//     internal/vt/screen.go setVerticalMargins stores DECSTBM's bottom margin
-//     without clamping it to the buffer, and ultraviolet's DeleteLineArea limits
-//     the delete count against the region but then indexes b.Lines[src] without
-//     limiting it against the buffer, so the next scroll up runs off the end.
-//     A real terminal clamps DECSTBM to the screen.
-//
-//     This is not exotic. A client renders a frame for the size it last knew
-//     about, the PTY shrinks, and the frame lands afterwards; tuios is entitled
-//     to emit that and every real terminal tolerates it. It killed an 850 second
-//     fuzz campaign and took every finding in it, because a panic in the pump
-//     goroutine cannot be recovered by the test. Until tuitest clamps, a long
-//     campaign has to be run in seed batches so one crash costs one batch: see
-//     TUIOS_FUZZ_FIRST on TestFuzzPTY.
+//     tuitest still has no recover around its emulator, so the next emulator
+//     bug would do the same. Until it has one, a long campaign runs in seed
+//     batches so one crash costs one batch: see TUIOS_FUZZ_FIRST on
+//     TestFuzzPTY.
 package tuie2e
 
 import (
@@ -165,6 +164,13 @@ func runE2E(m *testing.M) int {
 	// names the person's daemon, and tuiosCLI passes the environment on. The
 	// commands would dial it to check it; the suite has no business there.
 	_ = os.Unsetenv("TUIOS_SOCKET")
+	// The harnesses' own directory overrides. HOME is redirected per test, but
+	// each of these names a directory outright, so one set in the developer's
+	// shell would point an integration install or uninstall at their real
+	// agent config. Every tuios this suite spawns inherits the environment.
+	for _, key := range harnessDirKeys {
+		_ = os.Unsetenv(key)
+	}
 	defer func() { _ = os.RemoveAll(shortRuntimeRoot) }()
 
 	if bin := os.Getenv("TUIOS_E2E_BIN"); bin != "" {
@@ -278,6 +284,18 @@ var xdgKeys = []string{
 	// the tests of what shows before the first agent failed on that machine
 	// alone.
 	"HOME",
+}
+
+// harnessDirKeys are the variables that move a harness's configuration
+// directory away from the home (internal/integration's targets read them).
+// runE2E clears them for the whole suite. TestE2EClearsEveryDirOverride in
+// internal/integration fails when that package reads one missing here.
+var harnessDirKeys = []string{
+	"CLAUDE_CONFIG_DIR", "CODEX_HOME", "COPILOT_HOME", "CURSOR_CONFIG_DIR",
+	"GROK_HOME", "HERMES_HOME", "KIMI_CODE_HOME", "PI_CODING_AGENT_DIR",
+	"QODER_CONFIG_DIR", "QWEN_HOME", "ANTIGRAVITY_CLI_CONFIG_DIR",
+	// Windows only, cleared all the same. Hermes and Devin read them there.
+	"APPDATA", "LOCALAPPDATA",
 }
 
 // startIn spawns tuios against an explicit isolation root, so two clients can
@@ -1205,12 +1223,15 @@ func disableTiling(t *testing.T, term *tuitest.Terminal) {
 const unixSocketPathMax = 103
 
 // longestRuntimeSocket is the longest socket tuios binds under its runtime
-// directory, relative to it: a tmux shim pane holder's socket, named by a pane
-// number of up to ten digits. The daemon's tuios.sock and its link sockets
-// (tuios.sock.link-human is the longest) are shorter. A runtime directory is
-// measured against this one, since measuring it against tuios.sock alone let
-// a root through whose daemon bound and whose pane holders could not.
-var longestRuntimeSocket = filepath.Join("tuios", "tmux", "p", "2147483647.sock")
+// directory, relative to it: a tmux shim wait-for socket, a channel hash of
+// eight hex digits and a locker named by the time in thirteen base 36
+// digits. A pane holder's socket (tmux/p/2147483647.sock), the daemon's
+// tuios.sock and its link sockets (tuios.sock.link-human is the longest) are
+// shorter. A runtime directory is measured against this one, since measuring
+// it against tuios.sock alone let a root through whose daemon bound and whose
+// pane holders could not. A session's ssh agent link, named by the whole
+// session id, is longer still: ssh in a pane connects to it by that path.
+var longestRuntimeSocket = filepath.Join("tuios", "agent-00000000-0000-0000-0000-000000000000.sock")
 
 // shortRuntimeRoot is where a runtime directory goes when the isolation root
 // is too long to hold one. Per user and per test process. It was per user

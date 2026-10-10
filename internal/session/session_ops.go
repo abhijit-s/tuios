@@ -6,6 +6,7 @@ import (
 	"os"
 	"slices"
 	"strings"
+	"sync"
 
 	"github.com/Gaurav-Gosain/tuios/internal/worktree"
 	"github.com/google/uuid"
@@ -250,6 +251,11 @@ type NewWindowOptions struct {
 	// saved: a window a restore brings back starts with the daemon's
 	// environment. A window on another machine ignores it.
 	Env []string
+	// FocusIfShown focuses the window only when its workspace is the one the
+	// session shows, never changes the current workspace, and does not count
+	// as a focus move. See ExecuteCommandPayload.FocusIfShown. It means
+	// nothing with Focus set.
+	FocusIfShown bool
 	// Grants is what the window's process may do through tuios, nil for the
 	// default of [agents.permissions]. It is in force before the process
 	// starts, and it is saved with the window. See pane_grants.go.
@@ -322,6 +328,29 @@ func (s *Session) AddDaemonWindowWith(opts NewWindowOptions, onExit func(ptyID s
 	if cwd == "" && opts.Host == "" {
 		cwd = s.inheritedCwd()
 	}
+	// With nothing to inherit, the session's own start directory: the one
+	// tuios new --cwd named. A local path, so a window with a host skips it
+	// for the reason above.
+	if cwd == "" && opts.Host == "" {
+		cwd = s.StartDir()
+	}
+
+	// A command can exit before its window is in the state: one that fails
+	// at once does. onExit finds the window by its PTY (close_on_exit and
+	// plugin panes close it that way), so it waits until the window is
+	// added or refused. Without the wait it found nothing, and the window
+	// stayed open around a dead process.
+	added := make(chan struct{})
+	var addedOnce sync.Once
+	markAdded := func() { addedOnce.Do(func() { close(added) }) }
+	defer markAdded()
+	if onExit != nil {
+		exit := onExit
+		onExit = func(ptyID string) {
+			<-added
+			exit(ptyID)
+		}
+	}
 
 	pty, err := s.createPTY(ptyWidth, ptyHeight, ptySpawn{
 		windowID: windowID, cwd: cwd, command: opts.Command, env: opts.Env, host: opts.Host,
@@ -330,6 +359,9 @@ func (s *Session) AddDaemonWindowWith(opts NewWindowOptions, onExit func(ptyID s
 	})
 	if err != nil {
 		return WindowState{}, err
+	}
+	if windowSpawnedHook != nil {
+		windowSpawnedHook(pty)
 	}
 
 	// The session's directory is its first window's, so the first window is
@@ -386,6 +418,13 @@ func (s *Session) AddDaemonWindowWith(opts NewWindowOptions, onExit func(ptyID s
 		if opts.Workspace != 0 {
 			workspace = opts.Workspace
 		}
+		// The pane a switch to an empty workspace asks for is one per
+		// workspace, whatever asked: a second client that switched too, or a
+		// request sent again after the first one was slow. Checked under the
+		// state lock, so two that race cannot both add one.
+		if opts.FocusIfShown && !scratch && hasPanes(state, workspace) {
+			return ErrWorkspaceHasPane
+		}
 
 		win = WindowState{
 			ID:         windowID,
@@ -438,9 +477,16 @@ func (s *Session) AddDaemonWindowWith(opts NewWindowOptions, onExit func(ptyID s
 				state.CurrentWorkspace = workspace
 			}
 			state.FocusHistory = RecordFocus(state.FocusHistory, workspace, windowID)
+		} else if opts.FocusIfShown {
+			if workspace == state.CurrentWorkspace {
+				state.FocusedWindowID = windowID
+				state.FocusHistory = RecordFocus(state.FocusHistory, workspace, windowID)
+			}
+			s.focusNeutral = true
 		}
 		return nil
 	})
+	markAdded()
 	if err != nil {
 		// The shell started for a window that was refused has no owner.
 		_ = s.ClosePTY(pty.ID)
@@ -448,6 +494,15 @@ func (s *Session) AddDaemonWindowWith(opts NewWindowOptions, onExit func(ptyID s
 	}
 	return win, nil
 }
+
+// windowSpawnedHook, when set, runs after AddDaemonWindowWith has spawned the
+// window's process and before it adds the window to the state. Test-only.
+var windowSpawnedHook func(*PTY)
+
+// ErrWorkspaceHasPane is the refusal of a FocusIfShown window on a workspace
+// that has a pane already. The caller treats it as a success that did
+// nothing. See ExecuteCommandPayload.FocusIfShown.
+var ErrWorkspaceHasPane = errors.New("the workspace has a pane already")
 
 // ErrScratchExists is the refusal of a second scratch terminal in a session.
 var ErrScratchExists = errors.New("this session already has a scratch terminal of this name. Press its key to show it")
@@ -498,6 +553,9 @@ func (s *Session) CloseDaemonWindow(target string) (string, error) {
 				}
 			}
 		}
+		// The last pane on the workspace on screen takes the person back
+		// to where they came from. See empty_workspace.go.
+		s.returnFromEmptyLocked(state, workspace)
 		return nil
 	})
 	if err != nil {

@@ -75,6 +75,11 @@ type seqParser struct {
 
 	// state is the current state of the parser.
 	state byte
+
+	// oscBEL records whether the OSC being dispatched was ended by BEL rather
+	// than ST. A reply to an OSC query is ended the same way, as xterm does:
+	// a guest that reads up to the terminator it sent stalls on the other one.
+	oscBEL bool
 }
 
 // newSeqParser returns a parser with [parser.MaxParamsSize] parameters and a
@@ -165,6 +170,15 @@ func (p *seqParser) collectRune(b byte) {
 }
 
 func (p *seqParser) advanceUtf8(b byte) parser.Action {
+	if b&0xc0 != 0x80 {
+		// Only a continuation byte can extend a rune. Anything else ends it
+		// unfinished, and the byte is read again from the ground state: an
+		// ESC that arrives after a truncated rune still starts a sequence,
+		// rather than being taken as the rune's last byte and leaving the
+		// rest of the sequence to print as text.
+		p.abortRune()
+		return p.advance(b)
+	}
 	// Collect UTF-8 rune bytes.
 	p.collectRune(b)
 	rw := utf8ByteLen(byte(p.cmd & 0xff))
@@ -187,6 +201,18 @@ func (p *seqParser) advanceUtf8(b byte) parser.Action {
 	p.paramsLen = 0
 
 	return parser.PrintAction
+}
+
+// abortRune ends a rune that is missing bytes. It prints one U+FFFD for it,
+// which is what Unicode recommends for a maximal invalid subpart, and returns
+// to the ground state.
+func (p *seqParser) abortRune() {
+	if p.handler.Print != nil {
+		p.handler.Print(utf8.RuneError)
+	}
+	p.state = parser.GroundState
+	p.paramsLen = 0
+	p.cmd = 0
 }
 
 // inStringState reports whether the parser is collecting the payload of a
@@ -447,6 +473,7 @@ func (p *seqParser) performAction(action parser.Action, state parser.State, b by
 				p.handler.HandleDcs(ansi.Cmd(p.cmd), p.Params(), data)
 			}
 		case parser.OscStringState:
+			p.oscBEL = b == ansi.BEL
 			if p.handler.HandleOsc != nil {
 				p.handler.HandleOsc(p.cmd, data)
 			}

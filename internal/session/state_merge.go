@@ -3,6 +3,8 @@ package session
 import (
 	"maps"
 	"slices"
+
+	"github.com/Gaurav-Gosain/tuios/internal/layout"
 )
 
 // Merging a client state sync into daemon-owned state.
@@ -132,6 +134,17 @@ func retainDaemonExclusive(incoming, canonical *SessionState) {
 			}
 		}
 	}
+	// And the splits of every other pane, on the same terms again.
+	if len(canonical.WorkspaceMasterSplits) > 0 {
+		if incoming.WorkspaceMasterSplits == nil {
+			incoming.WorkspaceMasterSplits = make(map[int]layout.MasterSplits, len(canonical.WorkspaceMasterSplits))
+		}
+		for ws, sp := range canonical.WorkspaceMasterSplits {
+			if _, ok := incoming.WorkspaceMasterSplits[ws]; !ok {
+				incoming.WorkspaceMasterSplits[ws] = sp.Clone()
+			}
+		}
+	}
 
 	// The custom-layout flags are unioned on the same terms and for the same
 	// reason. A client only holds an entry for a workspace it has been told about
@@ -236,10 +249,16 @@ func retainDaemonExclusive(incoming, canonical *SessionState) {
 	// grants nor take them away by syncing. The daemon enforces them from its
 	// own table anyway; this is the copy that is shown and saved.
 	paneGrants := make(map[string][]string)
+	// A pane's OSC 7501 records are the daemon's alone, like the agent meta:
+	// only the pane's emulator writes them.
+	programStatus := make(map[string][]ProgramStatusRecord)
 	for i := range canonical.Windows {
 		w := &canonical.Windows[i]
 		if w.Grants != nil {
 			paneGrants[w.ID] = w.Grants
+		}
+		if w.ProgramStatus != nil {
+			programStatus[w.ID] = w.ProgramStatus
 		}
 		if w.CompletionSeq != 0 {
 			completions[w.ID] = w.CompletionSeq
@@ -344,6 +363,7 @@ func retainDaemonExclusive(incoming, canonical *SessionState) {
 		w.AgentMeta = metas[w.ID]
 		w.AgentQueued = queued[w.ID]
 		w.AgentSubagents = subagents[w.ID]
+		w.ProgramStatus = programStatus[w.ID]
 		w.Grants = paneGrants[w.ID]
 	}
 }

@@ -7,6 +7,7 @@ import (
 
 	"charm.land/lipgloss/v2"
 	"charm.land/lipgloss/v2/table"
+	"github.com/Gaurav-Gosain/tuios/internal/plural"
 )
 
 // The CLI half of the dock's two verbs.
@@ -27,6 +28,7 @@ type dockComponentRow struct {
 	Command  string `json:"command"`
 	Text     string `json:"text"`
 	Visible  bool   `json:"visible"`
+	Off      string `json:"off"`
 	LastExit int    `json:"last_exit"`
 	LastRun  string `json:"last_run"`
 	LastErr  string `json:"last_error"`
@@ -113,10 +115,15 @@ func printDockComponentList(raw json.RawMessage) error {
 			state, broken = "gave up", broken+1
 		case c.LastErr != "":
 			state, broken = "failed", broken+1
+		case c.Off != "":
+			state = "off"
 		case !c.Visible:
 			state = "hidden"
 		}
 		detail := c.Text
+		if c.Off != "" {
+			detail = c.Off
+		}
 		if c.LastErr != "" {
 			detail = c.LastErr
 			if c.LastExit != 0 {
@@ -149,7 +156,7 @@ func printDockComponentList(raw json.RawMessage) error {
 		})
 
 	fmt.Println(t.Render())
-	fmt.Printf("\n%d component(s).\n", len(res.Components))
+	fmt.Printf("\n%s.\n", plural.Count(len(res.Components), "component"))
 	if broken > 0 {
 		fmt.Printf("%d is not drawing; the READS column carries the reason. "+
 			"Fix the script and run 'tuios refresh-dock <name>'.\n", broken)

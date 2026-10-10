@@ -5,6 +5,7 @@ import (
 	"log"
 	"maps"
 	"slices"
+	"time"
 )
 
 // hasWindow reports whether id names one of these windows.
@@ -29,6 +30,9 @@ func clearLiveAgent(w *WindowState) {
 	w.AgentQueued = 0
 	w.AgentSubagents = 0
 	w.ForegroundCmd = ""
+	// OSC 7501 records live in the pane's emulator, which a restore does
+	// not bring back.
+	w.ProgramStatus = nil
 }
 
 // restoreAllSessions recreates every resurrectable session that is not already
@@ -127,6 +131,18 @@ func (d *Daemon) restoreSessionOffers(state *SessionState) (*Session, []resumeOf
 		return nil, nil, err
 	}
 
+	// The start directory comes back before any window is spawned. It is not
+	// checked: a folder missing when the daemon starts (a drive not mounted
+	// yet) would otherwise be saved as empty on the next save and lost. A
+	// shell asked to start in a missing folder starts in the daemon's.
+	sess.SetStartDir(state.StartDir)
+	// When the person last used it comes back too. Without it every restored
+	// session looked unused, and a bare attach fell to the restore order.
+	// Nothing below touches it: restoring panes is not the person.
+	if state.LastUsed > 0 {
+		sess.setLastUsed(time.Unix(0, state.LastUsed))
+	}
+
 	sessionID := sess.ID
 	onExit := func(ptyID string) {
 		d.notifyPTYClosed(sessionID, ptyID)
@@ -139,6 +155,7 @@ func (d *Daemon) restoreSessionOffers(state *SessionState) (*Session, []resumeOf
 	restored.WorkspaceFocus = maps.Clone(state.WorkspaceFocus)
 	restored.WorkspaceMasterRatio = maps.Clone(state.WorkspaceMasterRatio)
 	restored.WorkspaceStackRatio = maps.Clone(state.WorkspaceStackRatio)
+	restored.WorkspaceMasterSplits = cloneMasterSplits(state.WorkspaceMasterSplits)
 	restored.WorkspaceMasterLayout = maps.Clone(state.WorkspaceMasterLayout)
 	restored.WorkspaceHasCustom = maps.Clone(state.WorkspaceHasCustom)
 

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"maps"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
@@ -144,6 +145,14 @@ func (d *Daemon) verbListSessions(_ *connState, _ json.RawMessage) (any, *verbEr
 	}, nil
 }
 
+// verbListClients exposes the daemon's current connections to protocol clients.
+func (d *Daemon) verbListClients(_ *connState, _ json.RawMessage) (any, *verbError) {
+	return map[string]any{
+		"type":    "client_list",
+		"clients": d.listClients(),
+	}, nil
+}
+
 func (d *Daemon) verbSessionInfo(_ *connState, params json.RawMessage) (any, *verbError) {
 	var p struct {
 		Session string `json:"session"`
@@ -179,6 +188,11 @@ func (d *Daemon) verbListWindows(_ *connState, params json.RawMessage) (any, *ve
 	}
 	data := buildWindowListData(sess.GetState())
 	data["type"] = "window_list"
+	// The shell a new pane runs, by base name, so a reader can say what a
+	// pane at its prompt is running: foreground_cmd is omitted there.
+	if sh := sess.getShell(); sh != "" {
+		data["shell"] = filepath.Base(sh)
+	}
 	addShellFacts(sess, data)
 	addPaneMeta(sess, data)
 	return data, nil
@@ -230,8 +244,7 @@ func (d *Daemon) verbGetWindow(_ *connState, params json.RawMessage) (any, *verb
 	data := windowStateToData(state, idx)
 	if pty := sess.GetPTY(state.Windows[idx].PTYID); pty != nil {
 		maps.Copy(data, shellFactsData(pty.ShellFacts()))
-		m := pty.Meta()
-		data["history_rows"], data["revision"] = m.HistoryRows, m.Revision
+		addOnePaneMeta(pty, data)
 	}
 	data["type"] = "window"
 	return data, nil
@@ -301,7 +314,7 @@ func (d *Daemon) verbNewWindow(cs *connState, params json.RawMessage) (any, *ver
 	onExit := func(ptyID string) {
 		d.notifyPTYClosed(sess.ID, ptyID)
 		if p.CloseOnExit {
-			d.closeWindowOfPTY(sess, ptyID)
+			d.closeWindowOfPTY(sess, ptyID, false)
 		}
 	}
 	win, err := sess.AddDaemonWindowWith(NewWindowOptions{
@@ -500,7 +513,26 @@ func (d *Daemon) verbPopup(_ *connState, params json.RawMessage) (any, *verbErro
 		}
 	}
 
-	onExit := func(ptyID string) { d.notifyPTYClosed(sess.ID, ptyID) }
+	// The daemon closes a popup itself when its command exits. The attached
+	// client closes it too when it hears the exit, but only a client attached
+	// to the popup's session hears it (see notifyPTYClosed). A popup whose
+	// command moved that client to another session, which is what a
+	// sessionizer does, exited with nobody left to hear it, and stayed in the
+	// session it was opened from as an empty box (#479).
+	//
+	// The close removes the PTY, and a caller that waits reads the exit status
+	// from the PTY. So the status is kept here before the close is queued, and
+	// waitPopupExit falls back to it when the PTY is already gone.
+	exitStatus := newPopupExit()
+	onExit := func(ptyID string) {
+		d.notifyPTYClosed(sess.ID, ptyID)
+		if pty := sess.GetPTY(ptyID); pty != nil {
+			if code, ok := pty.ExitStatus(); ok {
+				exitStatus.record(code)
+			}
+		}
+		d.closeWindowOfPTY(sess, ptyID, true)
+	}
 	opts := NewWindowOptions{
 		Title:       p.Name,
 		Cwd:         p.Cwd,
@@ -540,7 +572,10 @@ func (d *Daemon) verbPopup(_ *connState, params json.RawMessage) (any, *verbErro
 		displayName = p.Name
 	}
 	if p.Wait {
-		code, exited := d.waitPopupExit(sess, win, time.Duration(p.Timeout)*time.Millisecond)
+		if popupBeforeWaitHook != nil {
+			popupBeforeWaitHook(sess, win)
+		}
+		code, exited := d.waitPopupExit(sess, win, time.Duration(p.Timeout)*time.Millisecond, exitStatus)
 		if !exited {
 			return nil, hintedVerbError(ErrVerbTimeout, "the popup was still open when the wait ended", &VerbHint{
 				Command: "tuios wait-for window-exit -w " + win.ID,
@@ -641,12 +676,17 @@ func (d *Daemon) verbCloseWindow(_ *connState, params json.RawMessage) (any, *ve
 }
 
 // closeWindowOfPTY closes the window whose PTY is ptyID, off the caller's
-// goroutine: an exit callback can run where the state lock is held. A window
-// that an attached client closed first is gone already, which is fine.
-func (d *Daemon) closeWindowOfPTY(sess *Session, ptyID string) {
+// goroutine: an exit callback can run where the state lock is held, and
+// closing the window closes the PTY whose exit is being reported. A window
+// that an attached client closed first is gone already, which is fine. With
+// popupOnly set, a window that is not a popup is left open.
+func (d *Daemon) closeWindowOfPTY(sess *Session, ptyID string, popupOnly bool) {
 	d.goTracked(func() {
 		for _, w := range sess.GetState().Windows {
 			if w.PTYID == ptyID {
+				if popupOnly && !w.Popup {
+					return
+				}
 				_, _ = sess.CloseDaemonWindow(w.ID)
 				return
 			}
@@ -919,7 +959,26 @@ func (d *Daemon) verbSendText(cs *connState, params json.RawMessage) (any, *verb
 // ptyWriteError is the verb error for a write a pane refused. A pane on
 // another machine whose link is being restored refuses writes, which is
 // host_unreachable: the text was not typed, and waiting is the remedy.
+// paneBusyError is the verb error for a large input refused because the pane
+// has not read the last one. See PTY.Write.
+func paneBusyError(err error) *verbError {
+	return newVerbError(ErrVerbBusy, err.Error()+". Nothing was typed. Try again when the pane reads its input.")
+}
+
+// promptWriteError is the verb error for a prompt or keys a pane did not
+// take: busy when the pane has not read the last large input, internal
+// otherwise.
+func promptWriteError(err error) *verbError {
+	if errors.Is(err, errPaneInputBusy) {
+		return paneBusyError(err)
+	}
+	return newVerbError(ErrVerbInternal, err.Error())
+}
+
 func ptyWriteError(err error) *verbError {
+	if errors.Is(err, errPaneInputBusy) {
+		return paneBusyError(err)
+	}
 	if errors.Is(err, errPaneReconnecting) {
 		return hintedVerbError(ErrVerbHostUnreachable, err.Error(), &VerbHint{
 			Command: "tuios list-windows",
@@ -1208,7 +1267,7 @@ func (d *Daemon) verbSetAgentState(cs *connState, params json.RawMessage) (any, 
 		})
 	}
 	if p.Kind != "" {
-		if p.Kind != harness.PromptKindApproval && p.Kind != harness.PromptKindQuestion {
+		if p.Kind != harness.PromptKindApproval && p.Kind != harness.PromptKindQuestion && p.Kind != harness.PromptKindAuth {
 			return nil, hintedVerbError(ErrVerbInvalidParams, "unknown kind "+echoName(p.Kind), &VerbHint{
 				Param:     "kind",
 				Available: agentKindNames,
@@ -1290,8 +1349,9 @@ func (d *Daemon) verbSetAgentState(cs *connState, params json.RawMessage) (any, 
 		// pane's agent.
 		d.activity.forgetIfEmpty(sess.ID, windowID)
 	}
+	transcriptRefused := ""
 	if applied && p.TranscriptPath != "" {
-		d.joinReportedTranscript(sess, target, p.Harness, p.TranscriptPath)
+		transcriptRefused = d.joinReportedTranscript(cs, sess, target, p.Harness, p.TranscriptPath)
 	}
 	// state is the effective state, so a report a higher-ranked source outranked
 	// reports what the pane actually shows rather than what was asked for.
@@ -1308,6 +1368,9 @@ func (d *Daemon) verbSetAgentState(cs *connState, params json.RawMessage) (any, 
 	}
 	if p.Activity != nil {
 		out["activity_recorded"] = recorded
+	}
+	if transcriptRefused != "" {
+		out["transcript_refused"] = transcriptRefused
 	}
 	return out, nil
 }
@@ -1482,7 +1545,7 @@ const maxAgentSessionIDLen = 256
 // agentKindNames are the values set-agent-state accepts for kind. They are
 // the manifest rule kinds, so a hook and a screen rule describe a block in the
 // same words.
-var agentKindNames = []string{harness.PromptKindApproval, harness.PromptKindQuestion}
+var agentKindNames = []string{harness.PromptKindApproval, harness.PromptKindQuestion, harness.PromptKindAuth}
 
 // joinReportedTranscript binds a window to the transcript file its harness
 // named in a hook. This is the exact join the transcript source was built for:
@@ -1490,11 +1553,17 @@ var agentKindNames = []string{harness.PromptKindApproval, harness.PromptKindQues
 // harness naming its own file settles that. Only a harness whose manifest has
 // a transcript reader is joined, since nothing else could read the file, and
 // a failure leaves the pane on whatever join it had.
-func (d *Daemon) joinReportedTranscript(sess *Session, target, harnessID, path string) {
+//
+// The path is what agent-transcript later reads for the person, so it is held
+// to two rules (transcriptPathRefusal): a process in a pane names a file only
+// for its own pane, and the file must be a regular file under the harness's
+// transcript folder. A refusal is returned for the reply, so the hook's
+// --explain shows it, and logged without the path, which is the person's.
+func (d *Daemon) joinReportedTranscript(cs *connState, sess *Session, target, harnessID, path string) string {
 	state := sess.GetState()
 	idx, err := findWindowStateIndex(state.Windows, target)
 	if err != nil {
-		return
+		return ""
 	}
 	w := state.Windows[idx]
 	if harnessID == "" {
@@ -1502,9 +1571,82 @@ func (d *Daemon) joinReportedTranscript(sess *Session, target, harnessID, path s
 	}
 	reg := d.agentMatcher.registry
 	if harnessID == "" || reg == nil || reg.TranscriptFor(harnessID) == nil {
-		return
+		return ""
 	}
-	_ = sess.JoinAgentTranscript(w.ID, harnessID, path, true)
+	if pa := d.paneAuthority(cs); pa != nil && (pa.hosted || pa.window != w.ID || !paneInSession(pa, sess)) {
+		why := "a pane may name a transcript only for its own pane"
+		LogBasic("transcript_path refused for window %s: %s", shortWindowID(w.ID), why)
+		return why
+	}
+	if cs != nil && (cs.viaLink || cs.paneOnly) {
+		why := "a transcript is named only from this machine"
+		LogBasic("transcript_path refused for window %s: %s", shortWindowID(w.ID), why)
+		return why
+	}
+	resolved, why := transcriptPathAllowed(reg.TranscriptFor(harnessID), path)
+	if why != "" {
+		LogBasic("transcript_path refused for window %s: %s", shortWindowID(w.ID), why)
+		return why
+	}
+	_ = sess.JoinAgentTranscript(w.ID, harnessID, resolved, true)
+	return ""
+}
+
+// paneInSession reports whether the pane pa is in sess, by ID when pa has
+// one and by name when it was found only through the grant table.
+func paneInSession(pa *paneAuth, sess *Session) bool {
+	if pa.sessionID != "" {
+		return pa.sessionID == sess.ID
+	}
+	return pa.session == sess.Name()
+}
+
+// transcriptPathAllowed checks a reported transcript path against the
+// harness's transcript folder (harness.Transcript.Root). It returns the path
+// with every symbolic link resolved, or why it is refused. The file need not
+// exist yet: a harness reports its path at the start of a session, before it
+// writes the first record. What exists of the path is resolved, so a link
+// cannot lead out of the folder, and a file that exists must be a regular
+// file. Each later open refuses a link or anything but a regular file again
+// (transcript.OpenRegular), so a file swapped after this check is not read.
+func transcriptPathAllowed(tr *harness.Transcript, path string) (string, string) {
+	root := tr.Root()
+	if root == "" {
+		return "", "the harness has no transcript folder"
+	}
+	if !filepath.IsAbs(path) {
+		return "", "the transcript path is not absolute"
+	}
+	realRoot := resolveExisting(root)
+	resolved := resolveExisting(filepath.Clean(path))
+	rel, err := filepath.Rel(realRoot, resolved)
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", "the transcript is not in the harness's transcript folder"
+	}
+	if ok, _ := filepath.Match(tr.Glob, filepath.Base(resolved)); !ok {
+		return "", "the transcript file name does not match the harness's pattern"
+	}
+	if info, err := os.Lstat(resolved); err == nil && !info.Mode().IsRegular() {
+		return "", "the transcript is not a regular file"
+	}
+	return resolved, ""
+}
+
+// resolveExisting resolves the symbolic links of the longest part of path
+// that exists, and keeps the rest as it is.
+func resolveExisting(path string) string {
+	rest := ""
+	for p := path; ; {
+		if r, err := filepath.EvalSymlinks(p); err == nil {
+			return filepath.Join(r, rest)
+		}
+		parent := filepath.Dir(p)
+		if parent == p {
+			return path
+		}
+		rest = filepath.Join(filepath.Base(p), rest)
+		p = parent
+	}
 }
 
 func (d *Daemon) verbGetAgentState(_ *connState, params json.RawMessage) (any, *verbError) {
@@ -1571,6 +1713,8 @@ func (d *Daemon) verbGetAgentState(_ *connState, params json.RawMessage) (any, *
 		// its hooks reported them; meta's subagents key says the same in
 		// words.
 		"subagents": w.AgentSubagents,
+		// program_status is the pane's OSC 7501 records, the root first.
+		"program_status": programStatusList(w.ProgramStatus),
 	}, nil
 }
 

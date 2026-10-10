@@ -139,9 +139,15 @@ func hostStateSentence(status, reason, detail string) string {
 		head = "The link is starting."
 	case federation.StatusReconnecting:
 		head = "The link dropped and tuios is connecting again."
+	case federation.StatusApproval:
+		head = federation.SignInSentence
 	}
 	parts := []string{head}
-	if reason != "" && reason != head {
+	if strings.HasPrefix(reason, head) {
+		// The link's own reason starts with the same sentence and goes on to
+		// say what to do, so it stands alone.
+		parts = []string{reason}
+	} else if reason != "" {
 		parts = append(parts, reason)
 	}
 	if detail != "" {

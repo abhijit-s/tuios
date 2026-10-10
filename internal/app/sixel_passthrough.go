@@ -2,12 +2,14 @@ package app
 
 import (
 	"fmt"
+	"image"
 	"io"
 	"os"
 	"sync"
 	"time"
 
 	"github.com/Gaurav-Gosain/tuios/internal/debuglog"
+	"github.com/Gaurav-Gosain/tuios/internal/mosaic"
 	"github.com/Gaurav-Gosain/tuios/internal/terminal"
 	"github.com/Gaurav-Gosain/tuios/internal/vt"
 )
@@ -37,6 +39,9 @@ const (
 	// sixelViaKitty sends the decoded image as a kitty graphics image, for a
 	// host that has kitty graphics and not sixel.
 	sixelViaKitty
+	// sixelSymbols draws the image as block glyphs, for a host with neither
+	// (see internal/mosaic). It is text, so nothing is sent beside the frame.
+	sixelSymbols
 )
 
 func (m sixelMode) String() string {
@@ -45,6 +50,8 @@ func (m sixelMode) String() string {
 		return "sixel"
 	case sixelViaKitty:
 		return "kitty"
+	case sixelSymbols:
+		return "symbols"
 	default:
 		return "placeholder"
 	}
@@ -77,6 +84,9 @@ type SixelPassthrough struct {
 	mu   sync.Mutex
 	mode sixelMode
 	caps *HostCapabilities
+	// symbols is the glyph set an image is drawn with on a host that draws
+	// no graphics, mosaic.Off for the placeholder box.
+	symbols mosaic.Kind
 
 	nextID   uint32
 	images   map[uint32]*sixelEntry
@@ -88,6 +98,16 @@ type SixelPassthrough struct {
 	direct func([]byte)
 	// lastSweep is when the last sweep started. See sixel_sweep.go.
 	lastSweep time.Time
+
+	// budgets are the panes' budgets for drawing glyphs, and wakers ask a
+	// pane for a frame. See sixel_symbols.go.
+	budgets map[string]*symbolBudget
+	wakers  map[string]func()
+	// frameBudget is the drawing budget the frame pass shares across panes.
+	frameBudget symbolBudget
+	// boxes is the frame pass's boxed colours. Used on the UI goroutine
+	// only, without the lock.
+	boxes *colorBoxes
 }
 
 // sixelEntry is one image a pane drew.
@@ -105,8 +125,11 @@ type sixelEntry struct {
 	// it is sent, and kittyPayload the transmission once it is built.
 	kittyID      uint32
 	kittyPayload []byte
-	bytes        int
-	seq          uint64 // registration order, for eviction
+	// sym is the image drawn as glyphs, for a host without graphics. See
+	// symbolImage for who may touch it.
+	sym   *symbolImage
+	bytes int
+	seq   uint64 // registration order, for eviction
 	// born is when the image was registered. The sweep leaves a young image
 	// alone: its cells are written just after it is registered.
 	born time.Time
@@ -124,6 +147,9 @@ type SixelPassthroughOptions struct {
 	// Caps is the terminal at the far end of this session. Nil falls back to
 	// this process's own terminal.
 	Caps *HostCapabilities
+	// Symbols is the glyph set images are drawn with when the terminal draws
+	// no graphics. mosaic.Off shows the placeholder box.
+	Symbols mosaic.Kind
 }
 
 // NewSixelPassthroughWithOptions creates the passthrough for one connection.
@@ -134,40 +160,60 @@ func NewSixelPassthroughWithOptions(opts SixelPassthroughOptions) *SixelPassthro
 	}
 	sp := &SixelPassthrough{
 		caps:     caps,
+		symbols:  opts.Symbols,
 		images:   make(map[uint32]*sixelEntry),
 		byWindow: make(map[string]int),
 	}
-	sp.mode = chooseSixelMode(caps.SixelGraphics || opts.ForceEnable, caps.KittyGraphics)
-	sixelPassthroughLog("NewSixelPassthrough: sixel=%v kitty=%v force=%v term=%s mode=%s",
-		caps.SixelGraphics, caps.KittyGraphics, opts.ForceEnable, caps.TerminalName, sp.mode)
+	sp.mode = chooseSixelMode(caps.SixelGraphics || opts.ForceEnable, caps.KittyGraphics, opts.Symbols)
+	sixelPassthroughLog("NewSixelPassthrough: sixel=%v kitty=%v force=%v term=%s mode=%s symbols=%s",
+		caps.SixelGraphics, caps.KittyGraphics, opts.ForceEnable, caps.TerminalName, sp.mode, opts.Symbols)
 	return sp
 }
 
-// chooseSixelMode prefers the host's own sixel, then kitty, then the box.
-// Sixel first because it is the format the image arrived in: the whole image
-// goes out byte for byte, and only a crop is re-encoded.
-func chooseSixelMode(sixel, kitty bool) sixelMode {
+// chooseSixelMode prefers the host's own sixel, then kitty, then glyphs, then
+// the box. Sixel first because it is the format the image arrived in: the
+// whole image goes out byte for byte, and only a crop is re-encoded.
+func chooseSixelMode(sixel, kitty bool, symbols mosaic.Kind) sixelMode {
 	switch {
 	case sixel:
 		return sixelNative
 	case kitty:
 		return sixelViaKitty
+	case symbols != mosaic.Off:
+		return sixelSymbols
 	default:
 		return sixelPlaceholder
 	}
 }
 
 // SetHostSixel updates whether the host draws sixel, from an answer that came
-// after the passthrough was built: an SSH client's DA1 reply. Images already
+// after the passthrough was built: an SSH client's DA1 reply, or a local
+// terminal's that came after the startup probe gave up. Images already
 // shown in the old mode are taken down on the next frame.
 func (sp *SixelPassthrough) SetHostSixel(sixel bool) {
 	sp.mu.Lock()
 	defer sp.mu.Unlock()
-	mode := chooseSixelMode(sixel, sp.caps.KittyGraphics)
+	sp.setModeLocked(chooseSixelMode(sixel, sp.caps.KittyGraphics, sp.symbols))
+}
+
+// SetSymbols changes the glyph set images are drawn with on a host without
+// graphics, for a settings change. Images registered while the box was shown
+// were never decoded and keep showing it.
+func (sp *SixelPassthrough) SetSymbols(k mosaic.Kind) {
+	if sp == nil {
+		return
+	}
+	sp.mu.Lock()
+	defer sp.mu.Unlock()
+	sp.symbols = k
+	sp.setModeLocked(chooseSixelMode(sp.mode == sixelNative, sp.caps.KittyGraphics, k))
+}
+
+func (sp *SixelPassthrough) setModeLocked(mode sixelMode) {
 	if mode == sp.mode {
 		return
 	}
-	sixelPassthroughLog("SetHostSixel: %s -> %s", sp.mode, mode)
+	sixelPassthroughLog("sixel mode: %s -> %s", sp.mode, mode)
 	sp.frame.pending = append(sp.frame.pending, sp.takeDownLocked()...)
 	sp.mode = mode
 	// Images decoded for the old mode stay valid; ones registered in
@@ -191,8 +237,10 @@ func (sp *SixelPassthrough) Advertised() bool {
 
 // Register takes an image a pane drew and returns the id its cells are
 // marked with. It runs on the pane's PTY reader, so the decode costs the
-// reader and not the UI.
-func (sp *SixelPassthrough) Register(windowID string, cmd *vt.SixelCommand) uint32 {
+// reader and not the UI. view is the part of the image, in cells, the pane
+// shows as it is drawn: the part drawn as glyphs now, on a host without
+// graphics (see symbolView).
+func (sp *SixelPassthrough) Register(windowID string, cmd *vt.SixelCommand, view image.Rectangle) uint32 {
 	if cmd == nil {
 		return 0
 	}
@@ -205,7 +253,7 @@ func (sp *SixelPassthrough) Register(windowID string, cmd *vt.SixelCommand) uint
 		return 0
 	}
 	sp.mu.Lock()
-	mode := sp.mode
+	mode, symbols := sp.mode, sp.symbols
 	sp.mu.Unlock()
 
 	e := &sixelEntry{windowID: windowID, cellW: cw, cellH: ch, rows: rows, cols: cols}
@@ -222,6 +270,11 @@ func (sp *SixelPassthrough) Register(windowID string, cmd *vt.SixelCommand) uint
 		}
 		// An image too large to decode still gets an id, so its cells show
 		// the placeholder rather than nothing.
+		if colors, colored := symbolColors(); mode == sixelSymbols && e.img != nil && colored {
+			// The part on screen is drawn here, on the PTY reader, so the
+			// frame mostly looks cells up.
+			sp.drawSymbolsOnReader(e, symbols, colors, view)
+		}
 	}
 
 	sp.mu.Lock()
@@ -236,6 +289,9 @@ func (sp *SixelPassthrough) Register(windowID string, cmd *vt.SixelCommand) uint
 	sp.images[id] = e
 	sp.byWindow[windowID] += e.bytes
 	sp.evictLocked(windowID)
+	if e.sym != nil && e.sym.waiting {
+		sp.wakeWhenBudgetLocked(windowID)
+	}
 	sixelPassthroughLog("Register: win=%s id=%d %dx%d px, %dx%d cells at %dx%d, %d bytes, mode=%s",
 		windowID[:min(8, len(windowID))], id, cmd.Width, cmd.Height, cols, rows, cw, ch, e.bytes, mode)
 	return id
@@ -268,7 +324,7 @@ func (sp *SixelPassthrough) evictLocked(windowID string) {
 			if !overCount && e.windowID != windowID {
 				continue
 			}
-			if sp.frame.visible[id] {
+			if sp.frame.visible[id] || sp.frame.drawn[id] {
 				continue
 			}
 			if victim == 0 || e.seq < oldest {
@@ -309,6 +365,11 @@ func (sp *SixelPassthrough) ClearWindow(windowID string) {
 			sp.dropLocked(id)
 		}
 	}
+	if b := sp.budgets[windowID]; b != nil && b.timer != nil {
+		b.timer.Stop()
+	}
+	delete(sp.budgets, windowID)
+	delete(sp.wakers, windowID)
 	sixelPassthroughLog("ClearWindow: windowID=%s", windowID[:min(8, len(windowID))])
 }
 
@@ -344,8 +405,16 @@ func (m *OS) setupSixelPassthrough(window *terminal.Window) {
 	}
 	sp := m.SixelPassthrough
 	id := window.ID
-	window.Terminal.SetSixelPassthroughFunc(func(cmd *vt.SixelCommand, _, _ int) uint32 {
-		return sp.Register(id, cmd)
+	term := window.Terminal
+	sp.mu.Lock()
+	if sp.wakers == nil {
+		sp.wakers = make(map[string]func())
+	}
+	sp.wakers[id] = window.NoteRedraw
+	sp.mu.Unlock()
+	window.Terminal.SetSixelPassthroughFunc(func(cmd *vt.SixelCommand, cursorX, _ int) uint32 {
+		rows, cols := vt.SixelCells(cmd, cmd.CellWidth, cmd.CellHeight)
+		return sp.Register(id, cmd, symbolView(rows, cols, cursorX, term.Width(), term.Height()))
 	})
 	window.Terminal.SetSixelAdvertised(sp.Advertised)
 }

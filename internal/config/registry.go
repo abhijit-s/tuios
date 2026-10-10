@@ -2,8 +2,10 @@ package config
 
 import (
 	"maps"
+	"slices"
 	"sort"
 	"strings"
+	"sync"
 )
 
 // KeybindRegistry manages the mapping between keys and actions
@@ -30,6 +32,17 @@ type KeybindRegistry struct {
 	// changed without a Reload is not seen by any lookup, which was already
 	// true of the seven flattened sections.
 	sections sectionMaps
+
+	// presses is PressesByAction's answer, kept until the next buildMappings.
+	// The help overlay asks for it four times a frame while it is open, and
+	// building it walks every binding in every scope: 2.9ms a frame, most of
+	// the overlay's cost. It goes stale exactly when the maps above do, so a
+	// rebound key shows as soon as the Reload that follows every edit runs.
+	pressesMu sync.Mutex
+	presses   map[string][]string
+	// live is each scope's keys that run, for the which-key menus, kept
+	// under pressesMu and dropped with presses. See liveScope.
+	live map[string]*liveScope
 }
 
 // sectionMaps is the resolved form of every section the registry reads on its
@@ -38,7 +51,7 @@ type sectionMaps struct {
 	prefix, windowPrefix, minimizePrefix, workspacePrefix map[string]string
 	debugPrefix, tapePrefix, layoutPrefix                 map[string]string
 	terminalMode, global, script, sidebar, sidebarFiles   map[string]string
-	sidebarAgents, inbox, inboxPeek, mail                 map[string]string
+	sidebarAgents, inbox, inboxPeek, mail, copyMode       map[string]string
 }
 
 // NewKeybindRegistry creates a new keybind registry from config
@@ -55,6 +68,10 @@ func NewKeybindRegistry(cfg *UserConfig) *KeybindRegistry {
 // buildMappings builds the reverse mapping from keys to actions
 func (r *KeybindRegistry) buildMappings() {
 	r.keyToAction = make(map[string]string)
+	r.pressesMu.Lock()
+	r.presses = nil
+	r.live = nil
+	r.pressesMu.Unlock()
 
 	// Build mappings for normal mode sections
 	// Note: Prefix sections (PrefixMode, WindowPrefix, MinimizePrefix, WorkspacePrefix)
@@ -91,6 +108,7 @@ func (r *KeybindRegistry) buildMappings() {
 		inbox:           r.sectionKeyMap(kb.Inbox),
 		inboxPeek:       r.sectionKeyMap(kb.InboxPeek),
 		mail:            r.sectionKeyMap(kb.Mail),
+		copyMode:        r.sectionKeyMap(kb.CopyMode),
 	}
 }
 
@@ -122,13 +140,49 @@ func (r *KeybindRegistry) sectionKeyMap(section map[string][]string) map[string]
 
 	keyMap := make(map[string]string, len(section))
 	for _, action := range actions {
-		for _, key := range r.normalizer.ExpandKeys(section[action]) {
-			if _, taken := keyMap[key]; !taken {
-				keyMap[key] = action
-			}
-		}
+		r.expandInto(keyMap, action, section[action])
 	}
 	return keyMap
+}
+
+// expandInto adds the keys of one action to keyMap: every plain spelling of
+// each key, then the spellings that hold only under an assumption about the
+// keyboard, each in its own tier (see USLayoutKey and OptionGlyphKey). A key
+// already in keyMap keeps the action that claimed it first.
+//
+// The tiers are why a binding the user writes for a key wins over a US alias
+// of another binding. On AZERTY a binding on opt+& now runs, where before the
+// alt+& alias of the default opt+shift+7 took it (issue #575).
+func (r *KeybindRegistry) expandInto(keyMap map[string]string, action string, keys []string) {
+	claim := func(key string) {
+		if _, taken := keyMap[key]; !taken {
+			keyMap[key] = action
+		}
+	}
+	plain := r.normalizer.ExpandKeys(keys)
+	for _, key := range plain {
+		claim(key)
+	}
+	kb := &r.config.Keybindings
+	if kb.KeyboardLayout == KeyboardLayoutOther {
+		return
+	}
+	for _, key := range keys {
+		for _, alias := range r.normalizer.USAliasKeys(key) {
+			claim(USLayoutKey(alias))
+		}
+	}
+	// An Option chord the terminal sent as the character a US layout composes
+	// for it is looked up by the chord, in this tier, with or without the Alt
+	// bit. "type" leaves it empty, so the character goes to the pane.
+	if kb.OptionGlyphs == OptionGlyphsType {
+		return
+	}
+	for _, key := range plain {
+		if strings.HasPrefix(key, "alt+") {
+			claim(OptionGlyphKey(key))
+		}
+	}
 }
 
 // withCommands adds the [[keybindings.command]] keys of one section to its
@@ -143,11 +197,7 @@ func (r *KeybindRegistry) withCommands(keyMap map[string]string, section string)
 		if c.Section() != section || kb.isLeader(c.BareKey()) {
 			continue
 		}
-		for _, key := range r.normalizer.ExpandKeys([]string{c.BareKey()}) {
-			if _, taken := keyMap[key]; !taken {
-				keyMap[key] = c.Action()
-			}
-		}
+		r.expandInto(keyMap, c.Action(), []string{c.BareKey()})
 	}
 	return keyMap
 }
@@ -258,6 +308,17 @@ func (r *KeybindRegistry) GetMailAction(key string) string {
 	return r.lookupKey(key, r.sections.mail)
 }
 
+// GetCopyModeAction returns the action a key runs in copy mode, or "" for a
+// key the section does not bind. Copy mode reads its vim motions itself.
+func (r *KeybindRegistry) GetCopyModeAction(key string) string {
+	return r.lookupKey(key, r.sections.copyMode)
+}
+
+// GetCopyModeKeys is GetKeys for the copy_mode section, for the help overlay.
+func (r *KeybindRegistry) GetCopyModeKeys(action string) []string {
+	return r.config.Keybindings.CopyMode[action]
+}
+
 // GetInboxKeys is GetKeys for the Inbox, its peek and the mailbox, whose
 // action names are their own: the key hints of those overlays read what the
 // config binds rather than a letter written into the renderer.
@@ -357,8 +418,19 @@ func (r *KeybindRegistry) GetKeys(action string) []string {
 //
 // Built in one pass and returned as a map because the help overlay is on the
 // render path: asking per action would rescan every section for each of eighty
-// of them, once a frame.
+// of them, once a frame. The registry keeps the map until its next Reload, so
+// callers share it and must not change it. Each slice is clipped, so an append
+// to one copies it rather than writing into the next.
 func PressesByAction(r *KeybindRegistry) map[string][]string {
+	r.pressesMu.Lock()
+	defer r.pressesMu.Unlock()
+	if r.presses == nil {
+		r.presses = buildPressesByAction(r)
+	}
+	return r.presses
+}
+
+func buildPressesByAction(r *KeybindRegistry) map[string][]string {
 	out := map[string][]string{}
 	seen := map[string]bool{}
 	for _, b := range r.Bindings() {
@@ -384,6 +456,9 @@ func PressesByAction(r *KeybindRegistry) map[string][]string {
 		seen[id] = true
 		out[b.Action] = append(out[b.Action], b.Press)
 	}
+	for action, presses := range out {
+		out[action] = slices.Clip(presses)
+	}
 	return out
 }
 
@@ -392,7 +467,7 @@ func PressesByAction(r *KeybindRegistry) map[string][]string {
 // no chord that would say so.
 func contextOnlyScope(scope string) bool {
 	switch scope {
-	case ScopeSidebar, ScopeSidebarFiles, ScopeSidebarAgents, ScopeScript, ScopeInbox, ScopeInboxPeek, ScopeMail:
+	case ScopeSidebar, ScopeSidebarFiles, ScopeSidebarAgents, ScopeScript, ScopeInbox, ScopeInboxPeek, ScopeMail, ScopeCopyMode:
 		return true
 	}
 	return false
@@ -429,6 +504,7 @@ var ActionDescriptions = map[string]string{
 	"file_paste":          "Files: paste into this folder",
 	"file_open":           "Files: open this folder, or copy this file's path",
 	"file_edit":           "Files: edit this text file in a new pane",
+	"file_copy_path":      "Files: copy the path of this file or folder",
 
 	// The Inbox, the prompt open over it, and the mailbox. Each acts only
 	// while its overlay is up.
@@ -487,10 +563,11 @@ var ActionDescriptions = map[string]string{
 	"reorder_down": "Rail: move this session or machine down",
 
 	// Window Management
-	"new_window":    "New window",
-	"close_window":  "Close window",
-	"rename_window": "Rename window",
-	"set_accent":    "Accent color",
+	"new_window":     "New window",
+	"new_window_ssh": "New window that runs the focused pane's ssh",
+	"close_window":   "Close window",
+	"rename_window":  "Rename window",
+	"set_accent":     "Accent color",
 	// Reached from the rail's session row and its menu; the row carries which
 	// session, so it has no key of its own.
 	"set_session_accent": "Session color",
@@ -504,6 +581,7 @@ var ActionDescriptions = map[string]string{
 	"screenshot_screen":  "Screenshot the whole screen",
 	"next_window":        "Next window",
 	"prev_window":        "Previous window",
+	"last_pane":          "Back to the previous pane",
 	"select_window_1":    "Select window 1",
 	"select_window_2":    "Select window 2",
 	"select_window_3":    "Select window 3",
@@ -588,6 +666,8 @@ var ActionDescriptions = map[string]string{
 	// BSP Tiling
 	"split_horizontal":               "Split window horizontally (top/bottom)",
 	"split_vertical":                 "Split window vertically (left/right)",
+	"split_ssh_horizontal":           "Split top/bottom, and run the focused pane's ssh in the new pane",
+	"split_ssh_vertical":             "Split left/right, and run the focused pane's ssh in the new pane",
 	"rotate_split":                   "Rotate split",
 	"equalize_splits":                "Equalize all split ratios",
 	"preselect_left":                 "Preselect left for next window",
@@ -622,23 +702,38 @@ var ActionDescriptions = map[string]string{
 	"focus_sidebar":       "Focus sidebar",
 	"next_session":        "Next session",
 	"prev_session":        "Previous session",
+	"switch_session_1":    "Switch to session 1",
+	"switch_session_2":    "Switch to session 2",
+	"switch_session_3":    "Switch to session 3",
+	"switch_session_4":    "Switch to session 4",
+	"switch_session_5":    "Switch to session 5",
+	"switch_session_6":    "Switch to session 6",
+	"switch_session_7":    "Switch to session 7",
+	"switch_session_8":    "Switch to session 8",
+	"switch_session_9":    "Switch to session 9",
 
 	// Clipboard
 	"copy_selection":  "Copy selection to clipboard",
 	"paste_clipboard": "Paste from clipboard",
 	"paste_image":     "Paste the clipboard image as a file path",
+	"paste_buffer":    "Paste the newest paste buffer",
+	"choose_buffer":   "Choose a paste buffer to paste",
 	"clear_selection": "Clear the text selection",
 	"hints":           "Label the text on the pane to copy it",
+	"display_panes":   "Label the panes and focus one by its label",
 	"toggle_scratch":  "Show or hide the scratch terminal",
 	"hints_all_panes": "Label the text on all panes to copy it",
 
 	// Copy mode search (no default keybinding)
 	ActionCopyModeSearchForward:  "Enter copy mode and search forward",
 	ActionCopyModeSearchBackward: "Enter copy mode and search backward",
+	ActionCopyModeLineStart:      "Copy mode: go to the start of the line",
+	ActionCopyModeLineEnd:        "Copy mode: go to the end of the line",
 
 	// Session lifecycle (context menu rows; no default keybinding)
 	"settings_sidebar":  "Sidebar settings",
 	"rename_session":    "Rename the session the menu was opened on",
+	"rename_workspace":  "Rename the workspace the session is showing",
 	"kill_session":      "Kill the session the menu was opened on",
 	"kill_session_next": "Kill session, go to next",
 	"kill_session_quit": "Kill session and quit",
@@ -688,6 +783,7 @@ var ActionDescriptions = map[string]string{
 	"prefix_command_palette":    "Open the command palette",
 	"prefix_file_search":        "Search files below the focused pane's directory",
 	"prefix_toggle_sidebar":     "Toggle the session sidebar",
+	"prefix_toggle_spotlight":   "Toggle spotlight",
 	"prefix_explore":            "Focus/leave sidebar",
 	"prefix_jump_notif":         "Jump to newest message",
 	"prefix_last_message":       "Show the last message in full",
@@ -696,8 +792,10 @@ var ActionDescriptions = map[string]string{
 	"prefix_next_attention":     "Jump to the oldest item needing you",
 	"prefix_review":             "Review the focused pane's changes",
 	"prefix_next_finished":      "Jump to the newest unseen finished turn",
+	"prefix_agents_settings":    "Open the Agents settings",
 	"prefix_session_switcher":   "Open the session switcher",
 	"prefix_workspace_switcher": "Open the workspace switcher",
+	"choose_tree":               "Find a pane in every session and go to it",
 	"prefix_layout":             "Enter layout prefix",
 
 	// Tape Prefix

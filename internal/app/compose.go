@@ -324,18 +324,26 @@ func (m *OS) composeLayersIn(canvas *frameCanvas, layers []*lipgloss.Layer, pane
 			if m.hints != nil {
 				m.applyHints(canvas, cl.layer.GetID(), &grounds)
 			}
+			if m.paneLabels != nil {
+				m.applyPaneLabels(canvas, cl.layer.GetID())
+			}
 			continue
 		}
 		if !cl.bounds.Overlaps(area) {
 			continue
 		}
 		if !scrimmed && scrimBehind(cl.layer.GetID()) {
+			// Image glyphs first, so the scrim fades them like text.
+			m.drawImageSymbols(canvas)
 			m.applyScrim(canvas)
 			scrimmed = true
 		}
 		m.drawComposedLayer(canvas, cl, painted, &grounds, area)
 		if m.hints != nil {
 			m.applyHints(canvas, cl.layer.GetID(), &grounds)
+		}
+		if m.paneLabels != nil {
+			m.applyPaneLabels(canvas, cl.layer.GetID())
 		}
 		switch id := cl.layer.GetID(); {
 		case fading:

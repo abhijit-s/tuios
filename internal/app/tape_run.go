@@ -172,7 +172,8 @@ func (m *OS) startTapePlayback(commands []tape.Command, workspace int) {
 		return
 	}
 	if workspace > 0 && workspace <= m.NumWorkspaces {
-		m.SwitchToWorkspace(workspace)
+		// The tape builds the workspace, so no pane opens on it first.
+		m.switchToWorkspace(workspace, -1)
 	}
 
 	player := tape.NewPlayer(commands)
@@ -182,6 +183,9 @@ func (m *OS) startTapePlayback(commands []tape.Command, workspace int) {
 	m.ScriptFinishedTime = time.Time{}
 	m.ScriptAwaitWindows = 0
 	m.ScriptAwaitDeadline = time.Time{}
+	m.ScriptWait = nil
+	m.ScriptFailure = ""
+	m.scriptInFlight = false
 	m.ScriptExecutor = tape.NewCommandExecutor(m)
 }
 
@@ -198,8 +202,11 @@ type PlayTapeMsg struct {
 // interactive player, the one `tuios tape play` and the tape manager use. It
 // returns the tick that drives playback.
 func (m *OS) PlayTape(name, script string) (tea.Cmd, error) {
-	if m.ScriptMode {
+	if m.scriptBusy() {
 		return nil, errors.New("a tape is already playing")
+	}
+	if m.ScriptMode {
+		m.exitScriptMode()
 	}
 	commands, errs := tape.ParseFile(script)
 	if len(errs) > 0 {

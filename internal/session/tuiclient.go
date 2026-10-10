@@ -45,10 +45,26 @@ type TUIClient struct {
 	// first one. See AttachPayload.
 	Served      bool
 	AllowNested bool
+	// StartDir is sent with every attach as AttachPayload.Cwd: the start
+	// directory of a session the attach creates. An attach to a session that
+	// exists ignores it.
+	StartDir string
 	// ViewOnly marks a client whose input is dropped, such as a tuios-web
 	// viewer started with --read-only. It is sent with every attach. See
 	// AttachPayload.ViewOnly.
 	ViewOnly bool
+	// DetachOthers is sent with the next AttachSession, as tuios attach -d
+	// asks: the other clients of the session are detached. AttachSession
+	// clears it, so a later attach on this client (a session switch, a host
+	// reconnect) detaches nobody. See AttachPayload.DetachOthers.
+	DetachOthers bool
+	// Reconnect marks the attach as the client getting back a session it
+	// lost, not the person attaching. See AttachPayload.Reconnect.
+	Reconnect bool
+	// SSHAuthSock is sent in the hello as HelloPayload.SSHAuthSock. Only a
+	// client that runs where the person is sets it: tuios attach and tuios
+	// new. A server that serves a remote viewer leaves it empty.
+	SSHAuthSock string
 
 	// nestProbe is the nonce of the probe WriteNestProbe wrote. Set once,
 	// before the first attach.
@@ -56,6 +72,10 @@ type TUIClient struct {
 	// nestedRefusal is the daemon's reason when it took this client off its
 	// session for showing the session inside itself. See NestedRefusal.
 	nestedRefusal atomic.Pointer[string]
+	// detachedReason is the daemon's reason when it detached this client
+	// because another client attached or detach-client named it. See
+	// DetachedReason.
+	detachedReason atomic.Pointer[string]
 
 	conn net.Conn
 	// br is the only reader of conn. A frame is read in three pieces, the
@@ -173,6 +193,12 @@ type TUIClient struct {
 	// sidebarOps says the daemon's welcome offered MsgSidebarVisibility. See
 	// sidebar_visibility.go.
 	sidebarOps atomic.Bool
+	// sessionUsed says the daemon's welcome offered MsgSessionUsed, and
+	// usedMu, usedAt and usedSession throttle it. See session_used.go.
+	sessionUsed atomic.Bool
+	usedMu      sync.Mutex
+	usedAt      time.Time
+	usedSession string
 	// daemonRefusesAnimation says the daemon's welcome offered
 	// KittyAnimationRefusal. See DaemonRefusesKittyAnimation.
 	daemonRefusesAnimation atomic.Bool
@@ -185,7 +211,9 @@ type TUIClient struct {
 	graphicsSupported bool
 	// windowSize says the daemon's welcome offered WindowSize, and this
 	// client offered it too. See tuiclient_window_size.go.
-	windowSize bool
+	// daemonDetachOthers says the daemon's welcome offered DetachOthers.
+	daemonDetachOthers bool
+	windowSize         bool
 	// activityMu and lastActivity throttle MsgClientActivity.
 	activityMu   sync.Mutex
 	lastActivity time.Time
@@ -194,6 +222,8 @@ type TUIClient struct {
 	// dirWatchSupported says the daemon's welcome offered MsgWatchDir. See
 	// WatchDir.
 	dirWatchSupported bool
+	// emptyWorkspacePanes says the daemon's welcome set EmptyWorkspacePanes.
+	emptyWorkspacePanes atomic.Bool
 	// dirChangedHandler takes the daemon's MsgDirChanged push. Guarded by
 	// multiClientMu like the other push handlers.
 	dirChangedHandler func(dir string)
@@ -208,22 +238,50 @@ type TUIClient struct {
 	// hostsChangedHandler takes the daemon's MsgHostsChanged push. See
 	// OnHostsChanged.
 	hostsChangedHandler HostsChangedHandler
-	sessionEndedOnce    sync.Once // gates the single session-ended notification
-	disconnectOnce      sync.Once // gates the single disconnect notification
-	multiClientMu       sync.RWMutex
+	// pasteRefusedHandler takes a paste the daemon refused. See
+	// paste_retry.go. pastes holds the large inputs sent and not answered,
+	// and pasteBarriers the pings behind them, by request id, under
+	// pastesMu. inputHolds holds input behind a paste that is not settled,
+	// by pane, under mu.
+	pasteRefusedHandler PasteRefusedHandler
+	pastes              map[uint64]*pasteRecord
+	pasteBarriers       map[uint64]*pasteRecord
+	pastesMu            sync.Mutex
+	inputHolds          map[string]*inputHold
+	// lostErr is why the connection was lost, once it was. See
+	// handleDisconnect.
+	lostErr          atomic.Pointer[error]
+	sessionEndedOnce sync.Once // gates the single session-ended notification
+	// pendingEnded holds a session-ended notice that arrived before a handler
+	// was registered: the read loop starts before the app wires itself, and
+	// the daemon can detach a client in between. OnSessionEnded delivers it.
+	pendingEnded   *[2]string
+	disconnectOnce sync.Once // gates the single disconnect notification
+	multiClientMu  sync.RWMutex
 
-	// Request/response handling for synchronous calls after readLoop starts
-	pendingResponses   map[MessageType]chan *Message
+	// Request/response handling for synchronous calls after readLoop starts.
+	// pendingByID holds the round trip waiting on each request id, for a
+	// daemon that tags its replies (requestIDs). pendingResponses holds a
+	// waiter by reply type: every round trip to a daemon that does not tag,
+	// and the detach of a session switch, which is not tagged either way.
+	pendingResponses   map[MessageType]*pendingReply
+	pendingByID        map[uint64]*pendingReply
 	pendingResponsesMu sync.Mutex
 
+	// requestIDs is set when the daemon's welcome said it tags replies (see
+	// Message.ReqID). nextReqID numbers this client's requests from 1.
+	requestIDs atomic.Bool
+	nextReqID  atomic.Uint64
+
 	// roundTripMu keeps at most one sendAndWaitResponse outstanding at a time.
-	// The read loop demuxes replies by MessageType alone, so two overlapping
-	// round-trips awaiting a shared type (MsgError, which every request can
-	// return, or the MsgSessionList shared by list/kill/refresh) would overwrite
-	// each other's pendingResponses slot and misroute a reply. The background
-	// session poll runs on its own goroutine, so it is the one caller that can
-	// overlap a UI-goroutine round-trip; serializing here removes the collision
-	// without threading a correlation id through the protocol.
+	// To a daemon that does not tag replies, the read loop demuxes them by
+	// MessageType alone, so two overlapping round-trips awaiting a shared type
+	// (MsgError, which every request can return, or the MsgSessionList shared
+	// by list/kill/refresh) would overwrite each other's pendingResponses slot
+	// and misroute a reply. The background session poll runs on its own
+	// goroutine, so it is the one caller that can overlap a UI-goroutine
+	// round-trip. Tagged replies cannot collide, but the order of round trips
+	// is kept the same for both kinds of daemon.
 	roundTripMu sync.Mutex
 
 	// State
@@ -239,7 +297,8 @@ func NewTUIClient() *TUIClient {
 		ptyHandlers:       make(map[string]func([]byte)),
 		ptyClosedHandlers: make(map[string]func()),
 		ptyResizeHandlers: make(map[string]func(int, int)),
-		pendingResponses:  make(map[MessageType]chan *Message),
+		pendingResponses:  make(map[MessageType]*pendingReply),
+		pendingByID:       make(map[uint64]*pendingReply),
 		done:              make(chan struct{}),
 	}
 }
@@ -258,9 +317,15 @@ type ClientCapabilities struct {
 	KittyGraphics bool
 	SixelGraphics bool
 	TerminalName  string
+	// Term is the terminal's TERM, for the glyph set images are drawn
+	// with on a terminal without graphics. Not sent to the daemon.
+	Term string
 	// KittyAnimation says the host terminal edits image frames. See
 	// HelloPayload.KittyAnimation.
 	KittyAnimation bool
+	// SymbolImages says images are drawn as block glyphs on a terminal
+	// without graphics. See HelloPayload.SymbolImages.
+	SymbolImages bool
 }
 
 // Connect connects to the daemon and performs handshake.
@@ -313,8 +378,15 @@ func (c *TUIClient) handshake(version string, width, height int, caps *ClientCap
 		hello.SixelGraphics = caps.SixelGraphics
 		hello.TerminalName = caps.TerminalName
 		hello.KittyAnimation = caps.KittyAnimation
+		hello.SymbolImages = caps.SymbolImages
 	}
 
+	// A hello through a host goes to the other machine, where this path
+	// means nothing. That daemon follows the agent the link forwards, and
+	// open-host-connection told this machine's daemon this socket.
+	if c.viaHost == "" {
+		hello.SSHAuthSock = c.SSHAuthSock
+	}
 	hello.LayoutTreeOps = true
 	hello.ScratchWorkspaces = true
 	hello.WindowSize = !legacyWindowSize()
@@ -340,6 +412,9 @@ func (c *TUIClient) handshake(version string, width, height int, caps *ClientCap
 		// and its message already names the fix.
 		var errPayload ErrorPayload
 		_ = resp.ParsePayload(&errPayload)
+		if errPayload.Code == ErrCodeBusy {
+			return ErrTooManyConnections
+		}
 		return fmt.Errorf("the daemon refused this client: %s", errPayload.Message)
 	}
 	if resp.Type != MsgWelcome {
@@ -377,11 +452,15 @@ func (c *TUIClient) handshake(version string, width, height int, caps *ClientCap
 	c.treeOps.Store(welcome.LayoutTreeOps)
 	c.masterOps.Store(welcome.MasterLayoutOps)
 	c.sidebarOps.Store(welcome.SidebarOps && !legacySidebar())
+	c.sessionUsed.Store(welcome.SessionUsed)
 	c.typeAtPromptSupported = welcome.TypeAtPrompt
 	c.graphicsSupported = welcome.ClientGraphics
 	c.windowSize = welcome.WindowSize && hello.WindowSize
+	c.daemonDetachOthers = welcome.DetachOthers
 	c.dirWatchSupported = welcome.DirWatch
+	c.emptyWorkspacePanes.Store(welcome.EmptyWorkspacePanes)
 	c.daemonRefusesAnimation.Store(welcome.KittyAnimationRefusal)
+	c.requestIDs.Store(welcome.RequestIDs)
 
 	// Seed the cache name-only; window summaries fill in on the first refresh.
 	infos := make([]SessionInfo, 0, len(welcome.SessionNames))
@@ -422,19 +501,23 @@ func (c *TUIClient) BuildMismatch() (clientBuild, daemonBuild string) {
 func (c *TUIClient) AttachSession(name string, createNew bool, width, height int) (*SessionState, error) {
 	probe := c.nestProbe
 	msg, err := NewMessage(MsgAttach, &AttachPayload{
-		SessionName: name,
-		CreateNew:   createNew,
-		Width:       width,
-		Height:      height,
-		Reserve:     c.OwnLayoutReserve(),
-		Served:      c.Served,
-		AllowNested: c.AllowNested,
-		NestProbe:   probe,
-		ViewOnly:    c.viewOnly(),
+		SessionName:  name,
+		CreateNew:    createNew,
+		Width:        width,
+		Height:       height,
+		Reserve:      c.OwnLayoutReserve(),
+		Served:       c.Served,
+		AllowNested:  c.AllowNested,
+		NestProbe:    probe,
+		ViewOnly:     c.viewOnly(),
+		Cwd:          c.StartDir,
+		DetachOthers: c.DetachOthers,
+		Reconnect:    c.Reconnect,
 	})
 	if err != nil {
 		return nil, err
 	}
+	c.DetachOthers = false
 
 	if err := c.send(msg); err != nil {
 		return nil, err
@@ -447,28 +530,7 @@ func (c *TUIClient) AttachSession(name string, createNew bool, width, height int
 
 	switch resp.Type {
 	case MsgAttached:
-		var payload AttachedPayload
-		if err := resp.ParsePayload(&payload); err != nil {
-			return nil, err
-		}
-		c.sessionID = payload.SessionID
-		c.setSessionName(payload.SessionName)
-		c.humanNonce.Store(&payload.HumanNonce)
-		c.startPushes()
-		c.appliedSeq.Store(stateSeq(payload.State))
-		if err := validateSessionState(payload.State); err != nil {
-			return nil, fmt.Errorf("attach: the session state the daemon sent was refused: %w", err)
-		}
-		c.NoteSession(payload.SessionName)
-		// The attach reply starts the session's numbering over: a switch to
-		// another session on this connection comes to a session whose
-		// generations are its own, and can be lower than the last one taken.
-		c.multiClientMu.Lock()
-		c.sessionLayoutGen = 0
-		c.multiClientMu.Unlock()
-		c.noteSessionLayout(payload.Generation, payload.Reserve)
-		c.noteSizePolicy(payload.Policy)
-		return payload.State, nil
+		return c.takeAttachReply(resp)
 
 	case MsgError:
 		var errPayload ErrorPayload
@@ -478,6 +540,40 @@ func (c *TUIClient) AttachSession(name string, createNew bool, width, height int
 	default:
 		return nil, fmt.Errorf("unexpected response: %d", resp.Type)
 	}
+}
+
+// takeAttachReply takes the daemon's answer to an attach, for the first
+// attach and for a session switch alike. A switch is an attach to another
+// session on the same connection, so the two must take the same things.
+//
+// The switch used to take less. It kept the layout generation and the chrome
+// reserve of the session it left. Generations are numbered per session, so a
+// session with a lower count than the one left had every resize answer
+// dropped as stale until its count caught up, and the panes kept the box they
+// were given at the switch: hiding the rail there gave its columns to nobody.
+func (c *TUIClient) takeAttachReply(resp *Message) (*SessionState, error) {
+	var payload AttachedPayload
+	if err := resp.ParsePayload(&payload); err != nil {
+		return nil, err
+	}
+	c.sessionID = payload.SessionID
+	c.setSessionName(payload.SessionName)
+	c.humanNonce.Store(&payload.HumanNonce)
+	c.startPushes()
+	c.appliedSeq.Store(stateSeq(payload.State))
+	if err := validateSessionState(payload.State); err != nil {
+		return nil, fmt.Errorf("attach: the session state the daemon sent was refused: %w", err)
+	}
+	c.NoteSession(payload.SessionName)
+	// The attach reply starts the session's numbering over: a switch to
+	// another session on this connection comes to a session whose
+	// generations are its own, and can be lower than the last one taken.
+	c.multiClientMu.Lock()
+	c.sessionLayoutGen = 0
+	c.multiClientMu.Unlock()
+	c.noteSessionLayout(payload.Generation, payload.Reserve)
+	c.noteSizePolicy(payload.Policy)
+	return payload.State, nil
 }
 
 // attachRefused reports an attach the daemon answered and declined, as opposed
@@ -574,7 +670,7 @@ func (c *TUIClient) SwitchSession(targetName string, width, height int) (*Sessio
 	// Register for detach response before sending
 	detachResp := make(chan *Message, 1)
 	c.pendingResponsesMu.Lock()
-	c.pendingResponses[MsgDetached] = detachResp
+	c.pendingResponses[MsgDetached] = &pendingReply{ch: detachResp}
 	c.pendingResponsesMu.Unlock()
 
 	if err := c.send(detachMsg); err != nil {
@@ -645,6 +741,7 @@ func (c *TUIClient) attachWhileReading(name string, createNew bool, width, heigh
 		CreateNew:   createNew,
 		Width:       width,
 		Height:      height,
+		Reserve:     c.OwnLayoutReserve(),
 		Served:      c.Served,
 		AllowNested: c.AllowNested,
 		NestProbe:   probe,
@@ -661,21 +758,7 @@ func (c *TUIClient) attachWhileReading(name string, createNew bool, width, heigh
 
 	switch resp.Type {
 	case MsgAttached:
-		var payload AttachedPayload
-		if err := resp.ParsePayload(&payload); err != nil {
-			return nil, err
-		}
-		c.sessionID = payload.SessionID
-		c.setSessionName(payload.SessionName)
-		c.humanNonce.Store(&payload.HumanNonce)
-		c.startPushes()
-		c.appliedSeq.Store(stateSeq(payload.State))
-		if err := validateSessionState(payload.State); err != nil {
-			return nil, fmt.Errorf("attach: the session state the daemon sent was refused: %w", err)
-		}
-		c.NoteSession(payload.SessionName)
-		c.noteSizePolicy(payload.Policy)
-		return payload.State, nil
+		return c.takeAttachReply(resp)
 
 	case MsgError:
 		var errPayload ErrorPayload
@@ -938,7 +1021,22 @@ func (c *TUIClient) OnSessionResize(handler SessionResizeHandler) {
 func (c *TUIClient) OnSessionEnded(handler SessionEndedHandler) {
 	c.multiClientMu.Lock()
 	c.sessionEndedHandler = handler
+	pending := c.pendingEnded
+	if handler != nil {
+		c.pendingEnded = nil
+	}
 	c.multiClientMu.Unlock()
+	if handler != nil && pending != nil {
+		c.sessionEndedOnce.Do(func() { handler(pending[0], pending[1]) })
+	}
+}
+
+// DaemonDetachesOthers reports whether the daemon's welcome said it reads
+// AttachPayload.DetachOthers. An older daemon ignores tuios attach -d.
+func (c *TUIClient) DaemonDetachesOthers() bool {
+	c.multiClientMu.RLock()
+	defer c.multiClientMu.RUnlock()
+	return c.daemonDetachOthers
 }
 
 // AgentMailHandler takes one MsgAgentMail push: a message from the session's
@@ -1010,6 +1108,9 @@ func (c *TUIClient) handleDisconnect(err error) {
 		return
 	default:
 	}
+	if err != nil {
+		c.lostErr.Store(&err)
+	}
 	_ = c.Close() // closes done + conn, idempotent
 	c.disconnectOnce.Do(func() {
 		c.multiClientMu.RLock()
@@ -1056,13 +1157,18 @@ func (c *TUIClient) SendCommandResultWithData(requestID string, success bool, me
 	return c.send(msg)
 }
 
-// WritePTY sends input to a PTY.
+// WritePTY sends input to a PTY. Input larger than one frame is not sent and
+// is reported to OnPasteRefused. To a daemon that tags replies, a large input
+// is sent as a paste: later input to the pane waits behind it, and a busy
+// refusal is sent again once. See paste_retry.go.
 func (c *TUIClient) WritePTY(ptyID string, data []byte) error {
+	if len(data) > maxPasteBytes {
+		c.pasteRefused(ptyID, PasteRefusedTooLarge)
+		return ErrPasteTooLarge
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-
-	_ = c.conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
-	return WritePTYInput(c.conn, ptyID, data)
+	return c.writeInputLocked(ptyID, data)
 }
 
 // ResizePTY resizes a PTY.
@@ -1135,19 +1241,51 @@ func (c *TUIClient) SendIntent(commandType string, args ...string) error {
 // SendIntentIn is SendIntent with the directory a NewWindow starts in. The
 // daemon spawns the shell there, so nothing has to be typed into it.
 func (c *TUIClient) SendIntentIn(cwd, commandType string, args ...string) error {
-	return c.SendIntentAt(cwd, 0, commandType, args...)
+	return c.SendNewWindowIntent(cwd, 0, "", commandType, args...)
 }
 
-// SendIntentAt is SendIntentIn with the workspace a NewWindow goes on. Zero
-// is the session's current workspace.
-func (c *TUIClient) SendIntentAt(cwd string, workspace int, commandType string, args ...string) error {
-	msg, err := NewMessage(MsgExecuteCommand, &ExecuteCommandPayload{
-		SessionName: c.SessionName(),
+// SendNewWindowIntent is SendIntentIn with the workspace a NewWindow goes on
+// and the window it follows into ssh. A zero workspace is the session's
+// current one. An empty sshFrom follows none. See
+// ExecuteCommandPayload.SSHFrom.
+func (c *TUIClient) SendNewWindowIntent(cwd string, workspace int, sshFrom, commandType string, args ...string) error {
+	return c.sendNewWindow(&ExecuteCommandPayload{
 		CommandType: commandType,
 		Args:        args,
 		Cwd:         cwd,
 		Workspace:   workspace,
+		SSHFrom:     sshFrom,
 	})
+}
+
+// SendNewWindowFrom asks for a shell on workspace that starts in the
+// directory of the window cwdFrom, or in the session's start directory
+// when that window has none. Empty cwdFrom gives the start directory too.
+// The window takes the focus only if the session still shows workspace.
+// See ExecuteCommandPayload.CwdFrom and FocusIfShown.
+//
+// sshFrom, when set, names the window whose ssh the new one follows, as
+// SendNewWindowIntent's does.
+func (c *TUIClient) SendNewWindowFrom(workspace int, cwdFrom, sshFrom string) error {
+	return c.sendNewWindow(&ExecuteCommandPayload{
+		CommandType:  "NewWindow",
+		Workspace:    workspace,
+		CwdFrom:      cwdFrom,
+		SSHFrom:      sshFrom,
+		FocusIfShown: true,
+	})
+}
+
+// EmptyWorkspacePanes reports whether the daemon takes SendNewWindowFrom.
+// See WelcomePayload.EmptyWorkspacePanes.
+func (c *TUIClient) EmptyWorkspacePanes() bool {
+	return c != nil && c.emptyWorkspacePanes.Load()
+}
+
+// sendNewWindow sends an execute-command payload for this client's session.
+func (c *TUIClient) sendNewWindow(payload *ExecuteCommandPayload) error {
+	payload.SessionName = c.SessionName()
+	msg, err := NewMessage(MsgExecuteCommand, payload)
 	if err != nil {
 		return err
 	}
@@ -1199,18 +1337,19 @@ func (c *TUIClient) LayoutTreeOps() bool {
 
 // SendLayoutTree sends one workspace's tree to the daemon as an op. leaves names
 // the window each leaf number in tree stands for; nil tree says the workspace
-// has none.
+// has none. base is zero for a change the user made, and otherwise the Version
+// of the state the tree was worked out from (see LayoutTreePayload.BaseVersion).
 //
 // The op is numbered in the same sequence as the state pushes, so every state
 // the daemon handed out before it landed reads as predating this client's own
 // push and is dropped (see PredatesOwnPush). That is what keeps a drag smooth:
 // the answers to the earlier steps of the drag arrive while later steps are in
 // flight, and none of them may put the divider back.
-func (c *TUIClient) SendLayoutTree(ws int, tree *SerializedBSPTree, leaves map[int]string) error {
+func (c *TUIClient) SendLayoutTree(ws int, tree *SerializedBSPTree, leaves map[int]string, base int) error {
 	c.pushMu.Lock()
 	defer c.pushMu.Unlock()
 	seq := c.pushSeq.Load() + 1
-	p := &LayoutTreePayload{PushSeq: seq, Workspace: ws, Tree: tree, Leaves: leaves}
+	p := &LayoutTreePayload{PushSeq: seq, Workspace: ws, Tree: tree, Leaves: leaves, BaseVersion: base}
 	if origin := c.pushOrigin.Load(); origin != nil {
 		p.PushOrigin = *origin
 	}
@@ -1379,16 +1518,46 @@ func (c *TUIClient) GetTerminalState(ptyID string, maxScrollback, have int) (*Te
 		return nil, err
 	}
 
-	resp, err := c.sendAndWaitResponse(msg, MsgTerminalState, MsgError)
+	// A daemon that tags its replies answers this request and no other with
+	// the id it carries. One that does not answers by type alone, so a state
+	// is checked for the pane it is about: a reply to a request that already
+	// gave up waiting is for another pane, and painting it here would put one
+	// pane's screen in another. It is dropped and the wait goes on. The check
+	// decodes the state, so the decoded copy is kept rather than decoded again.
+	var checked *TerminalStatePayload
+	forThisPane := func(m *Message) bool {
+		if m.Type != MsgTerminalState {
+			return true
+		}
+		var p TerminalStatePayload
+		if err := m.ParsePayload(&p); err != nil {
+			return true // reported by the caller below
+		}
+		if p.PTYID != ptyID {
+			debugLog("[CLIENT] dropped a terminal state for %s while waiting for %s", shortID(p.PTYID), shortID(ptyID))
+			return false
+		}
+		checked = &p
+		return true
+	}
+	resp, err := c.sendAndWaitMatching(msg, forThisPane, MsgTerminalState, MsgError)
 	if err != nil {
 		return nil, err
 	}
 
 	switch resp.Type {
 	case MsgTerminalState:
-		var payload TerminalStatePayload
-		if err := resp.ParsePayload(&payload); err != nil {
-			return nil, err
+		payload := checked
+		if payload == nil {
+			payload = &TerminalStatePayload{}
+			if err := resp.ParsePayload(payload); err != nil {
+				return nil, err
+			}
+		}
+		if payload.PTYID != ptyID {
+			// A tagged reply is the answer to this request, so this is a
+			// daemon fault, and the state is not applied to the wrong pane.
+			return nil, fmt.Errorf("get terminal state: the daemon answered for pane %s, not %s", shortID(payload.PTYID), shortID(ptyID))
 		}
 		// The cells were asked for packed and stay packed: ApplyTerminalState
 		// reads them in that form. They are checked here, so a malformed
@@ -1453,19 +1622,11 @@ func (c *TUIClient) readLoop() {
 			return
 		}
 
-		// Check if there's a pending response channel for this message type
-		c.pendingResponsesMu.Lock()
-		if respChan, ok := c.pendingResponses[msg.Type]; ok {
-			delete(c.pendingResponses, msg.Type)
-			c.pendingResponsesMu.Unlock()
-			// Send to the waiting caller
-			select {
-			case respChan <- msg:
-			default:
-			}
+		// A reply goes to the round trip waiting for it, and a stale one, the
+		// answer to a request that gave up waiting, goes nowhere.
+		if c.routeReply(msg) != replyNone {
 			continue
 		}
-		c.pendingResponsesMu.Unlock()
 
 		// Handle message normally
 		c.handleMessage(msg)
@@ -1545,14 +1706,22 @@ func (c *TUIClient) handleMessage(msg *Message) {
 			reason := payload.Reason
 			c.nestedRefusal.Store(&reason)
 		}
-		c.sessionEndedOnce.Do(func() {
-			c.multiClientMu.RLock()
-			handler := c.sessionEndedHandler
-			c.multiClientMu.RUnlock()
-			if handler != nil {
-				handler(name, payload.Reason)
+		if payload.Detached {
+			reason := payload.Reason
+			if reason == "" {
+				reason = DetachedByAttachMessage
 			}
-		})
+			c.detachedReason.Store(&reason)
+		}
+		c.multiClientMu.Lock()
+		handler := c.sessionEndedHandler
+		if handler == nil {
+			c.pendingEnded = &[2]string{name, payload.Reason}
+		}
+		c.multiClientMu.Unlock()
+		if handler != nil {
+			c.sessionEndedOnce.Do(func() { handler(name, payload.Reason) })
+		}
 
 	case MsgAgentMail:
 		var payload AgentMailPayload
@@ -2144,9 +2313,79 @@ func (c *TUIClient) reader() *bufio.Reader {
 // 256 KiB output batch in four. Larger only holds memory.
 const clientReadBuffer = 64 * 1024
 
+// pendingReply is one round trip waiting for its answer.
+type pendingReply struct {
+	ch chan *Message
+	// accept, when set, is asked about a reply matched by type before it is
+	// delivered. A reply it refuses is stale, the answer to an earlier request
+	// that gave up waiting, and is dropped. A tagged reply is matched by its
+	// id and needs no such check.
+	accept func(*Message) bool
+}
+
+// replyRoute is what the read loop did with a message.
+type replyRoute int
+
+const (
+	replyNone      replyRoute = iota // not a reply anyone waits for: handle it
+	replyDelivered                   // handed to the round trip waiting for it
+	replyStale                       // a reply nobody waits for any more: dropped
+)
+
+// routeReply hands msg to the round trip waiting for it.
+//
+// A tagged message is a reply by construction, so one whose request is no
+// longer waited on is dropped rather than handled: it is an answer that came
+// after its request timed out, and taking it for anything else is how one
+// pane's screen ended up painted into another. An untagged message is a reply
+// only to a round trip registered by type, which is every round trip to a
+// daemon that does not tag, and the detach of a session switch.
+func (c *TUIClient) routeReply(msg *Message) replyRoute {
+	c.pendingResponsesMu.Lock()
+	defer c.pendingResponsesMu.Unlock()
+
+	var p *pendingReply
+	if msg.ReqID != 0 {
+		p = c.pendingByID[msg.ReqID]
+		if p == nil && c.takePasteReply(msg) {
+			return replyDelivered
+		}
+		if p == nil {
+			debugLog("[CLIENT] dropped %s answering request %d, which nothing waits for", MessageTypeName(msg.Type), msg.ReqID)
+			return replyStale
+		}
+		delete(c.pendingByID, msg.ReqID)
+	} else {
+		p = c.pendingResponses[msg.Type]
+		if p == nil {
+			return replyNone
+		}
+		if p.accept != nil && !p.accept(msg) {
+			return replyStale
+		}
+		delete(c.pendingResponses, msg.Type)
+	}
+	select {
+	case p.ch <- msg:
+	default:
+	}
+	return replyDelivered
+}
+
 // sendAndWaitResponse sends a message and waits for a response of the expected type.
 // This works even after readLoop has started by registering a pending response channel.
 func (c *TUIClient) sendAndWaitResponse(msg *Message, expectedTypes ...MessageType) (*Message, error) {
+	return c.sendAndWaitMatching(msg, nil, expectedTypes...)
+}
+
+// sendAndWaitMatching is sendAndWaitResponse with a check for a reply matched
+// by type; see pendingReply.accept.
+//
+// To a daemon that tags replies, msg goes out with a fresh request id and only
+// the reply carrying that id is taken, whatever its type. An error the daemon
+// sends about some other message, such as a subscribe that failed, carries
+// another id or none, so it cannot be taken as this request's answer.
+func (c *TUIClient) sendAndWaitMatching(msg *Message, accept func(*Message) bool, expectedTypes ...MessageType) (*Message, error) {
 	// Serialize round-trips so no two overlap on a shared response type. The read
 	// loop never takes this lock and delivers replies before dispatching handlers,
 	// and no handler issues a round-trip, so holding it across the wait cannot
@@ -2154,29 +2393,57 @@ func (c *TUIClient) sendAndWaitResponse(msg *Message, expectedTypes ...MessageTy
 	c.roundTripMu.Lock()
 	defer c.roundTripMu.Unlock()
 
+	tagged := c.requestIDs.Load()
+	if tagged {
+		msg.ReqID = c.nextReqID.Add(1)
+	}
+
 	// If readLoop isn't running, use simple recv
 	if !c.readLoopRunning {
 		if err := c.send(msg); err != nil {
 			return nil, err
 		}
-		return c.recv()
+		for {
+			resp, err := c.recv()
+			if err != nil {
+				return nil, err
+			}
+			if resp.ReqID != 0 && resp.ReqID != msg.ReqID {
+				continue // the answer to an earlier request
+			}
+			if resp.ReqID == 0 && accept != nil && slices.Contains(expectedTypes, resp.Type) && !accept(resp) {
+				continue
+			}
+			return resp, nil
+		}
 	}
 
 	// Create a channel to receive the response
 	respChan := make(chan *Message, 1)
+	p := &pendingReply{ch: respChan, accept: accept}
 
-	// Register for all expected response types
 	c.pendingResponsesMu.Lock()
-	for _, t := range expectedTypes {
-		c.pendingResponses[t] = respChan
+	if tagged {
+		c.pendingByID[msg.ReqID] = p
+	} else {
+		// Register for all expected response types
+		for _, t := range expectedTypes {
+			c.pendingResponses[t] = p
+		}
 	}
 	c.pendingResponsesMu.Unlock()
 
 	// Clean up when done
 	defer func() {
 		c.pendingResponsesMu.Lock()
-		for _, t := range expectedTypes {
-			delete(c.pendingResponses, t)
+		if tagged {
+			delete(c.pendingByID, msg.ReqID)
+		} else {
+			for _, t := range expectedTypes {
+				if c.pendingResponses[t] == p {
+					delete(c.pendingResponses, t)
+				}
+			}
 		}
 		c.pendingResponsesMu.Unlock()
 	}()
@@ -2190,7 +2457,7 @@ func (c *TUIClient) sendAndWaitResponse(msg *Message, expectedTypes ...MessageTy
 	select {
 	case resp := <-respChan:
 		return resp, nil
-	case <-time.After(30 * time.Second):
+	case <-time.After(roundTripTimeout):
 		return nil, fmt.Errorf("timeout waiting for response")
 	case <-c.done:
 		return nil, fmt.Errorf("client closed")
@@ -2209,6 +2476,7 @@ func windowSummariesAgree(a, b WindowSummary) bool {
 		a.CompletionSeq == b.CompletionSeq &&
 		slices.Equal(a.AgentMeta, b.AgentMeta) &&
 		a.AgentQueued == b.AgentQueued && a.Subagents == b.Subagents &&
+		slices.Equal(a.ProgramStatus, b.ProgramStatus) &&
 		a.ForegroundCmd == b.ForegroundCmd && a.Workspace == b.Workspace &&
 		a.Scratch == b.Scratch
 }

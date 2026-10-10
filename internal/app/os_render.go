@@ -55,7 +55,8 @@ func (m *OS) MarkTerminalsWithNewContent() bool {
 
 	hasChanges := false
 	activeTerminals := 0
-	focusedWindowIndex := m.FocusedWindow
+	// A pane made since the last pass takes this client's frame rate.
+	m.setPaneFrameInterval()
 
 	for i := range m.Windows {
 		window := m.Windows[i]
@@ -70,6 +71,12 @@ func (m *OS) MarkTerminalsWithNewContent() bool {
 		}
 
 		activeTerminals++
+
+		// A write of kitty graphics alone changed no cell (see
+		// terminal.graphicsOnly). The frame is needed only to draw what the
+		// passthrough queued for the next frame; a frame it already wrote
+		// itself needs nothing.
+		graphics := window.HasGraphicsOutput.Swap(false)
 
 		// Skip content checking for minimized windows or windows on a different workspace.
 		// Their PTY data is still consumed (preventing buffer overflow), but we avoid
@@ -102,31 +109,25 @@ func (m *OS) MarkTerminalsWithNewContent() bool {
 		// This avoids the old unconditional dirty-marking that defeated frame skipping.
 		newOutput := window.HasNewOutput.Swap(false)
 		if !newOutput {
+			if graphics && m.KittyPassthrough != nil && m.KittyPassthrough.HasQueued() {
+				hasChanges = true
+			}
 			continue
 		}
 
-		// Mark window as dirty. Focused windows always update immediately.
-		// Background windows update every 3rd cycle to reduce CPU, but
-		// keep HasNewOutput set so they update when focused.
-		isFocused := i == focusedWindowIndex
-		if isFocused {
-			window.MarkContentDirty()
-			hasChanges = true
-		} else {
-			window.UpdateCounter++
-			if window.UpdateCounter%3 == 0 {
-				window.MarkContentDirty()
-				hasChanges = true
-				// The picture-in-picture view of this pane follows it at
-				// the same pace.
-				if window.ID == m.pip.windowID {
-					m.pip.dirty = true
-				}
-			} else {
-				// Don't clear the flag. Let it stay set so the window
-				// updates on the next cycle or when focused
-				window.HasNewOutput.Store(true)
-			}
+		// Mark the window dirty. Every visible pane with output is drawn in
+		// the frame: output frames are spaced a frame period apart (see
+		// paneFrameWait), so this runs at most once a frame.
+		//
+		// Unfocused panes used to be drawn on every third pass only, to
+		// save CPU when every signal from every pane composed a frame. With
+		// passes bounded by the frame rate that rule only made them uneven:
+		// nine animating panes at 120 frames a second showed their guests at
+		// 72 to 100.
+		window.MarkContentDirty()
+		hasChanges = true
+		if window.ID == m.pip.windowID {
+			m.pip.dirty = true
 		}
 	}
 

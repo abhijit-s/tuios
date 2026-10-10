@@ -30,8 +30,8 @@ const transcriptJoinRetry = 10 * time.Second
 // the pane's own output, which is the same trigger the screen tier uses and
 // costs exactly nothing on a silent pane.
 type transcriptWatch interface {
-	Watch(path string, onChange func()) error
-	Unwatch(path string)
+	Watch(path, key string, onChange func()) error
+	Unwatch(path, key string)
 }
 
 // transcriptJoin binds one window to one transcript file.
@@ -58,6 +58,9 @@ type transcriptJoin struct {
 	// gone is an agent that is not coming back, and the claim is given up rather
 	// than left pinning the pane.
 	missing int
+	// announced is the offset the last transcript event was raised at, so
+	// a read that found nothing new raises none.
+	announced int64
 }
 
 // transcriptMissingLimit is how many consecutive gone-file reads end a join. It
@@ -125,7 +128,7 @@ func (s *Session) JoinAgentTranscript(windowID, harnessID, path string, exact bo
 	s.transcripts.mu.Unlock()
 
 	if watcher != nil {
-		if err := watcher.Watch(abs, func() { s.onTranscriptChanged(windowID) }); err == nil {
+		if err := watcher.Watch(abs, s.transcriptWatchKey(windowID), func() { s.onTranscriptChanged(windowID) }); err == nil {
 			s.transcripts.mu.Lock()
 			j.watched = true
 			s.transcripts.mu.Unlock()
@@ -159,8 +162,14 @@ func (s *Session) releaseJoinLocked(j *transcriptJoin) {
 		j.debounce = nil
 	}
 	if j.watched && s.transcripts.watcher != nil {
-		s.transcripts.watcher.Unwatch(j.reader.Path())
+		s.transcripts.watcher.Unwatch(j.reader.Path(), s.transcriptWatchKey(j.windowID))
 	}
+}
+
+// transcriptWatchKey names one join to the watcher: the session and the
+// window, since windows of two sessions may share one file.
+func (s *Session) transcriptWatchKey(windowID string) string {
+	return s.ID + "/" + windowID
 }
 
 // onTranscriptChanged is what the watcher calls. It arms the debounce rather
@@ -199,7 +208,9 @@ func (s *Session) readAgentTranscript(windowID string) bool {
 
 	obs, fresh, err := j.reader.Read()
 	if err != nil {
-		if errors.Is(err, transcript.ErrNoFile) {
+		// A path that is not a regular file now (a FIFO put in its place)
+		// is as good as gone: it is not read, and the join ends.
+		if errors.Is(err, transcript.ErrNoFile) || errors.Is(err, transcript.ErrNotRegular) {
 			s.transcripts.mu.Lock()
 			j.missing++
 			gone := j.missing >= transcriptMissingLimit
@@ -220,6 +231,10 @@ func (s *Session) readAgentTranscript(windowID string) bool {
 	j.missing = 0
 	harnessID := j.harness
 	s.transcripts.mu.Unlock()
+	// The file grew: a reader of the conversation (agent-transcript) can
+	// read again. Raised for bookkeeping appends too, since only the
+	// reader can tell what they hold.
+	s.noteTranscriptGrowth(windowID, j)
 	if !fresh {
 		// An append that only wrote bookkeeping. A real event with no answer in
 		// it, so the pane keeps believing what it already believed.

@@ -57,16 +57,37 @@ type Dialer func(ctx context.Context, h Host) (Transport, error)
 // it obtains for a keyword, so a user who sets ServerAliveInterval themselves
 // still wins.
 func SSHDialer(sshBinary string) Dialer {
+	return SSHDialerEnv(sshBinary, nil)
+}
+
+// SSHDialerEnv is SSHDialer with the ssh's environment read from env for the
+// host at each dial. A nil env, or one that returns nil, runs ssh with this
+// process's environment. The daemon uses it to point SSH_AUTH_SOCK at the
+// agent link it keeps for a host whose link forwards the agent.
+func SSHDialerEnv(sshBinary string, env func(Host) []string) Dialer {
 	if sshBinary == "" {
 		sshBinary = "ssh"
 	}
 	return func(ctx context.Context, h Host) (Transport, error) {
-		return CommandDialer(sshBinary, linkArgs(h)...)(ctx, h)
+		var e []string
+		if env != nil {
+			e = env(h)
+		}
+		return commandDialerEnv(e, sshBinary, linkArgs(h)...)(ctx, h)
 	}
 }
 
 // linkArgs is the argv SSHDialer runs, split out so a test can read it.
 func linkArgs(h Host) []string {
+	return SSHArgs(h, h.remoteCommand(true, "stdio-proxy"))
+}
+
+// SSHArgs is the ssh argv, without the program name, that runs remoteCmd on
+// h with the options every link uses: BatchMode, the host's connect timeout,
+// no pseudo-terminal, the host's own SSHOptions and the keepalives. tuios
+// hosts sync runs its own commands through it, so they reach the host exactly
+// the way the link does.
+func SSHArgs(h Host, remoteCmd string) []string {
 	secs := max(int(h.connectTimeout().Seconds()), 1)
 	args := []string{
 		"-o", "BatchMode=yes",
@@ -76,6 +97,7 @@ func linkArgs(h Host) []string {
 		"-T",
 	}
 	args = append(args, h.SSHOptions...)
+	args = append(args, sharingOptions(h)...)
 	args = append(args, keepaliveOptions()...)
 	// One string: ssh joins its command words with spaces and the far
 	// side's login shell re-parses them, so what is sent is what that
@@ -83,7 +105,32 @@ func linkArgs(h Host) []string {
 	// configured.
 	// -- ends ssh's options. Without it ssh reads options after the host
 	// name as well, so a command starting with a dash would be one.
-	return append(args, "--", h.Addr, h.remoteCommand(true, "stdio-proxy"))
+	return append(args, "--", h.Addr, remoteCmd)
+}
+
+// sharingPersist is how long a shared master connection outlives its last
+// ssh. It covers the gaps of a run, such as the build of a binary between the
+// probe and the install, and it is the limit on a master the run did not stop.
+const sharingPersist = "10m"
+
+// sharingOptions are the options that make ssh share the connection at
+// h.ControlPath. A host with no path rides a master the person opened, when
+// there is one (see reuseOptions).
+func sharingOptions(h Host) []string {
+	if h.ControlPath == "" {
+		return reuseOptions(h)
+	}
+	return []string{
+		"-o", "ControlMaster=auto",
+		"-o", "ControlPath=" + h.ControlPath,
+		"-o", "ControlPersist=" + sharingPersist,
+	}
+}
+
+// StopSharingArgs is the ssh argv, without the program name, that stops the
+// master connection at h.ControlPath.
+func StopSharingArgs(h Host) []string {
+	return []string{"-o", "ControlPath=" + h.ControlPath, "-O", "exit", "--", h.Addr}
 }
 
 // The keepalive settings.
@@ -138,11 +185,18 @@ const KeepaliveWindow = sshServerAliveInterval * sshServerAliveCountMax * time.S
 // directly, which exercises the framing, the proxy and the daemon socket
 // without needing an ssh server or touching the user's ssh configuration.
 func CommandDialer(name string, args ...string) Dialer {
+	return commandDialerEnv(nil, name, args...)
+}
+
+// commandDialerEnv is CommandDialer with the child's environment. Nil keeps
+// this process's.
+func commandDialerEnv(env []string, name string, args ...string) Dialer {
 	return func(ctx context.Context, _ Host) (Transport, error) {
 		// The context is not attached to the command: a dial context expires
 		// once the handshake is done, and CommandContext would kill the child
 		// at that moment. Close ends the process.
 		cmd := exec.Command(name, args...)
+		cmd.Env = env
 		stdin, err := cmd.StdinPipe()
 		if err != nil {
 			return nil, err
@@ -214,7 +268,7 @@ func (t *cmdTransport) Exited() (bool, error) {
 
 func (t *cmdTransport) Diagnostic() string {
 	if b, ok := t.cmd.Stderr.(*boundedBuffer); ok {
-		return b.String()
+		return withoutStaleMasterLines(WithoutApprovedBanner(b.String()))
 	}
 	return ""
 }

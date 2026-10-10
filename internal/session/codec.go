@@ -12,6 +12,21 @@ import (
 // and stays reserved.
 const wireCodecGob byte = 0
 
+// wireCodecGobTagged marks a frame whose gob payload is preceded by an 8-byte
+// big-endian request id: the id a client put on a request, and the id the
+// daemon puts on its answer to it. See Message.ReqID. The id is never 0: a
+// message with no id goes out untagged, and a reader refuses a tagged 0.
+//
+// A reader from before the value existed ignores the codec byte and would take
+// the id for the start of the payload, so neither side writes one to a peer
+// that has not said it reads them. A client writes tagged requests only to a
+// daemon whose welcome set RequestIDs, and the daemon tags only the answer to
+// a request that was itself tagged.
+const wireCodecGobTagged byte = 2
+
+// reqIDLen is the size of the request id in a tagged frame.
+const reqIDLen = 8
+
 // wireCodecName is what the welcome reports in WelcomePayload.Codec. Older
 // peers inside the same protocol version still read that field.
 const wireCodecName = "gob"

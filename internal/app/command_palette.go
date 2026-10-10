@@ -8,6 +8,7 @@ import (
 	"github.com/Gaurav-Gosain/tuios/internal/config"
 	"github.com/Gaurav-Gosain/tuios/internal/layout"
 	"github.com/Gaurav-Gosain/tuios/internal/session"
+	"github.com/Gaurav-Gosain/tuios/internal/theme"
 	"github.com/Gaurav-Gosain/tuios/pkg/fuzzy"
 )
 
@@ -50,7 +51,20 @@ func (m *OS) ApplyReloadedConfig(cfg *config.UserConfig) tea.Cmd {
 	}
 	// Runs on the Bubble Tea goroutine, so applying it to this session's
 	// settings is single-threaded and reaches nobody else's session.
+	themeBefore := theme.CurrentThemeID()
 	config.ApplyAppearanceConfig(cfg, &m.Settings)
+	// ApplyAppearanceConfig switches the theme package, which recolours the
+	// chrome, but each pane's emulator holds its own copy of the palette. The
+	// theme picker pushes the new one into every pane (applyTheme); this path
+	// did not, so a theme saved in any config file recoloured the borders and
+	// left every pane, and all output after the save, in the old colours.
+	if theme.CurrentThemeID() != themeBefore {
+		m.UpdateAllWindowThemes()
+	}
+	// A reload is the one time the display's rate is looked for again, after
+	// startup: the person may have changed the monitor's mode. Started before
+	// applyAppearanceLive below, which would otherwise keep the first answer.
+	m.detectDisplayRate(true)
 	// Whether the rail is shown is the session's once the session has a
 	// value. The file's value is what a new session starts with, so a reload
 	// does not show or hide the rail on every client. See keepSessionSidebar.
@@ -70,6 +84,13 @@ func (m *OS) ApplyReloadedConfig(cfg *config.UserConfig) tea.Cmd {
 	cmd := m.ReloadDockComponents(cfg)
 	// A scratch entry the new file renamed or removed has no key any more.
 	m.pruneOrphanScratches()
+	// Keybindings reload the same way, minus the write-back: the edit came
+	// from the file, so persisting it would be the tail wagging the dog.
+	if m.KeybindRegistry != nil {
+		m.KeybindRegistry.Reload(cfg)
+		m.keybinds.report = m.buildKeybindReport()
+		m.keybinds.filtered = nil
+	}
 	// The beam is client-local, so nothing else carries it: without this the
 	// screen and the config disagree about whether it is on, and the next
 	// toggle writes the disagreement back to the file.
@@ -180,7 +201,20 @@ func GetCommandPaletteItems(s *config.Settings) []CommandPaletteItem {
 			Shortcut: "prefix+c",
 			Category: "Window",
 			Action: func(m *OS) (*OS, tea.Cmd) {
+				if m.FollowSSHOnNewWindow() {
+					m.NewWindowSSH()
+					return m, nil
+				}
 				m.NewWindowHere()
+				return m, nil
+			},
+		},
+		{
+			Name:     "New window that runs the focused pane's ssh",
+			Shortcut: "",
+			Category: "Window",
+			Action: func(m *OS) (*OS, tea.Cmd) {
+				m.NewWindowSSH()
 				return m, nil
 			},
 		},
@@ -279,7 +313,19 @@ func GetCommandPaletteItems(s *config.Settings) []CommandPaletteItem {
 			Category: "Layout",
 			Action: func(m *OS) (*OS, tea.Cmd) {
 				if m.AutoTiling {
-					m.SplitFocusedHorizontal()
+					m.splitFocused(layout.PreselectionDown, m.FollowSSHOnNewWindow())
+					m.ShowNotification("Split horizontal", "info", s.NotificationDuration)
+				}
+				return m, nil
+			},
+		},
+		{
+			Name:     "Split horizontal, and run the focused pane's ssh",
+			Shortcut: "",
+			Category: "Layout",
+			Action: func(m *OS) (*OS, tea.Cmd) {
+				if m.AutoTiling {
+					m.SplitFocusedHorizontalSSH()
 					m.ShowNotification("Split horizontal", "info", s.NotificationDuration)
 				}
 				return m, nil
@@ -291,7 +337,19 @@ func GetCommandPaletteItems(s *config.Settings) []CommandPaletteItem {
 			Category: "Layout",
 			Action: func(m *OS) (*OS, tea.Cmd) {
 				if m.AutoTiling {
-					m.SplitFocusedVertical()
+					m.splitFocused(layout.PreselectionRight, m.FollowSSHOnNewWindow())
+					m.ShowNotification("Split vertical", "info", s.NotificationDuration)
+				}
+				return m, nil
+			},
+		},
+		{
+			Name:     "Split vertical, and run the focused pane's ssh",
+			Shortcut: "",
+			Category: "Layout",
+			Action: func(m *OS) (*OS, tea.Cmd) {
+				if m.AutoTiling {
+					m.SplitFocusedVerticalSSH()
 					m.ShowNotification("Split vertical", "info", s.NotificationDuration)
 				}
 				return m, nil
@@ -705,6 +763,16 @@ func GetCommandPaletteItems(s *config.Settings) []CommandPaletteItem {
 			},
 		},
 		{
+			Name:     "Scroll: maximize column width",
+			Category: "Layout",
+			Action: func(m *OS) (*OS, tea.Cmd) {
+				if m.UseScrollingLayout {
+					m.ScrollingMaximizeColumn()
+				}
+				return m, nil
+			},
+		},
+		{
 			Name:     "Scroll: move window into the column below",
 			Category: "Layout",
 			Action: func(m *OS) (*OS, tea.Cmd) {
@@ -773,6 +841,17 @@ func GetCommandPaletteItems(s *config.Settings) []CommandPaletteItem {
 			Category: "Session",
 			Action: func(m *OS) (*OS, tea.Cmd) {
 				m.OpenSettings()
+				return m, nil
+			},
+		},
+		{
+			// The Agents tab, where each harness's integration is shown,
+			// installed and updated. Left out while the tab is.
+			Name:     paletteAgentsSettingsName,
+			Shortcut: "prefix+A",
+			Category: "Session",
+			Action: func(m *OS) (*OS, tea.Cmd) {
+				m.OpenAgentsSettings()
 				return m, nil
 			},
 		},
@@ -961,6 +1040,14 @@ func GetCommandPaletteItems(s *config.Settings) []CommandPaletteItem {
 			},
 		},
 		{
+			Name:     "Panes: find a pane in every session",
+			Shortcut: "prefix+/",
+			Category: "Session",
+			Action: func(m *OS) (*OS, tea.Cmd) {
+				return m, m.OpenNavigator()
+			},
+		},
+		{
 			Name:     "Hints: label text on the pane to copy it",
 			Shortcut: "prefix+F",
 			Category: "Session",
@@ -975,6 +1062,15 @@ func GetCommandPaletteItems(s *config.Settings) []CommandPaletteItem {
 			Category: "Session",
 			Action: func(m *OS) (*OS, tea.Cmd) {
 				return m, m.ToggleScratch()
+			},
+		},
+		{
+			Name:     "Panes: label the panes and focus one",
+			Shortcut: "prefix+Q",
+			Category: "Session",
+			Action: func(m *OS) (*OS, tea.Cmd) {
+				m.OpenPaneLabels()
+				return m, nil
 			},
 		},
 		{
@@ -1010,15 +1106,11 @@ func GetCommandPaletteItems(s *config.Settings) []CommandPaletteItem {
 		},
 		{
 			Name:     "Toggle spotlight",
-			Shortcut: "b",
+			Shortcut: "B",
 			Category: "Session",
 			Action: func(m *OS) (*OS, tea.Cmd) {
 				save := m.ToggleSpotlight()
-				state := "off"
-				if m.SpotlightOn() {
-					state = "on"
-				}
-				m.ShowNotification("Spotlight "+state, "success", s.NotificationDuration)
+				m.AnnounceSpotlight()
 				return m, save
 			},
 		},

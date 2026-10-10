@@ -63,6 +63,7 @@ func (s *Screen) Reset() {
 	s.buf.Clear()
 	s.cur = Cursor{}
 	s.saved = Cursor{}
+	s.savedExtra = savedExtras{}
 	s.scroll = s.buf.Bounds()
 }
 
@@ -170,6 +171,10 @@ func (s *Screen) shrinkRows(height int) {
 		s.buf.wrap = s.buf.wrap[:y]
 		if s.buf.tail != nil {
 			s.buf.tail = s.buf.tail[:y]
+		}
+		if s.buf.prot != nil {
+			s.buf.prot[y] = nil
+			s.buf.prot = s.buf.prot[:y]
 		}
 	}
 	if excess <= 0 {
@@ -339,9 +344,17 @@ func (s *Screen) SaveCursor() {
 // the pending-wrap flag and origin mode. xterm's DECSC documentation lists both
 // among what is saved, and they are per-screen because the alternate screen has
 // its own saved cursor.
+//
+// The character set selection is saved here too, once per screen. It used to
+// be held once for the emulator, so a DECSC on the alternate screen replaced
+// the shell's selection, and leaving with 1049 gave the program's sets to the
+// shell. Zero designator bytes read as US ASCII.
 type savedExtras struct {
-	phantom bool
-	origin  bool
+	phantom    bool
+	origin     bool
+	charsets   [4]CharSet
+	charsetIDs [4]byte
+	gl, gr     int
 }
 
 // RestoreCursor restores the cursor.
@@ -425,6 +438,8 @@ func (s *Screen) insertCellAt(x, y, n int) {
 		putBlank(line, i, blank)
 	}
 	repairWide(line)
+	s.buf.shiftProtected(y, x+n, x, right-x-n)
+	s.buf.clearProtected(y, x, x+n)
 }
 
 // DeleteCell deletes n cells at the cursor position moving cells to the left.
@@ -449,6 +464,8 @@ func (s *Screen) DeleteCell(n int) {
 		putBlank(line, i, blank)
 	}
 	repairWide(line)
+	s.buf.shiftProtected(y, x, x+n, right-x-n)
+	s.buf.clearProtected(y, right-n, right)
 	// The text that wrapped has been pulled off the row's end. ghostty
 	// clears the row's wrap flag on DCH as well.
 	s.buf.setSoftWrapped(y, false)
@@ -595,25 +612,13 @@ func (s *Screen) rotateWholeScreenUp(n int, save bool) bool {
 		n = height
 	}
 
-	// Lift the rows leaving the top, slide the rest up, and put the lifted
-	// slices back at the bottom to be blanked. The scrollback packs its own
-	// copy of each departing row, so the row's storage stays with the screen
-	// and the common case (one line, printing output) allocates only what
-	// the ring keeps. The scratch array means only a large CSI S needs the
-	// heap for the slice of line headers.
-	var scratch [16]uv.Line
-	var recycled []uv.Line
-	if n <= len(scratch) {
-		recycled = scratch[:n]
-	} else {
-		recycled = make([]uv.Line, n)
-	}
-	copy(recycled, lines[:n])
-	copy(lines, lines[n:])
+	// The rows leaving the top go to the scrollback first, while they and
+	// their extents, wrap flags and tails are still at the top. The
+	// scrollback packs its own copy of each, so the row's storage stays with
+	// the screen and comes back as a blank row at the bottom, and the common
+	// case (one line, printing output) allocates only what the ring keeps.
 	if save {
-		// ext still describes the departing rows here: they have moved in
-		// lines but not yet in ext, which is rotated below.
-		for i, row := range recycled {
+		for i, row := range lines[:n] {
 			if row == nil {
 				s.scrollback.PushBlankLine(s.buf.Width())
 			} else {
@@ -626,8 +631,7 @@ func (s *Screen) rotateWholeScreenUp(n int, save bool) bool {
 			s.scrollback.markNewest(s.buf.wrap[i])
 		}
 	}
-	copy(lines[height-n:], recycled)
-	s.buf.rotateExt(0, height, n)
+	s.buf.scrollWindow(n)
 
 	s.buf.blankRows(height-n, height, s.blankCell())
 	return true

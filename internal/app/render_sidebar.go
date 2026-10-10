@@ -15,6 +15,7 @@ import (
 	"github.com/Gaurav-Gosain/tuios/internal/session"
 	"github.com/Gaurav-Gosain/tuios/internal/sessiontree"
 	"github.com/Gaurav-Gosain/tuios/internal/terminal"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // sidebarRestoredTag is the rail's marker for a session rebuilt from saved
@@ -97,6 +98,10 @@ const (
 	// creates a session on that machine and opens it. It carries the host name
 	// in SessionID.
 	sidebarRowHostNew
+	// sidebarRowHostSignIn is the "sign in" label on the header of a host
+	// that waits for a Tailscale sign-in. Activating it opens the sign-in
+	// page. It carries the host name in SessionID. See host_signin.go.
+	sidebarRowHostSignIn
 	// sidebarRowDivider is the rule above the pinned section. Dragging it moves
 	// the split between that section and the ones over it; a double-click, or
 	// enter with the cursor on it, resets the split. See sidebar_split.go.
@@ -199,7 +204,7 @@ func sidebarRowBg(st sidebarRowState, pal overlay.Palette) color.Color {
 func sidebarHeaderAdd(kind sidebarRowKind, cw, labelW int, pal overlay.Palette, hoverX int, cursor bool, s *config.Settings, rowBg color.Color) (string, sidebarTokenSpan, bool) {
 	gw := lipgloss.Width(sidebarAddGlyph(s))
 	x0 := cw - 1 - gw
-	if x0 < labelW+1 {
+	if x0 < labelW+sidebarHeaderGap {
 		return "", sidebarTokenSpan{}, false
 	}
 	span := sidebarTokenSpan{Kind: kind, X0: x0, X1: x0 + gw}
@@ -234,6 +239,11 @@ const (
 	// branch it has, and how far that branch has drifted. Off unless the layout
 	// names it, like every other section.
 	sidebarSectionGit
+	// sidebarSectionCustom draws the rows a command of the user's printed,
+	// configured in [appearance.sidebar.custom]. One section, not a family:
+	// the enum sizes every per-section array in this package, and one more
+	// value fits all of them as they are. See sidebar_custom.go.
+	sidebarSectionCustom
 	sidebarSectionCount
 )
 
@@ -441,6 +451,13 @@ type sidebarAgentEntry struct {
 	// Subagents is how many subagents the pane's agent is running, which the
 	// subagents row token draws.
 	Subagents int
+	// Program is the pane's OSC 7501 records, the root first. The harness
+	// token falls back to the summary record's app, and the progress token
+	// draws its progress.
+	Program []sessiontree.ProgramRecord
+	// PR is the pull request of the session's worktree branch, in short form,
+	// which the pr row token draws. Empty when there is none.
+	PR string
 	// SessionLabel is what to print for SessionID: the session's display name
 	// when it has one. Identity keys the row, the label only fronts it.
 	SessionLabel string
@@ -698,9 +715,27 @@ func sidebarEdgeRule(s *config.Settings, rule color.Color) string {
 //
 // right is an already-styled trailing element (the peeked session's name, the
 // agents section's controls), inset one cell from the rail's edge so it lands
-// on the same spine the rows' figures do.
+// on the same spine the rows' figures do. At least sidebarHeaderGap blank cells
+// always stand between the label and right. A right element too wide for that
+// loses cells from its front behind an ellipsis, never the label and never its
+// last cells: those are where the controls sit, at columns the caller has
+// already recorded as click targets. A caller sizes right with
+// sidebarHeaderRightRoom so this cut is only a backstop.
 func sidebarHeaderRow(label, right string, cw int, pal overlay.Palette) string {
 	return sidebarHeaderRowRuled(label, right, cw, pal, nil)
+}
+
+// sidebarHeaderGap is the fewest blank cells between a header's label and the
+// element on its right. One cell read as a word break at best: with the peeked
+// session's name it was lost entirely, and "terminals" and "session-1" printed
+// as "terminalssession-1". Two cells keep the label a label.
+const sidebarHeaderGap = 2
+
+// sidebarHeaderRightRoom is how many cells a header's right element may take
+// beside the label of width labelW (sidebarHeaderLabelW): the rail's content
+// width less the label, the gap after it and the inset cell before the edge.
+func sidebarHeaderRightRoom(cw, labelW int) int {
+	return max(cw-labelW-sidebarHeaderGap-1, 0)
 }
 
 // sidebarHeaderRowRuled is sidebarHeaderRow with the rule that marks a heading.
@@ -709,26 +744,49 @@ func sidebarHeaderRow(label, right string, cw int, pal overlay.Palette) string {
 func sidebarHeaderRowRuled(label, right string, cw int, pal overlay.Palette, s *config.Settings) string {
 	row := sidebarStyle(nil, nil).Render(" ") +
 		sidebarStyle(nil, pal.FgMute).Render(overlay.Truncate(label, max(cw-2, 1)))
+	lw := lipgloss.Width(row)
 	rw := lipgloss.Width(right)
-	if s != nil {
-		pad := 1
-		if rw > 0 {
-			pad = 2
+	if rw > 0 {
+		if room := sidebarHeaderRightRoom(cw, lw); rw > room {
+			right = sidebarHeaderCutFront(right, rw, room)
+			rw = lipgloss.Width(right)
 		}
-		if run := cw - lipgloss.Width(row) - rw - pad; run > 1 {
-			row += sidebarStyle(nil, nil).Render(" ") +
-				sidebarStyle(nil, sidebarRuleInk(nil, pal)).Render(strings.Repeat(s.GetRailRuleGlyph(), run-1))
-		}
-		if rw > 0 {
-			row += " " + right + " "
+	}
+	if rw == 0 {
+		if s != nil {
+			if run := cw - lw - 1; run > 1 {
+				row += sidebarStyle(nil, nil).Render(" ") +
+					sidebarStyle(nil, sidebarRuleInk(nil, pal)).Render(strings.Repeat(s.GetRailRuleGlyph(), run-1))
+			}
 		}
 		return sidebarFit(row, cw, nil)
 	}
-	if rw > 0 {
-		gap := max(cw-lipgloss.Width(row)-rw-1, 0)
-		row += strings.Repeat(" ", gap) + right + " "
+	// The cells between the label and right. The cut above leaves at least
+	// sidebarHeaderGap of them. A rule needs a blank on each side of it, so it
+	// draws only when there are three or more.
+	gap := cw - lw - rw - 1
+	if s != nil && gap > sidebarHeaderGap {
+		row += sidebarStyle(nil, nil).Render(" ") +
+			sidebarStyle(nil, sidebarRuleInk(nil, pal)).Render(strings.Repeat(s.GetRailRuleGlyph(), gap-2)) +
+			sidebarStyle(nil, nil).Render(" ")
+	} else {
+		row += strings.Repeat(" ", gap)
 	}
+	row += right + " "
 	return sidebarFit(row, cw, nil)
+}
+
+// sidebarHeaderCutFront shortens the styled string right, rw cells wide, to
+// room cells by dropping cells from its front behind an ellipsis. The back is
+// kept because a header's controls are at its back. Nothing is returned when
+// the room cannot hold more than the ellipsis.
+func sidebarHeaderCutFront(right string, rw, room int) string {
+	ell := overlay.Ellipsis()
+	ew := lipgloss.Width(ell)
+	if room <= ew {
+		return ""
+	}
+	return ansi.TruncateLeft(right, rw-room+ew, ell)
 }
 
 // sidebarHeaderLabelW is the columns a section's label occupies, its leading
@@ -899,7 +957,7 @@ func (m *OS) sidebarAgentsControls(cw, headerW int, pal overlay.Palette, hoverX 
 
 	fw, sw := lipgloss.Width(filter), lipgloss.Width(sort)
 	sepW := lipgloss.Width(sep)
-	room := cw - 1 - (headerW + 1)
+	room := sidebarHeaderRightRoom(cw, headerW)
 	fits := func(countText, mailText string) bool {
 		total := fw + sepW + sw
 		if mailText != "" {
@@ -1317,12 +1375,21 @@ func (m *OS) sidebarPanelLinesForTree(tree sessiontree.Tree) ([]string, int) {
 	if filesRows == 0 && m.filesSectionEnabled() {
 		filesRows = 1
 	}
+	// The custom section keeps one row for the same reason files does: a
+	// person who put it on the rail and sees no heading reads the feature as
+	// broken rather than as a command that printed nothing.
+	customRows := m.railCustomRows()
+	nC := len(customRows)
+	if nC == 0 && m.railCustomEnabled() {
+		nC = 1
+	}
 	rowsIn := [sidebarSectionCount]int{
 		sidebarSectionSessions:  nS,
 		sidebarSectionTerminals: nT,
 		sidebarSectionAgents:    nA,
 		sidebarSectionFiles:     filesRows,
 		sidebarSectionGit:       len(gitRows),
+		sidebarSectionCustom:    nC,
 	}
 	// The last section in the configured layout is the one pinned to the rail's
 	// bottom: the slack rides above it, and it wears a blank line of its own so
@@ -1345,7 +1412,7 @@ func (m *OS) sidebarPanelLinesForTree(tree sessiontree.Tree) ([]string, int) {
 	agentRowH := 1
 	// Row heights per section, which is what turns a section's line budget into
 	// the rows it can show and a st.lit() line back into the row under it.
-	rowH := [sidebarSectionCount]int{1, 1, agentRowH, 1, 1}
+	rowH := [sidebarSectionCount]int{1, 1, agentRowH, 1, 1, 1}
 
 	// The chrome each drawn section costs before a row of it appears: its own
 	// header, plus the floating blank in front of the pinned block.
@@ -1638,6 +1705,7 @@ func (m *OS) sidebarPanelLinesForTree(tree sessiontree.Tree) ([]string, int) {
 				break
 			}
 		}
+		sessionIdx := localSessionIndexes(sessions)
 		for i := range count[sidebarSectionSessions] {
 			idx := start[sidebarSectionSessions] + i
 			s := sessionRows[idx]
@@ -1657,7 +1725,7 @@ func (m *OS) sidebarPanelLinesForTree(tree sessiontree.Tree) ([]string, int) {
 			dragged := m.SidebarDrag.Dragging && s.ID == m.SidebarDrag.SessionID
 			st := m.railRowState(idx == hoverRow[sidebarSectionSessions], isCursor(sidebarRowSession, s.ID, ""))
 			recordHit(sidebarRowSession, s.ID, "", -1, 1)
-			lines = append(lines, compose(st.mark(pal, m.sidebarSessionRow(s, variant, cw, pal, st, dragged, showCounts))))
+			lines = append(lines, compose(st.mark(pal, m.sidebarSessionRow(s, sessionIdx[s.ID], variant, cw, pal, st, dragged, showCounts))))
 		}
 		if h := hidden[sidebarSectionSessions]; h > 0 {
 			lines = append(lines, overflowRow(h, m.sidebarRowIndent()))
@@ -1686,14 +1754,23 @@ func (m *OS) sidebarPanelLinesForTree(tree sessiontree.Tree) ([]string, int) {
 			// readout that pushes a click target off its own cells is worse than a
 			// readout cut one word shorter. The control keeps the spine's last cell,
 			// so its recorded columns hold whether or not a label precedes it.
-			room := max(cw/2, 1)
+			//
+			// The name's room is what the row really has: the rail less the
+			// label, the gap after it, the inset, and the control with the
+			// blank in front of it. Half the rail, which this used to take,
+			// ignored the label and on a narrow rail ran the name into it.
+			room := sidebarHeaderRightRoom(cw, sidebarHeaderLabelW("terminals"))
 			if hasTermAdd {
-				room = max(room-lipgloss.Width(sidebarAddGlyph(&m.Settings))-1, 1)
+				room -= lipgloss.Width(sidebarAddGlyph(&m.Settings)) + 1
 			}
-			name := sidebarStyle(nil, ink).Render(overlay.Truncate(printableTitle(shown), room))
-			right = name + sidebarStyle(nil, nil).Render(" ") + termAdd
-			if !hasTermAdd {
+			// Below three cells a cut name is an ellipsis and a letter or two,
+			// which names nothing, so the header shows the control alone.
+			if room >= 3 {
+				name := sidebarStyle(nil, ink).Render(overlay.Truncate(printableTitle(shown), room))
 				right = name
+				if hasTermAdd {
+					right += sidebarStyle(nil, nil).Render(" ") + termAdd
+				}
 			}
 		}
 		if hasTermAdd {
@@ -1757,6 +1834,30 @@ func (m *OS) sidebarPanelLinesForTree(tree sessiontree.Tree) ([]string, int) {
 			}
 			st := m.railRowState(idx == hoverRow[sidebarSectionGit], false)
 			lines = append(lines, compose(st.mark(pal, m.sidebarGitRow(gitRows[idx], cw, pal, st))))
+		}
+	}
+
+	drawCustom := func() {
+		lines = append(lines, compose(sidebarHeaderRow(m.railCustomTitle(), "", cw, pal)))
+		if len(customRows) == 0 {
+			// The title over an empty section: the one notional row draws
+			// as a blank line, so the heading is not the last thing on the
+			// rail with nothing to say it is a section.
+			if count[sidebarSectionCustom] > 0 {
+				lines = append(lines, blank)
+			}
+			return
+		}
+		for i := range count[sidebarSectionCustom] {
+			idx := start[sidebarSectionCustom] + i
+			if idx >= len(customRows) {
+				break
+			}
+			st := m.railRowState(idx == hoverRow[sidebarSectionCustom], false)
+			lines = append(lines, compose(st.mark(pal, m.sidebarCustomRow(customRows[idx], cw, pal, st))))
+		}
+		if h := hidden[sidebarSectionCustom]; h > 0 {
+			lines = append(lines, overflowRow(h, 0))
 		}
 	}
 
@@ -1826,6 +1927,7 @@ func (m *OS) sidebarPanelLinesForTree(tree sessiontree.Tree) ([]string, int) {
 		sidebarSectionAgents:    drawAgents,
 		sidebarSectionFiles:     drawFiles,
 		sidebarSectionGit:       drawGit,
+		sidebarSectionCustom:    drawCustom,
 	}
 	for i, p := range plans {
 		if p.Spacer {
@@ -2071,6 +2173,10 @@ func (m *OS) sidebarAgents(sessions []sessiontree.Node) []sidebarAgentEntry {
 	}
 	var agents []sidebarAgentEntry
 	for _, s := range sessions {
+		pr := ""
+		if s.Worktree != nil {
+			pr = s.Worktree.PR
+		}
 		for _, win := range s.Children {
 			if win.AgentState == "" {
 				continue
@@ -2093,6 +2199,8 @@ func (m *OS) sidebarAgents(sessions []sessiontree.Node) []sidebarAgentEntry {
 				Meta:         win.Meta,
 				Queued:       win.Queued,
 				Subagents:    win.Subagents,
+				Program:      win.Program,
+				PR:           pr,
 				WindowIndex:  idx,
 				Foreign:      !s.IsCurrent,
 				Host:         s.Host,
@@ -2124,7 +2232,7 @@ func (m *OS) sidebarCursorIndex(target sidebarNavRow, sessions []sessiontree.Nod
 				return sidebarSectionSessions, i, true
 			}
 		}
-	case sidebarRowHost, sidebarRowHostNew:
+	case sidebarRowHost, sidebarRowHostNew, sidebarRowHostSignIn:
 		for i, s := range sessions {
 			if s.Kind == sessiontree.KindHost && s.Host == target.SessionID {
 				return sidebarSectionSessions, i, true
@@ -2320,7 +2428,7 @@ func (m *OS) windowIndexByID(id string) int {
 //
 // A drag in progress keeps the band on the dragged row while it rides the
 // pointer.
-func (m *OS) sidebarSessionRow(node sessiontree.Node, variant, cw int, pal overlay.Palette, st sidebarRowState, dragged, showCounts bool) string {
+func (m *OS) sidebarSessionRow(node sessiontree.Node, sessionIdx, variant, cw int, pal overlay.Palette, st sidebarRowState, dragged, showCounts bool) string {
 	rowBg := sidebarRowBg(st, pal)
 	if dragged {
 		// A drag keeps the strongest band on the row riding the pointer.
@@ -2402,14 +2510,27 @@ func (m *OS) sidebarSessionRow(node sessiontree.Node, variant, cw int, pal overl
 		s.tokens = append(s.tokens, railToken{Cost: sidebarFigureCost(f), Right: true})
 	}
 	titleW := lipgloss.Width(title)
-	keep, avail := railRowFitInto(s.keep, titleW, railNameKeep(titleW), s.tokens, sidebarNameAvailIn(cw, 0, indent))
+	// With show_numbers on, the session index leads the name: a muted number,
+	// the one switch_session_N opens, styled like the other chrome the row
+	// carries. Only switch_session_1..9 exist, so a tenth session wears none,
+	// and remote sessions have no number on this machine either. The armed
+	// prefix does not ask for the numbers: the default keys bind the digits
+	// under the prefix to select_window_N, so a session number there would
+	// name a key that opens something else.
+	mark, markW := "", 0
+	if m.Settings.SidebarShowNumbers && sessionIdx > 0 && sessionIdx <= 9 {
+		mark = sidebarStyle(rowBg, pal.FgMute).Bold(node.IsCurrent).
+			Render(strconv.Itoa(sessionIdx) + " ")
+		markW = len(strconv.Itoa(sessionIdx)) + 1
+	}
+	keep, avail := railRowFitInto(s.keep, titleW, railNameKeep(titleW), s.tokens, sidebarNameAvailIn(cw, 0, indent)-markW)
 	s.keep = keep
 	branch := ""
 	if keep[0] {
 		branch = sidebarStyle(rowBg, nil).Render(" ") + sidebarStyle(rowBg, pal.FgMute).Render(b)
 	}
 	right := sidebarJoinFigures(figures[:], keep[1:], sidebarStyle(rowBg, pal.FgMute))
-	name := sidebarStyle(rowBg, fg).Bold(sidebarAttention(node.AgentState)).
+	name := mark + sidebarStyle(rowBg, fg).Bold(sidebarAttention(node.AgentState)).
 		Render(m.sidebarMarquee("s:"+node.ID, title, max(avail, 1), st.Cursor)) + branch
 
 	gutter := sidebarGutterTinted(node.IsCurrent, node.AgentState, tint, rowBg, pal, &m.Settings)

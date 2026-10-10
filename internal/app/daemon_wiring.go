@@ -72,6 +72,13 @@ func (m *OS) WireDaemonClient(client *session.TUIClient) {
 			clientLog("ClientEventChan full, displaced an event for a hosts change")
 		}
 	})
+	// A paste the daemon refused twice, or one too large to send. The person
+	// is told, so a paste never vanishes. See session/paste_retry.go.
+	client.OnPasteRefused(func(_, message string) {
+		if m.QueueClientEvent(ClientEvent{Type: "paste-refused", Reason: message}) {
+			clientLog("ClientEventChan full, displaced an event for a refused paste")
+		}
+	})
 	// A folder the daemon watches for the files section changed. See
 	// sidebar_files_watch.go.
 	client.OnDirChanged(m.fileWatch.remoteDirChanged)
@@ -118,6 +125,7 @@ func (m *OS) UnwireDaemonClient(client *session.TUIClient) {
 	client.OnClientJoined(nil)
 	client.OnAgentMail(nil)
 	client.OnDirChanged(nil)
+	client.OnPasteRefused(nil)
 	client.OnClientLeft(nil)
 	client.OnSessionResize(nil)
 	client.OnSessionEnded(nil)
@@ -274,6 +282,19 @@ func (m *OS) adoptEmptySessionVersion(state *session.SessionState) {
 	m.treeDerived = nil
 	m.sessionTreeOpsOff = state != nil && !state.LayoutTreeOps
 	m.sessionScratchWSOff = state != nil && !state.ScratchWorkspaces
+	// The tiling and the layout mode are the session's too, and
+	// RestoreFromState, which takes them for a session with windows, does not
+	// run for one without. Kept from the session just left, a tiled client
+	// came to a new session with tiling on in its own model and off in the
+	// daemon's. The [startup] tiling that follows saw it on and did nothing,
+	// and the daemon made the first window floating (#480). A nil state is a
+	// session with nothing set, so tiling is off.
+	if state != nil {
+		m.AutoTiling = state.AutoTiling
+		m.ApplyLayoutModeName(state.LayoutMode)
+	} else {
+		m.AutoTiling = false
+	}
 	// The rail is the session's, and RestoreFromState, which takes it for a
 	// session with windows, does not run for one without. A new session made
 	// from the switcher is empty, and it has to be offered this client's

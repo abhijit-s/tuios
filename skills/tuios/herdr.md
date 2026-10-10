@@ -33,11 +33,43 @@ the usage on stderr and exits 2. `pane send-text`, `pane send-keys`, `pane
 run` and the report commands print nothing when they succeed.
 
 It answers `pane`, `tab`, `workspace`, `agent`, `worktree`,
-`notification show` and `api snapshot`. A method that tuios does not answer,
-such as `pane.resize`, `pane.move` or `server reload-config`, fails with code
-`unsupported`. A command that acts on herdr's own machine (`status`,
-`session`, `plugin`, `server stop` and the rest) fails with code
-`unsupported` and does nothing.
+`notification show`, `api snapshot`, `server reload-config`, `terminal
+title`, `status`, `session list` and `plugin`. A method that tuios does not
+answer, such as `layout.apply` or `workspace.move`, fails with code
+`unsupported`. A command that acts on herdr's own machine (`session stop`,
+`plugin install`, `server stop` and the rest) fails with code `unsupported`
+and does nothing.
+
+## herdr plugins
+
+tuios runs herdr plugins (`herdr-plugin.toml`) that the person enabled. From
+a pane you can run an enabled plugin's action and open its panes:
+
+```bash
+"$HERDR_BIN_PATH" plugin list --json
+"$HERDR_BIN_PATH" plugin action invoke ACTION --plugin PLUGIN_ID
+"$HERDR_BIN_PATH" plugin pane open --plugin PLUGIN_ID --entrypoint PANE_ID
+"$HERDR_BIN_PATH" plugin log list --plugin PLUGIN_ID
+```
+
+You need `admin` to run an action, open a plugin pane or read the plugin
+log. You cannot enable, disable, link or unlink a plugin from a pane: the
+call fails with code `forbidden` and changes nothing. Ask the person to run
+`tuios plugins enable PLUGIN_ID` from a terminal outside tuios.
+
+## What works
+
+77 of herdr's 102 socket methods answer. The rest fail with code
+`unsupported`: `layout.*`, `workspace.move`, `agent.view.*`, `pane.scroll`,
+`pane.clear`, the copy and selection methods, `integration.*` and the
+`server.*` methods that act on herdr's own server.
+
+These plugins run unchanged once the person enables them: terminal-browser,
+terminal-code, vim-herdr-navigation, herdr-splits.nvim, herdr-nvim-nav,
+herdr-nvim, herdr-file-viewer, herdr-sidebar, herdr-plus and
+herdr-auto-title. A plugin's `[[link_handlers]]` do not run.
+`plugin install` fails: the person clones the plugin and runs
+`tuios plugins link DIR`.
 
 ## What it may do
 
@@ -49,8 +81,8 @@ does:
   arguments and directories only with `write` on its session or `admin`.
 - Typing (`pane send-text`, `pane send-keys`, `pane run`) needs `write`, and
   `respond` to type into a pane that waits on a prompt.
-- A split, close, rename, focus, swap or zoom, and `workspace focus`, need
-  `admin`.
+- A split, close, rename, focus, swap, zoom, resize or move, `workspace
+  focus`, `workspace report-metadata` and `terminal title`, need `admin`.
 - `agent start` needs `fan`, and `write` for the typing.
 
 A refused call fails with code `forbidden` and changes nothing.

@@ -19,6 +19,7 @@ import (
 	"github.com/Gaurav-Gosain/tuios/internal/capture"
 	"github.com/Gaurav-Gosain/tuios/internal/config"
 	"github.com/Gaurav-Gosain/tuios/internal/harness"
+	"github.com/Gaurav-Gosain/tuios/internal/plural"
 	"github.com/Gaurav-Gosain/tuios/internal/session"
 	"github.com/Gaurav-Gosain/tuios/internal/shot"
 	"github.com/Gaurav-Gosain/tuios/internal/tape"
@@ -457,7 +458,7 @@ func runSelectWorkspace(sessionName string, workspace int, jsonOutput bool) erro
 	if err := json.Unmarshal(raw, &res); err != nil {
 		return fmt.Errorf("failed to parse response: %w", err)
 	}
-	fmt.Printf("workspace %d, %d window(s)\n", res.Current, res.WindowCount)
+	fmt.Printf("workspace %d, %s\n", res.Current, plural.Count(res.WindowCount, "window"))
 	return nil
 }
 
@@ -533,7 +534,7 @@ func printWorkspaceList(raw json.RawMessage) error {
 		})
 
 	fmt.Println(t.Render())
-	fmt.Printf("\n%d workspace(s). * marks the one showing.\n", len(res.Workspaces))
+	fmt.Printf("\n%s. * marks the one showing.\n", plural.Count(len(res.Workspaces), "workspace"))
 	return nil
 }
 
@@ -610,19 +611,27 @@ func runSetLayout(sessionName string, tiling *bool, equalize, rotate bool, maste
 // runSendText writes text verbatim to a pane's PTY. Unlike send-keys it parses
 // nothing, so a trailing newline in the argument is the Enter that submits the
 // line, and one call is enough to type and run a command.
-func runSendText(sessionName, windowTarget, text string) error {
+func runSendText(sessionName, windowTarget, text string, jsonOutput bool) error {
 	t, err := dialTarget(sessionName, windowTarget)
 	if err != nil {
 		return err
 	}
 	defer t.Close()
 
-	if _, err := t.client.Call("send-text", t.params(map[string]any{
+	raw, err := t.client.Call("send-text", t.params(map[string]any{
 		"session": sessionName,
 		"window":  windowTarget,
 		"text":    text,
-	})); err != nil {
+	}))
+	if err != nil {
 		return t.explain("send-text", err)
+	}
+	if jsonOutput {
+		var pretty any
+		if err := json.Unmarshal(raw, &pretty); err != nil {
+			return fmt.Errorf("failed to parse response: %w", err)
+		}
+		return printJSON(pretty)
 	}
 	return nil
 }
@@ -876,7 +885,7 @@ func printWindowList(raw json.RawMessage, on string) error {
 		})
 
 	fmt.Println(t.Render())
-	fmt.Printf("\n%d window(s)%s. * marks the focused one.\n", len(res.Windows), on)
+	fmt.Printf("\n%s%s. * marks the focused one.\n", plural.Count(len(res.Windows), "window"), on)
 	return nil
 }
 
@@ -1035,6 +1044,7 @@ type optionRow struct {
 	Accepted    []string `json:"accepted"`
 	Min         int      `json:"min"`
 	Max         int      `json:"max"`
+	Auto        bool     `json:"auto"`
 	Deprecated  string   `json:"deprecated"`
 	SessionVal  string   `json:"session_value"`
 }
@@ -1121,7 +1131,11 @@ func printOptionList(w io.Writer, options []optionRow, sections []string, total 
 			fmt.Fprintf(w, "  %-*s  one of: %s\n", width, "", strings.Join(opt.Accepted, ", "))
 		}
 		if opt.Max > 0 {
-			fmt.Fprintf(w, "  %-*s  range: %d to %d\n", width, "", opt.Min, opt.Max)
+			auto := ""
+			if opt.Auto {
+				auto = ", or auto"
+			}
+			fmt.Fprintf(w, "  %-*s  range: %d to %d%s\n", width, "", opt.Min, opt.Max, auto)
 		}
 		if opt.SessionVal != "" {
 			fmt.Fprintf(w, "  %-*s  this session: %s\n", width, "", opt.SessionVal)
@@ -1131,7 +1145,7 @@ func printOptionList(w io.Writer, options []optionRow, sections []string, total 
 		}
 	}
 
-	fmt.Fprintf(w, "\n%d option(s). Set one with 'tuios set-config <path> <value>'.\n", total)
+	fmt.Fprintf(w, "\n%s. Set one with 'tuios set-config <path> <value>'.\n", plural.Count(total, "option"))
 	if len(sections) > 0 {
 		fmt.Fprintf(w, "Sections: %s\n", strings.Join(sections, ", "))
 		fmt.Fprintln(w, "Narrow with --section <name>, or pass a path prefix as the argument.")
@@ -1140,22 +1154,69 @@ func printOptionList(w io.Writer, options []optionRow, sections []string, total 
 
 // runSetConfig sets a session option over the verb protocol. The value is
 // recorded in daemon-owned state and, when a TUI is attached, applied live.
-func runSetConfig(sessionName, path, value string) error {
-	client, err := dialVerb()
+func runSetConfig(sessionName, path, value string, jsonOutput bool) error {
+	raw, err := setConfigOption(sessionName, path, value)
 	if err != nil {
 		return err
 	}
+	if jsonOutput {
+		var pretty any
+		if err := json.Unmarshal(raw, &pretty); err != nil {
+			return fmt.Errorf("failed to parse response: %w", err)
+		}
+		return printJSON(pretty)
+	}
+	// The line on stdout stays as it was, for scripts. What the daemon says
+	// about a value it only recorded goes to stderr, so a person sees why the
+	// screen did not change.
+	fmt.Printf("Set %s = %s\n", path, value)
+	if note := setConfigNote(raw); note != "" {
+		fmt.Fprintln(os.Stderr, note)
+	}
+	return nil
+}
+
+// setConfigNote is what set-config says on stderr about the daemon's answer:
+// a value only recorded, and a deprecated path. It is empty when there is
+// nothing to say.
+func setConfigNote(raw json.RawMessage) string {
+	var res struct {
+		Applied    bool   `json:"applied"`
+		Reason     string `json:"reason"`
+		Deprecated string `json:"deprecated"`
+	}
+	if json.Unmarshal(raw, &res) != nil {
+		return ""
+	}
+	var lines []string
+	if !res.Applied && res.Reason != "" {
+		lines = append(lines, "Not applied: "+strings.TrimSuffix(res.Reason, ".")+".")
+	}
+	if res.Deprecated != "" {
+		lines = append(lines, "Deprecated: "+res.Deprecated)
+	}
+	return strings.Join(lines, "\n")
+}
+
+// setConfigOption is the set-option call behind set-config, and returns the
+// daemon's answer. tuios config browse sets a value through it too, so the
+// explorer has the same refusals as the command.
+func setConfigOption(sessionName, path, value string) (json.RawMessage, error) {
+	client, err := dialVerb()
+	if err != nil {
+		return nil, err
+	}
 	defer func() { _ = client.Close() }()
 
-	if _, err := client.Call("set-option", map[string]any{
+	raw, err := client.Call("set-option", map[string]any{
 		"session": sessionName,
 		"key":     path,
 		"value":   value,
-	}); err != nil {
-		return explainVerbError("set-option", err)
+	})
+	if err != nil {
+		return nil, explainVerbError("set-option", err)
 	}
-	fmt.Printf("Set %s = %s\n", path, value)
-	return nil
+	return raw, nil
 }
 
 // runGetConfig reads a session option over the verb protocol.
@@ -2009,26 +2070,26 @@ func ruleRefusals(r harness.RuleReport) []string {
 	return out
 }
 
-// runTapeExec executes a tape file in a running TUIOS session.
-func runTapeExec(sessionName, filePath string) error {
+// runTapeExec plays a tape file in a running TUIOS session and returns when
+// the tape has ended. A tape that fails returns the failure, placed at the
+// file and line it came from.
+func runTapeExec(sessionName, filePath string, timeout time.Duration) error {
 	if err := requireDaemon(); err != nil {
 		return err
 	}
 
-	// Read the tape file
-	content, err := os.ReadFile(filePath)
+	script, err := tape.LoadFile(filePath)
 	if err != nil {
 		return fmt.Errorf("failed to read tape file: %w", err)
 	}
-	script := string(content)
-
-	// Validate the script first
-	lexer := tape.New(script)
-	parser := tape.NewParser(lexer)
-	commands := parser.Parse()
-
-	if len(commands) == 0 {
-		return fmt.Errorf("tape script has no commands or contains errors")
+	if len(script.Errors) > 0 {
+		for _, e := range script.Errors {
+			fmt.Fprintf(os.Stderr, "%s: %s\n", filePath, e)
+		}
+		return fmt.Errorf("the tape has errors, listed above. Run 'tuios tape validate %s' after you fix them", filePath)
+	}
+	if len(script.Commands) == 0 {
+		return fmt.Errorf("the tape has no commands")
 	}
 
 	client := session.NewClient(&session.ClientConfig{
@@ -2042,26 +2103,44 @@ func runTapeExec(sessionName, filePath string) error {
 
 	requestID := uuid.New().String()
 
-	// Send the execute command with tape script
+	// The tape goes with its Source lines resolved: the session cannot read
+	// the files they name.
 	msg, err := session.NewMessage(session.MsgExecuteCommand, &session.ExecuteCommandPayload{
 		SessionName: sessionName,
-		TapeScript:  script,
+		TapeScript:  script.Text,
 		RequestID:   requestID,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to create message: %w", err)
 	}
 
-	if err := sendAndWaitForResult(client, msg, requestID); err != nil {
-		return err
+	resp, err := client.SendControlMessageWait(msg, timeout)
+	if err != nil {
+		if errors.Is(err, os.ErrDeadlineExceeded) {
+			return fmt.Errorf("the tape did not finish in %s. It may still be playing. Use --timeout to wait longer", timeout)
+		}
+		return fmt.Errorf("failed to run the tape: %w", err)
 	}
-
-	return nil
-}
-
-// sendAndWaitForResult sends a message and waits for the result (human-readable output).
-func sendAndWaitForResult(client *session.Client, msg *session.Message, requestID string) error {
-	return sendAndWaitForResultWithFormat(client, msg, requestID, false, nil)
+	switch resp.Type {
+	case session.MsgCommandResult:
+		var result session.CommandResultPayload
+		if err := resp.ParsePayload(&result); err != nil {
+			return fmt.Errorf("failed to parse response: %w", err)
+		}
+		if !result.Success {
+			return fmt.Errorf("the tape failed: %s", script.Locate(result.Message))
+		}
+		fmt.Printf("Tape finished: %d commands\n", len(script.Commands))
+		return nil
+	case session.MsgError:
+		var errPayload session.ErrorPayload
+		if err := resp.ParsePayload(&errPayload); err == nil && errPayload.Message != "" {
+			return fmt.Errorf("the tape did not run: %s", errPayload.Message)
+		}
+		return fmt.Errorf("the tape did not run, and the daemon did not say why. Run 'tuios logs' to read what it logged")
+	default:
+		return fmt.Errorf("unexpected response from the daemon: %v", resp.Type)
+	}
 }
 
 // resultRenderer prints a command result's data for a human reader.
@@ -2128,7 +2207,7 @@ func sendAndWaitForResultWithFormat(client *session.Client, msg *session.Message
 				})
 				return nil
 			}
-			return fmt.Errorf("command failed with unknown error")
+			return fmt.Errorf("the command failed, and the daemon did not say why. Run 'tuios logs' to read what it logged")
 		}
 		if jsonOutput {
 			outputJSON(map[string]any{
@@ -2227,6 +2306,12 @@ func runCommandCatalog() []runCommandEntry {
 		{"SetBorderStyle style", "Change window border style", "tuios run-command SetBorderStyle rounded"},
 		{"SetTheme themename", "Change the color theme", "tuios run-command SetTheme dracula"},
 		{"ShowNotification message [type]", "Show a notification", "tuios run-command ShowNotification \"Hello!\" info"},
+
+		// Any keybinding action, and keys through tuios's own key handling
+		{"<action>", "Run a keybinding action by name (tuios keybinds list prints them)", "tuios run-command toggle_spotlight"},
+		{"Action <action>", "The same, spelled as a tape writes it", "tuios run-command Action toggle_scratch"},
+		{"Press <keys>", "Press keys as a person would: prefixes, copy mode, dialogs", "tuios run-command Press \"ctrl+b ?\""},
+		{"Run <command line>", "Type a command line into the focused window and press Enter", "tuios run-command Run \"make test\""},
 
 		// Inspection commands
 		{"ListWindows", "List all windows (use --json)", "tuios list-windows --json"},

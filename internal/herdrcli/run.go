@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"path/filepath"
 	"time"
 )
 
@@ -32,6 +33,9 @@ type Options struct {
 	// Socket is the herdr socket to dial when HERDR_SOCKET_PATH is not set:
 	// tuios's own, beside the daemon socket.
 	Socket func() (string, error)
+	// PluginConfigDir makes and returns a plugin's config folder, for herdr
+	// plugin config-dir. Nil answers that command unsupported.
+	PluginConfigDir func(id string) (string, error)
 }
 
 // Main runs one herdr command line, without the program name, and returns
@@ -63,6 +67,18 @@ func Main(args []string, o Options) int {
 	case OutLocal:
 		printJSON(o.Stderr, errorResponse(c.ID, "unsupported", c.Text))
 		return 1
+	case OutPluginConfigDir:
+		if o.PluginConfigDir == nil {
+			printJSON(o.Stderr, errorResponse(c.ID, "unsupported", "this herdr front has no plugin folders"))
+			return 1
+		}
+		dir, err := o.PluginConfigDir(c.Text)
+		if err != nil {
+			fmt.Fprintln(o.Stderr, "herdr: "+err.Error())
+			return 1
+		}
+		fmt.Fprintln(o.Stdout, dir)
+		return 0
 	}
 	path := o.Getenv("HERDR_SOCKET_PATH")
 	if path == "" && o.Socket != nil {
@@ -72,6 +88,12 @@ func Main(args []string, o Options) int {
 			return 1
 		}
 		path = p
+	}
+	switch c.Output {
+	case OutStatus:
+		return printStatus(o, path, c)
+	case OutSessions:
+		return printSessions(o, path, c)
 	}
 	resp, err := request(path, c)
 	if err != nil {
@@ -218,4 +240,124 @@ func waitAgentStart(path string, c *Call, started map[string]any) map[string]any
 		}
 		// The agent moved on between the wait and its record: wait again.
 	}
+}
+
+// printStatus answers herdr status. A ping says whether the server
+// answers. The client part describes this front: herdr's version and
+// protocol, with +tuios. tuios does not serve herdr's endpoint protocol, so
+// endpoint_compatible is false, and no restart changes that.
+func printStatus(o Options, path string, c *Call) int {
+	asJSON, _ := c.Params["json"].(bool)
+	running := false
+	var version any
+	var protocol any
+	if resp, err := send(path, c.ID, "ping", map[string]any{}, requestTimeout); err == nil {
+		if r, ok := resp["result"].(map[string]any); ok && r["type"] == "pong" {
+			running, version, protocol = true, r["version"], r["protocol"]
+		}
+	}
+	bin, _ := os.Executable()
+	client := map[string]any{
+		"version": Version + "+tuios", "channel": "stable", "protocol": protocolVersion,
+		"endpoint_protocol_generation": 0, "endpoint_capabilities": []string{},
+		"remote_host_bridge": false, "binary": bin,
+	}
+	server := map[string]any{
+		"status": "not_running", "running": false, "socket": path,
+		"restart_needed": false, "server_binary_stale": false,
+	}
+	if running {
+		server["status"], server["running"] = "running", true
+		server["version"], server["protocol"] = version, protocol
+		server["compatible"] = fmt.Sprint(protocol) == fmt.Sprint(protocolVersion)
+		server["endpoint_compatible"] = false
+	}
+	if asJSON {
+		switch c.Text {
+		case "server":
+			printJSON(o.Stdout, server)
+		case "client":
+			printJSON(o.Stdout, client)
+		default:
+			printJSON(o.Stdout, map[string]any{"client": client, "server": server,
+				"update": map[string]any{"restart_needed": false, "server_binary_stale": false}})
+		}
+		return 0
+	}
+	serverLines := func(indent string) {
+		if !running {
+			fmt.Fprintf(o.Stdout, "%sstatus: not running\n%ssocket: %s\n", indent, indent, path)
+			return
+		}
+		compatible := "no"
+		if server["compatible"] == true {
+			compatible = "yes"
+		}
+		fmt.Fprintf(o.Stdout, "%sstatus: running\n%sversion: %v\n%sendpoint_compatible: no\n%sprivate_protocol: %v\n%sprivate_protocol_compatible: %s\n%ssocket: %s\n",
+			indent, indent, version, indent, indent, protocol, indent, compatible, indent, path)
+	}
+	clientLines := func(indent string) {
+		fmt.Fprintf(o.Stdout, "%sversion: %s+tuios\n%schannel: stable\n%sprotocol: %d\n", indent, Version, indent, indent, protocolVersion)
+	}
+	switch c.Text {
+	case "server":
+		serverLines("")
+	case "client":
+		clientLines("")
+		fmt.Fprintf(o.Stdout, "binary: %s\n", bin)
+	default:
+		fmt.Fprintln(o.Stdout, "client:")
+		clientLines("  ")
+		fmt.Fprintln(o.Stdout, "\nserver:")
+		serverLines("  ")
+		fmt.Fprintln(o.Stdout, "\nupdate:\n  restart_needed: no\n  server_binary_stale: no")
+	}
+	return 0
+}
+
+// printSessions answers herdr session list: one session, default, at the
+// socket the front talks to, running when it answers a ping.
+func printSessions(o Options, path string, c *Call) int {
+	running := false
+	if resp, err := send(path, c.ID, "ping", map[string]any{}, requestTimeout); err == nil {
+		r, _ := resp["result"].(map[string]any)
+		running = r["type"] == "pong"
+	}
+	dir := filepath.Dir(path)
+	if asJSON, _ := c.Params["json"].(bool); asJSON {
+		printJSON(o.Stdout, map[string]any{"sessions": []map[string]any{{
+			"name": "default", "default": true, "running": running, "socket_path": path, "session_dir": dir,
+		}}})
+		return 0
+	}
+	status := "stopped"
+	if running {
+		status = "running"
+	}
+	fmt.Fprintf(o.Stdout, "%-20s %-8s %-48s socket\n", "name", "status", "directory")
+	fmt.Fprintf(o.Stdout, "%-20s %-8s %-48s %s\n", "default", status, dir, path)
+	return 0
+}
+
+// Request sends one method to the herdr socket at path and returns the
+// response line as an object: a result or an error. A socket that cannot
+// be reached is an error in herdr's server_not_running shape. tuios's own
+// commands use it to reach the plugin host.
+func Request(path, method string, params map[string]any, timeout time.Duration) (map[string]any, error) {
+	resp, cerr := send(path, "tuios:"+method, method, params, timeout)
+	if cerr != nil {
+		return nil, cerr
+	}
+	return resp, nil
+}
+
+// NotRunning reports whether err is a socket nobody listens on.
+func NotRunning(err error) bool {
+	var c connError
+	if errors.As(err, &c) {
+		if e, ok := c["error"].(map[string]any); ok {
+			return e["code"] == "server_not_running"
+		}
+	}
+	return false
 }

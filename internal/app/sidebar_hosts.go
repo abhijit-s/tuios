@@ -74,6 +74,12 @@ type FederationHost struct {
 	// Queued is how many messages the daemon holds for the machine until its
 	// link is back.
 	Queued int
+	// ApprovalURL is the Tailscale sign-in page the link waits on, set only
+	// while Status is federation.StatusApproval and the link has one.
+	ApprovalURL string
+	// ApprovalRefused says the banner named a sign-in address that is not a
+	// Tailscale login origin, so there is no page to open.
+	ApprovalRefused bool
 }
 
 // FederationSession is one session on another machine, as that machine
@@ -138,6 +144,12 @@ func (m *OS) federationRefreshPlan() (after time.Duration, refresh bool) {
 	if !m.federationPolling {
 		return hostRefreshIdle, false
 	}
+	// The person just opened a Tailscale sign-in page. The link comes up
+	// when they sign in, and the rail must say so in seconds. A status change
+	// is pushed, so this is the backstop for a push that does not arrive.
+	if m.hostSignInWatching() {
+		return hostRefreshActive, true
+	}
 	// The push arrives on the attach connection. While the client is attached
 	// to another machine that connection goes to the far daemon, not to the
 	// one that pushes, so the rail keeps its poll.
@@ -199,11 +211,15 @@ func refreshFederationCmd() tea.Cmd {
 		msg := FederationHostsMsg{}
 		lastOK := map[string]int64{}
 		queued := map[string]int{}
+		signIn := map[string]string{}
+		signInRefused := map[string]bool{}
 		reports, pushes := hostStatusReports(client)
 		msg.Pushed = pushes
 		for _, h := range reports {
 			lastOK[h.Host] = h.LastOK
 			queued[h.Host] = h.Queued
+			signIn[h.Host] = h.ApprovalURL
+			signInRefused[h.Host] = h.ApprovalRefused
 			if h.Status == federation.StatusUp && h.Events != "live" {
 				msg.Pushed = false
 			}
@@ -212,7 +228,7 @@ func refreshFederationCmd() tea.Cmd {
 			if h.Host != federation.LocalHostName {
 				msg.Configured++
 			}
-			fh := FederationHost{Name: h.Host, Status: h.Status, Reason: h.Reason, LastOK: lastOK[h.Host], Queued: queued[h.Host]}
+			fh := FederationHost{Name: h.Host, Status: h.Status, Reason: h.Reason, LastOK: lastOK[h.Host], Queued: queued[h.Host], ApprovalURL: signIn[h.Host], ApprovalRefused: signInRefused[h.Host]}
 			for _, s := range h.Sessions {
 				fh.Sessions = append(fh.Sessions, FederationSession{
 					Name:        s.Name,
@@ -764,8 +780,20 @@ func (m *OS) drawHostRow(
 				}
 			}
 		}
+		lit := false
+		if node.HostStatus == string(federation.StatusApproval) {
+			// The "sign in" label is a control of its own, as the "+" is on
+			// a host that is up: it opens the sign-in page, and the rest of
+			// the header still folds the group.
+			figure, _ := hostDownFigure(node, lipgloss.Width(printableTitle(node.Title)), cw)
+			if w := lipgloss.Width(figure); w > 0 && cw-1-w > 0 {
+				span := sidebarTokenSpan{Kind: sidebarRowHostSignIn, X0: cw - 1 - w, X1: cw - 1}
+				lit = isCursor(sidebarRowHostSignIn, node.Host, "") || (headerHoverX >= span.X0 && headerHoverX < span.X1)
+				recordToken(span, node.Host)
+			}
+		}
 		recordHit(sidebarRowHost, node.Host, "", -1, 1)
-		*lines = append(*lines, compose(st.mark(pal, m.sidebarHostRow(node, cw, pal, add, st, collapsed))))
+		*lines = append(*lines, compose(st.mark(pal, m.sidebarHostRowLit(node, cw, pal, add, st, collapsed, lit))))
 		return
 	}
 
@@ -802,7 +830,18 @@ func (m *OS) createRemoteSession(host string) {
 		m.ShowNotification(hostAttachRefusal(host, err), "error", m.Settings.NotificationDuration*3)
 		return
 	}
-	m.applyStartupTiling()
+	m.applyStartupToUnarranged()
+}
+
+// localSessionIndexes maps a local session's id to its 1-based position in the
+// local rail, the number switch_session_N opens. Remote sessions are absent:
+// no number on this machine reaches them.
+func localSessionIndexes(nodes []sessiontree.Node) map[string]int {
+	indexes := make(map[string]int, len(nodes))
+	for i, s := range localSessionNodes(nodes) {
+		indexes[s.ID] = i + 1
+	}
+	return indexes
 }
 
 // localSessionNodes drops the other machines' rows from a tree's session list.
@@ -837,6 +876,10 @@ func hostStatusLabel(status string) string {
 		return "connecting"
 	case federation.StatusReconnecting:
 		return "reconnecting"
+	case federation.StatusApproval:
+		// Tailscale SSH waits for the person to sign in in a browser. A
+		// click or Enter on the header opens the page. See host_signin.go.
+		return "sign in"
 	default:
 		return "offline"
 	}
@@ -850,7 +893,7 @@ func hostStatusLabel(status string) string {
 func hostDownLabel(status string, lastOK int64, now time.Time) string {
 	label := hostStatusLabel(status)
 	switch federation.Status(status) {
-	case federation.StatusNoDaemon, federation.StatusNoBinary, federation.StatusIncompatible, federation.StatusConnecting:
+	case federation.StatusNoDaemon, federation.StatusNoBinary, federation.StatusIncompatible, federation.StatusConnecting, federation.StatusApproval:
 		return label
 	}
 	if lastOK > 0 {
@@ -889,6 +932,10 @@ func hostDownFigure(node sessiontree.Node, nameW, cw int) (figure string, nameRo
 	case federation.StatusConnecting, federation.StatusReconnecting:
 		// On its way up, not down: the mark would say the wrong thing.
 		last = ""
+	case federation.StatusApproval:
+		// Nothing is wrong with the machine. It waits for the person, so it
+		// keeps the mark an agent that needs you wears.
+		last = agentStateIndicator("needs_input")
 	}
 	if node.HostQueued > 0 {
 		queued := strconv.Itoa(node.HostQueued) + " queued"
@@ -923,6 +970,13 @@ func hostDownFigure(node sessiontree.Node, nameW, cw int) (figure string, nameRo
 // host that is not answering keeps its row with one word saying why, because a
 // machine that vanished from the rail reads as a machine nobody configured.
 func (m *OS) sidebarHostRow(node sessiontree.Node, cw int, pal overlay.Palette, add string, st sidebarRowState, collapsed bool) string {
+	return m.sidebarHostRowLit(node, cw, pal, add, st, collapsed, false)
+}
+
+// sidebarHostRowLit is sidebarHostRow with the "sign in" control under the
+// keyboard cursor or the pointer when lit is true. It is then underlined, as
+// a link is, and keeps its colour.
+func (m *OS) sidebarHostRowLit(node sessiontree.Node, cw int, pal overlay.Palette, add string, st sidebarRowState, collapsed, lit bool) string {
 	rowBg := sidebarRowBg(st, pal)
 	up := node.HostStatus == string(federation.StatusUp)
 
@@ -939,7 +993,17 @@ func (m *OS) sidebarHostRow(node sessiontree.Node, cw int, pal overlay.Palette, 
 		// hostDownFigure for how the word gives way on a narrow rail.
 		var label string
 		label, nameRoom = hostDownFigure(node, lipgloss.Width(title), cw)
-		right = sidebarStyle(rowBg, pal.FgMute).Render(label)
+		ink := pal.FgMute
+		if node.HostStatus == string(federation.StatusApproval) {
+			// A sign-in waits for the person, so it wears the colour of an
+			// agent that needs you, not the colour of an error.
+			ink = sidebarSeverityColor("needs_input", pal)
+		}
+		style := sidebarStyle(rowBg, ink)
+		if lit {
+			style = style.Underline(true)
+		}
+		right = style.Render(label)
 	case blocked > 0:
 		// How many of this machine's sessions want a person, in the strip
 		// badge's language. It outranks both the session count and the add

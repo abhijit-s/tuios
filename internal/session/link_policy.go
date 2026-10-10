@@ -5,11 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
-	"regexp"
 	"strings"
 	"sync/atomic"
 
 	"github.com/Gaurav-Gosain/tuios/internal/config"
+	"github.com/Gaurav-Gosain/tuios/internal/lazyre"
 )
 
 // What a machine linked to this one may do here.
@@ -75,15 +75,25 @@ var verbCapabilities = map[string][]string{
 	"list-hooks":           {config.LinkAllowList},
 	"list-dock-components": {config.LinkAllowList},
 	"list-sessions":        {config.LinkAllowList},
+	"list-clients":         {config.LinkAllowList},
 	"list-worktrees":       {config.LinkAllowList},
 	"list-hosts":           {config.LinkAllowList},
 	"list-host-sessions":   {config.LinkAllowList},
 	"list-host-agents":     {config.LinkAllowList},
 	"session-info":         {config.LinkAllowList},
+	"ssh-agent-path":       {config.LinkAllowList},
 	"list-windows":         {config.LinkAllowList},
 	"get-window":           {config.LinkAllowList},
 	"list-workspaces":      {config.LinkAllowList},
 	"capture-pane":         {config.LinkAllowList},
+	// stream-pane reads a pane. Its input and lease frames are checked
+	// as send-text and resize, frame by frame, so they need write.
+	"stream-pane": {config.LinkAllowList},
+	// attach-presence only names the person on this connection. What it
+	// lets the connection answer is checked by those verbs (respond).
+	"attach-presence":      {config.LinkAllowList},
+	"list-buffers":         {config.LinkAllowList},
+	"show-buffer":          {config.LinkAllowList},
 	"screenshot":           {config.LinkAllowList},
 	"list-options":         {config.LinkAllowList},
 	"list-themes":          {config.LinkAllowList},
@@ -134,17 +144,25 @@ var verbCapabilities = map[string][]string{
 	"remove-worktree": {config.LinkAllowWrite},
 	// bundle-worktree reads a worktree's files out, which write already
 	// reaches through a shell, and list must not.
-	"bundle-worktree":     {config.LinkAllowWrite},
-	"focus-window":        {config.LinkAllowWrite},
-	"move-window":         {config.LinkAllowWrite},
-	"set-window":          {config.LinkAllowWrite},
-	"select-workspace":    {config.LinkAllowWrite},
-	"set-layout":          {config.LinkAllowWrite},
-	"run-command":         {config.LinkAllowWrite},
-	"close-window":        {config.LinkAllowWrite},
-	"close-workspace":     {config.LinkAllowWrite},
-	"send-keys":           {config.LinkAllowWrite},
-	"send-text":           {config.LinkAllowWrite},
+	"bundle-worktree":  {config.LinkAllowWrite},
+	"focus-window":     {config.LinkAllowWrite},
+	"move-window":      {config.LinkAllowWrite},
+	"set-window":       {config.LinkAllowWrite},
+	"select-workspace": {config.LinkAllowWrite},
+	"set-layout":       {config.LinkAllowWrite},
+	"run-command":      {config.LinkAllowWrite},
+	"switch-session":   {config.LinkAllowWrite},
+	"detach-client":    {config.LinkAllowWrite},
+	"close-window":     {config.LinkAllowWrite},
+	"close-workspace":  {config.LinkAllowWrite},
+	"send-keys":        {config.LinkAllowWrite},
+	"send-text":        {config.LinkAllowWrite},
+	// The paste buffers hold what the person copied on this machine. A
+	// link reads them only where it may also capture a pane, and changes
+	// or pastes them only where it may type.
+	"paste-buffer":        {config.LinkAllowWrite},
+	"set-buffer":          {config.LinkAllowWrite},
+	"delete-buffer":       {config.LinkAllowWrite},
 	"ask-agent":           {config.LinkAllowWrite},
 	"resize":              {config.LinkAllowWrite},
 	"kill-session":        {config.LinkAllowWrite},
@@ -165,13 +183,23 @@ var verbCapabilities = map[string][]string{
 	// ask-human's own handler refuses every link caller as well.
 	"ask-human": {config.LinkAllowWrite},
 
-	"respond":               {config.LinkAllowRespond},
-	"reply-approval":        {config.LinkAllowRespond},
+	"respond":        {config.LinkAllowRespond},
+	"reply-approval": {config.LinkAllowRespond},
+	// The conversation holds the prompts, file contents and command output.
+	// Reading it is as much the person's act as answering for them.
+	"agent-transcript":      {config.LinkAllowRespond},
 	"dismiss-attention":     {config.LinkAllowRespond},
 	"release-agent-message": {config.LinkAllowRespond},
 	"answer-ask":            {config.LinkAllowRespond},
+	// A phone registered for Web Push gets what waits for the person, so
+	// the push verbs need what answering it needs.
+	"register-push": {config.LinkAllowRespond},
+	"list-push":     {config.LinkAllowRespond},
+	"remove-push":   {config.LinkAllowRespond},
 
 	"open-host-connection": {capRelay},
+	// Another machine has no reason to make this one's links dial.
+	"retry-host": {capRelay},
 
 	// The agent review, triage, queue and approval work. compare-fan,
 	// agent-activity, list-queued and get-approval return states, counts and
@@ -192,12 +220,30 @@ var verbCapabilities = map[string][]string{
 	"keep-fan":       {config.LinkAllowWrite},
 	"verify-fan":     {config.LinkAllowOpen, config.LinkAllowWrite},
 	"mark-attention": {config.LinkAllowRespond},
+
+	// The checkpoints. The listing carries states and the agent's prompts,
+	// which list reaches. The diff carries file contents, and a restore
+	// writes files, so both need write, as review-diff does.
+	"list-checkpoints":   {config.LinkAllowList},
+	"checkpoint-diff":    {config.LinkAllowWrite},
+	"restore-checkpoint": {config.LinkAllowWrite},
+
+	// The ship verbs. A commit and a merge write files, so they need write.
+	// A push and a pull request are refused over any link by their handler:
+	// the person on the machine the repository is on allows those. The
+	// status carries a state and a URL, which list reaches.
+	"ship-commit": {config.LinkAllowWrite},
+	"ship-merge":  {config.LinkAllowWrite},
+	"ship-push":   {config.LinkAllowWrite},
+	"ship-pr":     {config.LinkAllowWrite},
+	"ship-status": {config.LinkAllowList},
 }
 
 // msgCapabilities is what each binary message needs on a link connection.
 var msgCapabilities = map[MessageType][]string{
 	MsgHello:             nil,
 	MsgDetach:            nil,
+	MsgPing:              nil,
 	MsgList:              {config.LinkAllowList},
 	MsgSubscribePTY:      {config.LinkAllowList},
 	MsgUnsubscribePTY:    {config.LinkAllowList},
@@ -217,6 +263,7 @@ var msgCapabilities = map[MessageType][]string{
 	MsgLayoutTree:        {config.LinkAllowWrite},
 	MsgMasterLayout:      {config.LinkAllowWrite},
 	MsgSidebarVisibility: {config.LinkAllowWrite},
+	MsgSessionUsed:       {config.LinkAllowWrite},
 	MsgExecuteCommand:    {config.LinkAllowWrite},
 	MsgCommandResult:     {config.LinkAllowWrite},
 	MsgKill:              {config.LinkAllowWrite},
@@ -362,6 +409,10 @@ func (d *Daemon) verbLinkPeer(cs *connState, params json.RawMessage) (any, *verb
 	var p struct {
 		Peer   string `json:"peer"`
 		Pinned bool   `json:"pinned"`
+		// SSHAuthSock is the SSH_AUTH_SOCK tuios stdio-proxy runs with: the
+		// agent the link's ssh forwards, when it forwards one. See
+		// ssh_agent_follow.go.
+		SSHAuthSock string `json:"ssh_auth_sock"`
 	}
 	if verr := decodeParams(params, &p); verr != nil {
 		return nil, verr
@@ -370,7 +421,7 @@ func (d *Daemon) verbLinkPeer(cs *connState, params json.RawMessage) (any, *verb
 		return nil, newVerbError(ErrVerbForbidden, "link-peer is only for a connection that arrived over a link")
 	}
 	peer := strings.TrimSpace(p.Peer)
-	if peer != "" && (len(peer) > 64 || !linkPeerPattern.MatchString(peer)) {
+	if peer != "" && (len(peer) > 64 || !linkPeerPattern().MatchString(peer)) {
 		return nil, invalidParam("peer", "a peer name accepts only letters, digits, dot, dash and underscore")
 	}
 	cs.mu.Lock()
@@ -381,6 +432,7 @@ func (d *Daemon) verbLinkPeer(cs *connState, params json.RawMessage) (any, *verb
 	cs.linkPeerSet = true
 	cs.linkPeer = peer
 	cs.linkPinned = p.Pinned
+	cs.linkAgentSock = p.SSHAuthSock
 	// The connection goes back to being read from its first byte, JSON or
 	// binary, so an attach can follow the handshake on the same connection.
 	cs.takeover = func(br *bufio.Reader) { d.serveConnection(cs, br) }
@@ -390,7 +442,7 @@ func (d *Daemon) verbLinkPeer(cs *connState, params json.RawMessage) (any, *verb
 
 // linkPeerPattern is what a peer name may be: the same shape as a host name,
 // since it is matched against the [hosts] table's keys.
-var linkPeerPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
+var linkPeerPattern = lazyre.New(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 
 // linkSelfName is the name this machine gives for itself on a link: its host
 // name up to the first dot, lowered, since that is the name a person writes as
@@ -399,7 +451,7 @@ var linkPeerPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 func linkSelfName(host string) string {
 	name, _, _ := strings.Cut(strings.TrimSpace(host), ".")
 	name = strings.ToLower(name)
-	if name == "" || len(name) > 64 || !linkPeerPattern.MatchString(name) {
+	if name == "" || len(name) > 64 || !linkPeerPattern().MatchString(name) {
 		return ""
 	}
 	return name

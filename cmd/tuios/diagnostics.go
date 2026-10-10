@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"io"
@@ -11,6 +12,7 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/Gaurav-Gosain/tuios/internal/config"
 	"github.com/Gaurav-Gosain/tuios/internal/fang"
+	"github.com/Gaurav-Gosain/tuios/internal/plural"
 	"github.com/Gaurav-Gosain/tuios/internal/session"
 	"github.com/charmbracelet/colorprofile"
 	"github.com/spf13/cobra"
@@ -253,6 +255,15 @@ func explainDialError(err error) error {
 		return mismatch
 	}
 
+	if errors.Is(err, session.ErrTooManyConnections) {
+		return &diagnosticError{
+			What:  "The tuios daemon has too many connections.",
+			Cause: "other clients, commands or linked machines hold all of its connections.",
+			Fix:   "close some clients or commands, then run this command again.",
+			Err:   err,
+		}
+	}
+
 	d := session.DiagnoseDaemon()
 	if !d.Running() {
 		// The daemon disappeared between the check and the dial, which is
@@ -314,7 +325,7 @@ func explainVerbError(verb string, err error) error {
 	}
 	if len(hint.Accepted) > 0 {
 		d.Extra = append(d.Extra, fmt.Sprintf("Accepted values for %s: %s.",
-			nonEmpty(hint.Param, "this parameter"), strings.Join(hint.Accepted, ", ")))
+			cmp.Or(hint.Param, "this parameter"), strings.Join(hint.Accepted, ", ")))
 	}
 	if len(hint.Available) > 0 {
 		d.Extra = append(d.Extra, "Available: "+strings.Join(truncateList(hint.Available, 12), ", ")+".")
@@ -372,14 +383,6 @@ func refuseAgentCallHere(verb string, params any) error {
 	return &session.AgentsOffHereError{Path: path}
 }
 
-// nonEmpty returns s, or fallback when s is empty.
-func nonEmpty(s, fallback string) string {
-	if s == "" {
-		return fallback
-	}
-	return s
-}
-
 // truncateList caps a list for display so a hundred window ids do not bury the
 // fix line.
 func truncateList(items []string, limit int) []string {
@@ -406,7 +409,7 @@ func explainMissingSession(name string, available []string) error {
 	// wrong".
 	if info, ok := savedSession(name); ok {
 		e.Cause = "the daemon is running but has not restored it."
-		e.Extra = append(e.Extra, fmt.Sprintf("It has saved state (%d window(s)) and can be brought back.", info.WindowCount))
+		e.Extra = append(e.Extra, fmt.Sprintf("It has saved state (%s) and can be brought back.", plural.Count(info.WindowCount, "window")))
 		e.Fix = fmt.Sprintf("run 'tuios resurrect %s' to restore it and attach.", name)
 		return e
 	}

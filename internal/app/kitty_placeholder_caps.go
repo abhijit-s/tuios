@@ -1,11 +1,11 @@
 package app
 
 import (
-	"regexp"
 	"strconv"
 	"strings"
 
 	"github.com/Gaurav-Gosain/tuios/internal/config"
+	"github.com/Gaurav-Gosain/tuios/internal/lazyre"
 	"github.com/Gaurav-Gosain/tuios/internal/vt"
 )
 
@@ -44,7 +44,7 @@ var placeholderMinimum = map[string][3]int{
 
 // xtversionReply matches the DCS a terminal answers CSI > q with, which is
 // "ESC P > | <name> <version> ESC \".
-var xtversionReply = regexp.MustCompile(`\x1bP>\|([^\x1b]*)\x1b\\`)
+var xtversionReply = lazyre.New(`\x1bP>\|([^\x1b]*)\x1b\\`)
 
 // xtversionQuery is the request itself. It rides in the capability probe's
 // existing round trip, so it costs no extra latency.
@@ -54,12 +54,19 @@ const xtversionQuery = "\x1b[>q"
 // response. The name is lowercased and the version is whatever digits follow
 // it; both are empty when the terminal did not answer.
 func parseHostIdentity(response string) (name string, version [3]int, ok bool) {
-	m := xtversionReply.FindStringSubmatch(response)
+	m := xtversionReply().FindStringSubmatch(response)
 	if m == nil {
 		return "", version, false
 	}
+	return parseVersionName(m[1])
+}
+
+// parseVersionName reads a name and version out of the text of an XTVERSION
+// answer, without the DCS around it. A late answer reaches the program as a
+// tea.TerminalVersionMsg that holds only this text.
+func parseVersionName(text string) (name string, version [3]int, ok bool) {
 	// Two spellings in the wild: "ghostty 1.3.1" and "kitty(0.32.2)".
-	s := strings.TrimSpace(m[1])
+	s := strings.TrimSpace(text)
 	s = strings.ReplaceAll(s, "(", " ")
 	s = strings.TrimSuffix(s, ")")
 	fields := strings.Fields(s)
