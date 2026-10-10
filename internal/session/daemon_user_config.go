@@ -60,6 +60,10 @@ func DaemonConfigFromUser(uc *config.UserConfig) *DaemonConfig {
 	if path, err := config.GetConfigPath(); err == nil {
 		cfg.ConfigPath = path
 	}
+	// Kept whole, not projected: get-option answers for any path in the
+	// registry, so it needs the file rather than the handful of fields the
+	// daemon acts on.
+	cfg.UserConfig = uc
 	// The daemon owns every pane's history, so the depth the user asked for
 	// has to reach it: the client's emulator honoured the setting and the
 	// daemon's kept ten thousand lines whatever it said.

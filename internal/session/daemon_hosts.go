@@ -97,6 +97,9 @@ func (d *Daemon) onConfigReload(cfg *config.UserConfig, err error) {
 // waits for tuios config apply from outside every pane (byPerson true), or a
 // daemon restart.
 func (d *Daemon) applyUserConfig(cfg *config.UserConfig, byPerson bool) {
+	// Whatever else this applies, the file in force has changed, and
+	// get-option reads it to report a configured value.
+	d.userConfig.Store(cfg)
 	// The agent switch applies from a file change too, in both directions.
 	// Off is the stricter state (see agents_switch.go), and on is the state
 	// every daemon runs in by default, so neither widens what a pane may do
