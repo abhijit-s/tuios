@@ -148,6 +148,10 @@ type Daemon struct {
 	hostsWatcher *config.Watcher
 	// configPath is the file hostsWatcher follows.
 	configPath string
+	// userConfig is the config file in force, reread by applyUserConfig on
+	// every reload. Atomic because the watcher goroutine replaces it while
+	// verb handlers read it. Nil until a starter supplies one.
+	userConfig atomic.Pointer[config.UserConfig]
 	// plugins runs the enabled herdr plugins. See plugin_host.go.
 	plugins *pluginHost
 	// pluginsWaiting is true while config.toml enables a plugin the person
@@ -767,6 +771,11 @@ type DaemonConfig struct {
 	// [hosts] table. DaemonConfigFromUser fills it, so every real starter has
 	// it and a hand-built config in a test does not.
 	ConfigPath string
+	// UserConfig is the file the daemon was started from, kept whole so
+	// get-option can report what the person configured rather than only what
+	// the build defaults to. DaemonConfigFromUser fills it; nil in a test that
+	// builds a DaemonConfig by hand, which get-option handles.
+	UserConfig *config.UserConfig
 	// HostDial opens the transport to a host. Nil, the default, runs ssh. A
 	// test sets it to reach a second daemon in the same process without an ssh
 	// server.
@@ -888,6 +897,7 @@ func NewDaemon(cfg *DaemonConfig) *Daemon {
 	d.manager.SetRenameHook(d.onSessionRenamed)
 
 	d.configPath = cfg.ConfigPath
+	d.userConfig.Store(cfg.UserConfig)
 	d.plugins = newPluginHost(d, cfg.Plugins)
 	d.hostDial = cfg.HostDial
 	d.fleet = newHostFleet(d)
