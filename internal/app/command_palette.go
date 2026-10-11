@@ -122,6 +122,10 @@ type CommandPaletteItem struct {
 	// AgentSeen is the unread bit behind a done AgentState: true once the
 	// person has looked at the pane, which draws idle's mark (agentMark).
 	AgentSeen bool
+	// AgentSubagents is how many subagents the pane's agent is running, or
+	// for a session the pane its state was rolled up from, which draws a
+	// pane at rest as waiting.
+	AgentSubagents int
 	// Keybind marks a row that names one action to rebind. Those rows are
 	// reached only behind the "#" token and are hidden from every other query,
 	// which is what keeps a few hundred of them out of a list of twenty
@@ -665,6 +669,22 @@ func GetCommandPaletteItems(s *config.Settings) []CommandPaletteItem {
 			Category: "Navigation",
 			Action: func(m *OS) (*OS, tea.Cmd) {
 				m.SwitchToWorkspace(9)
+				return m, nil
+			},
+		},
+		{
+			Name:     "Next workspace",
+			Category: "Navigation",
+			Action: func(m *OS) (*OS, tea.Cmd) {
+				m.NextWorkspace()
+				return m, nil
+			},
+		},
+		{
+			Name:     "Previous workspace",
+			Category: "Navigation",
+			Action: func(m *OS) (*OS, tea.Cmd) {
+				m.PrevWorkspace()
 				return m, nil
 			},
 		},

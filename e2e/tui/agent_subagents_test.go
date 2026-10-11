@@ -67,7 +67,7 @@ func subagentCountOf(t *testing.T, base, session string) int {
 //   - a stop takes the count to "2 subagents";
 //   - a row at rest with a subagent at work is not folded into "+N at rest";
 //   - list-agents reports the figure, and agent-log the session start, the
-//     three starts and the one stop it knew;
+//     three starts and the one stop it knew, done since it said something;
 //   - a SessionStart (resume) forgets them: the metadata and the row lose the
 //     count, and a SessionEnd does the same for the other pane.
 //
@@ -86,7 +86,9 @@ func TestSubagentCountOnARestingRow(t *testing.T) {
 	log := &stateLog{name: "subagents-resting-row"}
 	defer log.save(t)
 	base := t.TempDir()
-	writeConfig(t, base, "[appearance.sidebar]\nenabled = true\nagent_rest_fold = \"1s\"\n")
+	// The count alone on the row, which is what this test holds; the rows
+	// under it are TestSubagentRowsOnTheRail's.
+	writeConfig(t, base, "[appearance.sidebar]\nenabled = true\nagent_rest_fold = \"1s\"\nsubagent_rows = \"count\"\n")
 	killDaemon(t, base)
 	for _, name := range []string{"e2e-home", "e2e-lead", "e2e-ra", "e2e-rb", "e2e-rc"} {
 		if out, err := tuiosCLI(t, base, "new", name, "--detach"); err != nil {
@@ -222,7 +224,7 @@ func TestSubagentCountOnARestingRow(t *testing.T) {
 		t.Fatalf("list-agents subagents = %v, want lead 2, ra 1, rb 0\n%s", counts, raw)
 	}
 	out, err := tuiosCLI(t, base, "agent-log", "-s", "e2e-lead", "-w", "0")
-	if err != nil || !strings.Contains(out, "subagent  Explore started") || strings.Count(out, "subagent  Explore stopped") != 1 ||
+	if err != nil || !strings.Contains(out, "subagent  Explore started") || strings.Count(out, "subagent  Explore done") != 1 ||
 		!strings.Contains(out, "session   started (startup)") {
 		t.Fatalf("agent-log does not hold the session start, the subagents' starts and the one stop it knew: %v\n%s", err, out)
 	}

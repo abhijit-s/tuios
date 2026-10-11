@@ -144,6 +144,10 @@ type Settings struct {
 	// constants. Set via appearance.link_click.
 	LinkClick string
 
+	// LinkHover is the hover highlight policy: one of the LinkHover*
+	// constants. Set via appearance.link_hover.
+	LinkHover string
+
 	// LinkOpener is the command that opens a web link. Empty uses $BROWSER,
 	// then the system opener. Set via appearance.link_opener.
 	LinkOpener string
@@ -195,6 +199,11 @@ type Settings struct {
 	// SidebarFolderClick is what a click on a folder row does: walk the listing
 	// into it, tell the pane to cd there, or both.
 	SidebarFolderClick string
+	// RailHeaderCase is how the rail's section headers read: "lowercase"
+	// keeps the quiet furniture look they have always had, "uppercase" draws
+	// the heading treatment (bold, secondary ink, the rule glyph and the
+	// uppercase label). Set via appearance.sidebar.header_case.
+	RailHeaderCase string
 	// SidebarEditor is the terminal editor command; empty uses the environment.
 	SidebarEditor string
 
@@ -212,6 +221,10 @@ type Settings struct {
 	// done and seen) before the rail folds it into one line with the others.
 	// Zero never folds. From appearance.sidebar.agent_rest_fold.
 	SidebarAgentRestFold time.Duration
+
+	// SidebarSubagentRows draws a row per subagent under its agent's row.
+	// False draws the count alone. From appearance.sidebar.subagent_rows.
+	SidebarSubagentRows bool
 
 	// SidebarFileDelete is where a deleted file goes: the trash, or nowhere.
 	SidebarFileDelete string
@@ -774,6 +787,7 @@ func DefaultSettings() Settings {
 		SidebarFileDelete:           SidebarFileDeleteTrash,
 		SidebarAgentRow:             DefaultSidebarAgentRow(),
 		SidebarAgentRestFold:        DefaultAgentRestFold,
+		SidebarSubagentRows:         true,
 		Tooltips:                    true,
 		SessionColors:               true,
 		SessionBorder:               false,

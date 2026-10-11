@@ -3776,3 +3776,74 @@ have.
 | The folders above the authorized keys folder, up to the home folder | `TestPairChecksTheHomeFolder/anyone`, `/group` (a home with mode 0777 gets a code, 0770 gives no warning) | **caught** |
 | The public address check for addresses tuios finds | none | **not caught**: the test machine has no public address to find |
 | The DNS and tailnet lookups of `[hosts]` addresses | none | **not caught**: the tests give an IP in `addr`. A name needs a resolver or a tailnet the test controls |
+
+### Workspace cycling (#612)
+
+Run on 2026-10-10. The control is the head of PR 616 (`bfa8054f`), whose
+cycle visits every workspace, built as `cmd/tuios` and run against
+`TestWorkspaceCycleSkipsEmptyWorkspaces` and `TestWorkspaceCycleOpensNoPanes`.
+
+| Control: what was cut | Tests that fail | Verdict |
+| --- | --- | --- |
+| The skip of workspaces with no panes in `cycleWorkspace` (the cycle visits every workspace) | `TestWorkspaceCycleSkipsEmptyWorkspaces` (alt+y from 1 shows 2, not 3), `TestWorkspaceCycleOpensNoPanes` (three presses leave 4 panes, not 1) | **caught** |
+
+## Subagent list
+
+`e2e/tui/agent_subagent_list_test.go` runs a stand-in `claude` in a pane. It
+replays hook payloads in the shape Claude Code 2.1.296 sent them (captured
+with a logging hook) through the real `tuios agent-hook claude-code`, against
+a real daemon with a real client attached. `TestSubagentListFromHooks` reads
+`get-agent-state --json` at each step: the descriptions, the tool each
+subagent runs, a client push, each way a subagent ends, the fade, and
+agent-log.
+
+Each control below was run on 2026-10-10 on branch
+`feat/subagent-rows-data`. Each one builds `cmd/tuios` with one piece of
+wiring cut and runs `TestSubagentListFromHooks` against it. The logs are in
+`~/.cache/agent-tmp/subagents/neg/` (`pr1-*.log`).
+
+| Control: what was cut | Where it failed | Verdict |
+| --- | --- | --- |
+| Whole feature: the base commit `71b6183d` | "tools": the list is empty, only the count moves | **caught** |
+| The `PreToolUse`, `PostToolUse`, `PostToolUseFailure` case for an event with `agent_id` in `translateClaude` | "tools": every `now` is empty | **caught** |
+| `r.Extra = claudeBackgroundTasks(p)` on `Stop` | "launched": the two subagents of one type keep each other's description | **caught** |
+| `w.AgentSubagentList = subagentLists[w.ID]` in `retainDaemonExclusive` | "a client push changed the list": the push after `new-window` empties it | **caught** |
+| The guard for `subagent_update`: `verbReportAgentActivity` records it whatever the reason | "launched": the first subagent's `now` is `Bash: FOREIGN-TOOL`, another conversation's call | **caught** |
+| The `subagentFlush.arm` call in `applyActivityMeta` | "tools": the four calls that came at once stay held | **caught** |
+| The fade (`subagentFade` set to 1000 hours) | "faded": the four finished subagents stay | **caught** |
+
+The "tools" step is there for the flush control. Without it, the `Stop` after
+the four calls changes descriptions, which pushes the whole list, held calls
+included, and the build without the flush passed.
+
+## Subagent rows
+
+`e2e/tui/subagent_rows_test.go` runs the stand-in `claude` of "Subagent
+list" under a real client with the rail at 24 columns, beside a second agent
+pane at rest that sorts after the lead. `TestSubagentRowsOnTheRail` checks
+the waiting mark on the lead's rail row and title bar, a tall row per
+subagent, and each collapse step as the terminal shrinks from 50 rows to 12.
+It runs in the shipped layout and in a layout with the agents section alone.
+At every height it checks that no subagent row shows while an agent row is
+hidden. Then it checks the fade, ASCII at 16 colours, and
+`subagent_rows = "count"`.
+
+Each control below was run on 2026-10-10 on branch `feat/subagent-rows`.
+Each one builds `cmd/tuios` with one piece of wiring cut and runs
+`TestSubagentRowsOnTheRail` against it. The logs are in
+`~/.cache/agent-tmp/subagents/neg/` (`pr2-*.log`).
+
+| Control: what was cut | Where it failed | Verdict |
+| --- | --- | --- |
+| `displayState` in `windowMarkState` (the title bar reads `sidebarGlyphState`) | "the lead's title bar does not wear the waiting mark" | **caught** |
+| `displayState` in `sidebarGlyph` | "the lead's rail row does not wear the waiting mark" | **caught** |
+| Step 1 of `sidebarAgentChildren` counts the subagents and not the agent rows (`all <= room`) | "at 24 rows a subagent row shows while an agent row is hidden" | **caught** |
+| The `!childCut` guard on the tall test | "at 24 rows a subagent row shows while an agent row is hidden": the collapsed rows went tall and pushed the second agent off | **caught** |
+| The list copy in the sync path (`w.AgentSubagentList = subagentsFromWire(...)` in `internal/app/session.go`) | "the rail never drew a tall row per subagent" | **caught** |
+| The child entries put into the section (`agents, childCut = plan.rows, plan.cut`) | "the rail never drew a tall row per subagent" | **caught** |
+| The `subagent_rows = "count"` check in `sidebarAgentChildren` | "subagent_rows = count still draws rows" | **caught** |
+
+The design named `◐` for the waiting mark. The frames drawn by
+`internal/shot`, with the Go Mono it embeds, showed it as a missing glyph.
+The mark is `◊`, which Go Mono and Menlo both have. Kiro and Qwen Code also
+put `◐` in their window titles as a spinner.

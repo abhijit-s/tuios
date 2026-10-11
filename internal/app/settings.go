@@ -427,6 +427,7 @@ func (m *OS) settingsCategories() []settingsCategory {
 			opt("appearance.zen_mode"),
 			opt("appearance.links"),
 			opt("appearance.link_click"),
+			opt("appearance.link_hover"),
 			opt("appearance.link_opener"),
 			opt("appearance.session_colors"),
 			opt("appearance.session_border"),
@@ -462,6 +463,7 @@ func (m *OS) settingsCategories() []settingsCategory {
 			opt("appearance.sidebar.position"),
 			opt("appearance.sidebar.width"),
 			custom("appearance.sidebar.sections", m.sectionLayoutItem()),
+			opt("appearance.sidebar.header_case"),
 			opt("appearance.sidebar.show_glyphs"),
 			opt("appearance.sidebar.show_counts"),
 			opt("appearance.sidebar.show_numbers"),
@@ -492,7 +494,10 @@ func (m *OS) settingsCategories() []settingsCategory {
 	// How long an agent row rests before it folds means nothing until an
 	// agent has run, so the row waits for one like the other agent rows.
 	if m.agentsSeen() {
-		sidebar.Items = append(sidebar.Items, m.resolveRows([]settingsRow{opt("appearance.sidebar.agent_rest_fold")})...)
+		sidebar.Items = append(sidebar.Items, m.resolveRows([]settingsRow{
+			opt("appearance.sidebar.agent_rest_fold"),
+			opt("appearance.sidebar.subagent_rows"),
+		})...)
 	}
 
 	// The marks a pane paints over its own output, in the order a person meets

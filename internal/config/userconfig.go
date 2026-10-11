@@ -293,6 +293,7 @@ type AppearanceConfig struct {
 	ZenMode                  string                  `toml:"zen_mode"`                     // Zen mode: disabled, always, mouse (default: disabled)
 	Links                    string                  `toml:"links"`                        // Links tuios acts on: off, marked, all (default: all)
 	LinkClick                string                  `toml:"link_click"`                   // The click that opens a link: both, ctrl, shift, off (default: both)
+	LinkHover                string                  `toml:"link_hover"`                   // The hover highlight: safe (skips a pane whose guest tracks the mouse) or always (default: safe)
 	LinkOpener               string                  `toml:"link_opener"`                  // Command that opens a web link; empty uses $BROWSER, then the system opener
 	HideWindowButtons        bool                    `toml:"hide_window_buttons"`          // Hide window control buttons (minimize, maximize, close)
 	WindowButtonStyle        string                  `toml:"window_button_style"`          // Window control style: pill, dots (default: dots)
@@ -554,6 +555,23 @@ const (
 // LinkClickModes lists the valid values for appearance.link_click.
 var LinkClickModes = []string{LinkClickBoth, LinkClickCtrl, LinkClickShift, LinkClickOff}
 
+// Link hover policies. See AppearanceConfig.LinkHover.
+//
+// A pane whose program tracks the mouse owns plain clicks over its content, so
+// the default keeps the hover underline off there: an underline a plain click
+// would not honour is a promise tuios does not keep. "always" draws the hover
+// anyway, for a setup where the guest tracks the mouse and the links are meant
+// for the modifier click.
+const (
+	// LinkHoverSafe keeps the hover off where the guest owns the pointer.
+	LinkHoverSafe = "safe"
+	// LinkHoverAlways draws the hover wherever the pointer finds a link.
+	LinkHoverAlways = "always"
+)
+
+// LinkHoverModes lists the valid values for appearance.link_hover.
+var LinkHoverModes = []string{LinkHoverSafe, LinkHoverAlways}
+
 // Window control styles. See AppearanceConfig.WindowButtonStyle.
 const (
 	// WindowButtonStylePill draws the controls as black glyphs on a filled pill
@@ -733,6 +751,9 @@ type SidebarConfig struct {
 	// FolderClick is what a click on a folder row does: navigate, cd or both
 	// (default: navigate).
 	FolderClick string `toml:"folder_click"`
+	// HeaderCase is how the rail's section headers read: lowercase or uppercase
+	// (default: lowercase). See RailHeaderCases.
+	HeaderCase string `toml:"header_case"`
 	// Editor is the terminal editor command for files (default: $EDITOR,
 	// $VISUAL or vi).
 	Editor string `toml:"editor"`
@@ -753,6 +774,9 @@ type SidebarConfig struct {
 	// AgentRestFold is how long an agent row rests before the rail folds it
 	// into one line: a duration, or off (default: 1h).
 	AgentRestFold string `toml:"agent_rest_fold"`
+	// SubagentRows is how an agent row shows its subagents: rows, one row
+	// each under it, or count, the count alone (default: rows).
+	SubagentRows string `toml:"subagent_rows"`
 	// Custom is the [appearance.sidebar.custom] table: the command whose
 	// output the custom section draws, its heading, and when it runs. Read
 	// from the file only; see SidebarCustomConfig for why.
@@ -866,6 +890,7 @@ func DefaultConfig() *UserConfig {
 			ZenMode:                  ZenModeDisabled,
 			Links:                    LinksAll,
 			LinkClick:                LinkClickBoth,
+			LinkHover:                LinkHoverSafe,
 			HideWindowButtons:        false,
 			WindowButtonStyle:        WindowButtonStyleDots,
 			WindowButtonPosition:     WindowButtonPositionLeft,
@@ -913,8 +938,10 @@ func DefaultConfig() *UserConfig {
 				Width:         SidebarDefaultWidth,
 				Sections:      SidebarDefaultSections,
 				FolderClick:   SidebarFolderClickNavigate,
+				HeaderCase:    RailHeaderLowercase,
 				FileDelete:    SidebarFileDeleteTrash,
 				AgentRestFold: "1h",
+				SubagentRows:  SidebarSubagentRowsRows,
 			},
 		},
 		Daemon: DaemonConfig{
@@ -1954,6 +1981,9 @@ func fillMissingAppearance(cfg, defaultCfg *UserConfig) {
 	if cfg.Appearance.LinkClick == "" {
 		cfg.Appearance.LinkClick = defaultCfg.Appearance.LinkClick
 	}
+	if cfg.Appearance.LinkHover == "" {
+		cfg.Appearance.LinkHover = defaultCfg.Appearance.LinkHover
+	}
 
 	if cfg.Appearance.DockbarPosition == "" {
 		cfg.Appearance.DockbarPosition = defaultCfg.Appearance.DockbarPosition
@@ -2106,6 +2136,11 @@ func ApplyAppearanceConfig(cfg *UserConfig, s *Settings) {
 	} else if cfg.Appearance.LinkClick != "" {
 		s.LinkClick = LinkClickBoth
 	}
+	if slices.Contains(LinkHoverModes, cfg.Appearance.LinkHover) {
+		s.LinkHover = cfg.Appearance.LinkHover
+	} else if cfg.Appearance.LinkHover != "" {
+		s.LinkHover = LinkHoverSafe
+	}
 	s.LinkOpener = strings.TrimSpace(cfg.Appearance.LinkOpener)
 
 	// DockbarPosition defaults to top. A typo lands on that default, which is
@@ -2171,6 +2206,13 @@ func ApplyAppearanceConfig(cfg *UserConfig, s *Settings) {
 	if sb.FolderClick != "" {
 		s.SidebarFolderClick = sb.FolderClick
 	}
+	// A typo reads as the default, the same contract the other enum options
+	// keep.
+	if slices.Contains(RailHeaderCases, sb.HeaderCase) {
+		s.RailHeaderCase = sb.HeaderCase
+	} else if sb.HeaderCase != "" {
+		s.RailHeaderCase = RailHeaderLowercase
+	}
 	s.SidebarEditor = sb.Editor
 	if sb.FileActions != nil {
 		s.SidebarFileActions = *sb.FileActions
@@ -2182,6 +2224,8 @@ func ApplyAppearanceConfig(cfg *UserConfig, s *Settings) {
 	// Assigned whatever the file says, so a value removed from it goes back
 	// to the default. A bad value reads as the default and validation says so.
 	s.SidebarAgentRestFold, _ = ParseAgentRestFold(sb.AgentRestFold)
+	// Anything but count draws rows, the default; validation names a typo.
+	s.SidebarSubagentRows = sb.SubagentRows != SidebarSubagentRowsCount
 	if sb.Tooltips != nil {
 		s.Tooltips = *sb.Tooltips
 	}

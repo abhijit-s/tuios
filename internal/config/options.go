@@ -157,6 +157,11 @@ var optionSpecs = []Option{
 		Accepted:    LinkClickModes, Default: LinkClickBoth,
 	},
 	{
+		Path: "appearance.link_hover", Type: OptionString, Section: "appearance",
+		Description: "The hover highlight: safe skips a pane whose guest tracks the mouse, always draws it everywhere",
+		Accepted:    LinkHoverModes, Default: LinkHoverSafe,
+	},
+	{
 		Path: "appearance.link_opener", Type: OptionString, Section: "appearance",
 		Description: "The command that opens a web link. If this is empty, tuios uses $BROWSER, then the system opener.",
 		Default:     "",
@@ -815,6 +820,11 @@ var optionSpecs = []Option{
 		Accepted:    SidebarFolderClicks, Default: SidebarFolderClickNavigate,
 	},
 	{
+		Path: "appearance.sidebar.header_case", Type: OptionString, Section: "sidebar",
+		Description: "How the rail's section headers read: lowercase keeps the quiet furniture look, uppercase draws them as headings",
+		Accepted:    RailHeaderCases, Default: RailHeaderLowercase,
+	},
+	{
 		Path: "appearance.sidebar.editor", Type: OptionString, Section: "sidebar",
 		Description: "The terminal editor that opens a text file. If this is empty, tuios uses $EDITOR, then $VISUAL, then vi.",
 		Default:     "",
@@ -833,6 +843,11 @@ var optionSpecs = []Option{
 		Path: "appearance.sidebar.agent_rest_fold", Type: OptionString, Section: "sidebar",
 		Description: "How long an agent row rests (idle, unknown, or done and seen) before the rail folds it into one line: a duration such as 1h, or off",
 		Default:     "1h",
+	},
+	{
+		Path: "appearance.sidebar.subagent_rows", Type: OptionString, Section: "sidebar",
+		Description: "How an agent row shows its subagents: a row for each under it, or the count alone",
+		Accepted:    SidebarSubagentRowsValues, Default: SidebarSubagentRowsRows,
 	},
 	{
 		Path: "appearance.sidebar.workspaces", Type: OptionString, Section: "sidebar",
