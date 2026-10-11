@@ -21,6 +21,15 @@ reading one JSON line back per request:
 {"id":1,"verb":"list-agents","params":{"session":"work"}}
 ```
 
+`tuios call VERB '{...}'` sends one verb and prints its reply as JSON, for a
+program that can start a process but cannot open the socket. A verb error
+exits 1, bad input 2 and a daemon it cannot reach 3. It refuses the verbs
+that hold the connection open, such as `subscribe`.
+
+```sh
+tuios call list-windows '{"session":"work"}'
+```
+
 A parameter the verb does not take is refused, not ignored, and the failure
 lists what it does take. `invalid_params` naming a parameter you believed in
 means the daemon is older than you think.
@@ -36,6 +45,7 @@ tuios subscribe --types window-created,window-exit
 tuios subscribe --types agent-state,attention
 tuios subscribe --types client-session-changed
 tuios subscribe --hosts --types agent-state
+tuios subscribe --types transfer,transfer-progress
 ```
 
 ```
@@ -60,7 +70,8 @@ finished turn) is opt-in: it arrives only when `--types` names it, and a
 resumed stream does not replay it, so read `tuios agent-log` after a gap.
 `transcript` (a pane's joined transcript grew, with the `cursor` of
 `agent-transcript`) is opt-in in the same way. It is for a client that shows
-the conversation to the person.
+the conversation to the person. `transfer-progress` (a copy's row while its bytes
+move, at most four a second) is opt-in in the same way.
 
 Every type, and what it reports:
 
@@ -81,6 +92,7 @@ Every type, and what it reports:
 | `prompt`, `command-started`, `command-finished` | Shell integration marks in a pane |
 | `output` | A pane writes output. High volume |
 | `host-changed` | A host link connects or drops |
+| `transfer`, `transfer-progress` | A copy the daemon runs is created, changes state or ends; its progress, opt-in (`tuios --skill files`) |
 | `gap` | Events were lost. See below |
 
 The hook names (`after-new-window` and the rest) are not event types. The

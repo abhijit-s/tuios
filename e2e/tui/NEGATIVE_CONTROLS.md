@@ -40,6 +40,37 @@ because all eight cut the handler and the fault was the switch above it.
 Cut the wiring, run the named test, and watch it fail. If it does not fail, the
 test enters the code below the fault, and the fault is what nobody is testing.
 
+## Dual-edge sidebar foundation
+
+On 2026-10-08 the new real-client tests were run with each missing wire before
+adding its fix, then rerun against the rebuilt client. `TestDualRailCustomSections`
+first timed out with only `RIGHT-CUSTOM-ROW` on screen before the second rail
+renderer was wired. `TestDualRailLeftFiles` timed out with no `LEFT-ONLY.txt`
+while `Update` called `FilesSyncCmd` only for the original edge; after scoped
+second-edge sync it passed. `TestDualRailResizeEdges` timed out with the left
+border still at its original column while `FilterMouseMotion` had no
+`SidebarEdgeActive` clause; it passed after that clause was added. Each test
+logs a real-client screen snapshot as its repeatable artifact. Run them with
+`TUIOS_E2E=1 TUIOS_E2E_BIN=/tmp/tuios go test -count=1 -run '^TestDualRail' .`
+
+For the review's hidden-edge case, `TestDualRailHiddenLegacyExplicitLeft`
+failed on the original foundation binary: no sidebar appeared. After resolving
+the effective edge, `TestDualRailHiddenDoesNotInheritLegacyFields` failed
+against the intermediate build because a hidden legacy section order and width
+leaked onto that edge; both pass on the final build. The negative logs are
+`/tmp/tuios-pr600-hidden-negative.log` and
+`/tmp/tuios-pr600-hidden-fields-negative.log`.
+
+On 2026-10-10, `TestDualRailClickSwitchesSession` was tightened to check
+which edge actually gets keyboard focus after a blank left-rail click, rather
+than only checking a session switch that either rail could perform. With the
+secondary branch removed from `OS.SidebarClick`, the rebuilt real client failed
+at `blank left-rail click did not give left edge keyboard focus`; after restoring
+the branch it passed. The run is recorded in
+`/tmp/tuios-pr600-click-negative.log`; the passing test saves a styled and
+plain settled screen in `$TUIOS_E2E_FRAMES/TestDualRailClickSwitchesSession/`
+(or the default system-temp artifacts directory).
+
 ## Paste buffers (#514)
 
 `paste_buffers_test.go`, `paste_buffers_scope_test.go`,
@@ -3847,3 +3878,525 @@ The design named `◐` for the waiting mark. The frames drawn by
 `internal/shot`, with the Go Mono it embeds, showed it as a missing glyph.
 The mark is `◊`, which Go Mono and Menlo both have. Kiro and Qwen Code also
 put `◐` in their window titles as a spinner.
+### Mail seen state
+
+Run on 2026-10-10 on branch `feat/mail-seen`. Each control cuts one thing from
+the fixed build and runs `TestMailSeen*`.
+
+| Control: what was cut | Tests that fail | Verdict |
+| --- | --- | --- |
+| `q.markSeen = ... && d.callerReadsInbox(cs, q.inbox)` set to false in `verbReadAgentMessages` (a peek marks nothing seen) | `TestMailSeenStateBetweenUnreadAndRead` (the recipient's peek does not say `marked seen`, `seen_at` stays 0), `TestMailSeenInboxRow`, `TestMailSeenMailbox` | **caught** |
+| `callerReadsInbox` returning true for any caller (the sender's peek of the recipient's inbox marks it seen) | `TestMailSeenStateBetweenUnreadAndRead` (the peek from the sender's pane gets `marked seen`, and `seen_at` is set) | **caught** |
+| The "marked read" summary in `mailStateSummary` (the old count from before the read) | `TestMailSeenStateBetweenUnreadAndRead` (the marking read does not say `1 message, marked read.`) | **caught** |
+| `was_seen` in `collect` | `TestMailSeenStateBetweenUnreadAndRead` (the sender's view of a seen message has no `seen` word) | **caught** |
+| `noteMailSeen` for the person's thread | `TestMailSeenInboxRow` (`list-attention` has no `[1 seen]`, the row never says seen) | **caught** |
+| The `SeenIDs` branch of `noteAgentMail` (the receipt) | `TestMailSeenMailbox` (the open mailbox keeps saying unread) | **caught** |
+| The `seen` case of `agentMailThreadRow` | `TestMailSeenMailbox` (the list keeps saying unread) | **caught** |
+
+## Files, transfers and drops across a link
+
+The tests are in `file_transfer_test.go`. Each runs a second daemon as
+build, reached only over the hub daemon's link through the ssh stand-in. The
+two tests about speed put this test binary in the link as a throttle: the far
+side's output passes at a fixed rate through a buffer as deep as ssh's
+channel window.
+
+- `TestATransferFromAHostResumesAfterTheLinkDrops` copies 96 MiB from build
+  over 24 MB/s, cuts the link a third of the way in, and changes a byte of
+  the part file while the link is down. The copy must wait, go on from the
+  part (resumed_from past half the bytes at the cut), catch the changed byte
+  with the whole-file check, copy again, and put the original in place with
+  its permission bits.
+- `TestATransferLeavesTypingOnItsMachineFast` times small verb round trips on
+  build while a copy fills an 8 MB/s link with 2 MiB of buffer. The p90 must
+  stay under 150 ms. The positive half is the copy itself: it must be running
+  at the link's rate while the round trips are timed.
+- `TestDropFilesOnAPaneOnAHost` drops two files on build. They must arrive in
+  a new folder under build's runtime folder, the folder owner only and the
+  files 0600.
+- `TestFileListOnAHost` lists a folder on build (folders first, then natural
+  order, with kinds, sizes and modes).
+- `TestFileBytesKeepToTheLinkPolicy` gives the hub only `list` on build. A
+  listing goes through (the positive half), a read of a file's bytes is
+  forbidden, and a copy fails with forbidden instead of waiting.
+
+The controls were run on 2026-10-08 on branch `feat/file-transfer`, each on a
+binary built with the one line changed and the rest as merged.
+
+| Control | How | Tests that fail | Verdict |
+| --- | --- | --- | --- |
+| A resume trusts no part | `copyFile`: the tail comparison's `if berr == nil && a == b` made false | `TestATransferFromAHostResumesAfterTheLinkDrops` (resumed_from 0 with 34 MB copied at the cut) | **caught** |
+| No whole-file check | `commitPart`: the sha256 comparison made false | `TestATransferFromAHostResumesAfterTheLinkDrops` (the file in place has another sha256) | **caught** |
+| No scheduler | `dialHostFiles`: `StreamOpen{Bulk: bulk}` made `Bulk: false`, so file bytes ride ordinary 1 MiB frames in the same lane as everything else | `TestATransferLeavesTypingOnItsMachineFast` (p90 275 ms, against 30 ms with it) | **caught** |
+| A drop stays on this machine | `verbDropFiles`: the this-machine answer taken for every host | `TestDropFilesOnAPaneOnAHost` (the paths are this machine's, no transfers) | **caught** |
+| Plain name order | `verbFileList`: `naturalLess` replaced by `<` | `TestFileListOnAHost` (file10 before file2) | **caught** |
+| Reading bytes needs only list | `verbCapabilities`: `file-read` moved to `list` | `TestFileBytesKeepToTheLinkPolicy` (the read went through) | **caught** |
+
+The federation package keeps two unit tests for the same work, as a perf
+budget and a wire compatibility check: `TestABulkCopyLeavesTypingFast` (an
+echo during a copy over a slow pipe stays under 150 ms; with the window cut it
+waited 519 ms, **caught**) and `TestABulkStreamToAnOlderPeerWritesWithoutAWindow`
+(a peer that never answers with a credit gets no credit frame and no wait).
+
+## The review of files, transfers and drops (wave 5)
+
+The tests are in `file_review_test.go`. The ones that need a far machine
+that lies put a fake daemon on build's socket, reached through the real ssh
+stand-in, stdio-proxy and mux.
+
+- `TestAFolderFromAHostCannotLandOutsideItsDestination`: build's file-walk
+  names `../../escaped.txt`. Nothing may land outside the destination, and
+  the copy must fail with the reason.
+- `TestFileVerbsOnAPipeAndADevice`: file-read, file-hash and
+  open-file-stream on a named pipe and on /dev/zero answer in 5 s.
+- `TestATransferStoppedWhileQueuedStaysStopped`: a copy cancelled and a
+  copy paused while they wait for a running slot stay so when the slots
+  free. The positive half resumes the paused one to done and verified.
+- `TestACopyDoesNotWriteThroughALinkAtItsPart`: a link at the part file,
+  here and on build, is not written through. A part is named by its copy's
+  id, so the links go in while the copies wait behind three slow ones.
+- `TestADropNamesEachFileSafely`: two dropped files of one name get two
+  paths, and no path holds a control character or a backslash.
+- `TestACancelledCopyStopsReadingItsSource`: after a copy of a 16 GiB
+  sparse file is cancelled, the daemon reads under 64 MB in 2 s.
+- `TestAFolderMoveRemovesOnlyWhatItCopied`: a move leaves the link it did
+  not copy, and the row names it in `skipped_items`.
+
+The controls were run on 2026-10-09 on branch `gpui-bridge-wave5`. "Before"
+is the branch as it was before the review (d32f832a); each test also passes
+on the branch with its fix.
+
+| Control | How | Tests that fail | Verdict |
+| --- | --- | --- | --- |
+| Names from a walk are trusted | before (no `safeRel` check) | `TestAFolderFromAHostCannotLandOutsideItsDestination` (escaped.txt and escaped-too.txt written outside, copy done) | **caught** |
+| Pipes and devices are opened | before (`os.Open`, no regular-file check) | `TestFileVerbsOnAPipeAndADevice` (the verbs never answered) | **caught** |
+| A queued copy ignores its stop | before (no state check after the slot) | `TestATransferStoppedWhileQueuedStaysStopped` (both ended done, both files arrived) | **caught** |
+| The part follows links | before (no `O_NOFOLLOW`) | `TestACopyDoesNotWriteThroughALinkAtItsPart` (the target holds the copy, the link put in place, here and on build) | **caught** |
+| Drop names as given | before (`filepath.Base`) | `TestADropNamesEachFileSafely` (two notes.txt wrote one part and failed the check) | **caught** |
+| A backslash stays in a drop name | `dropName`: `r == '\\'` cut | `TestADropNamesEachFileSafely` (the path holds `y\'; touch pwned; echo '.txt`) | **caught** |
+| The hash ignores the copy's context | before (`hashRange` with no context) | `TestACancelledCopyStopsReadingItsSource` (828 MB read in the 2 s after the cancel, against 0) | **caught** |
+| A move removes the whole folder | before (`RemoveAll`) | `TestAFolderMoveRemovesOnlyWhatItCopied` (the link is gone) | **caught** |
+
+The wave 5 tests in `file_transfer_test.go` pass on the branch with every
+fix.
+
+## Transfers on main: the journal, parts per copy, link writes, events
+
+The tests are in `file_transfer_journal_test.go`, with the far daemon of
+`host_attach_test.go` as build. Each saves its record as JSON under
+`TUIOS_E2E_FRAMES` (the rows or events in order and the sha256 of each file
+that matters).
+
+- `TestACopySurvivesADaemonRestart` copies 96 MiB from build at 24 MB/s and
+  kills the hub daemon with SIGKILL a third of the way in. The next daemon
+  must hold the copy, go on from the part (`resumed_from` past half the bytes
+  at the kill), and end done with the original's sha256. In the same folder a
+  part eight days old with no copy must be gone and a new one must stay.
+- `TestTwoCopiesToOnePathKeepTheirParts` copies two 32 MiB files from build
+  to one file at once, named through a folder and a link to it. Both must
+  write parts of their own, both must end checked, and the file in place
+  must be one of the two. The positive half of the busy rule: a third copy
+  to the first path answers `busy`.
+- `TestALinkCannotWriteKeysOrLeaveTheHome` sends a file to build's
+  `authorized_keys` (by `~`, by full path, through a link in build's home
+  that points at `~/.ssh`, and as `~/.SSH`), to `.bashrc`, and outside
+  build's home, and calls `file-mkdir`, `file-remove`, `file-rename` and
+  `open-file-stream` on those places over the link. Every one must be
+  `forbidden`, the files must keep their bytes, and no part may be left. The
+  positive half: a copy into `~/inbox` arrives with its time kept, a copy
+  through a link inside the home to `~/inbox` arrives, and a rename and a
+  remove there work.
+- `TestFileWritesNeedTheFilesCapability`: with `allow = ["list", "write"]`
+  on build, a listing works, each file verb but the listing is refused on
+  its own, and a copy to build fails as `forbidden`, naming `files`.
+- `TestACopySaysWhatItDoesOnTheEventStream`: a subscriber that names
+  `transfer` and `transfer-progress` sees the copy created, its progress at
+  most four times a second and never going back, and its end, done and
+  checked. A subscriber that names no types sees the start and the end and
+  no progress.
+
+`TestATransferFromAHostResumesAfterTheLinkDrops` also checks that the copy
+keeps the original's modification time, and `TestAFolderMoveRemovesOnlyWhatItCopied`
+that it names what it did not copy.
+
+The controls were run on 2026-10-10 on branch `feat/transfer-engine`, each
+on a binary built with the one change and the rest as committed.
+
+| Control | How | Tests that fail | Verdict |
+| --- | --- | --- | --- |
+| No journal | `Start`: `d.transfers.load()` cut | `TestACopySurvivesADaemonRestart` (`no_transfer` after the restart) | **caught** |
+| No stale part sweep | `load`: `m.parts.sweep(...)` cut | `TestACopySurvivesADaemonRestart` (the eight day old part is still there) | **caught** |
+| One part name per path | `partPath`: the id not added to the name | `TestTwoCopiesToOnePathKeepTheirParts` (one copy failed its check, the other found no part, no file in place) | **caught** |
+| No busy rule | `start`: the check of the other jobs made `false` | `TestTwoCopiesToOnePathKeepTheirParts` (the third copy started) | **caught** |
+| No deny list | `linkDenied` returns false | `TestALinkCannotWriteKeysOrLeaveTheHome` (copies to `authorized_keys` and `.bashrc` done, `file-mkdir ~/.ssh/more` and `file-remove ~/.ssh/authorized_keys` went through) | **caught** |
+| The deny list read by name | `linkWriteFS`: only `linkDenied(p, $HOME)`, no real path | `TestALinkCannotWriteKeysOrLeaveTheHome` (`~/innocent/authorized_keys` was written through the link, `authorized_keys` emptied) | **caught** |
+| No home root | `linkWriteRoots`: `/` added to the roots | `TestALinkCannotWriteKeysOrLeaveTheHome` (outside.txt arrived, `file-mkdir` outside the home went through) | **caught** |
+| A folder link inside the home is not followed | `verbOpenFileStream` and `verbFileMkdir`: `confineDir` replaced by `confine` | `TestALinkCannotWriteKeysOrLeaveTheHome` (the copy through `~/projects`, a link to `~/inbox`, failed: the `os.Root` refuses the link it would stat) | **caught** |
+| The part opened is not checked against its name | `openPart`: the `os.SameFile` and `Lstat` check cut | `TestACopyDoesNotWriteThroughALinkAtItsPart` ("on build, relative": the target holds the copy, since an `os.Root` follows a relative link whatever `O_NOFOLLOW` says) | **caught** |
+| files is write | every `config.LinkAllowFiles` in `verbCapabilities` made `config.LinkAllowWrite` | `TestFileWritesNeedTheFilesCapability` (the copy ended done) | **caught** |
+| files on one verb only | `file-commit` alone made `write`; then `open-file-stream` alone | `TestFileWritesNeedTheFilesCapability` (that verb answered past the policy: `no_file` from `file-commit`, a stream from `open-file-stream`) | **caught** |
+| mtime not kept | `commitPart`: the `Chtimes` made unreachable | `TestATransferFromAHostResumesAfterTheLinkDrops`, `TestALinkCannotWriteKeysOrLeaveTheHome` (the time of the copy, not the original's) | **caught** |
+| Skipped items not said | `walkTree`: the default case returns without counting | `TestAFolderMoveRemovesOnlyWhatItCopied` (no `skipped`) | **caught** |
+| No state events | `note`: the `publish` cut | `TestACopySaysWhatItDoesOnTheEventStream` (the stream starts with progress, never says created or ended) | **caught** |
+| No progress limit | `transferProgressEvery` = 0 | `TestACopySaysWhatItDoesOnTheEventStream` (2048 progress events in 2 s) | **caught** |
+| Progress not opt-in | `optInEventTypes`: `transfer-progress` cut | `TestACopySaysWhatItDoesOnTheEventStream` (a subscriber that named no types got progress) | **caught** |
+
+`TestACancelledCopyStopsReadingItsSource` reads `/proc` and skips on macOS,
+where these controls ran; it runs on Linux CI.
+
+## The second review of link file access: write roots and the read deny list
+
+The E2E tests are in `file_roots_test.go`, with the far daemon of
+`host_attach_test.go` as build. Unless a test says so, build gives a linked
+machine the wide root `~`, so the test proves the deny lists alone.
+
+- `TestALinkWritesOnlyInItsRoots`: build sets no `files_roots`. A copy to
+  `~` fails as `forbidden`, and the refusal names `~/Downloads/tuios` and
+  `files_roots`. The positive half: a copy into the receive folder arrives
+  checked.
+- `TestALinkCannotWriteThroughARenamedAncestor`: a rename and a remove of
+  `~/.config`, which holds the fish config, are refused and the config keeps
+  its bytes.
+- `TestALinkCannotWriteAStowedDotfile`: `~/.ssh` and `~/.bashrc` are links
+  into `~/dotfiles`. A copy to the link targets is refused.
+- `TestALinkCannotReadKeys`: `file-read` and `file-hash` of a private key are
+  refused. The positive half: a `.pub` key and an ordinary file are read.
+- `TestALinkCannotReadProcOrTheDaemonFolder`: build's roots also cover its
+  runtime folder. A read of `/proc/self/environ`, `/proc/self/mem` and the
+  daemon's pid file is refused, and so are `file-mkdir` in the stash,
+  `file-rename` of the pid file and `file-remove` of the socket folder.
+- `TestADarwinCaseFoldedDenyNameIsRefused` (macOS only): a copy to
+  `~/.ſsh/authorized_keys` is refused.
+- `TestTwoCopiesToOnePathKeepTheirParts` changed. The busy rule now resolves
+  links in a local path, so the two copies meet on build, where the path is
+  compared as given. A copy here through a link to a path that a running
+  copy writes must answer `busy`.
+
+The unit tests in `internal/session/transfer_review_test.go` hold what no E2E
+runner reaches: `TestADenyNameMatchesEveryFold` (a casefold disk on Linux, the
+Windows trim), `TestAFarWriteErrorCodeIsNotRetried`,
+`TestAnOldFiveCapAllowStillRelays` and `TestTransferEventsReachOnlyAFilesLink`.
+
+The controls were run on 2026-10-11 on Linux, on the branch rebased onto
+origin/main at a8ae79e4. Each ran on a binary built with the one change and
+the rest as committed. The driver and each log are in
+`~/.cache/agent-tmp/te-sec/nc/`.
+
+| Control | How | Tests that fail | Verdict |
+| --- | --- | --- | --- |
+| No write roots | `linkWriteRoots`: the home folder added to the roots | `TestALinkWritesOnlyInItsRoots` (the copy to `~` ended done) | **caught** |
+| An ancestor of a denied folder passes | `denyContains`: only `denyUnder(p, c)` | `TestALinkCannotWriteThroughARenamedAncestor` (the rename and the remove went through, the fish config was gone) | **caught** |
+| The deny list read by name only | `denyContains`: the entry's real path not compared | `TestALinkCannotWriteAStowedDotfile` (both copies done, `authorized_keys` holds the attacker's key) | **caught** |
+| No read check | `checkLinkRead` returns at once | `TestALinkCannotReadKeys` (the key was read and hashed) | **caught** |
+| /proc readable | `linkReadDenyAbsolute` empty | `TestALinkCannotReadProcOrTheDaemonFolder` (`/proc/self/environ` was read) | **caught** |
+| The socket folder not denied | `linkPrivate.with` returns the list as given | `TestALinkCannotReadProcOrTheDaemonFolder` (the pid file was read and moved, the stash got a folder, the socket folder was removed) | **caught** |
+| The drop folder not carved out | `linkPrivate.with`: the socket folder added for the drop folder too | `TestDropFilesOnAPaneOnAHost`, `TestADropNamesEachFileSafely` (each drop refused) | **caught** |
+| The busy rule reads a local path as given | `busyKey`: `filepath.Clean` without `realParent` | `TestTwoCopiesToOnePathKeepTheirParts` (the copy through the link here started) | **caught** |
+| One part name per path | `partPath`: the id not added to the name | `TestTwoCopiesToOnePathKeepTheirParts` (no two parts in flight, both copies failed their check) | **caught** |
+| The deny fold only on macOS and Windows | `denyUnder` is `pathUnder` | `TestADenyNameMatchesEveryFold` (`.SSH`, `.ſsh` and a soft hyphen passed) | **caught** |
+| No Windows trim | `trimWindowsNames` returns its input | `TestADenyNameMatchesEveryFold` (`.ssh.` and `.ssh . ` kept) | **caught** |
+| The far write code dropped | `writeReplyError`: the code not kept | `TestAFarWriteErrorCodeIsNotRetried` (`disk_full` became `host_unreachable` and was retried) | **caught** |
+| Relay needs all six capabilities | `expandRelay`: `config.LinkCapabilities` in place of `LinkRelayCapabilities` | `TestAnOldFiveCapAllowStillRelays` (a five-capability table could not relay) | **caught** |
+| Transfer events reach any link | `eventInScope`: the link check made false | `TestTransferEventsReachOnlyAFilesLink` (a list-only link got the event) | **caught** |
+
+`TestADarwinCaseFoldedDenyNameIsRefused` skips on Linux. Its control ran on
+macOS in the third review, below. Windows has no E2E runner: `plainLinkPath`
+and the trim are checked by cross-build vet, and the trim by the unit test
+above.
+
+## The third review of link file access: copies a link starts, limits, reads
+
+The tests are in `file_limits_test.go`, with the far daemon of
+`host_attach_test.go` as build. Each saves its record under
+`TUIOS_E2E_FRAMES`.
+
+- `TestALinkTransferStartKeepsToTheLinkPolicy`: build lets the hub relay and
+  use files. `transfer-start` over the link of a private key into the receive
+  folder, of a file onto `.bashrc`, of a file outside the write roots, and a
+  move of a file outside them, must each answer `forbidden` before a job
+  exists. `drop-files` of a private key is `forbidden` too. Nothing lands. The
+  positive half: a copy into the receive folder ends done and checked.
+- `TestALinkJobKeepsItsPolicyAcrossARestart`: the hub starts a copy of 2 GiB
+  on build into the receive folder, build's daemon is killed with SIGKILL,
+  its `files_roots` is narrowed to `~/elsewhere`, and it starts again. The
+  journal entry must name the link, and the resumed copy must end failed as
+  `forbidden`, with nothing in place.
+- `TestTheDropFolderTakesOnlyDropsWithinItsBudget`: a write and a `file-mkdir`
+  at the top of the drop folder are `forbidden`. A 300 MiB write into a drop
+  is `disk_full` before a byte moves, and leaves nothing. The positive half:
+  5 bytes go into the drop.
+- `TestALinkWriteLeavesFreeSpaceAndKeepsToItsCaps`: with `files_min_free` past
+  the disk's size, a write is `disk_full`, names the setting and leaves no
+  part. With the reserve off, the ninth open write stream is `busy`, and so
+  is the part after the 64th.
+- `TestALinkReadsOnlyItsReadRoots`: with `files_read_roots = ["~/share"]`, a
+  read in `~/share` and in the receive folder works. `file-read`, `file-stat`,
+  `file-list` and `file-hash` elsewhere are `forbidden` and name the setting.
+- `TestALinkCannotLookInsideDeniedFolders`: `file-list ~/.ssh`,
+  `file-stat ~/.ssh/id_ed25519`, `file-read ~/.bash_history`, and on Linux
+  `file-list /proc/self/fd` and `file-stat /proc/self/cwd`, are `forbidden`.
+  The positive half: a stat and a listing in the home folder work.
+- `TestADarwinCaseFoldedDenyNameIsRefused` also checks that no second folder
+  is made beside `.ssh`.
+
+**Repro.** The same six tests ran against a binary built from fb2fd838, the
+head before these fixes, over the same real daemon pair. Every one failed:
+`transfer-start` copied a file onto `.bashrc` and outside the write roots,
+`drop-files` read a private key, a file and a part landed at the top of the
+drop folder, a 300 MiB write into a drop was taken, a write ignored the
+reserve, nine streams and 90 parts were opened, reads ignored
+`files_read_roots`, and `~/.ssh`, `/proc/self/fd` and `~/.bash_history` were
+listed and read. The log is
+`~/.cache/agent-tmp/te-sec/artifacts/repro.log`, with each test's record
+beside it.
+
+The controls ran on 2026-10-11 on Linux on 8025ec91, each on a binary built
+with the one change. The driver is
+`~/.cache/agent-tmp/te-sec/nc/controls2.py`.
+
+| Control | How | Tests that fail | Verdict |
+| --- | --- | --- | --- |
+| No check at transfer-start | `checkTransferEnds` returns at once | `TestALinkTransferStartKeepsToTheLinkPolicy` (all four copies started) | **caught** |
+| A job keeps no link | `transferLinkOf` returns nil | `TestALinkJobKeepsItsPolicyAcrossARestart` (the resumed copy ended done outside the roots) | **caught** |
+| The journal drops the link | `recordLocked`: `Link` not set | `TestALinkJobKeepsItsPolicyAcrossARestart` (the same) | **caught** |
+| drop-files reads anything | `verbDropFiles`: the read check cut | `TestALinkTransferStartKeepsToTheLinkPolicy` (a private key was dropped) | **caught** |
+| Writes at the top of the drop folder | `linkWriteFS`: the drop rule made false | `TestTheDropFolderTakesOnlyDropsWithinItsBudget` (the file and the folder were made) | **caught** |
+| No drop budget | `claimLinkWrite`: the budget check made false | `TestTheDropFolderTakesOnlyDropsWithinItsBudget` (the 300 MiB write was taken and left a part) | **caught** |
+| No free-space reserve | `claimLinkWrite`: the reserve check made false | `TestALinkWriteLeavesFreeSpaceAndKeepsToItsCaps` (the write was taken and left a part) | **caught** |
+| No stream cap | `claimLinkWrite`: the stream check made false | `TestALinkWriteLeavesFreeSpaceAndKeepsToItsCaps` (nine streams) | **caught** |
+| No part cap | `claimLinkWrite`: the part check made false | `TestALinkWriteLeavesFreeSpaceAndKeepsToItsCaps` (88 parts) | **caught** |
+| files_read_roots not enforced | `checkLinkRead`: the roots check made false | `TestALinkReadsOnlyItsReadRoots` (all four verbs answered) | **caught** |
+| file-stat without the read check | `verbFileStat`: the check made false | `TestALinkCannotLookInsideDeniedFolders` (`~/.ssh/id_ed25519` and `/proc/self/cwd`) | **caught** |
+| file-list without the read check | `verbFileList`: the check made false | `TestALinkCannotLookInsideDeniedFolders` (`~/.ssh` and `/proc/self/fd`) | **caught** |
+
+**The part loop flaked on CI.** On 26b9449c the part half of
+`TestALinkWriteLeavesFreeSpaceAndKeepsToItsCaps` stopped at 26 and 49 parts
+with a broken pipe. The daemons were sound. `writeStream` wrote an empty body
+with a zero-length `Write`, which is still a write(2) on the socket. With
+length 0 the far daemon writes its closing line and closes at once, and the
+hub's relay closes the test's end. A slow runner let the close win the race.
+Under `taskset -c 0-1` and `GOMAXPROCS=1` it failed 6 runs in 20. With the
+empty write skipped it passed 100 runs in 100, and a binary with the part cap
+cut still failed at 88 parts.
+| No history in the read deny list | `.bash_history` cut from `linkReadDenyHome` | `TestALinkCannotLookInsideDeniedFolders` (the history was read) | **caught** |
+
+On macOS (the person's MacBook, a scratch clone of d6af80e7 under
+`~/.cache/agent-tmp`, the test harness's own XDG folders), the tests that
+match `TestADarwinCaseFoldedDenyNameIsRefused|TestALink.*|TestTheDrop.*`
+pass: 13 pass, and `TestALinkCannotReadProcOrTheDaemonFolder` skips. The
+control for the darwin test cuts the fold from `denyUnder`, the function the
+deny check calls (an earlier note named `pathUnder`, which is the roots
+check). The copy to `~/.ſsh/authorized_keys` then ended done and APFS wrote
+the attacker's key into `~/.ssh/authorized_keys`: **caught**.
+
+## The review of 217e663d: hard links, the read rename race, claims, revoked copies
+
+The tests are in `file_confine_test.go`, with the far daemon of
+`host_attach_test.go` as build. The protected file is a scratch file in
+build's temporary home folder that holds `ORIGINAL`. The key is a dummy file
+at `~/.ssh/id_ed25519` in that home folder that holds `DUMMY-KEY-MARKER`. No
+test reads or writes a real file of the person who runs the suite. Each test
+saves its record under `TUIOS_E2E_FRAMES`.
+
+- `TestALinkCannotWriteThroughAHardLinkedPart`: a part file in the receive
+  folder is a hard link to the protected file. A write stream into it must be
+  `forbidden`. A rename over the link of a hard link onto a part name, of a
+  plain file onto a part name, and of a part off its name must each be
+  `forbidden`. The protected file must still hold `ORIGINAL`. The positive
+  half: a write into a new part works.
+- `TestALinkReadCannotRaceARename`: the receive folder holds `evil/k`, a
+  symlink to `~/.ssh`, and `good/k/id_ed25519`, a harmless file. This process
+  swaps the two folders under the name `x` in a tight loop while the link
+  reads `x/k/id_ed25519` up to 6000 times or for 60 s. No read may return the
+  dummy key. The reads must see both folders, so the race ran. A Linux run
+  on the fixed build: 6000 reads, 709 harmless, 3541 refused, about 1.4
+  million swaps.
+- `TestOpenLinkWritesCountAgainstTheFreeSpaceReserve`: `files_min_free` is
+  set 1 GiB under the free space of the disk. Two write streams of 768 MiB
+  are opened and nothing is written. The second must be `disk_full` and leave
+  no part. The positive half: once the first stream closes, a third opens.
+- `TestALinkCopyStopsWhenItsFilesCapabilityGoes`: the link starts a copy of
+  2 GiB on build. In one subtest build's daemon is killed with SIGKILL and
+  starts again with `files` taken away from `allow` (relay stays). In the
+  other the copy is paused, `files` is taken away and `tuios config apply`
+  reloads the policy. Both times the copy must end failed as `forbidden`,
+  with nothing in place.
+- `TestALinkListsNoDeniedFolderOutsideTheFileVerbs`: `read-dir`, `wait-dir`
+  and a hand-built binary `MsgReadDir` frame of `~/.ssh` and, on Linux,
+  `/proc/self/fd` must be refused, and must not list the dummy key. The
+  positive half: each lists the home folder.
+- `TestALinkCannotReadAFileWithTwoNames`: the receive folder holds a hard link
+  to the dummy key. `file-read`, `file-hash` and an `open-file-stream` read
+  must be `forbidden`, and a copy of it the link starts must end failed as
+  `forbidden`, with nothing in place. The positive half: a file with one name
+  reads.
+- `TestADarwinLinkCannotReadThroughTheDataVolume` (macOS): a `file-read` of
+  the dummy key, a `file-stat` of it, and a `file-list` and `read-dir` of its
+  folder, each through `/System/Volumes/Data`, must be `forbidden`. The
+  positive half: an ordinary file reads through it.
+
+The Linux controls ran on 2026-10-11 on the fixes of 945b43d3 to 91de7c72,
+each on a binary built with the one change. The driver is
+`~/.cache/agent-tmp/te-sec4/nc/controls.py`, and each log is beside it.
+
+| Control | How | Tests that fail | Verdict |
+| --- | --- | --- | --- |
+| A part with two names is written | `openPart`: the `fileLinks` check made false | `TestALinkCannotWriteThroughAHardLinkedPart` (the write went into the protected file, which then held the payload) | **caught** |
+| A link renames onto and off a part name | `verbFileRename`: the part name check made false | `TestALinkCannotWriteThroughAHardLinkedPart` (all three renames ran; the next write met the hard link and was refused) | **caught** |
+| No check of the opened file by its path | `checkOpenedForLink`: the `fdPath` check made false | `TestALinkReadCannotRaceARename` (the dummy key was read after 1, 10, 18 and 12 reads in four runs) | **caught** |
+| The reserve ignores open claims | `claimLinkWrite`: `fsClaimed` left out of the comparison | `TestOpenLinkWritesCountAgainstTheFreeSpaceReserve` (the second stream opened and left a part) | **caught** |
+| An attempt does not check the capabilities | `attempt`: both `linkAllowed` checks made false | `TestALinkCopyStopsWhenItsFilesCapabilityGoes/on_resume_after_a_restart` (the resumed copy ended done and was put in place) | **caught** |
+| A reload ends no job | `reloadLinkPolicies`: the `failRevoked` call cut | `TestALinkCopyStopsWhenItsFilesCapabilityGoes/after_a_policy_reload` (the copy stayed paused) | **caught** |
+| read-dir without the read check | `verbReadDir`: the check made false | `TestALinkListsNoDeniedFolderOutsideTheFileVerbs` (`~/.ssh` listed the dummy key, `/proc/self/fd` listed) | **caught** |
+| wait-dir without the read check | `verbWaitDir`: the check after the watch starts made false, on 9d8e58fb | `TestALinkListsNoDeniedFolderOutsideTheFileVerbs` (both waits ran) | **caught** |
+| MsgReadDir without the read check | `handleReadDir`: the check made false | `TestALinkListsNoDeniedFolderOutsideTheFileVerbs` (`~/.ssh` and `/proc/self/fd` listed) | **caught** |
+| A link reads a file with two names | `checkOpenedForLink`: the `fileLinks` check made false | `TestALinkCannotReadAFileWithTwoNames` (read, hash and stream answered, and the copy put the dummy key in place) | **caught** |
+
+On macOS the first form of the `wait-dir` check, run before the watch
+started, made `TestFilesFollowAWindowOnAHost` miss a removed file in three
+runs out of three. It passed on 217e663d and on b2dd5b88, and failed on
+91de7c72. The check takes a few milliseconds there, which widened the gap
+after the listing. 9d8e58fb starts the watch first, and the test passed three
+runs out of three.
+
+`commitPart` checks the number of names of a part again before it hashes it.
+No test reaches that check alone, because `openPart` refuses the same part
+first.
+
+On macOS (the person's MacBook, a scratch clone under `~/.cache/agent-tmp`,
+the test harness's own XDG folders), `F_GETPATH` names an open file by its
+short path. A file opened through `/System/Volumes/Data/Users/...` comes back
+as `/Users/...`, and one under `/var/folders` as `/private/var/folders/...`,
+which is also what `EvalSymlinks` gives for the roots. So `files_read_roots`
+keeps matching: `TestALinkReadsOnlyItsReadRoots` passes there. The data
+volume was a hole of its own. `EvalSymlinks` does not follow a firmlink, so
+on 217e663d a path through `/System/Volumes/Data` missed the deny list, and a
+link read and listed the dummy key that way. `realPath` now trims the prefix
+when the short path is the same file. The macOS controls:
+
+| Control | How | Tests that fail | Verdict |
+| --- | --- | --- | --- |
+| No check of the opened file by its path | `checkOpenedForLink`: the `fdPath` check made false | `TestALinkReadCannotRaceARename` (the dummy key was read after 3 reads) | **caught** |
+| A link reads a file with two names | `checkOpenedForLink`: the `fileLinks` check made false | `TestALinkCannotReadAFileWithTwoNames` (read, hash, stream and copy) | **caught** |
+| No data volume trim | `realPath`: the `trimDataVolume` call cut | `TestADarwinLinkCannotReadThroughTheDataVolume` (`file-stat`, `file-list` and `read-dir` showed the dummy key; the read stayed refused by the check after the open) | **caught** |
+| No check after the open, before the trim | `checkOpenedForLink`: the `fdPath` check made false, on e5a21555 | `TestADarwinLinkCannotReadThroughTheDataVolume` (the dummy key was read through the data volume) | **caught** |
+## Snapshot state
+
+`reattach_snapshot_state_test.go` has one test, `TestReattachCarriesSnapshotState`,
+and the snapshot fields it covers have wire and conformance tests in
+`internal/session/snapshot_complete_wire_test.go`, `ghostty_wire_test.go` and
+`internal/vt/conform_snapshot_state_test.go`. On 2026-10-10 each control below
+cut one line, built a binary or ran the named package, and the same tests
+passed on the branch build. The end-to-end test passed five runs in a row on
+the branch build.
+
+| Control: what was cut | Test | Verdict |
+| --- | --- | --- |
+| `t.RestorePendingInput(pending)` in `ApplyTerminalState` | `TestReattachCarriesSnapshotState` (the client reattached at the first stop shows `STOP1 mple.test/LINKTEXT`; the one at the second shows `STOP2  END8`) | **caught** |
+| `t.RestoreTabStops(...)` in `ApplyTerminalState` | `TestReattachCarriesSnapshotState` (the tabs land 8 and 8 columns apart, not 9 and 9) | **caught** |
+| `t.RestoreGuestColors(...)` in `ApplyTerminalState` | `TestReattachCarriesSnapshotState` (REDTEXT is palette colour 1, not the guest's red) | **caught** |
+| `t.RestoreANSIModes(...)` in `ApplyTerminalState` | `TestReattachCarriesSnapshotState` (the row reads `INSrow`, not `INSxyzrow`) | **caught** |
+| `t.RestoreTitles(...)` in `ApplyTerminalState` | `TestReattachCarriesSnapshotState` | **not caught**: the title a client draws follows the daemon's own title for the pane, and the daemon's emulator is never restored on a reattach. The client's stack matters to a daemon that takes over a pane, the live upgrade. `TestWireCarriesTheSnapshotState/*/title-stack-*` cover the wire |
+| `state.PendingInput = t.PendingInput()` in `beginTerminalState` | `TestWireCarriesACutSequence` | **caught** |
+| `t.RestorePendingInput(pending)` in `ApplyTerminalState` | `TestWireCarriesACutSequence`, `TestWireDropsTheClientsOwnCut` | **caught** |
+| `b.Write(st.PendingInput)` in `snapshotVT` | `TestSnapshotVTCarriesTheTabsModesAndACut` | **caught** |
+| The HTS of each stop in `snapshotVT` | `TestSnapshotVTCarriesTheTabsModesAndACut/tabs-*` | **caught** |
+| The ground state check around `p.cmd = int(b)` in `seqParser.performAction` | `TestConform_CSIParameters` (the control inside a CSI erases the screen) | **caught** |
+| `e.notePending(...)` in `Emulator.Write` | `TestSnapshotState_PendingInput` | **caught** |
+| The OSC 2 a pop sends the library (`afterCSI`), `-tags ghostty` | `TestSnapshotState_Titles` | **caught** |
+| `setTabStopLocked` on HTS in `observeESC`, `-tags ghostty` | `TestSnapshotState_TabStops` | **caught** |
+| The library continuation in `GhosttyTerminal.PendingInput`, `-tags ghostty` | `TestGhosttyWireCarriesACutSequence` | **caught** |
+| The scanner's held bytes in `GhosttyTerminal.PendingInput`, `-tags ghostty` | `TestGhosttyWireCarriesACutSequence` | **caught** |
+| The HTS of each stop in the libghostty restore, `-tags ghostty` | `TestGhosttyWireCarriesTheSnapshotState` | **caught** |
+| The insert and newline mode in the libghostty restore, `-tags ghostty` | `TestGhosttyWireCarriesTheSnapshotState` | **caught** |
+| The `holdsC1Introducer` check in `notePending` (2026-10-11) | `TestSnapshotState_PendingInputC1` (five cases keep the bytes from the last ESC, such as `"ab\x9b1;3"`) | **caught** |
+| The open rune's byte count passed to `sequenceStart` (2026-10-11) | `TestSnapshotState_PendingInputC1/a_C1_CSI_after_a_rune_cut_across_writes` (`"\x9b\x9b4"`, want `"\x9b4"`) | **caught** |
+
+### Snapshot state: review fixes
+
+On 2026-10-11 each control below cut one fix, ran the named test, and put
+the fix back. `-tags ghostty` runs the libghostty ones. The same tests passed
+on the branch build. `ghostty cut` is
+`TestGhosttyWireCarriesACutSequenceTheScannerFollows`, which cuts each stream
+in `sameBackendCutStreams` at every byte between two libghostty emulators.
+
+| Control: what was cut | Test | Verdict |
+| --- | --- | --- |
+| The `state == parser.DcsStringState` check in `notePending` (an ESC right after a DCS introducer is payload) | `TestWireCarriesACutSequence/*/dcs-passthrough-*`, `c1-dcs-passthrough` (29 cases; the client's copy differs in 3 places) | **caught** |
+| `isC1Introducer(b)` as a sequence start in `sequenceStart` | `TestSnapshotState_PendingInputC1/a_C1_CSI_right_after_an_ESC` (`"\x1b\x9b("`, want `"\x9b("`) | **caught** |
+| A C0 control inside an escape sequence leaves the scanner's `gsEsc` | ghostty cut `esc-bs-csi` (tab stops: client [], daemon [0 8 16 24 32]) | **caught** |
+| An ESC after an intermediate leaves the scanner's `gsEscInter` at ground | ghostty cut `esc-sp-then-*`, `esc-paren-then-tab-clear` (25 cases) | **caught** |
+| A C0 control after an intermediate leaves `gsEscInter` | ghostty cut `esc-intermediate-lf-charset` | **caught** |
+| The ESC handed over early when it ends a cut UTF-8 character | ghostty cut `hts-after-a-cut-character` (cursor: client (5,0), daemon (6,0)) | **caught** |
+| Autowrap off around the CAN in `dropCutLocked` | `TestGhosttyWireDropsTheClientsCutAtAPendingWrap` (history: client 4 lines, daemon 3) | **caught** |
+| The shadow tab stops reset on DECCOLM in `observeDecMode` | ghostty cut `deccolm-with-mode-40` | **caught** |
+| Mode 40 in `ghosttyModeNumbers` | ghostty cut `deccolm-with-mode-40` (11 cases) | **caught** |
+| `\x1b[4l\x1b[20l` in the extending restore prefix | `TestGhosttyWireRestoresUnderTheClientsInsertMode` (4 cells differ) | **caught** |
+| `highInSequence` (a byte with the top bit set inside a sequence) | ghostty cut `utf8-inside-a-csi` (cursor: client (39,0), daemon (5,0)) | **caught** |
+| The `csiIgnore` check before the CSI hook | ghostty cut `csi-prefix-after-a-parameter` | **caught** |
+| CAN and SUB ending a CSI in the scanner | ghostty cut `csi-cancelled` (tab stops: client [0 8 16 24 32], daemon []) | **caught** |
+| SOS and PM withheld from the library | ghostty cut `sos-holding-0x88` | **caught** |
+| A non-kitty APC withheld from the library | ghostty cut `apc-holding-0x88` | **caught** |
+| The charset filter in `observeESC` (the library ignores a set it does not have) | ghostty cut `unknown-charset` (charsets: client "BBBB", daemon "]BBB") | **caught** |
+| U+FFFD as REP's character after a cut character | ghostty cut `rep-after-a-cut-character` | **caught** |
+| U+FFFD as REP's character after a stray continuation byte | ghostty cut `rep-after-a-stray-byte` | **caught** |
+| DEL as REP's character | ghostty cut `rep-after-del` | **caught** |
+| The ESC that ends a CSI handed over at once | ghostty cut `csi-ended-by-a-kept-osc` (cursor shape: client steady false, daemon steady true) | **caught** |
+
+`TestWireCarriesAnOpenCluster` records a known gap: it fails when the
+snapshot starts to carry an open character cluster.
+
+## ED 2 keeps the program's background (#624)
+
+`TestEraseDisplayKeepsTheProgramBackground` sets a truecolor background, sends
+ED 2, writes one word and holds the screen. It reads cells the program never
+wrote and checks that they carry the program's background. It also checks the
+word's own cell, which is the positive half: the colour reaches the screen at
+all.
+
+The control was run on 2026-10-11 on branch `fix/nvim-erase-background`. It
+builds `cmd/tuios` with the ED 2 case of `eraseDisplay` in
+`internal/vt/csi_screen.go` back on `e.scr.Clear()`, the call it made before
+the fix.
+
+| Control: what was cut | Where it failed | Verdict |
+| --- | --- | --- |
+| ED 2 fills with `e.scr.blankCell()` (back to `e.scr.Clear()`) | "cells the clear painted lost the program's background": all three probes on the terminal's own background | **caught** |
+### tuios call
+
+Run on 2026-10-11 on branch `feat/call-verb`. The control cuts one thing from
+the fixed build and runs `TestCallVerb`.
+
+| Control: what was cut | Tests that fail | Verdict |
+| --- | --- | --- |
+| The params left out of `client.Call` | `TestCallVerb` ("params did not reach the daemon") | **caught** |
+| A fixed 30 s wait in place of the verb's own timeout | `TestCallVerbTransport` (the 32 s wait-for exits 3 at 30 s) | **caught** |
+| `open-pane` left out of the stream verbs | `TestCallVerb` (call open-pane opened a pane) | **caught** |
+| One exit status for every failure | `TestCallVerb` (a stream verb refused with status 1) | **caught** |
+| `TestCallVerbFromAPane` | No control: the refusal is the daemon's, and `call` adds nothing to cut. The test holds that `call` is no way around it. | n/a |
+### pane-view
+
+Run on 2026-10-11 on branch `feat/pane-view`. Each control cuts one thing from
+the fixed build and runs `TestPaneView`.
+
+| Control: what was cut | Tests that fail | Verdict |
+| --- | --- | --- |
+| `queryFilter.Write` returning its input unchanged (the outer terminal sees every request) | `TestPaneView` ("the pane's DA1 request was answered twice") | **caught** |
+| `fit` returning at once (only the lease sizes the pane) | `TestPaneView` ("the pane did not follow the terminal to 160x50, larger than the session") | **caught** |
+
+### pane-view review
+
+Run on 2026-10-11 on branch `feat/pane-view`, after the review of #630. Each
+control cuts one thing from the fixed build and runs the test named.
+
+| Control: what was cut | Tests that fail | Verdict |
+| --- | --- | --- |
+| The `viewer` report left out of the stream-pane call | `TestPaneViewTheme` (light and dark: the pane is told `0000/0000/0000`) | **caught** |
+| `leasedSizeLocked` ignoring `noClients` (fit never sizes the pane) | `TestPaneViewSizes` ("one viewer: the pane is 22 78, want 36 120") | **caught** |
+| `noteTUIClients` left out of `refreshTreeOps` (no refit on attach and detach) | `TestPaneViewSizes` ("a client attached and the pane kept the viewer's size") | **caught** |
+| `signal.Reset` in place of the handler | `TestPaneViewExit` ("SIGTERM left the terminal raw") | **caught** |
+| Every connect error retried | `TestPaneViewGone` (exit after 25 s, want within 10 s) | **caught** |
+| No resume after `the daemon stopped` | `TestPaneViewGone` ("pane-view did not resume after the daemon restarted") | **caught** |
+| The OSC rule back to "ends in `;?`" | `TestPaneViewFilter` ("title ending ;?: nothing reached the terminal") | **caught** |
+| A kitty command keeping its own `q=` | `TestPaneViewFilter` (the terminal got `q=2,a=d,q=1`) | **caught** |
+| The `ctx` check in `exitReason` (a closed window read as `killed 9`) | none in six runs | **not caught**: the stream sees the close first in every run here. One run before the guard gave `killed 9` (137). The guard stays. |

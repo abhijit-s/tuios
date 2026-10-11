@@ -988,6 +988,55 @@ the command fails, and `tuios list-dock-components` says which and why.
 
 `examples/dock/README.md` is the full contract and five working recipes.
 
+## Two sidebar edges
+
+The existing `[appearance.sidebar]` settings still configure the original rail.
+A table for its current edge overrides only the fields it names; the opposite
+edge stays hidden unless explicitly enabled. Each edge can have its own width,
+section order and custom command:
+
+```toml
+[appearance.sidebar]
+position = "right"
+sections = "sessions,terminals,custom"
+
+[appearance.sidebar.custom]
+command = "right-summary"
+
+[appearance.sidebar.left]
+enabled = true
+width = 28
+sections = "sessions,files,custom"
+
+[appearance.sidebar.left.custom]
+command = "left-summary"
+```
+
+`[appearance.sidebar.right]` has the same `enabled`, `width`, `sections` and
+`custom` keys. On the original edge, omitted keys retain the legacy settings;
+on the other edge, an omitted `sections` uses the default section order.
+Writing an edge table without `enabled = true` does not enable that edge.
+With `position = "hidden"`, explicitly enabled edge tables still draw: if
+both edges are enabled, the left one supplies the primary rail settings and
+the right one supplies the opposite rail settings. Unset fields on those
+explicit edges use the edge defaults; they do not inherit a hidden legacy
+width, section order or custom command. The file's hidden legacy position is
+not rewritten.
+Both rails can show the same built-in sections: they use the same sessions,
+focused pane's directory listing and repository reading, but have independent
+section scrolling, keyboard focus and pointer hit areas. A custom command on
+each edge runs independently: `rail/custom` belongs to the original rail and
+`rail/secondary/custom` to the other. These edge tables are file-only, not
+`set-option` targets, because custom commands execute outside panes.
+
+On narrow screens, the optional edge contracts before the original rail; both
+may hide to leave room for the panes. Resizing either rail by dragging its
+inner border changes only that edge for this client. In sidebar keyboard focus,
+`e` moves focus to the other visible edge (and back); `Ctrl+B H` independently
+hides or shows the opposite edge, while `Ctrl+B b` keeps its existing legacy
+rail toggle. The opposite-edge toggle does not opt in an edge whose
+`enabled = true` was never configured.
+
 ## The rail's custom section
 
 The rail has one section whose rows are the output of a command you write.
@@ -1569,12 +1618,80 @@ allow = ["list", "mail"]
 | `open` | Start processes: sessions, windows, worktrees, fans, `start-agent`, clones of a repository by its URL, and panes this machine runs for it. |
 | `write` | Change what is here: type into panes, `run` a line at a prompt, close and move windows, set options, layouts and names, report agent state, and attach. Also read a worktree's work out with `bundle-worktree` (`tuios worktree pull`), since a machine that may type into a shell here can read those files already. |
 | `respond` | Answer for the person: prompts, held approvals, `ask-human` questions, dismissing Inbox items, and passing on held mail. Also type into a pane that waits on a prompt, from a pane on the other machine. The person on the other machine, outside every pane, needs only `write` for that. |
+| `files` | Read and write files here with the file verbs: a file's bytes, copies in and out (`transfer-start` on the other machine), new folders, moves and removes. It is apart from `write`, so you can stop one machine's copies and keep its typing. A write that arrives over the link lands only in the folders of `files_roots` (the receive folder unless you add more, see below), and the drop folder for dropped files, never in `~/.ssh`, `~/.gnupg`, credentials, shell start files, login items or tuios's own config, whatever `allow` and `files_roots` say. A read never returns keys or credentials. See [protocol.md](protocol.md#files-and-transfers). |
 
-With no table, a machine may `list`, `mail`, `open` and `write`, which is what
-every link could do before the policy existed. `respond` is opt-in. Relaying on
-to this machine's own hosts needs all five, because the next machine sees the
-relay as coming from this one. An `allow` that is set replaces the inherited
+With no table, a machine may `list`, `mail`, `open`, `write` and `files`,
+which is what every link could do before the policy existed. `respond` is
+opt-in. Relaying on to this machine's own hosts needs the five capabilities a
+link had before `files` (`list`, `mail`, `open`, `write`, `respond`), because
+the next machine sees the relay as coming from this one; a table written for an
+older tuios that allows those five still relays. A copy this machine runs for
+another one also needs `files`. A table that sets `allow` without `files` keeps
+that machine from the file verbs. An `allow` that is set replaces the inherited
 list; `allow = []` allows nothing but `hello`.
+
+**Where a link may write: `files_roots`.** A machine with `files` writes only
+under the folders `files_roots` names, plus the drop folder. Unset, it is one
+receive folder: `~/Downloads/tuios` on macOS and Windows, and
+`$XDG_DOWNLOAD_DIR/tuios` (or `~/Downloads/tuios`) on other systems. tuios
+makes it on first use. Widen it on purpose, per machine:
+
+```toml
+[hosts.laptop]
+allow = ["list", "files"]
+files_roots = ["~/Downloads/tuios", "~/dev"]
+```
+
+A path is absolute or starts with `~`. `files_roots = ["~"]` lets the machine
+write anywhere in your home folder; the deny list below still holds inside
+every root, so even then it cannot touch `~/.ssh` or a shell start file. A
+write outside the roots is refused, and the refusal says where writes may land
+and which setting to change. A reload that widens `files_roots`, like one that
+widens `allow`, waits for `tuios config apply`.
+
+**Where a link may read: `files_read_roots`.** Unset, a machine with `files`
+reads any file you can read, apart from the read deny list: keys, credentials,
+keyrings, shell histories, browser profiles, `/proc` and tuios's own state. A
+deny list can never name every secret on a machine. Set `files_read_roots` to
+hold reads to the folders you name, plus the folders the machine may write.
+That is the stronger choice:
+
+```toml
+[hosts.laptop]
+files_read_roots = ["~/share"]
+```
+
+The rule covers `file-read`, `file-hash`, `file-walk`, a copy out, and the
+names and sizes `file-stat` and `file-list` show. The read deny list still
+holds inside every root. A file with more than one name (a hard link) is never
+read over a link, inside a root or outside one. Copy it to a new file to share
+it. A reload that removes or widens `files_read_roots`
+waits for `tuios config apply`. A reload that narrows it applies at once.
+
+**How much a link may write.** A write over a link must leave
+`files_min_free` free on its disk: `"1GiB"` unless you set it. The value is a
+whole number with `B`, `KB`, `MB`, `GB`, `TB`, `KiB`, `MiB`, `GiB` or `TiB`.
+`"0"` turns the check off, and a reload that lowers it waits for
+`tuios config apply`. A write that does not fit is refused as
+`disk_full` before a byte moves. One machine may have at most 8 write streams
+and 64 unfinished part files here at once. Past that, a write is `busy`, and
+a copy waits and tries again. The drop folder holds at most 256 MiB for all
+drops together, and a machine writes there only inside a drop that
+`file-drop-dir` made.
+
+```toml
+[hosts."*"]
+files_min_free = "5GiB"
+```
+
+A copy that another machine starts here with `transfer-start` or `drop-files`
+is held to these rules too, also after tuios restarts. When a reload or a
+restart takes `files` away from that machine, its copies here stop.
+
+> **Trust.** A machine with `files` can write any file inside its roots and
+> read any file outside the deny list (or inside `files_read_roots`). A file copy is a way to run code: a
+> binary dropped on your `PATH`, a config a program reads. Give `files`, and a
+> wide `files_roots`, only to machines you trust as you trust your own.
 
 `hold_mail` holds mail from that machine to any agent here in your Inbox,
 marked `held for NAME`, until you pass it on with `p` there (or

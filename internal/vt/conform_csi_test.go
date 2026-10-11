@@ -3,6 +3,8 @@ package vt_test
 import (
 	"strings"
 	"testing"
+
+	"github.com/charmbracelet/x/ansi"
 )
 
 // CSI parameter parsing and cursor motion. Parameters are where a guest's
@@ -81,6 +83,28 @@ func TestConform_CSIParameters(t *testing.T) {
 			cursor:    "3,0",
 			want:      "Hxy",
 			unhandled: true,
+		},
+		{
+			// A C0 control inside a CSI is carried out where it is, and the
+			// CSI goes on to its final byte, as in xterm. The parser used to
+			// fold the control into the command, so this CUP with a line
+			// feed inside it came out as ED 2 and erased the x.
+			name:   "a control inside a CSI is carried out and the CSI goes on",
+			in:     "x\x1b[2\n;3Hy",
+			cursor: "3,1",
+			want:   "x\n  y",
+		},
+		{
+			name:   "a backspace inside a CSI is carried out and the CSI goes on",
+			in:     "ab\x1b[\x08CZ",
+			cursor: "3,0",
+			want:   "abZ",
+		},
+		{
+			name:   "a control inside an escape sequence leaves its intermediate",
+			in:     "\x1b(\n0q",
+			cursor: "1,1",
+			want:   "\n─",
 		},
 		{
 			name:   "an ESC inside a sequence starts a new one",
@@ -271,6 +295,16 @@ func TestConform_Erase(t *testing.T) {
 			in:     fill + "\x1b[2;3H\x1b[2J",
 			cursor: "2,1",
 			want:   "",
+		},
+		{
+			// ED 2 erases to the pen's background, as ED 0, ED 1 and EL do.
+			// neovim clears with its colour scheme's background set and then
+			// draws only its text, so a clear to the default background left
+			// every cell past the text in the host's colour (#624).
+			name:  "ED 2 erases to the current background",
+			in:    fill + "\x1b[41m\x1b[2J",
+			want:  "",
+			cells: []cellWant{{x: 0, y: 0, bg: ansi.Red}, {x: 5, y: 3, bg: ansi.Red}},
 		},
 		{
 			name: "EL ignores the scroll region",

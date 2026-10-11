@@ -106,9 +106,9 @@ const (
 	// directory did not exist. The daemon that owns the pane owns the
 	// filesystem the pane is on, so the listing is asked for rather than taken.
 	//
-	// It carries no new authority over a link. Attaching a session on a host
-	// already gives a shell on it, and reading the names in a directory is
-	// strictly less than that.
+	// Over a link it keeps to the read rules file-list keeps to
+	// (verb_files_confine.go). A machine that may list panes is not thereby
+	// one that may list ~/.ssh or /proc.
 	MsgReadDir
 	MsgDirListing
 	// MsgClientFocus reports whether the host terminal of a TUI client has
@@ -690,11 +690,15 @@ type PTYResizedPayload struct {
 // A push carries either a stored message or a read receipt, never both. The
 // receipt lists the ids a read just marked read, so the count a client draws
 // beside a pane's inbox follows the agent actually reading rather than the
-// client's guess.
+// client's guess. A seen receipt lists the ids a peek just marked seen, in
+// SeenIDs. A client that does not know the field sees an empty push and
+// ignores it, and keeps counting the message unread, which it still is.
 type AgentMailPayload struct {
 	Message AgentMessage `json:"message"`
 	ReadIDs []uint64     `json:"read_ids,omitempty"`
 	ReadAt  int64        `json:"read_at,omitempty"`
+	SeenIDs []uint64     `json:"seen_ids,omitempty"`
+	SeenAt  int64        `json:"seen_at,omitempty"`
 }
 
 // UnsubscribePTYPayload requests unsubscribing from PTY output.

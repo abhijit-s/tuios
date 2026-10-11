@@ -2901,6 +2901,104 @@ tuios pip agent
 tuios pip --off
 ```
 
+### `tuios call`
+
+Send one verb to the daemon and print its reply as JSON.
+
+**Usage:**
+```bash
+tuios call <verb> [params]
+```
+
+`params` is a JSON object, or `-` to read it from standard input. Omit it for
+a verb that takes none. The reply is the daemon's result object as it is.
+
+Use it from a program that can start a process but cannot write to the
+socket, such as a Tern plugin. The daemon checks the call as it checks any
+other, so a pane is held to its grants, and the verbs only the person may
+call stay refused from a pane. `tuios list-verbs` lists every verb.
+
+`call` refuses the verbs that hold the connection open after their reply:
+`subscribe` (use `tuios subscribe`), `stream-pane`, `open-file-stream`,
+`open-pane`, `pane-calls`, `link-peer` and `open-host-connection`.
+
+The call waits 30 seconds, or for the verb's own `timeout` param (in
+milliseconds) and 10 seconds more. `--timeout` sets the wait.
+
+Exit status:
+- 1: the daemon answered with an error, printed as `{"error": {"code", "message", "hint"}}`
+- 2: the arguments or params are wrong
+- 3: the daemon could not be reached, or did not answer in time
+
+**Flags:**
+- `--pretty`: Indent the JSON
+- `--json`: Print bad input and transport errors as JSON too, with the code `invalid_input` or `transport`
+- `--timeout <duration>`: How long to wait for the reply
+
+**Examples:**
+```bash
+# Every session, as the daemon reports it
+tuios call list-sessions
+
+# A verb with params
+tuios call list-windows '{"session":"work"}'
+```
+
+### `tuios pane-view`
+
+Show one pane in this terminal, with no tuios around it.
+
+**Usage:**
+```bash
+tuios pane-view -w <window> [flags]
+```
+
+The pane's output goes to this terminal as it is. What you type goes to the
+pane, Ctrl-C included. A terminal that draws its own panes, such as Tern, runs
+one `pane-view` for each tuios pane. Each pane then gets the terminal's own
+scrollback, selection and search.
+
+`pane-view` does not attach. It reads the pane through `stream-pane`, so the
+session's clients do not change. The daemon answers the requests a program
+sends to its terminal, so `pane-view` keeps them from the outer terminal,
+which would answer them a second time.
+
+With `--size follow` (the default), the pane takes this terminal's size while
+no tuios client shows the session. With several viewers, the largest decides.
+When the last viewer leaves, the pane goes back to its own size. While a
+client shows the session, the pane only gets smaller to fit this terminal.
+With `--size pane`, the pane keeps its size and only gets smaller. The daemon
+makes these decisions, so a client that attaches or detaches, or a rename,
+changes the size at once.
+
+At start, `pane-view` asks this terminal for its colours and graphics, and
+tells the daemon. While no tuios client shows the session, a program in the
+pane that asks (OSC 10, 11 and 4, DA1, the kitty graphics query) gets this
+terminal's answers.
+
+Close the terminal to stop viewing. The pane and its session keep running.
+After a daemon restart, `pane-view` resumes on the new daemon.
+
+Exit status:
+- the status of the pane's program when it exits
+- 128 plus the signal that ended the pane's program, or ended `pane-view`
+- 3 when the pane's window closes while its program runs
+- 1 for an error, such as a pane or session that does not exist
+
+**Flags:**
+- `-s, --session <name>`: Target session (default: most recently active)
+- `-w, --window <window>`: The pane to show, by ID or name
+- `--size follow|pane`: Whether the pane takes this terminal's size (default: follow)
+
+**Examples:**
+```bash
+# Show the pane named build of the session work
+tuios pane-view -s work -w build
+
+# Keep the pane at the size the session gives it
+tuios pane-view -s work -w build --size pane
+```
+
 ### `tuios list-windows`
 
 List all windows in a TUIOS session.
@@ -3376,7 +3474,7 @@ Some commands also answer to a short name: `attach` to `a`, `new` to `n`,
 | `tuios set-agent-session <id> --harness <h>` | Record which conversation a pane's agent runs, for a later resume, without changing its state |
 | `tuios resume-agent [-w pane] [--dry-run]` | Type the pane's recorded conversation's resume command into its shell, after a daemon restart |
 | `tuios send-agent-message <text>` | Leave a message in another agent's inbox, or post a notice to the session. `--from human` from inside a pane is refused with `forbidden`: only the person at an attached client can send as `human` (see [Who can act as the person](AGENT_STATE.md#who-can-act-as-the-person)). With `-s HOST:SESSION` and that host's link down, the message waits on this machine and goes when the link is back; the Inbox shows it under Waiting to send. `--select` sends one message to every agent pane a selector matches, after listing them: it asks at a terminal, and takes `--yes` or `--confirm TOKEN` otherwise. `--subject` gives it a one-line subject (at most 120 characters), `--reply-to ID` joins that message's thread, and `--attach PATH` (absolute, repeatable, at most 8) attaches files |
-| `tuios read-agent-messages` | Read the messages agents have left in this session. Each body prints inside the untrusted fence, and every body line starts with `│ `, as in `ask-agent` replies and `peek-prompt`. Reading `-w human` from inside a pane is always a peek. `--unread` shows only unread messages, `--peek` reads without marking anything read, and `--notices` includes the session-wide notices |
+| `tuios read-agent-messages` | Read the messages agents have left in this session. Each body prints inside the untrusted fence, and every body line starts with `│ `, as in `ask-agent` replies and `peek-prompt`. Reading `-w human` from inside a pane is always a peek. `--unread` shows only unread messages, `--peek` reads without marking anything read, except that a peek by a pane of its own inbox (`-w "$TUIOS_PANE_ID"`) marks its unread messages seen, so the sender can tell they were looked at. A peek of another pane's inbox marks nothing, `--notices` includes the session-wide notices |
 | `tuios ask-agent <text>` | Ask another agent a question and wait for its answer. Fails with `prompt_stalled` when the target shows no sign of taking the question within `--stall-timeout` (5000 ms) of Enter. `--select` asks every agent pane a selector matches, at most 16 at once, after the same confirmation as `send-agent-message --select`; a pane on `needs_input` is refused in its own row. `--settle MS` (2000) is the silence that counts as finished for a pane that reports no state; `--allow-blocked` types at a target on `needs_input`, answering its prompt |
 | `tuios queue <text>` | Leave a message for an agent that is typed as a prompt when it comes to rest, never over a prompt it waits on and never twice. `queue ls` lists what waits, `queue rm ID` or `queue rm --all -w PANE` drops it. See [`tuios queue`](#tuios-queue) |
 | `tuios review [SESSION]` | Show what the agent in a pane changed against its base, with the notes left on it. `review note FILE:LINE TEXT` leaves one, `review notes` lists them, `review send` sends the unsent ones to the agent as one queued message. See [`tuios review`](#tuios-review) |
@@ -3468,7 +3566,7 @@ there.
 Show a QR code that adds this machine to a phone. You do not copy a key by hand.
 
 ```
-tuios pair [--name DEVICE] [--machine NAME] [--allow list,mail,open,write,respond] [--timeout 5m]
+tuios pair [--name DEVICE] [--machine NAME] [--allow list,mail,open,write,respond,files] [--timeout 5m]
            [--listen HOST:PORT] [--listen-all] [--accept-local] [--authorized-keys PATH]
            [--advertise-ssh HOST:PORT,...] [--advertise-pair HOST:PORT,...]
            [--ssh-port 22] [--host-key PATH] [--command PATH] [--yes] [--json]
@@ -3522,7 +3620,7 @@ is in use when:
 |------|--------------|
 | `--name DEVICE` | The device name. It replaces the name the phone sends. Use letters, digits, dot, dash and underscore |
 | `--machine NAME` | The machine name in the code. The phone shows it. The default is the host name, up to the first dot |
-| `--allow LIST` | The `allow` list of the new `[hosts.DEVICE]` table. The default is `list,mail` |
+| `--allow LIST` | The `allow` list of the new `[hosts.DEVICE]` table. The default is `list,mail`. `files` lets the device read and write files here; a write from it lands only under the device's `files_roots` (the receive folder `~/Downloads/tuios` unless you add more in `config.toml`) and never in keys, credentials or shell start files |
 | `--timeout D` | The time the code works. The default is 5 minutes. The maximum is 1 hour |
 | `--listen HOST:PORT` | Listen on this address. Port 0 picks a free port. Without it, tuios listens on each address in the code |
 | `--listen-all` | Let the listener use every interface, as `0.0.0.0` or `[::]` do, or a public address. tuios prints a warning for every interface |
