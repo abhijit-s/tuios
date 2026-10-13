@@ -14,6 +14,7 @@ import (
 
 	"github.com/Gaurav-Gosain/tuios/internal/config"
 	"github.com/Gaurav-Gosain/tuios/internal/mcp"
+	"github.com/Gaurav-Gosain/tuios/internal/serverscope"
 	"github.com/Gaurav-Gosain/tuios/internal/session"
 	"github.com/spf13/cobra"
 )
@@ -114,7 +115,7 @@ func mcpSocketPath() (string, error) {
 	if _, statErr := os.Stat(path); statErr == nil || os.Getenv("XDG_RUNTIME_DIR") != "" || runtime.GOOS != "linux" {
 		return path, nil
 	}
-	alt := filepath.Join("/run/user", strconv.Itoa(os.Getuid()), "tuios", "tuios.sock")
+	alt := filepath.Join(serverscope.SocketDir(filepath.Join("/run/user", strconv.Itoa(os.Getuid()), "tuios")), "tuios.sock")
 	if _, err := os.Stat(alt); err == nil {
 		return alt, nil
 	}

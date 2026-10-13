@@ -4400,3 +4400,16 @@ control cuts one thing from the fixed build and runs the test named.
 | The OSC rule back to "ends in `;?`" | `TestPaneViewFilter` ("title ending ;?: nothing reached the terminal") | **caught** |
 | A kitty command keeping its own `q=` | `TestPaneViewFilter` (the terminal got `q=2,a=d,q=1`) | **caught** |
 | The `ctx` check in `exitReason` (a closed window read as `killed 9`) | none in six runs | **not caught**: the stream sees the close first in every run here. One run before the guard gave `killed 9` (137). The guard stays. |
+
+### tuios --server
+
+Run on 2026-10-12 on macOS. Each control cuts one wire from the fixed build and
+runs `TestNamedServersAreIsolated`, `TestKillServerStopsOnlyTheNamedDaemon` and
+`TestServerNamesAreChecked`.
+
+| Control: what was cut | Tests that fail | Verdict |
+| --- | --- | --- |
+| The root command's `PersistentPreRunE` returning nil in place of `serverscope.Apply` (the flag is parsed and ignored) | all three: every server lists every session, no `servers/foo` socket, foo's pane has no `TUIOS_SERVER`, `--server ../escape` is not refused | **caught** |
+| `main` validating `TUIOS_SERVER` without applying it | `TestNamedServersAreIsolated`, `TestKillServerStopsOnlyTheNamedDaemon` ("create foo's session": the daemon tuios starts never takes the name and cannot bind) | **caught** |
+| `sockpath.Dir` returning `BaseDir` (one socket for every server) | all three: every server lists every session, no per-server socket or state, `ok_name-1` gets no socket folder | **caught** |
+| `tuiosOwnDirs` denying the scoped `xdg.StateHome/tuios` and not `tuios-servers` (unit test in `internal/session`, a security boundary) | `TestLinkDenyCoversEveryServersState`: a link to foo may write the default server's grants record, and every link may reach bar's daemon log | **caught** |

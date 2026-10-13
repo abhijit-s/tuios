@@ -28,10 +28,18 @@ func GetSocketPath() (string, error) {
 // defaultSocketPath is the daemon socket the environment's directories name.
 func defaultSocketPath() (string, error) {
 	// $XDG_RUNTIME_DIR/tuios when there is a runtime directory, and
-	// /tmp/tuios-$UID otherwise.
+	// /tmp/tuios-$UID otherwise. A named server's folder is inside that one,
+	// <that folder>/servers/<name>, and each folder down to it is checked:
+	// whoever controls a parent can replace the child.
 	socketDir := sockpath.Dir()
-	if err := ensureSocketDir(socketDir); err != nil {
-		return "", err
+	dirs := []string{socketDir}
+	if base := sockpath.BaseDir(); base != socketDir {
+		dirs = []string{base, filepath.Dir(socketDir), socketDir}
+	}
+	for _, dir := range dirs {
+		if err := ensureSocketDir(dir); err != nil {
+			return "", err
+		}
 	}
 	return filepath.Join(socketDir, "tuios.sock"), nil
 }
