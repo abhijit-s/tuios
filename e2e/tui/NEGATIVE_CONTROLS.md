@@ -4786,3 +4786,11 @@ Not covered here: the far OS (`os` in `hello`) picks `cmd /C` only for a
 Windows host, which this suite cannot run. The longer pending time and the
 answer to "already has a scratch terminal" need a create whose answer is lost
 on the link, which this suite cannot make on demand.
+The `ClearDropZone` calls (press, release, lost release) have no control. Without them a stale highlight shows on a press until the first motion recomputes it, and the last drop's target pane is kept alive until the next drag; no test here makes two drags in one session or inspects memory.
+### Rail git section on one line
+
+Run on 2026-10-13 on macOS. The tests are in `rail_git_overflow_test.go`. The fixture (`sections = "sessions,custom:99,git:1"` on a 120x40 screen) gives the git section one line for its repository and branch rows. Each control cuts one wire from the fixed build, builds it, restores the source, and runs the test against the cut binary; the fixed build passes both tests.
+
+| Control: what was cut | Test that fails | Verdict |
+| --- | --- | --- |
+| The `+N` tail of `drawGit` (`if h := hidden[sidebarSectionGit]; h > 0 { ... overflowRow ... }`) | `TestRailGitOneLineOwnsUpToItsRows` ("the git section on one line does not end in +2") | **caught** |
