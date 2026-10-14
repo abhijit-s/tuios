@@ -26,30 +26,10 @@ func spaceLayoutRail(mode string) string {
 	return rail + "spaces = '" + mode + "'\n"
 }
 
-// railHeaderRow is the screen row of a section's header: the row whose first
-// word is the label, where a session or space row starts with its glyph. -1
-// when not drawn.
-func railHeaderRow(s tuitest.Screen, label string) int {
-	_, rows := s.Size()
-	for r := range rows {
-		if f := strings.Fields(railRowText(s, r)); len(f) > 0 && f[0] == label {
-			return r
-		}
-	}
-	return -1
-}
-
 // railFocusMarked reports whether a rail row wears the focus mark in its
 // gutter.
 func railFocusMarked(s tuitest.Screen, row int) bool {
 	return row >= 0 && strings.HasPrefix(railLine(s, row), "▎")
-}
-
-// railRowText is a rail row with the gutter, the edge rule and the padding
-// taken off.
-func railRowText(s tuitest.Screen, row int) string {
-	line := strings.TrimSuffix(strings.TrimRight(railLine(s, row), " "), "│")
-	return strings.TrimSpace(strings.TrimPrefix(line, "▎"))
 }
 
 // sessionsListed is which of the fixture's sessions the sessions section lists,
