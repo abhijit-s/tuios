@@ -4813,3 +4813,15 @@ Run on 2026-10-14 on macOS, on the change rebased onto the current main. The tes
 The rounding control does not fail the terminals subtest: 14 rows on 6 lines give a 3-line thumb over 3 lines of travel and 8 rows of scroll, and one notch rounds to `roundDiv(9, 8) = 1`, a middle position without the clamp. The custom fixture is the one sized to need it.
 
 `TestNarrowRailKeepsWhatAnAgentIsDoing` is unchanged and runs at the default 24-column rail. Its agents section overflows there, so it is also what keeps the thumb from costing a row its width.
+
+## Rail peek holds the terminals height
+
+Run on 2026-10-14 on macOS on branch `pr/rail-peek-hold`, from upstream `main` (`2b6578f8`). The test is `TestRailPeekHoldsTheTerminalsHeight` in `rail_peek_hold_test.go`, with the section order `terminals,spacer:5,agents,spacer:5,sessions,spacer:5,git,files`. The attached session `pk-main` has three panes, `pk-few` one and `pk-many` six. The pointer hovers the session rows in the order main, few, many, few, main, many, and after every hover every session row and every header must be on the row it held at rest. A build of upstream `main` itself fails it with the same message as the first two controls. Each control cuts one wire from the fixed build, builds it, and runs the test.
+
+| Control | Build | Tests that fail | Verdict |
+| --- | --- | --- | --- |
+| None: upstream `main` | `2b6578f8` | `TestRailPeekHoldsTheTerminalsHeight` ("hovering pk-few moved pk-main from row 7 to row 5") | **caught** |
+| The hold: the budget counts the peeked session's rows (`if false && len(resting) > 0` in `sidebarPanelLinesForTree`) | mutant of this branch | the same, with the same message | **caught** |
+| The padding: the held lines a shorter peek leaves are not filled (`for false && len(lines) < end` in `drawTerminals`) | mutant of this branch | the same, with the same message | **caught** |
+| The peek's own list never takes over the section's rows (`if false && peeking && rowsIn[...] > 0`) | mutant of this branch | the same test ("hovering pk-few: the terminals header naming it is false, want true": the peek never draws) | **caught** |
+| The positive half | this branch | none: every hover names the session on the terminals header, `pk-few` draws one pane and two blank lines, `pk-many` ends the section in `+4`, and leaving the rail ends the peek | **guard** |
