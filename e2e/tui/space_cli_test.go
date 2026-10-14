@@ -2,8 +2,6 @@ package tuie2e
 
 import (
 	"encoding/json"
-	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -14,17 +12,6 @@ import (
 // the grouped tuios ls. The data model and list-spaces are space_test.go's.
 
 // newInSpace makes a detached session filed under space with tuios new.
-func newInSpace(t *testing.T, base, name, space string) {
-	t.Helper()
-	out, err := tuiosCLI(t, base, "new", name, "--detach", "--space", space)
-	if err != nil {
-		t.Fatalf("tuios new %s --space %s: %v: %s", name, space, err, out)
-	}
-	if !strings.Contains(out, "in space '"+space+"'") {
-		t.Fatalf("ASSERTION: tuios new --space did not say the session is in space %s: %s", space, out)
-	}
-}
-
 // wantSpaces fails unless list-spaces holds exactly want, members sorted.
 func wantSpaces(t *testing.T, base, when string, want map[string][]string) {
 	t.Helper()
@@ -63,50 +50,6 @@ func liveSessions(t *testing.T, base string) []string {
 	}
 	slices.Sort(names)
 	return names
-}
-
-// TestNewSpaceFilesTheSession: tuios new --space files the session under the
-// space as it is made, detached and attached, and a name the space rules
-// refuse makes no session at all.
-//
-// How it could pass wrongly, and what stops it:
-//   - the flag parsed and dropped: list-spaces must hold the sessions, which
-//     only the daemon's own record can say.
-//   - the space set on the detached path only: the attached form is checked
-//     too, through a real client.
-//   - a bad space refused after the session was made: the listing must not
-//     hold the session afterwards.
-//
-// NEGATIVE CONTROLS (e2e/tui/NEGATIVE_CONTROLS.md, "Space CLI").
-func TestNewSpaceFilesTheSession(t *testing.T) {
-	base := t.TempDir()
-	killDaemon(t, base)
-
-	newInSpace(t, base, "e2e-api", "payments")
-	if out, err := tuiosCLI(t, base, "new", "e2e-loose", "--detach"); err != nil {
-		t.Fatalf("create e2e-loose: %v: %s", err, out)
-	}
-	wantSpaces(t, base, "after tuios new --space --detach", map[string][]string{"payments": {"e2e-api"}})
-
-	out, err := tuiosCLI(t, base, "new", "e2e-bad", "--detach", "--space", "bad/name")
-	if err == nil {
-		t.Fatalf("ASSERTION: tuios new --space bad/name succeeded: %s", out)
-	}
-	if slices.Contains(liveSessions(t, base), "e2e-bad") {
-		t.Fatalf("ASSERTION: a refused space still made the session e2e-bad")
-	}
-	if out, err := tuiosCLI(t, base, "new", "e2e-glob", "--global", "--space", "payments"); err == nil {
-		t.Fatalf("ASSERTION: tuios new --global --space succeeded, but the global path does not take a space: %s", out)
-	}
-
-	// An attached tuios new makes the session empty and the client opens its
-	// first window, as the option says. --space keeps that.
-	writeConfig(t, base, "[startup]\nopen_default_window = true\n")
-	term := startIn(t, base, startOpts{args: []string{"new", "e2e-live", "--space", "payments"}})
-	waitWindowCount(t, term, 1, "the attached space session's first window")
-	clientShows(t, base, "e2e-live")
-	wantSpaces(t, base, "after an attached tuios new --space", map[string][]string{"payments": {"e2e-api", "e2e-live"}})
-	saveFrame(t, term, "new-space-attached")
 }
 
 // TestRenameSpaceMovesEveryMember: rename-space moves every session of a
@@ -286,87 +229,4 @@ func TestSwitchSpaceLandsOnTheLastUsedSession(t *testing.T) {
 	}
 	clientShows(t, base, "e2e-b")
 	saveFrame(t, term, "switch-space")
-}
-
-// TestLsGroupsSessionsBySpace: tuios ls draws one table per space, in name
-// order, and the sessions in no space last. ls --json stays a flat list with
-// each row's space, and with no space anywhere ls has no headings at all.
-//
-// How it could pass wrongly, and what stops it:
-//   - headings printed over one table of every session: each session must
-//     come after its own heading and before the next one.
-//   - the grouping applied to --json too: the JSON must decode as a flat
-//     array of rows.
-//   - headings with no spaces at all, which changes every existing listing:
-//     ls is read once before any session is in a space.
-//
-// The grouped listing is written to the test's artifact directory.
-//
-// NEGATIVE CONTROLS (e2e/tui/NEGATIVE_CONTROLS.md, "Space CLI").
-func TestLsGroupsSessionsBySpace(t *testing.T) {
-	base := t.TempDir()
-	killDaemon(t, base)
-
-	if out, err := tuiosCLI(t, base, "new", "e2e-loose", "--detach"); err != nil {
-		t.Fatalf("create e2e-loose: %v: %s", err, out)
-	}
-	out, err := tuiosCLI(t, base, "ls")
-	if err != nil {
-		t.Fatalf("ls: %v: %s", err, out)
-	}
-	if strings.Contains(out, "Space:") || strings.Contains(out, "No space") {
-		t.Fatalf("ASSERTION: with no session in a space, ls shows space headings:\n%s", out)
-	}
-
-	// Made out of name order, so the listing's order is ls's own.
-	newInSpace(t, base, "e2e-zulu", "zeta")
-	newInSpace(t, base, "e2e-alpha-1", "alpha")
-	newInSpace(t, base, "e2e-alpha-2", "alpha")
-
-	out, err = tuiosCLI(t, base, "ls")
-	if err != nil {
-		t.Fatalf("ls: %v: %s", err, out)
-	}
-	if err := os.WriteFile(filepath.Join(artifactDir(t), "ls-grouped.txt"), []byte(out), 0o644); err != nil {
-		t.Logf("could not save the listing: %v", err)
-	}
-	// Each line in the order it must appear. A session name must sit between
-	// its own heading and the next.
-	order := []string{"Space: alpha", "e2e-alpha-1", "e2e-alpha-2", "Space: zeta", "e2e-zulu", "No space", "e2e-loose"}
-	at := 0
-	for _, want := range order {
-		i := strings.Index(out[at:], want)
-		if i < 0 {
-			t.Fatalf("ASSERTION: ls does not list %q after what comes before it in %v:\n%s", want, order, out)
-		}
-		at += i + len(want)
-	}
-	if strings.Count(out, "e2e-zulu") != 1 || strings.Count(out, "e2e-loose") != 1 {
-		t.Fatalf("ASSERTION: a session is listed more than once:\n%s", out)
-	}
-
-	raw, err := tuiosCLI(t, base, "ls", "--json")
-	if err != nil {
-		t.Fatalf("ls --json: %v: %s", err, raw)
-	}
-	var rows []struct {
-		Name  string `json:"name"`
-		Space string `json:"space"`
-	}
-	if err := json.Unmarshal([]byte(raw), &rows); err != nil {
-		t.Fatalf("ASSERTION: ls --json is not a flat list of sessions: %v\n%s", err, raw)
-	}
-	got := map[string]string{}
-	for _, r := range rows {
-		got[r.Name] = r.Space
-	}
-	want := map[string]string{"e2e-loose": "", "e2e-zulu": "zeta", "e2e-alpha-1": "alpha", "e2e-alpha-2": "alpha"}
-	if len(got) != len(want) {
-		t.Fatalf("ASSERTION: ls --json lists %v, want %v", got, want)
-	}
-	for name, space := range want {
-		if sp, ok := got[name]; !ok || sp != space {
-			t.Fatalf("ASSERTION: ls --json lists %v, want %v", got, want)
-		}
-	}
 }

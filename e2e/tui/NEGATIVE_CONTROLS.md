@@ -7017,9 +7017,14 @@ light `1` for Latte. Run on 2026-10-18.
 | --- | --- | --- | --- |
 | A served client runs the operator's hook | `noteThemeChange`: the `m.Client != ClientLocal` check cut | `TestServedClientsDoNotRunTheThemeHook` ssh and web rows ("the hook ran 1 times for a theme change in a ssh client, want 0") | **caught** |
 | The light flag uses another rule | `noteThemeChange`: the `vt.IsLightBackground` result inverted | `TestServedClientsDoNotRunTheThemeHook` local row (light "0" for Latte) | **caught** |
+| The whole fix (the build at the pull request's head: the landing rectangle cached on the target and the edge only) | `TestTheDropZoneFollowsTheTreeUnderAHeldDrag/held-still` and `/after-a-motion`, both with "outline cell (0,28) of the landing rectangle {... X:0 Y:0 Width:30 Height:38} has ground {Kind:0 ...} (before the drag {Kind:0 ...}, the outline's {Kind:2 ... R:107 G:80 B:255})": the highlight kept the half-height rectangle from before D closed, and kept it after the motion too | **caught** |
+| The `refreshDropZone` call in `ApplyBSPLayout` | The same two rows, with the same message | **caught** |
+
 ### Space persistence
 
 Run on 2026-10-13 on macOS. The control cuts one wire from the fixed build and runs `TestSpaceSurvivesTheDaemon`. Rerun on 2026-10-14 on macOS on the tree rebased onto upstream `main` (`7f25ec35`): the restore control is still caught, with the same message.
+
+On the local integration stack this test is the one in `space_label_test.go` (the set-session-space pull request), which records the same controls under its own heading; the copy in `space_test.go` was dropped.
 
 | Control: what was cut | Tests that fail | Verdict |
 | --- | --- | --- |
@@ -7029,6 +7034,8 @@ Run on 2026-10-13 on macOS. The control cuts one wire from the fixed build and r
 ### Space CLI
 
 Run on 2026-10-13 on macOS. The tests are in `space_cli_test.go`: `TestNewSpaceFilesTheSession`, `TestRenameSpaceMovesEveryMember`, `TestKillSpaceNeedsForceAndCascades`, `TestSwitchSpaceLandsOnTheLastUsedSession` and `TestLsGroupsSessionsBySpace`. Each control cuts one wire from the fixed build and runs the test named.
+
+On the local integration stack `TestNewSpaceFilesTheSession` and `TestLsGroupsSessionsBySpace` are the ones in `space_label_test.go` (the set-session-space pull request), which draws the space headings as the space's bare name with no `No space` heading; the copies in `space_cli_test.go` were dropped, and the two `renderSpaceGroups` rows below describe the dropped copies.
 
 `TestSwitchSpaceLandsOnTheLastUsedSession` puts three sessions in one space. The person types in `e2e-a`, then in `e2e-b`, then windows are opened in `e2e-c` from the CLI, which bumps its activity and is not the person. The client sits on a session in no space. So the right answer, `e2e-b`, is neither the first nor the last member by name nor the latest by activity.
 
@@ -7115,6 +7122,8 @@ Run on 2026-10-13 on macOS. The test is `TestRailPeekHoldsTheTerminalsHeight` in
 
 Run on 2026-10-13 on macOS. `new --space` goes through the `new-session` verb over the JSON verb connection (`VerbClient`), not the binary protocol `new`/`attach` use. The binary protocol's `MsgHello` sets `cs.hello` from the caller's real terminal, and `verbNewSession` (and `switch-session`'s `create`) read it; the JSON verb connection's own handshake, the `hello` verb, never set `cs.hello` at all, so every session a verb created got the daemon's own default (`xterm-256color`, no `COLORTERM`) regardless of the caller's real terminal. The `hello` verb now takes `term`/`color_term`, and `VerbClient`'s handshake sends them with the same detection `client.go`'s binary-protocol `sendHello` uses.
 
+On the local integration stack this fix is the verb-session-term pull request's, and `TestVerbNewSessionGivesItsPaneTheCallersTerm` in `verb_hello_term_test.go` covers it; `TestNewSpaceGivesItsPaneTheCallersTerm` was dropped, since `new --space` reaches the daemon through the same `new-session` verb.
+
 | Control: what was cut | Test that fails | Verdict |
 | --- | --- | --- |
 | `cs.hello = &HelloPayload{...}` in `verbHello` | `TestNewSpaceGivesItsPaneTheCallersTerm` ("gave its pane \"TERM=xterm-256color COLORTERM=truecolor\", want \"TERM=xterm-ghostty COLORTERM=truecolor\"") | **caught** |
@@ -7173,7 +7182,7 @@ Run on 2026-10-13 on macOS. The tests are in `space_switch_test.go`: `TestSpaceK
 
 ### A global session is in no space
 
-Run on 2026-10-14 on macOS. The test is `TestAGlobalSessionIsInNoSpace` in `space_global_test.go`: `set-session-space` on the global session `e2e-g` is refused, a 65-byte space name is refused by the verb and by `tuios new --space`, `kill-space --force s` kills only `e2e-a`, and herdr's `workspace.close` with `close_group` kills only the session it names, on a spaced session and on the global one. `TestSwitchSpaceNone` in `space_switch_test.go` filed its global session under a space with `set-session-space`; it now checks that the call is refused, and goes on to check the global session counts among the sessions in no space. The fixed build passes both.
+Run on 2026-10-14 on macOS. The test is `TestAGlobalSessionIsInNoSpace` in `space_global_test.go`, named `TestAGlobalSessionIsOutOfEverySpaceVerb` on the local integration stack, where `space_label_test.go` holds a test of the first name; `checkSpaceName` there is `spaceName`: `set-session-space` on the global session `e2e-g` is refused, a 65-byte space name is refused by the verb and by `tuios new --space`, `kill-space --force s` kills only `e2e-a`, and herdr's `workspace.close` with `close_group` kills only the session it names, on a spaced session and on the global one. `TestSwitchSpaceNone` in `space_switch_test.go` filed its global session under a space with `set-session-space`; it now checks that the call is refused, and goes on to check the global session counts among the sessions in no space. The fixed build passes both.
 
 | Control: what was cut | Test that fails | Verdict |
 | --- | --- | --- |

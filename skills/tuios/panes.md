@@ -48,8 +48,8 @@ no space last, and the rail and the session switcher group them the same way.
 
 ```sh
 tuios new --detach pay-api --space payments          # make a session in a space
-tuios call set-session-space '{"session":"notes","space":"payments"}'
-tuios call set-session-space '{"session":"notes","space":""}'   # out of any space
+tuios set-session-space -s notes payments            # file a session under a space
+tuios set-session-space -s notes                     # take it out of any space
 tuios call list-spaces
 tuios rename-space payments billing
 tuios switch-space billing        # the person's client goes to the space's last used session

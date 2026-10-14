@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-// TestAGlobalSessionIsInNoSpace: a global session is drawn above the
+// TestAGlobalSessionIsOutOfEverySpaceVerb: a global session is drawn above the
 // machines, never inside a space, so set-session-space refuses to file one,
 // and the verbs that kill a space's sessions never reach it. A space name is
 // capped at 64 bytes.
@@ -28,7 +28,7 @@ import (
 //     space's member out of the listing.
 //
 // NEGATIVE CONTROLS (e2e/tui/NEGATIVE_CONTROLS.md, "A global session is in no space").
-func TestAGlobalSessionIsInNoSpace(t *testing.T) {
+func TestAGlobalSessionIsOutOfEverySpaceVerb(t *testing.T) {
 	base := t.TempDir()
 	killDaemon(t, base)
 
