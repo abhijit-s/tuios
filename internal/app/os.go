@@ -754,9 +754,6 @@ type OS struct {
 	// session state, so the rail reads the attached row from live state exactly
 	// as it reads the rest of that row.
 	SessionWorktree *session.WorktreeInfo
-	// SessionSpace is the space the attached session is filed under, empty for
-	// none. Daemon-owned, adopted off the session state like the other labels.
-	SessionSpace string
 	// WorkspaceNames maps a workspace number to its daemon-owned label. The
 	// number stays the workspace's identity and is what an unnamed workspace
 	// shows, so an absent entry is not a missing label but the normal case.
