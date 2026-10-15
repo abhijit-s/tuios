@@ -360,12 +360,16 @@ func TestSpaceLayoutSettingsRow(t *testing.T) {
 	}
 	saveArtifact(t, term, dir, "settings-spaces-row")
 
-	// The tab opens on its first row; the Spaces row sits under Sections.
-	for range 4 {
+	// The tab opens on its first row, and the Spaces row sits under Sections,
+	// however many rows the tab has above them. The cursor steps down one row
+	// at a time until it is on Spaces.
+	for step := 0; selectedSettingsRow(term.Screen(), "Spaces") == ""; step++ {
+		if step == 40 {
+			t.Fatalf("forty rows down did not put the Spaces row under the cursor\n%s", term.Snapshot())
+		}
+		before := term.Screen().Text()
 		sendKeys(t, term, tuitest.Down)
-	}
-	if err := term.WaitFor(func(s tuitest.Screen) bool { return selectedSettingsRow(s, "Spaces") != "" }, uiTimeout); err != nil {
-		t.Fatalf("four rows down did not put the Spaces row under the cursor: %v\n%s", err, term.Snapshot())
+		_ = term.WaitFor(func(s tuitest.Screen) bool { return s.Text() != before }, 2*time.Second)
 	}
 	sendKeys(t, term, tuitest.Right)
 	if err := term.WaitFor(func(s tuitest.Screen) bool {
