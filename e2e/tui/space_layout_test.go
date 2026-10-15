@@ -96,8 +96,8 @@ func useSession(t *testing.T, base, session string) {
 }
 
 // TestSpaceSplitLayout: with spaces = split the rail draws a spaces section
-// directly above the sessions section, one row per space in its first
-// member's order and a none row last, each with its session count, the
+// directly above the sessions section, one row per space in name order and a
+// none row last, each with its session count, the
 // attached mark on the space a client is in and the focus mark on the current
 // one; the sessions section lists only the current space's sessions, with no
 // headings. A click on a space's row and Enter on another switch the client to
@@ -135,7 +135,7 @@ func TestSpaceSplitLayout(t *testing.T) {
 	time.Sleep(1100 * time.Millisecond)
 
 	term := attachSpaceUI(t, base, "e2e-loose", 120, 40)
-	s := waitSpaceRail(t, term, "the split rail", "spaces", "beta", "alpha", "none", "e2e-loose")
+	s := waitSpaceUIRail(t, term, "the split rail", "spaces", "beta", "alpha", "none", "e2e-loose")
 	saveArtifact(t, term, dir, "split-from-none")
 
 	spacesHdr, sessionsHdr := railHeaderRow(s, "spaces"), railHeaderRow(s, "sessions")
@@ -144,11 +144,11 @@ func TestSpaceSplitLayout(t *testing.T) {
 		t.Fatalf("ASSERTION: the spaces header is on row %d with %d rows and the sessions header on %d, want sessions right under the spaces section\n%s",
 			spacesHdr, len(rows), sessionsHdr, term.Snapshot())
 	}
-	want := []string{"beta", "alpha", "none"}
+	want := []string{"alpha", "beta", "none"}
 	if len(rows) != len(want) {
-		t.Fatalf("ASSERTION: the spaces section has rows %q, want beta, alpha, none\n%s", rows, term.Snapshot())
+		t.Fatalf("ASSERTION: the spaces section has rows %q, want alpha, beta, none\n%s", rows, term.Snapshot())
 	}
-	counts := []string{"1", "2", "1"}
+	counts := []string{"2", "1", "1"}
 	for i, text := range rows {
 		if !strings.Contains(text, want[i]) || !strings.HasSuffix(text, " "+counts[i]) {
 			t.Fatalf("ASSERTION: spaces row %d is %q, want %s with %s sessions\n%s", i, text, want[i], counts[i], term.Snapshot())
@@ -159,18 +159,18 @@ func TestSpaceSplitLayout(t *testing.T) {
 	}
 	focus := []bool{railFocusMarked(s, spacesHdr+1), railFocusMarked(s, spacesHdr+2), railFocusMarked(s, spacesHdr+3)}
 	if focus[0] || focus[1] || !focus[2] {
-		t.Fatalf("ASSERTION: the focus marks on beta, alpha, none are %v, want none alone\n%s", focus, term.Snapshot())
+		t.Fatalf("ASSERTION: the focus marks on alpha, beta, none are %v, want none alone\n%s", focus, term.Snapshot())
 	}
 	if got := sessionsListed(s); len(got) != 1 || got[0] != "e2e-loose" {
 		t.Fatalf("ASSERTION: from e2e-loose the sessions section lists %q, want e2e-loose alone\n%s", got, term.Snapshot())
 	}
 
 	// A click on alpha's row lands on e2e-a1, the session of alpha used last.
-	mouseClick(t, term, 5, spacesHdr+2, tuitest.MouseLeft, 0)
+	mouseClick(t, term, 5, spacesHdr+1, tuitest.MouseLeft, 0)
 	clientShows(t, base, "e2e-a1")
 	if err := term.WaitFor(func(s tuitest.Screen) bool {
 		got := sessionsListed(s)
-		return len(got) == 2 && got[0] == "e2e-a1" && got[1] == "e2e-a2" && railFocusMarked(s, railHeaderRow(s, "spaces")+2)
+		return len(got) == 2 && got[0] == "e2e-a1" && got[1] == "e2e-a2" && railFocusMarked(s, railHeaderRow(s, "spaces")+1)
 	}, uiTimeout); err != nil {
 		t.Fatalf("ASSERTION: after the click the sessions section is not alpha's two, with alpha's row marked: %v\n%s", err, term.Snapshot())
 	}
@@ -178,7 +178,7 @@ func TestSpaceSplitLayout(t *testing.T) {
 	// three-second poll would bring it.
 	if err := term.WaitFor(func(s tuitest.Screen) bool {
 		rows := spaceRowsListed(s)
-		return len(rows) == 3 && strings.Contains(rows[1], "attached") && !strings.Contains(rows[2], "attached")
+		return len(rows) == 3 && strings.Contains(rows[0], "attached") && !strings.Contains(rows[2], "attached")
 	}, 2500*time.Millisecond); err != nil {
 		t.Fatalf("ASSERTION: after the switch the attached mark is not on alpha alone: %v\n%s", err, term.Snapshot())
 	}
@@ -196,12 +196,16 @@ func TestSpaceSplitLayout(t *testing.T) {
 		t.Fatalf("s did not give the keyboard to the rail: %v\n%s", err, term.Snapshot())
 	}
 	sendKeys(t, term, "h")
+	// The cursor comes up onto alpha, the first row, and j steps it to beta.
+	_ = term.WaitStable(500 * time.Millisecond)
+	sendKeys(t, term, "j")
+	_ = term.WaitStable(500 * time.Millisecond)
 	saveArtifact(t, term, dir, "split-cursor-in-spaces")
 	sendKeys(t, term, tuitest.Enter)
 	clientShows(t, base, "e2e-b1")
 	if err := term.WaitFor(func(s tuitest.Screen) bool {
 		got := sessionsListed(s)
-		return len(got) == 1 && got[0] == "e2e-b1" && railFocusMarked(s, railHeaderRow(s, "spaces")+1)
+		return len(got) == 1 && got[0] == "e2e-b1" && railFocusMarked(s, railHeaderRow(s, "spaces")+2)
 	}, uiTimeout); err != nil {
 		t.Fatalf("ASSERTION: Enter on beta did not leave the sessions section on e2e-b1 with beta's row marked: %v\n%s", err, term.Snapshot())
 	}
@@ -229,7 +233,7 @@ func TestSpaceOffLayout(t *testing.T) {
 	spaceUIFixture(t, base, true)
 
 	term := attachSpaceUI(t, base, "e2e-a1", 120, 40)
-	s := waitSpaceRail(t, term, "the flat rail", "e2e-loose", "e2e-b1", "e2e-a1", "e2e-a2")
+	s := waitSpaceUIRail(t, term, "the flat rail", "e2e-loose", "e2e-b1", "e2e-a1", "e2e-a2")
 	saveArtifact(t, term, dir, "off")
 
 	if got := sessionsListed(s); strings.Join(got, ",") != "e2e-loose,e2e-b1,e2e-a1,e2e-a2" {
@@ -265,7 +269,7 @@ func TestSpaceLayoutLiveSwitch(t *testing.T) {
 	spaceUIFixture(t, base, true)
 
 	term := attachSpaceUI(t, base, "e2e-a1", 120, 40)
-	s := waitSpaceRail(t, term, "the grouped rail", "beta", "alpha", "e2e-b1", "e2e-loose")
+	s := waitSpaceUIRail(t, term, "the grouped rail", "beta", "alpha", "e2e-b1", "e2e-loose")
 	saveArtifact(t, term, dir, "live-grouped")
 	if railHeaderRow(s, "spaces") >= 0 {
 		t.Fatalf("ASSERTION: the default layout draws a spaces section\n%s", term.Snapshot())
@@ -336,7 +340,7 @@ func TestSpaceLayoutSettingsRow(t *testing.T) {
 	spaceUIFixture(t, base, false)
 
 	term := attachSpaceUI(t, base, "e2e-a1", 140, 50)
-	waitSpaceRail(t, term, "the rail", "e2e-loose", "e2e-a1")
+	waitSpaceUIRail(t, term, "the rail", "e2e-loose", "e2e-a1")
 	windowManagementMode(t, term)
 	openSidebarTab(t, term)
 	_ = term.WaitStable(2 * time.Second)
@@ -351,7 +355,7 @@ func TestSpaceLayoutSettingsRow(t *testing.T) {
 
 	setSpace(t, base, "e2e-b1", "beta")
 	setSpace(t, base, "e2e-a1", "alpha")
-	waitSpaceRail(t, term, "the grouped rail", "beta", "alpha")
+	waitSpaceUIRail(t, term, "the grouped rail", "beta", "alpha")
 	openSidebarTab(t, term)
 	if err := term.WaitFor(func(s tuitest.Screen) bool {
 		return strings.Contains(settingsSpacesRow(s), "grouped")
@@ -401,7 +405,7 @@ func spaceLayoutScreen(t *testing.T, mode string) string {
 	writeConfig(t, base, spaceLayoutRail(mode))
 	spaceUIFixture(t, base, false)
 	term := attachSpaceUI(t, base, "e2e-a1", 120, 40)
-	waitSpaceRail(t, term, "the rail", "e2e-loose", "e2e-b1", "e2e-a1", "e2e-a2")
+	waitSpaceUIRail(t, term, "the rail", "e2e-loose", "e2e-b1", "e2e-a1", "e2e-a2")
 	label := mode
 	if label == "" {
 		label = "baseline"

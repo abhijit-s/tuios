@@ -69,11 +69,12 @@ func settleAfterSwitch(t *testing.T, term *tuitest.Terminal) {
 
 // TestSpaceKeysMoveOnlyThisClient: two clients on e2e-a1, in alpha. } in the
 // first moves the first alone to the next space in the rail's order, which is
-// none (e2e-loose); { in the second moves the second alone to the previous
-// space, beta (e2e-b1). } again in the first wraps from none to beta.
+// beta (e2e-b1); { in the second moves the second alone to the previous space,
+// which wraps round to none (e2e-loose). } again in the first moves it on from
+// beta to none.
 //
-// The fixture's spaces come in their first member's order, beta then alpha,
-// and the sessions in no space last, so alpha's neighbours are none and beta.
+// The fixture's spaces come in name order, alpha then beta, and the sessions
+// in no space last, so alpha's neighbours are beta and, wrapping, none.
 //
 // How it could pass wrongly, and what stops it:
 //   - a switch that moves whichever client the daemon finds on the session,
@@ -81,8 +82,8 @@ func settleAfterSwitch(t *testing.T, term *tuitest.Terminal) {
 //     did not press must still be where it was well after the move landed.
 //   - the key walking sessions rather than spaces: } from e2e-a1 by session
 //     would go to e2e-a2, in the same space.
-//   - the order ignoring the none row, or not wrapping: } from alpha must reach
-//     none, and } from none must come back round to beta.
+//   - the order ignoring the none row, or not wrapping: { from alpha must wrap
+//     round to none, and } from beta must reach none.
 //
 // NEGATIVE CONTROLS (e2e/tui/NEGATIVE_CONTROLS.md, "Space switching").
 func TestSpaceKeysMoveOnlyThisClient(t *testing.T) {
@@ -100,30 +101,30 @@ func TestSpaceKeysMoveOnlyThisClient(t *testing.T) {
 	windowManagementMode(t, b)
 
 	pressSpaceSwitch(t, a, "}")
-	clientOnPid(t, base, a.Pid(), "e2e-loose")
+	clientOnPid(t, base, a.Pid(), "e2e-b1")
 	stillOnPid(t, base, b.Pid(), "e2e-a1", "} in the other client")
 	settleAfterSwitch(t, a)
-	saveArtifact(t, a, dir, "a-next-to-none")
+	saveArtifact(t, a, dir, "a-next-to-beta")
 	saveArtifact(t, b, dir, "b-stayed-on-a1")
 
 	pressSpaceSwitch(t, b, "{")
-	clientOnPid(t, base, b.Pid(), "e2e-b1")
-	stillOnPid(t, base, a.Pid(), "e2e-loose", "{ in the other client")
+	clientOnPid(t, base, b.Pid(), "e2e-loose")
+	stillOnPid(t, base, a.Pid(), "e2e-b1", "{ in the other client")
 	settleAfterSwitch(t, b)
-	saveArtifact(t, b, dir, "b-prev-to-beta")
-	saveArtifact(t, a, dir, "a-stayed-on-loose")
+	saveArtifact(t, b, dir, "b-prev-wraps-to-none")
+	saveArtifact(t, a, dir, "a-stayed-on-b1")
 
 	pressSpaceSwitch(t, a, "}")
-	clientOnPid(t, base, a.Pid(), "e2e-b1")
+	clientOnPid(t, base, a.Pid(), "e2e-loose")
 	settleAfterSwitch(t, a)
-	saveArtifact(t, a, dir, "a-next-wraps-to-beta")
+	saveArtifact(t, a, dir, "a-next-to-none")
 	alive(t, a, "after switching spaces")
 	alive(t, b, "after the other client switched spaces")
 }
 
 // TestSpaceKeyChordInTerminalMode: next_space bound to a direct chord (alt+y)
-// works from terminal mode, twice in a row: from e2e-a1 in alpha to none
-// (e2e-loose), then to beta (e2e-b1). The chord reaches the action through the
+// works from terminal mode, twice in a row: from e2e-a1 in alpha to beta
+// (e2e-b1), then to none (e2e-loose). The chord reaches the action through the
 // terminal-mode router (handleTerminalModeBinds), the path a direct chord
 // takes while typing into a shell.
 //
@@ -144,7 +145,7 @@ func TestSpaceKeyChordInTerminalMode(t *testing.T) {
 	spaceUIFixture(t, base, true)
 
 	term := attachSpaceUI(t, base, "e2e-a1", 120, 40)
-	for i, want := range []string{"e2e-loose", "e2e-b1"} {
+	for i, want := range []string{"e2e-b1", "e2e-loose"} {
 		windowManagementMode(t, term)
 		enterTerminalMode(t, term)
 		if err := term.SendKeys(tuitest.Alt('y')); err != nil {
@@ -327,7 +328,7 @@ func TestSpaceRowLandsOnTheDaemonsPick(t *testing.T) {
 	useBothInOneSecond(t, base, a3, a2, "e2e-a3", "e2e-a2")
 
 	term := attachSpaceUI(t, base, "e2e-loose", 120, 40)
-	waitSpaceRail(t, term, "the split rail", "spaces", "alpha", "none", "e2e-loose")
+	waitSpaceUIRail(t, term, "the split rail", "spaces", "alpha", "none", "e2e-loose")
 	// Long enough for the rail's listing poll to have taken both uses, so the
 	// client holds the tie the old pick read.
 	time.Sleep(3500 * time.Millisecond)

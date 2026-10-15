@@ -7196,6 +7196,8 @@ Not covered: the read side, where `Session.Space` and the rail read a global ses
 
 ### A repository split across spaces
 
+On the local integration stack this test is the space-headings pull request's, in `space_rail_test.go`, and the fork's copy in `space_rail_cursor_test.go` is dropped. The run below is the fork copy's.
+
 Run on 2026-10-14 on macOS. The test is `TestSpaceRailCursorPassesASplitRepository` in `space_rail_cursor_test.go`. Two worktree sessions of one repository are made, one filed in space `s` and one left in none, so the rail draws the repository's header twice (the test checks it does). Entering the rail puts the cursor on `plain`; two `j`, with the rail left to settle after each, must reach the second header and then `feat/two`, and enter there must switch to it. The fixed build passes.
 
 | Control: what was cut | Test that fails | Verdict |

@@ -72,15 +72,6 @@ func setSpace(t *testing.T, base, session, space string) {
 	}
 }
 
-// spaceRailRows is the rail's screen row of each needle, -1 for one not drawn.
-func spaceRailRows(s tuitest.Screen, needles ...string) []int {
-	out := make([]int, len(needles))
-	for i, n := range needles {
-		out[i] = railRowOf(s, n)
-	}
-	return out
-}
-
 // strictlyIncreasing reports whether every row is drawn and each is below the
 // one before it.
 func strictlyIncreasing(rows []int) bool {
@@ -92,8 +83,8 @@ func strictlyIncreasing(rows []int) bool {
 	return true
 }
 
-// waitSpaceRail waits for every needle on the rail and for the frame to settle.
-func waitSpaceRail(t *testing.T, term *tuitest.Terminal, what string, needles ...string) tuitest.Screen {
+// waitSpaceUIRail waits for every needle on the rail and for the frame to settle.
+func waitSpaceUIRail(t *testing.T, term *tuitest.Terminal, what string, needles ...string) tuitest.Screen {
 	t.Helper()
 	if err := term.WaitFor(func(s tuitest.Screen) bool {
 		for _, n := range needles {
@@ -123,16 +114,21 @@ func sidebarState(t *testing.T, base string) map[string]any {
 	return st
 }
 
-// TestSpaceRailHeadersFoldAndPersist: the rail draws a header per space over
-// its sessions, the spaces in their first member's order and the session in no
-// space after them all; a click folds a space and leaves its count; the fold
-// is in sidebar.json under its own key and is still there after a reattach.
+// TestSpaceRailHeadersFoldAndPersist: the rail draws a heading per space over
+// its sessions, the spaces in name order and the session in no space after
+// them all; each heading carries a fold mark; a click folds a space and leaves
+// its count; the fold is in sidebar.json under its own key and is still there
+// after a reattach.
+//
+// TestSpaceRailHeadings (space_rail_test.go) covers how a heading is drawn and
+// that the cursor passes over it. This test covers the fold the local stack
+// adds on top.
 //
 // How it could pass wrongly, and what stops it:
 //   - the names appear but ungrouped (the daemon's order): e2e-loose is made
-//     first and must be drawn last, and beta's header must sit above alpha's.
-//   - a header drawn as one more session row: it has to be bold, and its
-//     sessions have to step in two columns under it while e2e-loose does not.
+//     first and must be drawn last, and alpha's heading must sit above beta's.
+//   - a heading mistaken for a session in no space at the same indent: each
+//     heading must carry the open fold mark, and e2e-loose must not.
 //   - the fold hiding the rows for this client only: the client is detached
 //     and a new one attached, and the space must come back folded.
 //   - the fold stored as a repository fold (a collision with a repository of
@@ -147,52 +143,41 @@ func TestSpaceRailHeadersFoldAndPersist(t *testing.T) {
 	spaceUIFixture(t, base, true)
 
 	term := attachSpaceUI(t, base, "e2e-a1", 120, 40)
-	s := waitSpaceRail(t, term, "the grouped rail", "beta", "alpha", "e2e-b1", "e2e-a1", "e2e-a2", "e2e-loose")
+	s := waitSpaceUIRail(t, term, "the grouped rail", "beta", "alpha", "e2e-b1", "e2e-a1", "e2e-a2", "e2e-loose")
 	saveArtifact(t, term, dir, "rail-grouped")
 
-	order := spaceRailRows(s, "beta", "e2e-b1", "alpha", "e2e-a1", "e2e-a2", "e2e-loose")
+	order := spaceRailRows(s, "alpha", "e2e-a1", "e2e-a2", "beta", "e2e-b1", "e2e-loose")
 	if !strictlyIncreasing(order) {
-		t.Fatalf("ASSERTION: the rail rows beta, e2e-b1, alpha, e2e-a1, e2e-a2, e2e-loose are on %v, want that order top to bottom\n%s", order, term.Snapshot())
+		t.Fatalf("ASSERTION: the rail rows alpha, e2e-a1, e2e-a2, beta, e2e-b1, e2e-loose are on %v, want that order top to bottom\n%s", order, term.Snapshot())
 	}
-	alphaCol := nameColOf(s, order[2], "alpha")
-	betaCol := nameColOf(s, order[0], "beta")
+	alphaCol := nameColOf(s, order[0], "alpha")
+	betaCol := nameColOf(s, order[3], "beta")
 	if alphaCol < 0 || betaCol != alphaCol {
-		t.Fatalf("ASSERTION: the space headers start on columns %d and %d, want one column\n%s", betaCol, alphaCol, term.Snapshot())
+		t.Fatalf("ASSERTION: the space headings start on columns %d and %d, want one column\n%s", alphaCol, betaCol, term.Snapshot())
 	}
-	for _, name := range []string{"beta", "alpha"} {
-		row := railRowOf(s, name)
-		if !boldAt(s, nameColOf(s, row, name), row) {
-			t.Fatalf("ASSERTION: the %s header is not bold, so it reads as one more session\n%s", name, term.SnapshotStyled())
-		}
-	}
-	// The fold mark, not weight alone, is what tells a space's header from a
-	// session in no space at the same indent.
+	// The fold mark is what says a heading can be folded, and it tells a
+	// space's heading from a session in no space at the same indent.
 	for _, name := range []string{"beta", "alpha"} {
 		if mark := spaceFoldMark(s, name); mark != "▾" {
-			t.Fatalf("ASSERTION: the open %s header carries %q before its name, want the open fold mark ▾\n%s", name, mark, term.Snapshot())
+			t.Fatalf("ASSERTION: the open %s heading carries %q before its name, want the open fold mark ▾\n%s", name, mark, term.Snapshot())
 		}
 	}
 	if mark := spaceFoldMark(s, "e2e-loose"); mark == "▾" || mark == "▸" {
-		t.Fatalf("ASSERTION: e2e-loose, a session in no space, carries the fold mark %q, like a header\n%s", mark, term.Snapshot())
+		t.Fatalf("ASSERTION: e2e-loose, a session in no space, carries the fold mark %q, like a heading\n%s", mark, term.Snapshot())
 	}
-	for i, name := range []string{"e2e-b1", "", "e2e-a1", "e2e-a2"} {
-		if name == "" {
-			continue
-		}
-		if col := nameColOf(s, order[i+1], name); col != alphaCol+2 {
-			t.Fatalf("ASSERTION: %s starts on column %d, want %d, two in from its space's header\n%s", name, col, alphaCol+2, term.Snapshot())
+	for _, i := range []int{1, 2, 4} {
+		name := []string{"alpha", "e2e-a1", "e2e-a2", "beta", "e2e-b1"}[i]
+		if col := nameColOf(s, order[i], name); col != alphaCol+2 {
+			t.Fatalf("ASSERTION: %s starts on column %d, want %d, two in from its space's heading\n%s", name, col, alphaCol+2, term.Snapshot())
 		}
 	}
 	if col := nameColOf(s, order[5], "e2e-loose"); col != alphaCol {
-		t.Fatalf("ASSERTION: e2e-loose, in no space, starts on column %d, want the headers' column %d\n%s", col, alphaCol, term.Snapshot())
+		t.Fatalf("ASSERTION: e2e-loose, in no space, starts on column %d, want the headings' column %d\n%s", col, alphaCol, term.Snapshot())
 	}
 	// Every session has one window, so the rail's window-count column is off,
-	// as it is with no spaces. A header's member count must not turn it on.
+	// as it is with no spaces. A heading's member count must not turn it on.
 	if line := strings.TrimRight(strings.TrimSuffix(strings.TrimRight(railLine(s, order[5]), " "), "│"), " "); !strings.HasSuffix(line, "e2e-loose") {
-		t.Fatalf("ASSERTION: the e2e-loose row carries a figure after its name, %q: a header's count turned the window counts on\n%s", line, term.Snapshot())
-	}
-	if nameColOf(s, order[5], "e2e-loose") >= 0 && boldAt(s, alphaCol, order[5]) {
-		t.Fatalf("ASSERTION: e2e-loose is drawn bold, like a header\n%s", term.SnapshotStyled())
+		t.Fatalf("ASSERTION: the e2e-loose row carries a figure after its name, %q: a heading's count turned the window counts on\n%s", line, term.Snapshot())
 	}
 
 	// A click on beta's header folds it: its session goes, and the header
@@ -222,23 +207,23 @@ func TestSpaceRailHeadersFoldAndPersist(t *testing.T) {
 	}
 
 	// Detach, and attach a new client: the fold is still there. The new client
-	// runs at 16 colours, where a header has no ground or ink of its own to
-	// lean on, and it still has to read as a header: bold, with its sessions
-	// stepped in under it.
+	// runs at 16 colours, where a heading has no ground or ink of its own to
+	// lean on, and it still has to read as a heading: the rule out to the
+	// spine, with its sessions stepped in under it.
 	if err := term.SendKeys(tuitest.Ctrl('b'), "d"); err != nil {
 		t.Fatalf("detach: %v", err)
 	}
 	waitExit(t, term, "after the detach")
 	again := attachSpaceUI(t, base, "e2e-a1", 120, 40, "TERM=xterm", "COLORTERM=")
-	s = waitSpaceRail(t, again, "the reattached rail", "beta", "alpha", "e2e-a1", "e2e-loose")
+	s = waitSpaceUIRail(t, again, "the reattached rail", "beta", "alpha", "e2e-a1", "e2e-loose")
 	saveArtifact(t, again, dir, "rail-reattached-16-colours")
 	if railRowOf(s, "e2e-b1") >= 0 {
 		t.Fatalf("ASSERTION: beta came back open after a reattach\n%s", again.Snapshot())
 	}
 	for _, name := range []string{"beta", "alpha"} {
 		row := railRowOf(s, name)
-		if !boldAt(s, nameColOf(s, row, name), row) {
-			t.Fatalf("ASSERTION: at 16 colours the %s header is not bold\n%s", name, again.SnapshotStyled())
+		if !railRuledFrom(s, row, nameColOf(s, row, name)+len(name)) {
+			t.Fatalf("ASSERTION: at 16 colours the %s heading has no rule after its name\n%s", name, again.Snapshot())
 		}
 	}
 	if a, h := nameColOf(s, railRowOf(s, "e2e-a1"), "e2e-a1"), nameColOf(s, railRowOf(s, "alpha"), "alpha"); a != h+2 {
@@ -310,7 +295,7 @@ func switcherSessions(s tuitest.Screen) []string {
 //
 // How it could pass wrongly, and what stops it:
 //   - headings drawn but the rows in the daemon's order: the rows are read in
-//     screen order and must be e2e-b1, e2e-a1, e2e-a2, e2e-loose, each space's
+//     screen order and must be e2e-a1, e2e-a2, e2e-b1, e2e-loose, each space's
 //     under its heading.
 //   - "alpha/" matched as plain text (no session is called that, so the list
 //     would be empty, or every row would stay): exactly alpha's two must show.
@@ -337,12 +322,12 @@ func TestSpaceSwitcherGroupsAndNarrows(t *testing.T) {
 	saveArtifact(t, term, dir, "switcher-grouped")
 
 	rows := []int{
-		switcherHeader(s, "beta", "1"), switcherRow(s, "e2e-b1"),
 		switcherHeader(s, "alpha", "2"), switcherRow(s, "e2e-a1"), switcherRow(s, "e2e-a2"),
+		switcherHeader(s, "beta", "1"), switcherRow(s, "e2e-b1"),
 		switcherRow(s, "e2e-loose"),
 	}
 	if !strictlyIncreasing(rows) {
-		t.Fatalf("ASSERTION: beta's heading, e2e-b1, alpha's heading, e2e-a1, e2e-a2, e2e-loose are on rows %v, want that order\n%s", rows, term.Snapshot())
+		t.Fatalf("ASSERTION: alpha's heading, e2e-a1, e2e-a2, beta's heading, e2e-b1, e2e-loose are on rows %v, want that order\n%s", rows, term.Snapshot())
 	}
 
 	sendKeys(t, term, "alpha/")
@@ -530,7 +515,7 @@ func spaceUIScreens(t *testing.T, base, label string) (rail, switcher string) {
 	writeConfig(t, base, spaceUIRail)
 	spaceUIFixture(t, base, false)
 	term := attachSpaceUI(t, base, "e2e-a1", 120, 40)
-	waitSpaceRail(t, term, label+" rail", "e2e-loose", "e2e-b1", "e2e-a1", "e2e-a2")
+	waitSpaceUIRail(t, term, label+" rail", "e2e-loose", "e2e-b1", "e2e-a1", "e2e-a2")
 	rail = term.Snapshot()
 	saveArtifact(t, term, dir, label+"-rail")
 
