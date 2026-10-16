@@ -7216,3 +7216,21 @@ Run on 2026-10-14 on macOS. `TestOverlayLayouts` in `overlay_layout_test.go` has
 | The space keys not held back in `PrefixMenuGroups` with no space (they fall to the Other section) | `TestOverlayLayouts/dark-120x40-truecolor` ("the which-key menu has an Other section", and 25 rows at 120 columns) | **caught** |
 
 The last control passes at 80x24: there the menu leaves out a section that does not fit, and the Other section is the one left out. The 120x40 run catches it.
+
+### Space rename dialog
+
+Run on 2026-10-16 on macOS. The tests are in `space_rename_dialog_test.go`: `TestRenameSpaceKeyRenamesTheAttachedSessionsSpace`, `TestRailSpaceHeadingMenuRenamesThatSpace`, `TestRenameSpaceDialogMergesIntoAnExistingSpace`, `TestRenameSpaceDialogRefusesAnInvalidName` and `TestRenameSpaceKeyWithNoSpaceSaysSo`. The fixture is the space UI one (`e2e-loose` in no space, `e2e-b1` in beta, `e2e-a1` and `e2e-a2` in alpha), the client is attached to `e2e-a1` (to `e2e-loose` for the no-space test), and `rename_space` is bound to `ctrl+b %`. What was renamed is read from `tuios ls --json`. Each control cuts one wire from the fixed build, builds it, restores the source, and runs the tests named; the fixed build passes all five.
+
+| Control: what was cut | Tests that fail | Verdict |
+| --- | --- | --- |
+| Target substitution: `handleRenameSpace` ignores `TakeMenuSpace` and always takes the attached session's space | `TestRailSpaceHeadingMenuRenamesThatSpace` ("the dialog did not name the heading's space": it opened on alpha) | **caught** |
+| The heading's right-click wire in `openSidebarContextMenu` (a space heading opens the rail's settings menu, as it did before) | `TestRailSpaceHeadingMenuRenamesThatSpace` ("the beta heading's menu offered no Rename") | **caught** |
+| The verb not called: `renameVerb` builds no call for `RenameSpace` | `TestRenameSpaceKeyRenamesTheAttachedSessionsSpace` ("the rail never drew [gamma ...] without [alpha]"), `TestRenameSpaceDialogMergesIntoAnExistingSpace` ("the rail never drew [beta ...] without [alpha]"), `TestRenameSpaceDialogRefusesAnInvalidName` ("the refusal did not carry the verb's message") | **caught** |
+| The merge reimplemented in the client: `renameVerb` sends `set-session-space` for the attached session only | `TestRenameSpaceKeyRenamesTheAttachedSessionsSpace` and `TestRenameSpaceDialogMergesIntoAnExistingSpace` (the rail still draws alpha over `e2e-a2`) | **caught** |
+| Validation skipped: `verbRenameSpace` trims the name and does not call `spaceName` | `TestRenameSpaceDialogRefusesAnInvalidName` ("the refusal did not carry the verb's message": `SetSpace` checks nothing, so `bad/name` was applied) | **caught** |
+| The `rename_space` registration in the dispatcher | `TestRenameSpaceKeyRenamesTheAttachedSessionsSpace` ("ctrl+b % did not open the dialog on space alpha"), `TestRenameSpaceKeyWithNoSpaceSaysSo` ("rename_space on a session in no space never said so") | **caught** |
+| The no-space notice in `handleRenameSpace` | `TestRenameSpaceKeyWithNoSpaceSaysSo` ("rename_space on a session in no space never said so") | **caught** |
+
+`TestRenameSpaceKeyWithNoSpaceSaysSo` is the negative half ("no dialog on a session in no space"); `TestRenameSpaceKeyRenamesTheAttachedSessionsSpace` is its positive half, the same key in a spaced session opening the dialog. The dialog validates nothing itself: the verb is the one check, so the dialog and `tuios rename-space` refuse the same names in the same words, and the validation control is a cut in the verb.
+
+Not covered: the unchanged-name cancel (nothing observable distinguishes it from a rename to the same name, which the verb answers as already done), and the 64-byte cap through the dialog, which `TestAGlobalSessionIsInNoSpace` covers on the verb.
