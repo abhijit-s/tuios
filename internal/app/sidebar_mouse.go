@@ -26,6 +26,9 @@ type sidebarDragState struct {
 	// that cannot be dragged. Motion arrives on every cell the pointer crosses,
 	// and a toast per cell is not an answer.
 	PinnedTold bool
+	// SpaceDrop is the space a session row would be filed under if it were let
+	// go now. See sidebar_space_drop.go.
+	SpaceDrop sidebarSpaceDrop
 }
 
 // sidebarEdgeState is the width-resize gesture on the rail's edge rule. A left
@@ -700,6 +703,13 @@ func (m *OS) sidebarDragMotion(x, y int) bool {
 		}
 	}
 
+	m.sidebarTrackSpaceDrop(d, x, y)
+	if d.SpaceDrop.Heading {
+		// A heading names no position among the members, so the draft order
+		// stays where it was and the release puts the session last.
+		return true
+	}
+
 	var targetID string
 	if d.Host {
 		targetID = m.sidebarHostRowIDAt(y)
@@ -800,7 +810,11 @@ func (m *OS) sidebarRelease(x, y int) bool {
 		if d.Host {
 			m.SidebarHostOrder = d.Order
 		} else {
-			m.setSidebarSessionOrder(m.attachedMachine(), d.Order)
+			order := d.Order
+			if d.SpaceDrop.Active {
+				order = m.commitSpaceDrop(d)
+			}
+			m.setSidebarSessionOrder(m.attachedMachine(), order)
 		}
 		m.saveSidebarState()
 		return true
@@ -1119,8 +1133,13 @@ func (m *OS) filesBandContains(y int) bool {
 }
 
 // openRailSettingsMenu is the menu for a right-click on blank rail: there is no
-// row to act on, so the only thing the click can mean is the rail itself.
+// row to act on, so the click means the rail itself, and, with a daemon, the
+// rail's add affordance: a new session, as the sessions header's "+" makes.
 func (m *OS) openRailSettingsMenu(x, y int) {
+	items := []ContextMenuItem{m.railSettingsItem()}
+	if m.IsDaemonSession {
+		items = append([]ContextMenuItem{m.item(glyphNew, "New session", "new_session", false), separator()}, items...)
+	}
 	m.ContextMenu = &ContextMenu{
 		AnchorX:     x,
 		AnchorY:     y,
@@ -1129,7 +1148,7 @@ func (m *OS) openRailSettingsMenu(x, y int) {
 		Target:      CtxTargetDesktop,
 		WindowIndex: -1,
 		Title:       "Sidebar",
-		Items:       []ContextMenuItem{m.railSettingsItem()},
+		Items:       items,
 	}
 }
 

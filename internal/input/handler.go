@@ -395,6 +395,11 @@ func HandleKeyPress(msg tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
 	o.NoteHostKey(msg)
 	msg = readKey(msg)
 
+	// Escape while a rail row is being dragged lets it go where it started.
+	if msg.String() == "esc" && o.CancelSidebarDrag() {
+		return o, nil
+	}
+
 	// Capture the keypress for the showkeys overlay when it is enabled. This is
 	// the earliest shared point in the input path, before any mode routing or
 	// handler can consume the key, so the overlay reflects keys in both

@@ -1,6 +1,7 @@
 package app
 
 import (
+	"image/color"
 	"strconv"
 
 	"github.com/Gaurav-Gosain/tuios/internal/overlay"
@@ -42,7 +43,11 @@ func (m *OS) sidebarNodeIndent(node sessiontree.Node) int {
 // and the rule out to the spine, which is what makes it read as a heading with
 // colour off. It is never lit. A folded heading ends in the count of the
 // sessions it holds, since a shut group with no number reads as an empty one.
-func (m *OS) sidebarSpaceRow(node sessiontree.Node, cw int, pal overlay.Palette) string {
+func (m *OS) sidebarSpaceRow(node sessiontree.Node, cw int, pal overlay.Palette, st sidebarRowState) string {
+	var bg color.Color
+	if st.lit() {
+		bg = sidebarRowBg(st, pal)
+	}
 	collapsed := m.SidebarSpaceCollapsed(node.ID)
 	mark := m.Settings.GetRailFoldOpenGlyph()
 	right, rightW := "", 0
@@ -50,16 +55,16 @@ func (m *OS) sidebarSpaceRow(node sessiontree.Node, cw int, pal overlay.Palette)
 		mark = m.Settings.GetRailFoldShutGlyph()
 		if node.WindowCount > 0 {
 			count := strconv.Itoa(node.WindowCount)
-			right = sidebarStyle(nil, pal.FgMute).Render(count)
+			right = sidebarStyle(bg, pal.FgMute).Render(count)
 			rightW = len(count)
 		}
 	}
 	indent := m.sidebarNodeIndent(node)
-	name := sidebarStyle(nil, pal.FgDim).
+	name := sidebarStyle(bg, pal.FgDim).
 		Render(overlay.Truncate(printableTitle(node.Title), sidebarNameAvailIn(cw, rightW, indent)))
-	gutter := sidebarGutter(false, "", nil, pal, &m.Settings)
-	glyph := sidebarStyle(nil, pal.FgMute).Render(mark)
-	return sidebarComposeRuledRow(indent, gutter, glyph, name, right, cw, nil, pal, &m.Settings)
+	gutter := sidebarGutter(false, "", bg, pal, &m.Settings)
+	glyph := sidebarStyle(bg, pal.FgMute).Render(mark)
+	return st.mark(pal, sidebarComposeRuledRow(indent, gutter, glyph, name, right, cw, bg, pal, &m.Settings))
 }
 
 // SidebarSpaceCollapsed reports whether a space's group is folded shut.

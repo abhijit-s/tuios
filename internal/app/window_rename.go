@@ -32,6 +32,12 @@ const (
 	// space exactly as tuios rename-space does, merging into a space that
 	// already has the name.
 	RenameSpace
+	// RenameSessionSpace targets the space a session is filed under. The
+	// buffer is the space, not a name for the session: typing a space that
+	// exists joins it, a new name makes that space, and an empty field takes
+	// the session out of every space. The daemon's set-session-space applies
+	// it, so the dialog refuses what tuios set-session-space refuses.
+	RenameSessionSpace
 )
 
 // Renaming reports whether a rename editor is open, whatever it targets.
@@ -84,6 +90,45 @@ func (m *OS) BeginRenameSpace(space string) {
 	m.RenameKind = RenameSpace
 	m.RenameTargetID = space
 	m.RenameBuffer = space
+}
+
+// BeginSetSessionSpace opens the dialog that files a session under a space,
+// seeded with the space it is in now. A global session cannot be in a space,
+// so it gets the daemon's refusal as a notice instead of a dialog that could
+// only fail.
+func (m *OS) BeginSetSessionSpace(name string) {
+	if name == "" {
+		return
+	}
+	if m.sessionIsGlobal(name) {
+		m.ShowNotification("Not moved: "+session.GlobalSpaceRefusal, "info", m.Settings.NotificationDuration)
+		return
+	}
+	m.RenameKind = RenameSessionSpace
+	m.RenameTargetID = name
+	m.RenameBuffer = m.sessionSpaceOf(name)
+}
+
+// sessionSpaceOf is the space a session is filed under. The attached session's
+// comes from its own state, which a push keeps current; any other comes from
+// the cached listing.
+func (m *OS) sessionSpaceOf(name string) string {
+	if name == m.SessionName {
+		return m.SessionSpace
+	}
+	if m.DaemonClient == nil {
+		return ""
+	}
+	return m.DaemonClient.SessionSpace(name)
+}
+
+// sessionIsGlobal reports whether a session is a global one, which no space
+// can hold.
+func (m *OS) sessionIsGlobal(name string) bool {
+	if name == m.SessionName && m.SessionGlobal {
+		return true
+	}
+	return m.DaemonClient != nil && m.DaemonClient.SessionGlobal(name)
 }
 
 // RenameAppend adds typed text to the rename buffer, keeping only what the
@@ -179,6 +224,8 @@ func (m *OS) RenameDialogTitle() string {
 		return "rename workspace " + m.RenameTargetID
 	case RenameSpace:
 		return "rename space " + printableTitle(m.RenameTargetID)
+	case RenameSessionSpace:
+		return "move " + printableTitle(m.SessionLabel(m.RenameTargetID)) + " to space"
 	default:
 		return "rename"
 	}
@@ -208,11 +255,18 @@ func (m *OS) CommitRename() tea.Cmd {
 	if kind == RenameSpace && label == target {
 		return nil
 	}
+	what := "Rename"
+	if kind == RenameSessionSpace {
+		if label == m.sessionSpaceOf(target) {
+			return nil
+		}
+		what = "Move"
+	}
 	verb, params, ok := renameVerb(kind, target, m.SessionName, label)
 	if !ok {
 		return nil
 	}
-	return labelVerbCmd(m.verbDialer(), "Rename", verb, params)
+	return labelVerbCmd(m.verbDialer(), what, verb, params)
 }
 
 // renameVerb picks the daemon verb a rename goes through and builds its params.
@@ -244,6 +298,13 @@ func renameVerb(kind RenameKind, target, sessionName, label string) (string, map
 			return "", nil, false
 		}
 		return "rename-space", map[string]any{"space": target, "name": label}, true
+	case RenameSessionSpace:
+		// An empty name is sent, because it is how the verb takes a session
+		// out of every space. Every other name is checked by the verb alone.
+		if target == "" {
+			return "", nil, false
+		}
+		return "set-session-space", map[string]any{"session": target, "space": label}, true
 	default:
 		return "", nil, false
 	}

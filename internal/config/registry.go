@@ -838,13 +838,15 @@ var ActionDescriptions = map[string]string{
 	ActionCopyModeLineEnd:        "Copy mode: go to the end of the line",
 
 	// Session lifecycle (context menu rows; no default keybinding)
-	"settings_sidebar":  "Sidebar settings",
-	"rename_session":    "Rename the session the menu was opened on",
-	"rename_workspace":  "Rename the workspace the session is showing",
-	"rename_space":      "Rename the space of the attached session, or of the heading the menu was opened on",
-	"kill_session":      "Kill the session the menu was opened on",
-	"kill_session_next": "Kill session, go to next",
-	"kill_session_quit": "Kill session and quit",
+	"settings_sidebar":     "Sidebar settings",
+	"rename_session":       "Rename the session the menu was opened on",
+	"rename_workspace":     "Rename the workspace the session is showing",
+	"rename_space":         "Rename the space of the attached session, or of the heading the menu was opened on",
+	"set_session_space":    "Move the attached session, or the one the menu was opened on, to a space",
+	"new_session_in_space": "Make a session in the space of the heading the menu was opened on, or of the attached session (a plain new session when it is in no space)",
+	"kill_session":         "Kill the session the menu was opened on",
+	"kill_session_next":    "Kill session, go to next",
+	"kill_session_quit":    "Kill session and quit",
 
 	// System
 	"toggle_logs":        "Toggle log viewer",

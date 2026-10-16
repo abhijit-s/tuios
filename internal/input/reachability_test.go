@@ -454,6 +454,8 @@ var actionsWithNoDefaultBinding = map[string]string{
 	"settings_sidebar":      "rail mouse row",
 	"rename_workspace":      "user binding",
 	"rename_space":          "rail space heading menu row and user binding",
+	"set_session_space":     "rail session row menu row and user binding",
+	"new_session_in_space":  "rail space heading menu row and user binding",
 
 	// ssh-aware splits. The palette lists each one, and a user binds a key
 	// or sets appearance.new_window_follow_ssh to make the ordinary keys follow.

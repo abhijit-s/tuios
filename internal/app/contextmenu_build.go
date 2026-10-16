@@ -398,6 +398,9 @@ func (m *OS) sessionMenu(sessionID string) (string, []ContextMenuItem) {
 		// are offered on every row and both read the menu's target rather than
 		// the attached session.
 		m.item(glyphRename, "Rename", "rename_session", false),
+		// The row's own session, like Rename. Dimmed on a global session,
+		// which no space can hold.
+		m.item(glyphSwitch, "Move to space...", "set_session_space", m.sessionIsGlobal(sessionID)),
 		m.item(glyphPalette, "Session color", "set_session_accent", false),
 		m.item(glyphDetach, "Detach", "prefix_detach", !attached),
 		m.item(glyphSwitch, "Switch session...", "prefix_session_switcher", false),
@@ -413,6 +416,9 @@ func (m *OS) sessionMenu(sessionID string) (string, []ContextMenuItem) {
 		// live on — dimmed elsewhere, saying the action exists, the way the
 		// pane menu dims a paste it cannot reach.
 		m.item(glyphNew, "New worktree...", "session_new_worktree", m.sessionWorktreeInfo(sessionID) == nil),
+		// A plain new session, the new_session action the sessions header's
+		// "+" runs. It is about no row, so it reads no menu target.
+		m.item(glyphNew, "New session", "new_session", false),
 		separator(),
 	}, kill...)
 }
@@ -440,7 +446,7 @@ func (m *OS) repoHeaderMenu(repo string) (string, []ContextMenuItem) {
 
 // spaceHeaderMenu is the menu for a space's heading on the rail. A left-click on
 // the heading folds it, so the menu holds what the heading offers that no click
-// on it suggests: renaming the space. What the menu is about rides in
+// on it suggests: renaming the space, and making a session in it. What the menu is about rides in
 // ContextMenu.Space; see TakeMenuSpace.
 func (m *OS) spaceHeaderMenu(space string) (string, []ContextMenuItem) {
 	title := printableTitle(space)
@@ -449,6 +455,7 @@ func (m *OS) spaceHeaderMenu(space string) (string, []ContextMenuItem) {
 	}
 	return title, []ContextMenuItem{
 		m.item(glyphRename, "Rename", "rename_space", false),
+		m.item(glyphNew, "New session here", "new_session_in_space", false),
 	}
 }
 

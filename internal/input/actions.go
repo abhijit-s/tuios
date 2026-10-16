@@ -247,6 +247,8 @@ func (d *ActionDispatcher) registerHandlers() {
 	d.Register("rename_session", handleRenameSession)
 	d.Register("rename_workspace", handleRenameWorkspace)
 	d.Register("rename_space", handleRenameSpace)
+	d.Register("set_session_space", handleSetSessionSpace)
+	d.Register("new_session_in_space", handleNewSessionInSpace)
 	d.Register("kill_session", handleKillSession)
 	d.Register("kill_session_next", handleKillSessionNext)
 	d.Register("kill_session_quit", handleKillSessionQuit)
@@ -1228,6 +1230,35 @@ func handleRenameSpace(_ tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
 		return o, nil
 	}
 	o.BeginRenameSpace(space)
+	return o, nil
+}
+
+// handleSetSessionSpace opens the dialog that files a session under a space,
+// for the session whose rail row the menu was opened on. Reached by key it
+// means the attached session, because a key names no row.
+func handleSetSessionSpace(_ tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
+	name := o.TakeMenuSession()
+	if name == "" {
+		name = o.SessionName
+	}
+	o.BeginSetSessionSpace(name)
+	return o, nil
+}
+
+// handleNewSessionInSpace makes a session in the space whose heading the menu
+// was opened on. Reached by key it means the attached session's space, and in
+// a session in no space it is new_session: a plain session, asking which
+// machine when there is more than one.
+func handleNewSessionInSpace(_ tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
+	space := o.TakeMenuSpace()
+	if space == "" {
+		space = o.SessionSpace
+	}
+	if space == "" {
+		o.OpenNewSessionPicker()
+		return o, nil
+	}
+	o.NewSessionInSpace(space)
 	return o, nil
 }
 

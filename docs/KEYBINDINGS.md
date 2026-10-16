@@ -903,6 +903,38 @@ rename_space = ["%"]
 ```
 
 Right-clicking a space's heading on the rail (or its row in the spaces section) offers the same dialog on that space, whichever session is attached. The rail's `r` renames the session under the cursor, since the cursor passes over headings.
+
+## Move a session to a space
+
+The `set_session_space` action opens the rename dialog on the attached session's space, titled "move SESSION to space" and seeded with the space the session is in. Enter files the session through the daemon, as [`tuios set-session-space`](CLI_REFERENCE.md#tuios-set-session-space) does: a space that exists is joined, a new name makes that space, and an empty field takes the session out of every space. A name the daemon refuses (one that breaks the session name rules, or longer than 64 bytes) is refused with its message ("Move failed: ...") and nothing changes. Esc cancels. A global session cannot be in a space, so in one the action opens nothing and says "Not moved: a global session cannot be in a space".
+
+Right-clicking a session's row on the rail and taking "Move to space..." opens the same dialog on that row's session, whichever session is attached. The row is dimmed on a global session. A session on another machine has no session menu.
+
+Dragging a session's row on the rail does the same with the mouse, in the grouped space layout (the default; see [Spaces on the rail](CONFIGURATION.md#spaces-on-the-rail)):
+
+- Dropped on a space's heading, the session is filed under that space and drawn last in its group.
+- Dropped on a row of another space's group, it is filed under that space and drawn where that row was.
+- Dropped on a row of the sessions in no space, it is taken out of its space.
+- Dropped on a row of its own group, it is reordered and its space is left alone, as a drag always did.
+
+While the row is dragged, the heading of the space it would land in is lit, or the row in no space under the pointer. A global session's row lights nothing and is only reordered. Esc while dragging, or a drop off the sessions section, files nothing. The drop goes through `set-session-space`, so it is refused in the same words as the dialog.
+
+## New session in a space
+
+The `new_session_in_space` action makes a session in the attached session's space and switches to it, through the daemon's `new-session` verb with the space, as [`tuios new NAME --space SPACE`](CLI_REFERENCE.md#tuios-new) does. The daemon names the session. It is made on the daemon the client is attached to, with no machine asked for, because a space groups that daemon's sessions. In a session in no space it is `new_session`: a plain session, asking which machine when there is more than one.
+
+Right-clicking a space's heading on the rail and taking "New session here" makes the session in that heading's space, whichever session is attached.
+
+The session menu on a rail row, and the menu of blank rail, also have a "New session" row, which runs `new_session`, the action `N` runs.
+
+`set_session_space` and `new_session_in_space` have no default key, and the command palette lists both. `ctrl+b &` and `ctrl+b ^` are free in the default prefix table; to bind them there:
+
+```toml
+[keybindings.prefix_mode]
+set_session_space = ["&"]
+new_session_in_space = ["^"]
+```
+
 ## Split into the same ssh
 
 These actions open a pane on the machine that the focused pane is connected to

@@ -2047,7 +2047,10 @@ func (m *OS) sidebarPanelLinesForTree(tree sessiontree.Tree) ([]string, int) {
 				// nav row and the cursor passes over it. A click on it folds
 				// the space, so it records a click.
 				recordClick(sidebarRowSpace, s.ID, "", -1, 1)
-				lines = append(lines, compose(m.sidebarSpaceRow(s, cw, pal)))
+				// The heading of the space a dragged session row would be
+				// filed under is lit the way the pointer lights a row.
+				st := m.railRowState(m.sidebarSpaceDropLit(sidebarRowSpace, s.ID), false)
+				lines = append(lines, compose(m.sidebarSpaceRow(s, cw, pal, st)))
 				continue
 			}
 			if s.Kind == sessiontree.KindRepo {
@@ -2067,7 +2070,7 @@ func (m *OS) sidebarPanelLinesForTree(tree sessiontree.Tree) ([]string, int) {
 				continue
 			}
 			dragged := m.SidebarDrag.Dragging && s.ID == m.SidebarDrag.SessionID
-			st := m.railRowState(idx == hoverRow[sidebarSectionSessions], isCursor(sidebarRowSession, s.ID, ""))
+			st := m.railRowState(idx == hoverRow[sidebarSectionSessions] || m.sidebarSpaceDropLit(sidebarRowSession, s.ID), isCursor(sidebarRowSession, s.ID, ""))
 			recordHit(sidebarRowSession, s.ID, "", -1, 1)
 			lines = append(lines, compose(st.mark(pal, m.sidebarSessionRow(s, sessionIdx[s.ID], variant, cw, pal, st, dragged, showCounts))))
 		}
