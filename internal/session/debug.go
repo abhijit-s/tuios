@@ -365,6 +365,7 @@ var messageTypeNames = [...]string{
 	MsgDirChanged:        "DirChanged",
 	MsgSessionsChanged:   "SessionsChanged",
 	MsgPaneMark:          "PaneMark",
+	MsgDaemonUpgrading:   "DaemonUpgrading",
 }
 
 // MessageTypeName returns a human-readable name for a message type.
