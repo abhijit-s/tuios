@@ -56,6 +56,9 @@ func (m *OS) sessionCloseTitle() string {
 	if m.SessionCloseWindow != "" {
 		return "close pane"
 	}
+	if m.SessionCloseSpace != "" {
+		return "close space"
+	}
 	if m.SessionCloseWorkspace != 0 {
 		return "close workspace"
 	}
@@ -65,6 +68,9 @@ func (m *OS) sessionCloseTitle() string {
 func (m *OS) sessionCloseLabel() string {
 	if m.SessionCloseWindow != "" {
 		return "Close pane"
+	}
+	if m.SessionCloseSpace != "" {
+		return "Close space"
 	}
 	if m.SessionCloseWorkspace != 0 {
 		return "Close workspace"

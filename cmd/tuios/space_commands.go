@@ -74,6 +74,36 @@ are left under each name, and running the same command again moves the rest.`,
 	return cmd
 }
 
+func newRemoveSpaceCmd() *cobra.Command {
+	var jsonOut bool
+	cmd := &cobra.Command{
+		Use:   "remove-space <space>",
+		Short: "Take every session out of a space",
+		Long: `Remove a space: every session filed under it is taken out of it, and joins
+the sessions in no space. The sessions keep running.
+
+The remove is made one session at a time. If it stops part way, some sessions
+are left in the space, and running the same command again takes out the rest.`,
+		Example: `  tuios remove-space payments`,
+		Args:    cobra.ExactArgs(1),
+		RunE: func(_ *cobra.Command, args []string) error {
+			var res struct {
+				Space    string   `json:"space"`
+				Sessions []string `json:"sessions"`
+			}
+			printed, err := callSpaceVerb("remove-space", map[string]any{"space": args[0]}, jsonOut, &res)
+			if err != nil || printed {
+				return err
+			}
+			fmt.Printf("Removed space '%s': %s now in no space (%s).\n", res.Space,
+				plural.Count(len(res.Sessions), "session"), strings.Join(res.Sessions, ", "))
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&jsonOut, "json", false, "Output as JSON")
+	return cmd
+}
+
 func newKillSpaceCmd() *cobra.Command {
 	var force, jsonOut bool
 	cmd := &cobra.Command{

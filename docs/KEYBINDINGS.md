@@ -935,6 +935,22 @@ set_session_space = ["&"]
 new_session_in_space = ["^"]
 ```
 
+## Remove or close a space
+
+The `remove_space` action takes every session out of the attached session's space, through the daemon, as [`tuios remove-space`](CLI_REFERENCE.md#tuios-remove-space) does: the sessions join the ones in no space and keep running, and the space's heading leaves the rail. It asks nothing, since nothing is lost.
+
+The `close_space` action opens the close confirmation on the attached session's space. The dialog names the sessions in the space, counts their panes and the agents still working in them, and opens on Cancel. Close ends every one of those sessions through the daemon, as [`tuios kill-space --force`](CLI_REFERENCE.md#tuios-kill-space) does; Cancel or Esc changes nothing. When the attached session is in the space, the dialog says so, and closing it quits this client, as closing the attached session does.
+
+In a session that is in no space neither action does anything, and the dock says "No space to remove" or "No space to close". Right-clicking a space's heading on the rail and taking "Remove space" or "Close space..." does the same for that heading's space, whichever session is attached.
+
+Neither action has a default key, and the command palette lists both. `ctrl+b *` and `ctrl+b #` are free in the default prefix table; to bind them there:
+
+```toml
+[keybindings.prefix_mode]
+remove_space = ["*"]
+close_space = ["#"]
+```
+
 ## Split into the same ssh
 
 These actions open a pane on the machine that the focused pane is connected to

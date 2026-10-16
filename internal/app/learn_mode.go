@@ -55,6 +55,8 @@ var learnUnavailable = map[string]string{
 	"repo_new_worktree":       learnNoteSessions,
 	"set_session_space":       learnNoteSessions,
 	"new_session_in_space":    learnNoteSessions,
+	"remove_space":            learnNoteSessions,
+	"close_space":             learnNoteSessions,
 	"prefix_mail":             learnNoteMail,
 	"screenshot":              learnNoteShot,
 	"screenshot_window":       learnNoteShot,

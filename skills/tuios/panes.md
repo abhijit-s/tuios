@@ -55,6 +55,7 @@ tuios rename-space payments billing
 tuios switch-space billing        # the person's client goes to the space's last used session
 tuios switch-space --none         # the same among the sessions in no space
 tuios kill-space --force billing  # ends every process in every session of the space
+tuios remove-space billing        # or, instead: its sessions leave the space and keep running
 ```
 
 A space name follows the session name rules and is at most 64 bytes. A global
@@ -65,7 +66,10 @@ from the client with the rail heading's Rename row or the `rename_space`
 action, which call the same `rename-space` verb. A session row's "Move to
 space..." row, the `set_session_space` action and a drag of the row onto a
 space call `set-session-space`; a heading's "New session here" and the
-`new_session_in_space` action call `new-session` with `space`.
+`new_session_in_space` action call `new-session` with `space`. A heading's
+"Remove space" row and the `remove_space` action call `remove-space`; "Close
+space..." and `close_space` ask the person first, then call `kill-space` with
+`force`.
 
 ## Opening a pane and running work in it
 

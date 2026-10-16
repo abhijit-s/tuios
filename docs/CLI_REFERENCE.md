@@ -762,6 +762,20 @@ tuios rename-space <space> <new-name>
 tuios rename-space payments billing
 ```
 
+### `tuios remove-space`
+
+Remove a space: every session filed under it is taken out of it and joins the sessions in no space. The sessions keep running. The remove is made one session at a time, so if it stops part way some sessions are left in the space, and running the same command again takes out the rest. Once no session is left in the space, the space no longer exists, and running it again is refused as an unknown space. To end the sessions instead, see [`tuios kill-space`](#tuios-kill-space). The rail's space heading menu and the `remove_space` action make the same remove from the client; see [Remove or close a space](KEYBINDINGS.md#remove-or-close-a-space).
+
+**Usage:**
+```bash
+tuios remove-space <space>
+```
+
+**Examples:**
+```bash
+tuios remove-space payments
+```
+
 ### `tuios worktree`
 
 A git worktree as a session. `worktree new` makes a worktree of the repository

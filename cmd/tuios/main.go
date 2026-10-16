@@ -3109,7 +3109,7 @@ command in authorized_keys to make the policy a boundary:
 	rootCmd.AddCommand(sshCmd, configCmd, newLookCommand(), keybindsCmd, tapeCmd, layoutCmd, updateCmd)
 	rootCmd.AddCommand(attachCmd, newCmd, lsCmd, listClientsCmd, killSessionCmd, resurrectCmd)
 	rootCmd.AddCommand(newSwitchSessionCmd())
-	rootCmd.AddCommand(newRenameSpaceCmd(), newKillSpaceCmd(), newSwitchSpaceCmd())
+	rootCmd.AddCommand(newRenameSpaceCmd(), newRemoveSpaceCmd(), newKillSpaceCmd(), newSwitchSpaceCmd())
 	rootCmd.AddCommand(newDetachClientCmd())
 	rootCmd.AddCommand(newSSHAgentPathCmd())
 	rootCmd.AddCommand(newDisplayEnvCmd())

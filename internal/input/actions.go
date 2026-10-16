@@ -249,6 +249,8 @@ func (d *ActionDispatcher) registerHandlers() {
 	d.Register("rename_space", handleRenameSpace)
 	d.Register("set_session_space", handleSetSessionSpace)
 	d.Register("new_session_in_space", handleNewSessionInSpace)
+	d.Register("remove_space", handleRemoveSpace)
+	d.Register("close_space", handleCloseSpace)
 	d.Register("kill_session", handleKillSession)
 	d.Register("kill_session_next", handleKillSessionNext)
 	d.Register("kill_session_quit", handleKillSessionQuit)
@@ -1259,6 +1261,38 @@ func handleNewSessionInSpace(_ tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
 		return o, nil
 	}
 	o.NewSessionInSpace(space)
+	return o, nil
+}
+
+// menuOrAttachedSpace is the space a space action acts on: the heading the menu
+// was opened on, else the attached session's, since a key names no heading.
+func menuOrAttachedSpace(o *app.OS) string {
+	if space := o.TakeMenuSpace(); space != "" {
+		return space
+	}
+	return o.SessionSpace
+}
+
+// handleRemoveSpace takes every session out of the space. A session in no
+// space has nothing to remove, which it says rather than doing nothing.
+func handleRemoveSpace(_ tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
+	space := menuOrAttachedSpace(o)
+	if space == "" {
+		o.ShowNotification("No space to remove: this session is in no space", "info", o.Settings.NotificationDuration)
+		return o, nil
+	}
+	return o, o.RemoveSpace(space)
+}
+
+// handleCloseSpace raises the confirmation for closing every session in the
+// space. It never kills: only the dialog's Close row does.
+func handleCloseSpace(_ tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
+	space := menuOrAttachedSpace(o)
+	if space == "" {
+		o.ShowNotification("No space to close: this session is in no space", "info", o.Settings.NotificationDuration)
+		return o, nil
+	}
+	o.OpenSpaceClose(space)
 	return o, nil
 }
 

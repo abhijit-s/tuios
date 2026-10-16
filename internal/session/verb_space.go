@@ -195,6 +195,36 @@ func (d *Daemon) verbRenameSpace(_ *connState, params json.RawMessage) (any, *ve
 	return out, nil
 }
 
+// remove-space takes every session of a space out of it, so they join the
+// sessions in no space and keep running. Like rename-space it is one SetSpace
+// per member, looked up afresh on every call, so running it again after a
+// failure part way takes out the rest. Once no session is left in the space,
+// the space no longer exists and a further call is refused as unknown.
+func (d *Daemon) verbRemoveSpace(_ *connState, params json.RawMessage) (any, *verbError) {
+	var p struct {
+		Space string `json:"space"`
+	}
+	if verr := decodeParams(params, &p); verr != nil {
+		return nil, verr
+	}
+	if p.Space == "" {
+		return nil, invalidParam("space", "space is the space to remove and cannot be empty")
+	}
+	members := d.sessionsInSpace(p.Space)
+	if len(members) == 0 {
+		return nil, d.noSuchSpace(p.Space)
+	}
+	removed := make([]string, 0, len(members))
+	for _, sess := range members {
+		if err := sess.SetSpace(""); err != nil {
+			return nil, newVerbError(ErrVerbInternal, "took "+strconv.Itoa(len(removed))+" of "+strconv.Itoa(len(members))+
+				" sessions out of the space, then "+sess.Name()+" failed: "+err.Error()+". Run the same remove again to take out the rest")
+		}
+		removed = append(removed, sess.Name())
+	}
+	return map[string]any{"type": "space_removed", "space": p.Space, "sessions": removed}, nil
+}
+
 // kill-space kills every session filed under a space, as kill-session kills
 // one. It ends every process in all of them, so it refuses unless force is
 // passed, and the refusal names the sessions that would go.

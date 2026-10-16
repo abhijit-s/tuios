@@ -130,6 +130,9 @@ func (m *OS) sessionCloseQuestion() string {
 	if id := m.SessionCloseWindow; id != "" {
 		return "Close " + m.windowCloseLabel(m.windowIndexByID(id)) + "?"
 	}
+	if space := m.SessionCloseSpace; space != "" {
+		return "Close every session in space '" + printableTitle(space) + "'?"
+	}
 	if ws := m.SessionCloseWorkspace; ws != 0 {
 		return "Close every pane on " + m.workspaceLabel(ws) + "?"
 	}
@@ -189,6 +192,7 @@ func (m *OS) OpenSessionCloseForWindow(i int) {
 	}
 	m.SessionCloseTarget = ""
 	m.SessionCloseWorkspace = 0
+	m.SessionCloseSpace = ""
 	m.SessionCloseWindow = m.Windows[i].ID
 	m.SessionCloseSelected = SessionCloseRowCancel
 	m.ShowSessionClose = true
@@ -207,6 +211,7 @@ func (m *OS) OpenSessionCloseFor(sessionID string) {
 		sessionID = ""
 	}
 	m.SessionCloseWindow = ""
+	m.SessionCloseSpace = ""
 	m.SessionCloseTarget = sessionID
 	m.SessionCloseSelected = SessionCloseRowCancel
 	m.ShowSessionClose = true
@@ -218,6 +223,7 @@ func (m *OS) CloseSessionClose() {
 	m.SessionCloseTarget = ""
 	m.SessionCloseWorkspace = 0
 	m.SessionCloseWindow = ""
+	m.SessionCloseSpace = ""
 	m.SessionCloseSelected = SessionCloseRowCancel
 }
 
@@ -242,9 +248,13 @@ func (m *OS) SessionCloseActivate(idx int) tea.Cmd {
 	target := m.SessionCloseTarget
 	ws := m.SessionCloseWorkspace
 	win := m.SessionCloseWindow
+	space := m.SessionCloseSpace
 	m.CloseSessionClose()
 	if idx != SessionCloseRowClose {
 		return nil
+	}
+	if space != "" {
+		return m.CloseSpace(space)
 	}
 	if win != "" {
 		// The pane is found again by its ID: it may have moved in

@@ -418,7 +418,10 @@ type OS struct {
 	// before anything dies. It holds the pane's ID, not its index, because
 	// m.Windows can change while the dialog is open, and an index would then
 	// name another pane. "" is no pane.
-	SessionCloseWindow   string
+	SessionCloseWindow string
+	// SessionCloseSpace turns the dialog into close_space's: it asks about every
+	// session filed under the space, which kill-space ends. "" is no space.
+	SessionCloseSpace    string
 	SessionCloseSelected int
 	// Pending resize tracking for debouncing PTY resize during mouse drag
 	PendingResizes map[string][2]int // windowID -> [width, height] of pending PTY resize

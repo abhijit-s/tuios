@@ -1696,6 +1696,19 @@ func buildVerbRegistry() map[string]verbEntry {
 			examples: []string{`{"id":1,"verb":"rename-space","params":{"space":"payments","name":"billing"}}`},
 			handler:  (*Daemon).verbRenameSpace,
 		},
+		"remove-space": {
+			description: "Remove a space: take every session in it out of it, so they join the sessions in no space and keep running. It is one change per session, not one transaction, so a failure part way leaves some sessions in the space, and calling it again takes out the rest.",
+			params: []verbParam{
+				{Name: "space", Type: "string", Required: true, Description: "The space to remove."},
+			},
+			returns: []verbParam{
+				{Name: "type", Type: "string", Description: "Always space_removed."},
+				{Name: "space", Type: "string", Description: "The space that was removed."},
+				{Name: "sessions", Type: "[]string", Description: "The sessions this call took out of the space, by name."},
+			},
+			examples: []string{`{"id":1,"verb":"remove-space","params":{"space":"payments"}}`},
+			handler:  (*Daemon).verbRemoveSpace,
+		},
 		"kill-space": {
 			description: "Terminate every session in a space, and every window in them, as kill-session does one session. Without force it kills nothing and names the sessions it would kill.",
 			params: []verbParam{

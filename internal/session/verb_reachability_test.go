@@ -99,6 +99,7 @@ var exampleOutcomes = map[string]exampleOutcome{
 	// does not exist. The verbs are proved end to end in
 	// e2e/tui/space_cli_test.go.
 	"rename-space#0": {errCode: ErrVerbInvalidParams, why: "no session in the fixture is in a space"},
+	"remove-space#0": {errCode: ErrVerbInvalidParams, why: "no session in the fixture is in a space"},
 	"kill-space#0":   {errCode: ErrVerbInvalidParams, why: "no session in the fixture is in a space"},
 	"kill-space#1":   {errCode: ErrVerbInvalidParams, why: "no session in the fixture is in a space"},
 	"switch-space#0": {errCode: ErrVerbInvalidParams, why: "no session in the fixture is in a space"},

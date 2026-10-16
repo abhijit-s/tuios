@@ -1,6 +1,8 @@
 package app
 
 import (
+	"image/color"
+	"slices"
 	"strings"
 
 	"github.com/Gaurav-Gosain/tuios/internal/overlay"
@@ -24,10 +26,15 @@ func (m *OS) renderSessionClose() (string, overlay.Geometry, []overlayRowHit) {
 	m.SessionCloseSelected = clampInt(m.SessionCloseSelected, 0, sessionCloseRowCount-1)
 
 	toll := m.SessionTollFor(m.SessionCloseTarget)
-	if m.SessionCloseWindow != "" {
+	var members []string
+	switch {
+	case m.SessionCloseWindow != "":
 		toll = m.windowToll(m.windowIndexByID(m.SessionCloseWindow))
-	} else if m.SessionCloseWorkspace != 0 {
+	case m.SessionCloseWorkspace != 0:
 		toll = m.workspaceToll(m.SessionCloseWorkspace)
+	case m.SessionCloseSpace != "":
+		members = m.spaceMembers(m.SessionCloseSpace)
+		toll = m.spaceToll(members)
 	}
 	// The toll is warn-coloured only when an agent is in it. Colouring it always
 	// would spend the one loud thing in the dialog on "three shells are open",
@@ -37,15 +44,30 @@ func (m *OS) renderSessionClose() (string, overlay.Geometry, []overlayRowHit) {
 		tollColor = pal.Warn
 	}
 
-	body := []string{
-		overlay.Fill(overlay.Style(bg).Render(" ")+
-			overlay.Style(bg).Foreground(pal.Fg).Bold(true).Render(overlay.Truncate(m.sessionCloseQuestion(), max(width-1, 1))), width, bg),
-		overlay.Fill(overlay.Style(bg).Render(" ")+
-			overlay.Style(bg).Foreground(tollColor).Render(overlay.Truncate(toll.Line(), max(width-1, 1))), width, bg),
+	line := func(text string, fg color.Color, bold bool) string {
+		return overlay.Fill(overlay.Style(bg).Render(" ")+
+			overlay.Style(bg).Foreground(fg).Bold(bold).Render(overlay.Truncate(text, max(width-1, 1))), width, bg)
+	}
+	body := []string{line(m.sessionCloseQuestion(), pal.Fg, true)}
+	if m.SessionCloseSpace != "" {
+		// A space is closed whole, so the dialog names what is in it: the
+		// sessions as the rail labels them, then their panes and agents.
+		labels := make([]string, len(members))
+		for i, name := range members {
+			labels[i] = printableTitle(m.sessionTitle(name))
+		}
+		body = append(body, line(countOf(len(members), "session")+": "+strings.Join(labels, ", "), pal.FgDim, false))
+	}
+	body = append(body, line(toll.Line(), tollColor, false))
+	if m.SessionCloseSpace != "" && slices.Contains(members, m.SessionName) {
+		body = append(body, line("This client quits: its session is in the space.", pal.Warn, false))
+	}
+	body = append(body,
 		overlay.Fill(overlay.Style(bg).Render(" ")+overlay.DashRule(max(width-2, 0), bg, pal), width, bg),
 		m.sessionCloseRow(SessionCloseRowCancel, width, pal),
 		m.sessionCloseRow(SessionCloseRowClose, width, pal),
-	}
+	)
+	firstRow := len(body) - sessionCloseRowCount
 
 	content, geo := overlay.Dialog{
 		Title: m.sessionCloseTitle(),
@@ -61,7 +83,7 @@ func (m *OS) renderSessionClose() (string, overlay.Geometry, []overlayRowHit) {
 	// user is looking at.
 	hits := make([]overlayRowHit, 0, sessionCloseRowCount)
 	for i := range sessionCloseRowCount {
-		y := geo.BodyY + 3 + i
+		y := geo.BodyY + firstRow + i
 		hits = append(hits, overlayRowHit{
 			Rect: overlay.Rect{X0: 0, Y0: y, X1: geo.Width, Y1: y + 1},
 			Idx:  i,
