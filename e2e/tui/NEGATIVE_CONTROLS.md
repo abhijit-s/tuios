@@ -7234,3 +7234,29 @@ Run on 2026-10-16 on macOS. The tests are in `space_rename_dialog_test.go`: `Tes
 `TestRenameSpaceKeyWithNoSpaceSaysSo` is the negative half ("no dialog on a session in no space"); `TestRenameSpaceKeyRenamesTheAttachedSessionsSpace` is its positive half, the same key in a spaced session opening the dialog. The dialog validates nothing itself: the verb is the one check, so the dialog and `tuios rename-space` refuse the same names in the same words, and the validation control is a cut in the verb.
 
 Not covered: the unchanged-name cancel (nothing observable distinguishes it from a rename to the same name, which the verb answers as already done), and the 64-byte cap through the dialog, which `TestAGlobalSessionIsInNoSpace` covers on the verb.
+
+### Space rows of the session menus
+
+Run on 2026-10-16 on macOS. The tests are in `space_session_menus_test.go`. The fixture is the space UI one (`e2e-loose` in no space, `e2e-b1` in beta, `e2e-a1` and `e2e-a2` in alpha), the client is attached to `e2e-a1` unless the test says otherwise, and the config binds `set_session_space` to `ctrl+b &` and `new_session_in_space` to `ctrl+b ^`. The global tests add `e2e-g`, a global session with one window. Spaces are read from `tuios ls --json`. Each control cuts one wire from the fixed build, builds it, restores the source, and runs the tests named; the fixed build passes all fifteen.
+
+| Control: what was cut | Tests that fail | Verdict |
+| --- | --- | --- |
+| Target substitution: `handleSetSessionSpace` ignores `TakeMenuSession` and always takes the attached session | `TestRailSessionMenuMovesThatSessionToANewSpace`, `TestRailSessionMenuJoinsAnExistingSpace`, `TestRailSessionMenuEmptyFieldClearsTheSpace`, `TestRailSessionMenuRefusesAnInvalidSpace` (each: "the move dialog did not name e2e-loose / e2e-b1 / e2e-a2": it opened on e2e-a1) | **caught** |
+| Space not passed: `NewSessionInSpace` calls `new-session` without `space` | `TestSpaceHeadingNewSessionHere` ("the new session session-867bcfaf is in space \"\", want beta"), `TestNewSessionInSpaceKey` ("the session made from e2e-b1 is in space \"\", want beta") | **caught** |
+| Verb not called: `renameVerb` builds no call for `RenameSessionSpace` | the four `TestRailSessionMenu*` tests ("the rail never drew [gamma ...]", "e2e-a2 is still in a space", "the refusal did not carry the verb's message"), `TestSetSessionSpaceKeyMovesTheAttachedSession` ("the rail never drew [delta alpha beta]") | **caught** |
+| Row not wired: the session menu's "Move to space..." row | `TestRailSessionMenuMovesThatSessionToANewSpace`, `TestAGlobalSessionCannotBeMovedToASpace` ("the menu of e2e-loose / e2e-g offered no \"Move to space\"") | **caught** |
+| Row not wired: the space heading menu's "New session here" row | `TestSpaceHeadingNewSessionHere` ("the menu of beta offered no \"New session here\"") | **caught** |
+| Row not wired: the session menu's "New session" row | `TestSessionMenuNewSessionRow` ("the menu of e2e-b1 offered no \"New session\"") | **caught** |
+| Row not wired: blank rail's "New session" row | `TestBlankRailNewSessionRow` ("blank rail's menu offered no New session") | **caught** |
+| Action not registered: `set_session_space` | `TestSetSessionSpaceKeyMovesTheAttachedSession` ("the move dialog did not name e2e-a1"), `TestRailSessionMenuMovesThatSessionToANewSpace` (the row runs nothing), `TestAGlobalSessionCannotBeMovedToASpace` ("set_session_space in a global session did not refuse") | **caught** |
+| Action not registered: `new_session_in_space` (the key path and the heading row) | `TestNewSessionInSpaceKey`, `TestSpaceHeadingNewSessionHere` ("no session was made") | **caught** |
+| The global check in `BeginSetSessionSpace` (the dialog opens on a global session and the verb refuses on Enter) | `TestAGlobalSessionCannotBeMovedToASpace` ("set_session_space in a global session did not refuse") | **caught** |
+| Drag target substitution: `commitSpaceDrop` files the attached session instead of the dragged one | `TestRailDragSessionOntoSpaceHeading` ("e2e-a2 was not filed under beta": e2e-a1 went to beta), `TestRailDragSessionIntoNoSpaceRun` ("e2e-b1 is still in a space": e2e-a1 was cleared) | **caught** |
+| Drop on a heading not wired: `sidebarTrackSpaceDrop` ignores a space heading | `TestRailDragSessionOntoSpaceHeading` ("e2e-a2 was not filed under beta"), `TestRailDragGlobalSessionOntoHeadingChangesNothing` ("beta's heading is not lit under e2e-loose's row") | **caught** |
+| The clear not wired: a drop on a row in no space is no target | `TestRailDragSessionIntoNoSpaceRun` ("e2e-b1 is still in a space") | **caught** |
+| Escape not cancelling the drag | `TestRailDragGlobalSessionOntoHeadingChangesNothing` ("after Escape mid-drag, the sessions and their spaces are ... e2e-loose:beta") | **caught** |
+| The global check in `sidebarTrackSpaceDrop` (the verb would still refuse the drop) | `TestRailDragGlobalSessionOntoHeadingChangesNothing` ("beta's heading is lit under a global session's row") | **caught** |
+
+Each test that names a negative half has its positive half in the file: the global row's dimmed "Move to space..." opens no dialog where every other row's does, a global row over beta lights nothing where `e2e-loose` over beta lights it, and `TestRailDragWithinSpaceReorders` is the drag that must not touch a space.
+
+Not covered: a drop on a repository header inside a space's group (no fixture session is a worktree), the split space layout (drops file nothing there, by design), a session on another machine (it has no session menu, and its row is no session row a drag can start from), and the lit row in no space, which only the heading's ground is read for.
