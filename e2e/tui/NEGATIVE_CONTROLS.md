@@ -7281,3 +7281,12 @@ Run on 2026-10-16 on macOS. The tests are in `space_remove_close_test.go`. The f
 `TestSpaceKeysWithNoSpaceSaySo` is the negative half of both key paths ("nothing in a session in no space"); `TestRemoveSpaceKeyRemovesTheAttachedSessionsSpace` and `TestCloseSpaceKeyQuitsWhenTheClientIsInIt` are their positive halves. `TestSpaceHeadingCloseSpaceConfirms` holds the cancel halves (Esc, and Enter on the row the dialog opens on) beside the Close that kills.
 
 Not covered: a failed kill of the attached session's space (the client stays and says why; no fixture makes kill-space fail after the dialog), a session filed into the space while the dialog is open (kill-space ends the members the daemon holds when Close is taken, as `tuios kill-space --force` does), the split space layout's spaces section, whose rows open the same heading menu, and Learn mode, which lists both actions as unavailable.
+
+#### Remove space on a daemon from before remove-space
+
+Run on 2026-10-16 on macOS. `TestRemoveSpaceWithAnOlderDaemon` starts the fixture's daemon from `TUIOS_E2E_BASELINE_BIN`, a build with spaces and no `remove-space` verb (dev+37815211 here), attaches the fixed client to `e2e-a1`, and presses `remove_space`. The fixed build passes it, and the six tests above, with the baseline set.
+
+| Control: what was cut | Tests that fail | Verdict |
+| --- | --- | --- |
+| No fallback: `RemoveSpace` returns the unknown-verb refusal instead of calling `set-session-space` per member | `TestRemoveSpaceWithAnOlderDaemon` ("after remove_space on an older daemon, the sessions and their spaces are map[e2e-a1:alpha e2e-a2:alpha e2e-b1:beta e2e-loose:]"); `TestRemoveSpaceKeyRemovesTheAttachedSessionsSpace` still passes, as it should, since its daemon knows the verb | **caught** |
+| Target substitution, rerun independently: `RemoveSpace` replaces its argument with the attached session's space | `TestSpaceHeadingRemoveSpace` ("after removing beta from its heading, the sessions and their spaces are map[e2e-a1: e2e-a2: e2e-b1:beta e2e-loose:]") | **caught** |

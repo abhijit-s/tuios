@@ -2,6 +2,7 @@ package tuie2e
 
 import (
 	"encoding/json"
+	"os"
 	"slices"
 	"strings"
 	"testing"
@@ -146,6 +147,45 @@ func TestRemoveSpaceKeyRemovesTheAttachedSessionsSpace(t *testing.T) {
 	waitRailHeadings(t, term, "after removing alpha", []string{"beta", "e2e-a1", "e2e-a2"}, []string{"alpha"})
 	saveArtifact(t, term, dir, "rail-removed")
 	alive(t, term, "after removing the attached session's space")
+}
+
+// TestRemoveSpaceWithAnOlderDaemon: attached to a daemon from before
+// remove-space, remove_space still takes every session out of the space, one
+// set-session-space at a time, so a client upgrade needs no daemon restart for
+// it.
+//
+// How it could pass wrongly, and what stops it:
+//   - the daemon is the new build after all: the fixture's CLI starts it from
+//     the baseline, which has no remove-space verb.
+//   - only the attached session taken out: e2e-a2, which no client shows, must
+//     leave alpha too.
+//   - the stale-daemon notice shown and nothing done: the spaces must change.
+func TestRemoveSpaceWithAnOlderDaemon(t *testing.T) {
+	baseline := os.Getenv("TUIOS_E2E_BASELINE_BIN")
+	if baseline == "" {
+		t.Skip("TUIOS_E2E_BASELINE_BIN is not set: build tuios from a commit with spaces and no remove-space, and name it there")
+	}
+	dir := artifactDir(t)
+	prev := tuiosBin
+	tuiosBin = baseline
+	restore := func() { tuiosBin = prev }
+	defer restore()
+	base := t.TempDir()
+	writeConfig(t, base, spaceUIRail+spaceEndKeys)
+	spaceUIFixture(t, base, true)
+	restore()
+
+	term := attachSpaceUI(t, base, "e2e-a1", 140, 40)
+	waitSpaceUIRail(t, term, "the grouped rail", "alpha", "beta", "e2e-loose")
+	windowManagementMode(t, term)
+
+	sendKeys(t, term, tuitest.Ctrl('b'), "*")
+	waitSessionSpaces(t, base, "after remove_space on an older daemon", withSpaces(map[string]string{"e2e-a1": "", "e2e-a2": ""}))
+	saveArtifact(t, term, dir, "removed-on-older-daemon")
+	if strings.Contains(term.Screen().Text(), "older than this tuios") {
+		t.Fatalf("ASSERTION: the stale-daemon notice showed although the fallback worked\n%s", term.Snapshot())
+	}
+	alive(t, term, "after removing a space on an older daemon")
 }
 
 // TestSpaceKeysWithNoSpaceSaySo: in a session in no space, remove_space and

@@ -20,11 +20,29 @@ import (
 // command, and its outcome lands as a RenameAppliedMsg, as a space rename's
 // does: a refusal is shown in the verb's words, and success refreshes the
 // listing the rail draws its headings from.
+//
+// A daemon older than remove-space still knows set-session-space, so the
+// sessions this client knows to be in the space are taken out one by one
+// instead. Removing a space is then no reason to restart the daemon, which
+// would end every pane.
 func (m *OS) RemoveSpace(space string) tea.Cmd {
 	if space == "" {
 		return nil
 	}
-	return labelVerbCmd(m.verbDialer(), "Remove space", "remove-space", map[string]any{"space": space})
+	dial, members := m.verbDialer(), m.spaceMembers(space)
+	return func() tea.Msg {
+		const what = "Remove space"
+		err := rawCallVerb(dial, "remove-space", map[string]any{"space": space})
+		if session.StaleDaemonError("remove-space", err) == nil {
+			return RenameAppliedMsg{What: what, Err: err}
+		}
+		for _, name := range members {
+			if err := callVerb(dial, "set-session-space", map[string]any{"session": name, "space": ""}); err != nil {
+				return RenameAppliedMsg{What: what, Err: err}
+			}
+		}
+		return RenameAppliedMsg{What: what}
+	}
 }
 
 // spaceMembers is the sessions filed under space, by name, sorted as
@@ -97,18 +115,23 @@ func (m *OS) CloseSpace(space string) tea.Cmd {
 	return tea.Quit
 }
 
-// callVerb makes one verb call and reports only whether it was refused.
+// callVerb makes one verb call and reports only whether it was refused, a
+// verb the daemon is too old to know in words that say so.
 func callVerb(dial agentMailDial, verb string, params map[string]any) error {
+	err := rawCallVerb(dial, verb, params)
+	if stale := session.StaleDaemonError(verb, err); stale != nil {
+		return stale
+	}
+	return err
+}
+
+// rawCallVerb is callVerb with the daemon's refusal left as it came.
+func rawCallVerb(dial agentMailDial, verb string, params map[string]any) error {
 	c, err := dial()
 	if err != nil {
 		return err
 	}
 	defer func() { _ = c.Close() }()
-	if _, err := c.Call(verb, params); err != nil {
-		if stale := session.StaleDaemonError(verb, err); stale != nil {
-			return stale
-		}
-		return err
-	}
-	return nil
+	_, err = c.Call(verb, params)
+	return err
 }
