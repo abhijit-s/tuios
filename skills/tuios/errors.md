@@ -23,13 +23,13 @@ Over the socket every failure carries a stable code in the error envelope:
 `no_buffer`, `risk_unacknowledged`, `agents_disabled`, `busy`, `too_many_connections`,
 `no_file`, `file_exists`, `no_permission`, `hash_mismatch`, `source_changed`,
 `cross_device`, `disk_full`, `no_transfer`, `same_session`, `pane_not_movable`,
-`internal`. `internal` is a failure inside the daemon
+`upgrade_refused`, `daemon_upgrading`, `internal`. `internal` is a failure inside the daemon
 that none of the others names; its message says what went wrong. The CLI folds
 the same information into its messages.
 
 ## What each asks of you
 
-Not one of these is a timeout. Retrying one unchanged fails the same way, except `busy` and `too_many_connections`, which clear when other requests finish or other connections close.
+Not one of these is a timeout. Retrying one unchanged fails the same way, except `busy` and `too_many_connections`, which clear when other requests finish or other connections close, and `daemon_upgrading`, which the upgraded daemon answers.
 
 | Code | What to do |
 | --- | --- |
@@ -77,6 +77,8 @@ Not one of these is a timeout. Retrying one unchanged fails the same way, except
 | `cross_device` | `file-rename` cannot move a path to another disk. Copy it with `transfer-start` and `move`. |
 | `disk_full` | The disk had no room. What was written stays in the part, and `transfer-resume` goes on from it once there is space. |
 | `no_transfer` | No transfer has that id. A finished transfer leaves the list 30 minutes after it ends. |
+| `upgrade_refused` | From `daemon-upgrade`: the new binary failed its check, the daemon holds something a live upgrade cannot hand over (a pane on another machine, a running fan check, a capturing popup), or the platform has no live upgrade. Nothing was changed. The message says which. Tell the person. |
+| `daemon_upgrading` | A live upgrade replaced the daemon while your call ran or waited, and the connection closed. Your pane and its program are as they were. Make the call again: the upgraded daemon answers it. |
 | `same_session`, `pane_not_movable` | From `move-window` with `to_session`: the window is already in that session, or it is a popup, a scratch pane or a pane on another machine. Nothing moved. |
 
 ## The exit codes of tuios cp
@@ -118,6 +120,8 @@ The shells are new: scrollback is empty, whatever ran is gone, and mail and
 agent state died with the old daemon. Treat a restored session as panes to be
 started again, addressed by the ids and names you already know. An agent
 conversation can come back with `resume-agent` (`tuios --skill state`).
+
+A live upgrade is different: `tuios daemon upgrade` swaps the daemon's binary with every pane's program still running, so your process, its pid and its pane id stay as they were and nothing is restored. A call in flight ends with `daemon_upgrading`; call again. An event stream drops and resumes with `--after-seq` and the same `boot_id`. Run `tuios daemon upgrade` only when the person asks: it restarts what every session runs under.
 
 ## The person's setup
 
