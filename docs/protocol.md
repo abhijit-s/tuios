@@ -131,6 +131,7 @@ Result:
   "min_protocol": 1,
   "daemon_version": "1.4.0",
   "pid": 4242,
+  "instance": "5b0e9c1f2a7d4e83",
   "sessions": 2,
   "link_policy": true,
   "pane_grants": true,
@@ -148,6 +149,10 @@ for a link, and refuses when it is set. It is absent from an older daemon.
 platform where the daemon cannot read the peer's pid, the `tuios` CLI reads it
 and then presents `$TUIOS_PANE_ID` and `$TUIOS_PANE_TOKEN` on every
 connection it opens from a pane. It is absent from an older daemon.
+
+`instance` is an id for the running daemon image. It changes when a live upgrade execs another binary, while `pid` stays the same.
+
+`upgrade` is present only on an image that took its panes over in a live upgrade (see [daemon-upgrade](#daemon-upgrade)), and says what the handoff measured: `from` (the build the panes came from), `panes`, `manifest_bytes`, `preflight_ms`, `quiesce_ms`, `capture_ms`, `pending_max`, `pending_total` (bytes the programs wrote while their panes were stopped), `stopped_at` (Unix nanoseconds), `apply_ms`, `apply_heap_start`, `apply_peak_heap_inuse`, `apply_heap_end`, `paused_ms`, and `fallback`, set when the new binary could not take the panes over and the binary that was running took them back.
 
 `os` is the operating system the daemon runs on, as Go names it: `linux`,
 `darwin`, `windows`. A client attached from another machine reads it to start
@@ -1609,6 +1614,8 @@ catalog.
 | `host_unreachable` | The host is configured and is not answering: its link is down, or the far side does not reply. Nothing was queued; only `send-agent-message` with `host` keeps a message for a host that is down, and it answers `queued` instead of this. A write to a window on another machine whose link is being restored also answers it. |
 | `host_refused` | The host's link is up and cannot take another connection. |
 | `unknown_pane` | This daemon is not running a pane with that id. |
+| `upgrade_refused` | `daemon-upgrade` did not start: the new binary failed the preflight, the daemon holds something a live upgrade cannot hand over (a pane on another machine, a running fan check, a capturing popup), or this platform cannot hand off. Nothing was changed. The message says which. |
+| `daemon_upgrading` | A live upgrade replaced the daemon's image while it worked on, or waited in, this call. The connection closes after it. Call again: the new image answers, with the same panes. |
 | `internal` | An unexpected server side failure. |
 | `not_worktree` | The session is not in a git worktree, so there is nothing to remove or diff. |
 | `worktree_dirty` | remove-worktree refused: the worktree holds uncommitted changes and neither `stash` nor `force` was passed. Nothing was removed. |
@@ -1637,7 +1644,7 @@ catalog.
 | `cross_device` | `file-rename` cannot move a path to another disk. Nothing was moved. |
 | `disk_full` | The disk had no room for the write. What was written stays in the part. |
 | `no_transfer` | No transfer has that id. A finished one leaves the list 30 minutes after it ends. |
-| `busy` | The daemon had no room for the request now, or (`transfer-start`) another copy writes that destination now. Nothing was done. |
+| `busy` | The daemon had no room for the request now, (`transfer-start`) another copy writes that destination now, or (`daemon-upgrade`) a live upgrade is already running. Nothing was done. |
 
 Codes are stable and additive: existing codes never change meaning, and a new
 code is only ever introduced for a condition that previously had none. A client
@@ -1747,6 +1754,26 @@ validator uses.
 
 Handshake: report the protocol range this daemon serves. Params: `client`,
 `version`, `protocol`. Result type: `hello`. See the versioning section above.
+
+### daemon-upgrade
+
+Upgrade the daemon live to another tuios binary. Every pane's process keeps running with the same pid, terminal and screen, and the daemon keeps its pid. `tuios daemon upgrade` is the CLI over this verb; see [CLI_REFERENCE.md](CLI_REFERENCE.md#tuios-daemon-upgrade).
+
+Params:
+
+- `binary` (required): the absolute path of the tuios binary to run the daemon as.
+
+The daemon first runs `<binary> daemon handoff-accepts`, which prints the handoff manifest versions the binary reads, and refuses a binary that does not run or reads another version. It then stops every pane and writes down what each holds. The call answers once that is done:
+
+```json
+{"id": 1, "result": {"type": "daemon_upgrading", "pid": 8615, "instance": "5b0e9c1f2a7d4e83",
+ "from": "v0.10.0", "to": "v0.10.1", "binary": "/usr/local/bin/tuios", "handoff": 1,
+ "panes": 4, "manifest_bytes": 35123, "clients": 2, "preflight_ms": 41}}
+```
+
+`handoff` is the manifest version, and `clients` the attached TUI clients that will be dropped. After the answer, every TUI client is sent `MsgDaemonUpgrading` (the binary message after `MsgSessionsChanged`, payload `{Version}`, the build the daemon is becoming; a client that does not know it ignores it) and dropped, every other call still running or waiting ends with `daemon_upgrading`, and the daemon execs the binary. The socket stays open: a call made during the swap waits in its backlog and the new image answers it. Call `hello` until `instance` changes; its `upgrade` field says what the handoff measured, and `fallback` is set when the new binary could not take the panes over and the binary that was running took them back.
+
+Refused with `upgrade_refused`, and nothing changed, on Windows, in a daemon embedded in another program (`tuios-web`, the SSH server), while a pane runs here for another machine or a window's process runs on another machine, and while a `fan verify` check or a popup with `capture_stdout` runs. A second call while an upgrade runs answers `busy`. Refused with `forbidden` over a link and on a restricted connection; from a pane it needs the `admin` grant.
 
 ### restrict-connection
 
@@ -6530,6 +6557,8 @@ event.
 daemon numbers events from 1 again, so a `seq` only identifies an event
 together with the `boot_id` it came with. Keep both if you plan to resume.
 
+A live upgrade ([daemon-upgrade](#daemon-upgrade)) keeps the `boot_id`, the numbering and the replay ring, so a subscriber the upgrade dropped resumes with `after_seq` as from any other disconnect.
+
 Event types:
 
 | Type | Meaning | Notable fields |
@@ -6562,6 +6591,7 @@ Event types:
 | `command-finished` | That command finished. `exit_code` is absent when the shell sent no status; a prompt with no finish mark ends the command that way. `command_seq` counts the pane's finished commands. | `session`, `window`, `pty_id`, `cmdline`, `exit_code`, `duration_ms`, `command_seq` |
 | `agent-activity` | One entry of an agent pane's activity ring, as [agent-activity](#agent-activity) returns it. Opt-in: only a subscription whose `types` names it receives it. Not replayed on a resume. | `session`, `window`, `entry` |
 | `transcript` | The transcript that a pane is joined to grew. Read it again with [agent-transcript](#agent-transcript). `cursor` is the cursor that a read to the end returns now. When you hold that cursor, there is nothing new. The event carries nothing from the file. It fires at most once for each read the daemon makes, after the 150 ms debounce. Opt-in: only a subscription whose `types` names it receives it. Not replayed on a resume. | `session`, `window`, `cursor` |
+| `daemon-upgraded` | A live upgrade replaced the daemon's image. Raised once, by the image that took the panes over. `title` is the build the panes came from, `body` the build that has them now. `state` is `upgraded`, or `fallback` when the new binary could not take them and the previous one did. No hook runs for it. | `title`, `body`, `state` |
 | `transfer` | A copy the daemon runs (see [Files and transfers](#files-and-transfers)) changed. `action` is `created`, `state`, `ended` or `removed`, and `transfer` is its row as `transfer-list` returns it. `removed` says a copy that ended left the list, by `transfer-clear` or 30 minutes after it ended, and carries its last row. A state is said once per change; a folder copy going between `running` and `verifying` for each file is not a change. A copy the daemon takes back from its journal at start says `state` once. | `action`, `transfer` |
 | `transfer-progress` | A copy's row while its bytes move, at most four a second per copy. Opt-in: only a subscription whose `types` names it receives it. Not replayed on a resume. | `action` (`progress`), `transfer` |
 | `transfer-file` | One file of a copy ended. `action` and `file.state` are `done` (copied and checked), `same` (there already with the same bytes), `skipped` (there and different, left as it was), `conflict` (made there during the copy, left as it was) or `failed`. `file` has `id`, `pane`, `rel`, `state`, `sha256`, `code` and `error`. Opt-in: only a subscription whose `types` names it receives it. Not replayed on a resume. | `action`, `file` |
