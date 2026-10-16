@@ -841,6 +841,7 @@ var ActionDescriptions = map[string]string{
 	"settings_sidebar":  "Sidebar settings",
 	"rename_session":    "Rename the session the menu was opened on",
 	"rename_workspace":  "Rename the workspace the session is showing",
+	"rename_space":      "Rename the space of the attached session, or of the heading the menu was opened on",
 	"kill_session":      "Kill the session the menu was opened on",
 	"kill_session_next": "Kill session, go to next",
 	"kill_session_quit": "Kill session and quit",

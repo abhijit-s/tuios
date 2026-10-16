@@ -1868,6 +1868,9 @@ type OS struct {
 	// menuRepo carries the repository a rail group header's menu was opened
 	// on, the same way menuSession carries a session row's. See TakeMenuRepo.
 	menuRepo string
+	// menuSpace carries the space a rail heading's menu was opened on, the same
+	// way menuRepo carries a repository's. See TakeMenuSpace.
+	menuSpace string
 	// menuFile carries the listing row a files-section menu was opened on, the
 	// same way menuSession carries a session row's. See fileMenuTarget.
 	menuFile fileMenuTarget

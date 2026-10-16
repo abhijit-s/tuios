@@ -993,12 +993,26 @@ func (m *OS) openSidebarContextMenu(hit sidebarRowHit, x, y int) {
 		// a field of its own so no session action can be handed it.
 		cm.Repo = hit.SessionID
 		cm.Title, cm.Items = m.repoHeaderMenu(hit.SessionID)
-	case sidebarRowHostSession, sidebarRowHostNew, sidebarRowHostSignIn, sidebarRowGlobalNew, sidebarRowSpace, sidebarRowSpaceSwitch:
-		// A session on another machine, a space's group header, and a row of
-		// the spaces section. None is a local session and none has a per-row
-		// menu in this release, so the right-click opens the rail's own
-		// settings the way a click on blank rail would, rather than building a
-		// session menu for a name that is not a local session.
+	case sidebarRowSpace, sidebarRowSpaceSwitch:
+		// A space's heading, or its row in the spaces section. The hit names
+		// the space in its session field; the menu gives it a field of its own
+		// so the rename row renames this space, not the attached session's.
+		// The spaces section's "none" row names no space, and a space is
+		// renamed through the daemon, so either way there is nothing to offer
+		// and the right-click opens the rail's own settings.
+		if hit.SessionID == "" || !m.IsDaemonSession {
+			m.openRailSettingsMenu(x, y)
+			return
+		}
+		cm.Target = CtxTargetSpace
+		cm.Space = hit.SessionID
+		cm.Title, cm.Items = m.spaceHeaderMenu(hit.SessionID)
+	case sidebarRowHostSession, sidebarRowHostNew, sidebarRowHostSignIn, sidebarRowGlobalNew:
+		// A session on another machine and the rows that make one. None is a
+		// local session and none has a per-row menu in this release, so the
+		// right-click opens the rail's own settings the way a click on blank
+		// rail would, rather than building a session menu for a name that is
+		// not a local session.
 		m.openRailSettingsMenu(x, y)
 		return
 	case sidebarRowFileCd, sidebarRowFileUp, sidebarRowFileEntry:

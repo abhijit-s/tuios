@@ -60,7 +60,9 @@ tuios kill-space --force billing  # ends every process in every session of the s
 A space name follows the session name rules and is at most 64 bytes. A global
 session is in no space: `--space` with `--global`, and `set-session-space` on
 one, are refused. `kill-space` without `--force` refuses and names the sessions
-it would kill, so read that list before forcing it.
+it would kill, so read that list before forcing it. A person renames a space
+from the client with the rail heading's Rename row or the `rename_space`
+action, which call the same `rename-space` verb.
 
 ## Opening a pane and running work in it
 

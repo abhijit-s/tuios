@@ -891,6 +891,18 @@ prev_space = ["ctrl+alt+k"]
 
 A config that already binds `}` or `{` after the prefix keeps its binding, and the space action then has no prefix key: `tuios keybinds doctor` names it.
 
+## Rename a space
+
+The `rename_space` action opens the rename dialog on the attached session's space, seeded with its name. Enter renames the space through the daemon, as [`tuios rename-space`](CLI_REFERENCE.md#tuios-rename-space) does: every session in the space moves to the new name, and a name another space already has merges the two. A name the daemon refuses (one that breaks the session name rules, or longer than 64 bytes) is refused with its message, and nothing changes. An empty or unchanged name, or Esc, cancels. In a session that is in no space the action opens nothing and the dock says "No space to rename".
+
+The action has no default key. To bind it after the prefix:
+
+```toml
+[keybindings.prefix_mode]
+rename_space = ["%"]
+```
+
+Right-clicking a space's heading on the rail (or its row in the spaces section) offers the same dialog on that space, whichever session is attached. The rail's `r` renames the session under the cursor, since the cursor passes over headings.
 ## Split into the same ssh
 
 These actions open a pane on the machine that the focused pane is connected to

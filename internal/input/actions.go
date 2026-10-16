@@ -246,6 +246,7 @@ func (d *ActionDispatcher) registerHandlers() {
 	d.Register("settings_sidebar", handleSettingsSidebar)
 	d.Register("rename_session", handleRenameSession)
 	d.Register("rename_workspace", handleRenameWorkspace)
+	d.Register("rename_space", handleRenameSpace)
 	d.Register("kill_session", handleKillSession)
 	d.Register("kill_session_next", handleKillSessionNext)
 	d.Register("kill_session_quit", handleKillSessionQuit)
@@ -1210,6 +1211,23 @@ func handleRenameSession(_ tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
 		name = o.SessionName
 	}
 	o.BeginRenameSession(name)
+	return o, nil
+}
+
+// handleRenameSpace opens the rename editor on the space whose heading the menu
+// was opened on. Reached by key it means the attached session's space, because
+// a key names no heading, and a session in no space has nothing to rename, which
+// it says rather than doing nothing.
+func handleRenameSpace(_ tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
+	space := o.TakeMenuSpace()
+	if space == "" {
+		space = o.SessionSpace
+	}
+	if space == "" {
+		o.ShowNotification("No space to rename: this session is in no space", "info", o.Settings.NotificationDuration)
+		return o, nil
+	}
+	o.BeginRenameSpace(space)
 	return o, nil
 }
 

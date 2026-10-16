@@ -27,6 +27,11 @@ const (
 	RenameSession
 	// RenameWorkspace targets a workspace's name. The number stays its identity.
 	RenameWorkspace
+	// RenameSpace targets a space's name, which every member session carries.
+	// The daemon's rename-space moves the members, so the dialog renames a
+	// space exactly as tuios rename-space does, merging into a space that
+	// already has the name.
+	RenameSpace
 )
 
 // Renaming reports whether a rename editor is open, whatever it targets.
@@ -68,6 +73,17 @@ func (m *OS) BeginRenameWorkspace(ws int) {
 	m.RenameKind = RenameWorkspace
 	m.RenameTargetID = strconv.Itoa(ws)
 	m.RenameBuffer = m.WorkspaceNames[ws]
+}
+
+// BeginRenameSpace starts a rename of a space, seeded with its name. A space is
+// only ever named, so there is nothing to open on for "".
+func (m *OS) BeginRenameSpace(space string) {
+	if space == "" {
+		return
+	}
+	m.RenameKind = RenameSpace
+	m.RenameTargetID = space
+	m.RenameBuffer = space
 }
 
 // RenameAppend adds typed text to the rename buffer, keeping only what the
@@ -161,6 +177,8 @@ func (m *OS) RenameDialogTitle() string {
 		return "rename session"
 	case RenameWorkspace:
 		return "rename workspace " + m.RenameTargetID
+	case RenameSpace:
+		return "rename space " + printableTitle(m.RenameTargetID)
 	default:
 		return "rename"
 	}
@@ -185,6 +203,9 @@ func (m *OS) CommitRename() tea.Cmd {
 	if kind == RenameSession && label == m.SessionLabel(target) {
 		// Nothing changed, so there is nothing to send. A session that
 		// shows a display label keeps it.
+		return nil
+	}
+	if kind == RenameSpace && label == target {
 		return nil
 	}
 	verb, params, ok := renameVerb(kind, target, m.SessionName, label)
@@ -214,6 +235,15 @@ func renameVerb(kind RenameKind, target, sessionName, label string) (string, map
 		return "set-workspace-name", map[string]any{
 			"session": sessionName, "workspace": ws, "name": label,
 		}, true
+	case RenameSpace:
+		// An empty name cancels rather than reaching the verb, which would
+		// refuse it: emptying the field is how a person backs out. Every
+		// other name goes to the verb as typed and is checked there, so the
+		// dialog refuses exactly what tuios rename-space refuses, in its words.
+		if target == "" || label == "" {
+			return "", nil, false
+		}
+		return "rename-space", map[string]any{"space": target, "name": label}, true
 	default:
 		return "", nil, false
 	}

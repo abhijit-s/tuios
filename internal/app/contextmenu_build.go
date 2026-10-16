@@ -438,6 +438,20 @@ func (m *OS) repoHeaderMenu(repo string) (string, []ContextMenuItem) {
 	}
 }
 
+// spaceHeaderMenu is the menu for a space's heading on the rail. A left-click on
+// the heading folds it, so the menu holds what the heading offers that no click
+// on it suggests: renaming the space. What the menu is about rides in
+// ContextMenu.Space; see TakeMenuSpace.
+func (m *OS) spaceHeaderMenu(space string) (string, []ContextMenuItem) {
+	title := printableTitle(space)
+	if title == "" {
+		title = "Space"
+	}
+	return title, []ContextMenuItem{
+		m.item(glyphRename, "Rename", "rename_space", false),
+	}
+}
+
 // OpenSelectionMenu opens the small terminal-mode selection menu: what you can
 // do with an active text selection, and nothing else. It exists because a
 // plain right-click in terminal mode only means anything when there is a

@@ -750,7 +750,7 @@ tuios kill-space payments --force  # Kill every session in the space payments
 
 ### `tuios rename-space`
 
-Rename a space: every session filed under it is filed under the new name. If the new name is a space already, the two become one. The rename is made one session at a time, so if it stops part way some sessions are left under each name, and running the same command again moves the rest. Once nothing is left under the old name, running it again changes nothing and says so.
+Rename a space: every session filed under it is filed under the new name. If the new name is a space already, the two become one. The rename is made one session at a time, so if it stops part way some sessions are left under each name, and running the same command again moves the rest. Once nothing is left under the old name, running it again changes nothing and says so. The rail's space heading menu and the `rename_space` action make the same rename from the client; see [Rename a space](KEYBINDINGS.md#rename-a-space).
 
 **Usage:**
 ```bash

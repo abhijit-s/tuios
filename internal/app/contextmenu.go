@@ -41,6 +41,10 @@ const (
 	// CtxTargetRepo is a repository's group header on the rail. What the menu
 	// is about rides in ContextMenu.Repo, which holds the repository's name.
 	CtxTargetRepo
+	// CtxTargetSpace is a space's heading on the rail, or its row in the split
+	// layout's spaces section. What the menu is about rides in
+	// ContextMenu.Space, which holds the space's name.
+	CtxTargetSpace
 	// CtxTargetFileRow is the rail's files section: one row of the listing, or
 	// the blank space the section drew around it. Both are the same target
 	// because the two rows that need no file at all (make one, paste one) are
@@ -131,6 +135,10 @@ type ContextMenu struct {
 	// repository is not a session: a row acting on one cannot be handed the
 	// other by mistake.
 	Repo string
+	// Space is the space whose heading the menu was opened on, or "". It is its
+	// own field for the reason Repo is: a row acting on a space cannot be handed
+	// the attached session's space, or a session, by mistake.
+	Space string
 	// File is the listing row the menu was opened on, for a files-section menu.
 	// It carries exactly as far as Workspace and SessionID do, and it is read
 	// only inside this package: the actions it steers (fileActionTarget,
@@ -250,7 +258,7 @@ func (m *OS) ContextMenuSelectedAction() string {
 // carryMenuTarget hands what the menu was opened on to the dispatch of the row
 // being taken. See TakeMenuWorkspace.
 func (m *OS) carryMenuTarget(cm *ContextMenu) {
-	m.menuWorkspace, m.menuSession, m.menuRepo, m.menuFile = cm.Workspace, cm.SessionID, cm.Repo, cm.File
+	m.menuWorkspace, m.menuSession, m.menuRepo, m.menuSpace, m.menuFile = cm.Workspace, cm.SessionID, cm.Repo, cm.Space, cm.File
 }
 
 // TakeMenuWorkspace returns the workspace whose pill menu produced the action
@@ -269,10 +277,15 @@ func (m *OS) TakeMenuSession() string { return m.menuSession }
 // TakeMenuSession does.
 func (m *OS) TakeMenuRepo() string { return m.menuRepo }
 
+// TakeMenuSpace returns the space whose heading menu produced the action being
+// dispatched, or "". It carries exactly as far as TakeMenuSession does, so the
+// same action reached by key falls back to the attached session's space.
+func (m *OS) TakeMenuSpace() string { return m.menuSpace }
+
 // ClearMenuTarget ends the carry. The input layer calls it after dispatching a
 // menu row.
 func (m *OS) ClearMenuTarget() {
-	m.menuWorkspace, m.menuSession, m.menuRepo, m.menuFile = 0, "", "", fileMenuTarget{}
+	m.menuWorkspace, m.menuSession, m.menuRepo, m.menuSpace, m.menuFile = 0, "", "", "", fileMenuTarget{}
 }
 
 // ContextMenuMove moves the selection by delta, skipping separators and dimmed
