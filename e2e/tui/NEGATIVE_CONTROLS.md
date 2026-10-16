@@ -7290,3 +7290,24 @@ Run on 2026-10-16 on macOS. `TestRemoveSpaceWithAnOlderDaemon` starts the fixtur
 | --- | --- | --- |
 | No fallback: `RemoveSpace` returns the unknown-verb refusal instead of calling `set-session-space` per member | `TestRemoveSpaceWithAnOlderDaemon` ("after remove_space on an older daemon, the sessions and their spaces are map[e2e-a1:alpha e2e-a2:alpha e2e-b1:beta e2e-loose:]"); `TestRemoveSpaceKeyRemovesTheAttachedSessionsSpace` still passes, as it should, since its daemon knows the verb | **caught** |
 | Target substitution, rerun independently: `RemoveSpace` replaces its argument with the attached session's space | `TestSpaceHeadingRemoveSpace` ("after removing beta from its heading, the sessions and their spaces are map[e2e-a1: e2e-a2: e2e-b1:beta e2e-loose:]") | **caught** |
+
+### Numbered space switching
+
+Run on 2026-10-16 on macOS. The tests are in `space_number_keys_test.go`. The fixture makes `e2e-loose` in no space, `e2e-b2` and then `e2e-b1` in beta, `e2e-a1` and `e2e-a2` in alpha, and then uses `e2e-b2` and `e2e-a2`, so beta's session used last is not the one made last and alpha's is not its first row. The config binds `switch_space_1`, `_2` and `_3` to `alt+shift+q`, `w` and `e` in window management. Landings are read from the daemon's list of clients by pid. Each control cuts one wire from the fixed build, builds it, restores the source, and runs the four tests; the fixed build passes all four.
+
+| Control: what was cut | Tests that fail | Verdict |
+| --- | --- | --- |
+| Actions not registered: the `switch_space_N` loop in `RegisterActions` | all four (`TestSwitchSpaceByNumber`: "client ... shows \"e2e-loose\", want e2e-b2"; `TestSwitchSpaceNumberPastTheEnd`: "switch_space_3 with two spaces never said so") | **caught** |
+| The number ignored: `SwitchToSpaceByIndex` always takes the first space | `TestSwitchSpaceByNumber`, `TestSwitchSpaceNumberInTerminalMode` ("shows \"e2e-a2\", want e2e-b2"), `TestSpaceNumbersOnTheRail` (the menu row on beta landed on `e2e-a1`) | **caught** |
+| The sessions in no space numbered, last, as `SpaceRows` orders them | `TestSwitchSpaceNumberPastTheEnd` ("switch_space_3 with two spaces never said so": 3 was the sessions in no space), `TestSpaceNumbersOnTheRail` ("the none row is not drawn as glyph then none, unnumbered: \"· 3 none       attached 1\"") | **caught** |
+| The sessions in no space numbered first | all four (`TestSwitchSpaceByNumber`: switch_space_2 landed on `e2e-a2`; `TestSpaceNumbersOnTheRail`: the rail never drew "1 alpha") | **caught** |
+| Not terminal-safe: `switch_space_` dropped from `isTerminalSafeAction` | `TestSwitchSpaceNumberInTerminalMode` ("shows \"e2e-loose\", want e2e-b2"); the three window-management tests pass, as they should | **caught** |
+| The heading's number not passed: `sidebarSpaceRow` given 0 at its call site | `TestSpaceNumbersOnTheRail` ("the grouped rail: the rail never drew [1 alpha 2 beta e2e-loose]") | **caught** |
+| The split row's number not passed: `sidebarSpaceSwitchRow` given 0 at its call site | `TestSpaceNumbersOnTheRail` ("the split rail: the rail never drew [spaces 1 alpha 2 beta none]") | **caught** |
+| The badge never drawn: `sidebarSpaceNumber` returns nothing | `TestSpaceNumbersOnTheRail` ("the grouped rail: the rail never drew ...") | **caught** |
+| The heading menu's "Switch to space" row not wired | `TestSpaceNumbersOnTheRail` ("the menu of beta offered no \"Switch to space\"") | **caught** |
+| The "already in that space" check cut from `SwitchToSpaceByIndex` | none. The press is itself a use of the attached session, so pick-space answers the session the client is on and the switch to it moves nothing. The third press in `TestSwitchSpaceByNumber` holds the behaviour, not the check, which saves a daemon round trip | **not caught** |
+
+`TestSwitchSpaceNumberPastTheEnd` is the negative half ("No space 3", and "No spaces" on a daemon with no space), and `TestSwitchSpaceByNumber` its positive half on the same fixture.
+
+Not covered: a space past the ninth (no action, no number, no menu row), a session attached on another machine (only that machine's spaces are numbered, as `next_space` cycles), a daemon from before `pick-space` (the same path as `next_space`, covered there), and Learn mode, which lists the nine actions as unavailable.
