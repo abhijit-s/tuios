@@ -891,6 +891,21 @@ prev_space = ["ctrl+alt+k"]
 
 A config that already binds `}` or `{` after the prefix keeps its binding, and the space action then has no prefix key: `tuios keybinds doctor` names it.
 
+## Switch to a space by its number
+
+The `switch_space_1` to `switch_space_9` actions go straight to the first to ninth space, in the order the sidebar draws the spaces (name order). Only named spaces are numbered: the sessions in no space have no number, so `switch_space_1` is always the first space with a name. Like `next_space` they land on the session of that space you used last, chosen by the daemon (the `pick-space` verb), and only this client moves. In the space already, the key does nothing. A number past the spaces there are stays put and the dock says "No space 3" (for the third); with no session in any space, "No spaces". Only the spaces on the machine of the attached session are numbered.
+
+With `appearance.sidebar.show_numbers` on, the rail leads each space's heading (or its row in the split layout's spaces section) with its number, as it leads each session row with the `switch_session_N` number. Spaces past the ninth wear none. Right-clicking a numbered space's heading offers "Switch to space", with the bound key as its hint.
+
+The actions have no default key, as `switch_session_1` to `switch_session_9` have none. They work from terminal mode on a chord with Alt or Ctrl:
+
+```toml
+[keybindings.window_management]
+switch_space_1 = ["ctrl+alt+1"]
+switch_space_2 = ["ctrl+alt+2"]
+switch_space_3 = ["ctrl+alt+3"]
+```
+
 ## Rename a space
 
 The `rename_space` action opens the rename dialog on the attached session's space, seeded with its name. Enter renames the space through the daemon, as [`tuios rename-space`](CLI_REFERENCE.md#tuios-rename-space) does: every session in the space moves to the new name, and a name another space already has merges the two. A name the daemon refuses (one that breaks the session name rules, or longer than 64 bytes) is refused with its message, and nothing changes. An empty or unchanged name, or Esc, cancels. In a session that is in no space the action opens nothing and the dock says "No space to rename".

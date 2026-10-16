@@ -232,6 +232,10 @@ func (d *ActionDispatcher) registerHandlers() {
 	for i := 1; i <= 9; i++ {
 		d.Register("switch_session_"+string(rune('0'+i)), makeSwitchSessionHandler(i))
 	}
+	// Space switching (1-9), the named spaces in the rail's order
+	for i := 1; i <= 9; i++ {
+		d.Register("switch_space_"+string(rune('0'+i)), makeSwitchSpaceHandler(i))
+	}
 
 	// Clipboard actions
 	d.Register("copy_selection", handleCopySelection)
@@ -529,6 +533,12 @@ func makeSwitchSessionHandler(n int) ActionHandler {
 	return func(_ tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
 		o.SwitchToSessionByIndex(n - 1)
 		return o, nil
+	}
+}
+
+func makeSwitchSpaceHandler(n int) ActionHandler {
+	return func(_ tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
+		return o, o.SwitchToSpaceByIndex(n - 1)
 	}
 }
 

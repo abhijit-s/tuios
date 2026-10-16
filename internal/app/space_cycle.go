@@ -3,6 +3,7 @@ package app
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -141,6 +142,52 @@ func (m *OS) CycleSpace(delta int) tea.Cmd {
 		next = len(rows) - 1
 	}
 	return m.switchToSpaceCmd(rows[next].ID)
+}
+
+// SwitchToSpaceByIndex switches to the named space at position n (0-based)
+// among numberedSpaces, landing on the session of it used last as CycleSpace
+// does. It does nothing in that space already, and says so for a number past
+// the spaces there are.
+func (m *OS) SwitchToSpaceByIndex(n int) tea.Cmd {
+	sessions := localSessionNodes(m.BuildSessionTree().Sessions)
+	spaces := numberedSpaces(sessions)
+	if len(spaces) == 0 {
+		m.ShowNotification("No spaces", "info", m.Settings.NotificationDuration)
+		return nil
+	}
+	if n < 0 || n >= len(spaces) {
+		m.ShowNotification(fmt.Sprintf("No space %d", n+1), "info", m.Settings.NotificationDuration)
+		return nil
+	}
+	if current, _ := currentSpace(sessions); current == spaces[n] {
+		return nil
+	}
+	return m.switchToSpaceCmd(spaces[n])
+}
+
+// numberedSpaces is the named spaces among one machine's sessions, in the
+// order the rail draws them: the spaces switch_space_N counts. The sessions in
+// no space are not a space anybody named, so they take no number and 1 is
+// always the first named space.
+func numberedSpaces(sessions []sessiontree.Node) []string {
+	var out []string
+	for _, r := range sessiontree.SpaceRows(sessions) {
+		if r.ID != "" {
+			out = append(out, r.ID)
+		}
+	}
+	return out
+}
+
+// spaceNumbers maps each named space to the number switch_space_N opens it
+// with, from 1. Only 1 to 9 have an action; a caller draws no number past 9.
+func spaceNumbers(sessions []sessiontree.Node) map[string]int {
+	spaces := numberedSpaces(localSessionNodes(sessions))
+	out := make(map[string]int, len(spaces))
+	for i, s := range spaces {
+		out[s] = i + 1
+	}
+	return out
 }
 
 // CycleSessionInSpace switches to the next (delta 1) or previous (delta -1)

@@ -818,6 +818,15 @@ var ActionDescriptions = map[string]string{
 	"switch_session_7":      "Switch to session 7",
 	"switch_session_8":      "Switch to session 8",
 	"switch_session_9":      "Switch to session 9",
+	"switch_space_1":        "Switch to space 1",
+	"switch_space_2":        "Switch to space 2",
+	"switch_space_3":        "Switch to space 3",
+	"switch_space_4":        "Switch to space 4",
+	"switch_space_5":        "Switch to space 5",
+	"switch_space_6":        "Switch to space 6",
+	"switch_space_7":        "Switch to space 7",
+	"switch_space_8":        "Switch to space 8",
+	"switch_space_9":        "Switch to space 9",
 
 	// Clipboard
 	"copy_selection":  "Copy selection to clipboard",

@@ -120,18 +120,23 @@ func (m *OS) sidebarSpaceSwitchRows(sessions []sessiontree.Node) []sessiontree.N
 
 // sidebarSpaceSwitchRow renders one row of the spaces section.
 //
-//	▎● work      attached 2
-//	 ○ ops                1
+//	▎● 1 work    attached 2
+//	 ○ 2 ops              1
 //	 · none               1
-//	^^ ^         ^        ^ sessions in it
-//	|| |         a client is attached to one of them
+//	^^ ^ ^       ^        ^ sessions in it
+//	|| | |       a client is attached to one of them
+//	|| | the name
+//	|| the number switch_space_N opens, with show_numbers on
 //	|| the members' rolled-up agent state
 //	|gutter: the focus mark on the current space, else severity
+//
+// The none row has no number: it is no space anybody named, and
+// switch_space_N counts only the named ones.
 //
 // The roll-up is the one a folded space's heading carries, drawn whatever the
 // row: the members of every space but the current one are off screen, and the
 // current one's gutter is spent on the focus mark.
-func (m *OS) sidebarSpaceSwitchRow(node sessiontree.Node, current bool, cw int, pal overlay.Palette, st sidebarRowState) string {
+func (m *OS) sidebarSpaceSwitchRow(node sessiontree.Node, number int, current bool, cw int, pal overlay.Palette, st sidebarRowState) string {
 	rowBg := sidebarRowBg(st, pal)
 	state := node.AgentState
 
@@ -157,11 +162,12 @@ func (m *OS) sidebarSpaceSwitchRow(node sessiontree.Node, current bool, cw int, 
 		s.tokens = append(s.tokens, railToken{Cost: sidebarFigureCost(f), Right: true})
 	}
 	titleW := lipgloss.Width(title)
-	keep, avail := railRowFitInto(s.keep, titleW, railNameKeep(titleW), s.tokens, sidebarNameAvailIn(cw, 0, 0))
+	badge, badgeW := m.sidebarSpaceNumber(number, rowBg, pal, current)
+	keep, avail := railRowFitInto(s.keep, titleW, railNameKeep(titleW), s.tokens, sidebarNameAvailIn(cw, 0, 0)-badgeW)
 	s.keep = keep
 	right := sidebarJoinFigures(figures[:], keep, sidebarStyle(rowBg, pal.FgMute))
 
-	name := sidebarStyle(rowBg, fg).Bold(sidebarAttention(state)).Render(overlay.Truncate(title, max(avail, 1)))
+	name := badge + sidebarStyle(rowBg, fg).Bold(sidebarAttention(state)).Render(overlay.Truncate(title, max(avail, 1)))
 	gutter := sidebarGutter(current, state, rowBg, pal, &m.Settings)
 	return sidebarComposeGroupRow(0, gutter, glyph, name, right, cw, rowBg)
 }

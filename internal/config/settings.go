@@ -182,9 +182,9 @@ type Settings struct {
 	// SidebarShowCounts draws the window count on each session row.
 	SidebarShowCounts bool
 
-	// SidebarShowNumbers draws the switch number ahead of each session name.
-	// Off by default: the quiet rail is the default, and the people who want
-	// the numbers set show_numbers in [appearance.sidebar].
+	// SidebarShowNumbers draws the switch number ahead of each session name and
+	// space heading. Off by default: the quiet rail is the default, and the
+	// people who want the numbers set show_numbers in [appearance.sidebar].
 	SidebarShowNumbers bool
 
 	// SidebarMarquee scrolls a hovered row's title when it overflows its columns.

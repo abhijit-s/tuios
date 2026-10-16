@@ -33,9 +33,10 @@ func (m *OS) sidebarNodeIndent(node sessiontree.Node) int {
 
 // sidebarSpaceRow renders one space's heading.
 //
-//	 ▾ payments ─────────────
-//	^^ ^
-//	|| the name, where a session's name would be at this level
+//	 ▾ 1 payments ───────────
+//	^^ ^ ^
+//	|| | the name, where a session's name would be at this level
+//	|| the number switch_space_N opens, with show_numbers on
 //	|the fold mark: ▾ open, ▸ folded
 //	gutter
 //
@@ -43,11 +44,12 @@ func (m *OS) sidebarNodeIndent(node sessiontree.Node) int {
 // and the rule out to the spine, which is what makes it read as a heading with
 // colour off. It is never lit. A folded heading ends in the count of the
 // sessions it holds, since a shut group with no number reads as an empty one.
-func (m *OS) sidebarSpaceRow(node sessiontree.Node, cw int, pal overlay.Palette, st sidebarRowState) string {
+func (m *OS) sidebarSpaceRow(node sessiontree.Node, number, cw int, pal overlay.Palette, st sidebarRowState) string {
 	var bg color.Color
 	if st.lit() {
 		bg = sidebarRowBg(st, pal)
 	}
+	badge, badgeW := m.sidebarSpaceNumber(number, bg, pal, false)
 	collapsed := m.SidebarSpaceCollapsed(node.ID)
 	mark := m.Settings.GetRailFoldOpenGlyph()
 	right, rightW := "", 0
@@ -60,11 +62,23 @@ func (m *OS) sidebarSpaceRow(node sessiontree.Node, cw int, pal overlay.Palette,
 		}
 	}
 	indent := m.sidebarNodeIndent(node)
-	name := sidebarStyle(bg, pal.FgDim).
-		Render(overlay.Truncate(printableTitle(node.Title), sidebarNameAvailIn(cw, rightW, indent)))
+	name := badge + sidebarStyle(bg, pal.FgDim).
+		Render(overlay.Truncate(printableTitle(node.Title), max(sidebarNameAvailIn(cw, rightW, indent)-badgeW, 1)))
 	gutter := sidebarGutter(false, "", bg, pal, &m.Settings)
 	glyph := sidebarStyle(bg, pal.FgMute).Render(mark)
 	return st.mark(pal, sidebarComposeRuledRow(indent, gutter, glyph, name, right, cw, bg, pal, &m.Settings))
+}
+
+// sidebarSpaceNumber is the number that leads a space's heading, or its row in
+// the spaces section, and its width: the one switch_space_N opens, in the
+// session number's muted ink, and only while show_numbers draws the session
+// numbers. number is 0 for a row with none (the sessions in no space), and a
+// space past 9 has no action and so wears none either.
+func (m *OS) sidebarSpaceNumber(number int, bg color.Color, pal overlay.Palette, bold bool) (string, int) {
+	if !m.Settings.SidebarShowNumbers || number < 1 || number > 9 {
+		return "", 0
+	}
+	return sidebarStyle(bg, pal.FgMute).Bold(bold).Render(strconv.Itoa(number) + " "), 2
 }
 
 // SidebarSpaceCollapsed reports whether a space's group is folded shut.

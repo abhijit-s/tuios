@@ -1521,6 +1521,11 @@ func (m *OS) sidebarPanelLinesForTree(tree sessiontree.Tree) ([]string, int) {
 	// with no session in a space, which drops the section header and all.
 	spaceRows := m.sidebarSpaceSwitchRows(sessions)
 	currentSpace := m.sidebarCurrentSpace(localSessionNodes(sessions))
+	// The number each space's row leads with, drawn only with show_numbers.
+	var spaceIdx map[string]int
+	if m.Settings.SidebarShowNumbers {
+		spaceIdx = spaceNumbers(sessions)
+	}
 
 	// The lists, built before anything is drawn: the budget needs their counts,
 	// and hover has to resolve against the same arithmetic the draw uses.
@@ -2050,7 +2055,7 @@ func (m *OS) sidebarPanelLinesForTree(tree sessiontree.Tree) ([]string, int) {
 				// The heading of the space a dragged session row would be
 				// filed under is lit the way the pointer lights a row.
 				st := m.railRowState(m.sidebarSpaceDropLit(sidebarRowSpace, s.ID), false)
-				lines = append(lines, compose(m.sidebarSpaceRow(s, cw, pal, st)))
+				lines = append(lines, compose(m.sidebarSpaceRow(s, spaceIdx[s.ID], cw, pal, st)))
 				continue
 			}
 			if s.Kind == sessiontree.KindRepo {
@@ -2316,7 +2321,7 @@ func (m *OS) sidebarPanelLinesForTree(tree sessiontree.Tree) ([]string, int) {
 			s := spaceRows[idx]
 			st := m.railRowState(idx == hoverRow[sidebarSectionSpaces], isCursor(sidebarRowSpaceSwitch, s.ID, ""))
 			recordHit(sidebarRowSpaceSwitch, s.ID, "", -1, 1)
-			lines = append(lines, compose(st.mark(pal, m.sidebarSpaceSwitchRow(s, s.ID == currentSpace, cw, pal, st))))
+			lines = append(lines, compose(st.mark(pal, m.sidebarSpaceSwitchRow(s, spaceIdx[s.ID], s.ID == currentSpace, cw, pal, st))))
 		}
 		if h := hidden[sidebarSectionSpaces]; h > 0 {
 			lines = append(lines, overflowRow(h, 0))

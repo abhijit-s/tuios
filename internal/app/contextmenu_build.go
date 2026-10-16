@@ -3,6 +3,7 @@ package app
 import (
 	"path/filepath"
 	"slices"
+	"strconv"
 
 	"github.com/Gaurav-Gosain/tuios/internal/terminal"
 )
@@ -446,14 +447,24 @@ func (m *OS) repoHeaderMenu(repo string) (string, []ContextMenuItem) {
 
 // spaceHeaderMenu is the menu for a space's heading on the rail. A left-click on
 // the heading folds it, so the menu holds what the heading offers that no click
-// on it suggests: renaming the space, making a session in it, and ending it. What the menu is about rides in
+// on it suggests: switching to the space, renaming it, making a session in it, and ending it. What the menu is about rides in
 // ContextMenu.Space; see TakeMenuSpace.
 func (m *OS) spaceHeaderMenu(space string) (string, []ContextMenuItem) {
 	title := printableTitle(space)
 	if title == "" {
 		title = "Space"
 	}
-	return title, []ContextMenuItem{
+	var items []ContextMenuItem
+	// Switching to the space, under the action whose number it carries, so
+	// the row's hint is the key bound to it. A space past 9 has no such action
+	// and so no row; its row in the split rail's spaces section switches on a
+	// click. Dimmed on the space this client is in.
+	local := localSessionNodes(m.BuildSessionTree().Sessions)
+	if n := spaceNumbers(local)[space]; n >= 1 && n <= 9 {
+		current, _ := currentSpace(local)
+		items = append(items, m.item(glyphSwitch, "Switch to space", "switch_space_"+strconv.Itoa(n), current == space))
+	}
+	return title, append(items,
 		m.item(glyphRename, "Rename", "rename_space", false),
 		m.item(glyphNew, "New session here", "new_session_in_space", false),
 		separator(),
@@ -462,7 +473,7 @@ func (m *OS) spaceHeaderMenu(space string) (string, []ContextMenuItem) {
 		// Ends every session in the space, so it asks first: close_space only
 		// ever opens the confirmation.
 		m.item(glyphClose, "Close space...", "close_space", false),
-	}
+	)
 }
 
 // OpenSelectionMenu opens the small terminal-mode selection menu: what you can

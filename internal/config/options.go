@@ -864,7 +864,7 @@ var optionSpecs = []Option{
 	},
 	{
 		Path: "appearance.sidebar.show_numbers", Type: OptionBool, Section: "sidebar",
-		Description: "Show the switch number ahead of each session name",
+		Description: "Show the switch number ahead of each session name and space heading",
 		Default:     "false",
 	},
 	{

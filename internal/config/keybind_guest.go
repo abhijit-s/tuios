@@ -149,6 +149,7 @@ func terminalSafeAction(action string) bool {
 	return strings.HasPrefix(action, "switch_workspace_") ||
 		strings.HasPrefix(action, "move_and_follow_") ||
 		strings.HasPrefix(action, "switch_session_") ||
+		strings.HasPrefix(action, "switch_space_") ||
 		action == "next_session" || action == "prev_session" ||
 		action == "next_session_in_space" || action == "prev_session_in_space" ||
 		action == "next_space" || action == "prev_space"

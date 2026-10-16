@@ -69,7 +69,7 @@ var allowedActions = map[string]bool{
 // numberedActions are the action families that end in one digit.
 var numberedActions = []string{
 	"select_window_", "switch_workspace_", "move_and_follow_",
-	"resize_width_", "resize_height_", "switch_session_",
+	"resize_width_", "resize_height_", "switch_session_", "switch_space_",
 	"restore_minimized_", "prefix_select_", "minimize_prefix_restore_",
 	"workspace_prefix_switch_", "workspace_prefix_move_",
 }
