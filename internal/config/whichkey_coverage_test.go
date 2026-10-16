@@ -40,7 +40,7 @@ func TestWhichKeyTablesMatchTheKeymap(t *testing.T) {
 		for _, name := range Presets()[1:] {
 			pcfg := DefaultConfig()
 			pcfg.Keybindings = DefaultKeybindingsFor(name)
-			rows := PrefixMenuActions(table.name, MenuState{})
+			rows := PrefixMenuActions(table.name, MenuState{Spaces: true})
 			for action, keys := range table.section(pcfg) {
 				if len(keys) == 0 {
 					continue
