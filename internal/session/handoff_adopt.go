@@ -111,6 +111,7 @@ func (d *Daemon) adopt(fd int, fb *adoptFallback, kept map[int]int) error {
 	}
 	d.events.restore(m.Daemon.Events)
 	d.agents.restore(m.Daemon.Mail)
+	d.replyHistory.restore(m.Daemon.Replies)
 	d.restoreWindowRecords(m.Daemon)
 	listeners := map[string]net.Listener{}
 	// FileListener works on a copy of each descriptor. The inherited ones
