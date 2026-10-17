@@ -7267,7 +7267,9 @@ TUIOS_E2E=1 TUIOS_E2E_BIN=/path/to/tuios go test -count=1 -run '^TestDaemonUpgra
 `e2e/tui/handoff_carry_test.go` covers what section 7.3 of the spec carries or re-arms beyond the window records. Run on 2026-10-17 on macOS arm64 (Darwin 27, Go 1.26.9) against feat/live-handoff, one build per control.
 
 - `TestSelfExecKeepsFocusReporting`: a `cat -v` pane turns on focus reporting and is handed over with no client attached; a client then attaches to the new image and reports the pane's focus. The program must hear exactly one focus-in.
+- `TestSelfExecPrunesMetadataWithATimeToLive`: a working agent's pane gets a `phase` token with `ttl_ms` 7000, the panes are handed over at once, and a client with the rail on attaches to the new image and draws the token. It must be gone from the rail 9 to 12 s after it was set.
 
 | Control | How | Test that fails | Verdict |
 | --- | --- | --- | --- |
 | Focus reporting starts off in the new image | the `pty.focusReporting = ...FocusReportingEnabled()` line cut from `adoptPTY` | `TestSelfExecKeepsFocusReporting`: "the program heard 2 focus-in reports after one client attached to the new image, want 1" | **caught** |
+| Metadata with a time to live is never pruned | the re-arm of `armAgentMetaPrune` cut from `adoptSession` | `TestSelfExecPrunesMetadataWithATimeToLive`: "the token outlived its 7 s on the rail by 5s after the handoff" | **caught** |

@@ -179,16 +179,16 @@ func (d *Daemon) adopt(fd int, fb *adoptFallback, kept map[int]int) error {
 	d.adopting.Store(true)
 	var (
 		started []*PTY
-		closes  []func()
+		later   []func()
 	)
 	for _, rec := range m.Sessions {
-		ptys, exited, err := d.adoptSession(rec, bySession[rec.ID], fb)
+		ptys, after, err := d.adoptSession(rec, bySession[rec.ID], fb)
 		if err != nil {
 			d.adopting.Store(false)
 			return fmt.Errorf("session %q: %w", rec.State.Name, err)
 		}
 		started = append(started, ptys...)
-		closes = append(closes, exited...)
+		later = append(later, after...)
 	}
 	d.adopting.Store(false)
 	d.restoreSessionRecords(m.Daemon)
@@ -202,12 +202,8 @@ func (d *Daemon) adopt(fd int, fb *adoptFallback, kept map[int]int) error {
 	for _, p := range started {
 		p.startPTY()
 	}
-	// A pane the previous image reaped and wrote down as exited, in a window
-	// that closes on exit, is one whose close that image queued and never
-	// ran: the close runs on a goroutine after the reap, and it waited on
-	// the handoff until the exec ended it. It runs here.
-	for _, closeWindow := range closes {
-		closeWindow()
+	for _, fn := range later {
+		fn()
 	}
 	if stats.StoppedAt > 0 {
 		stats.PausedMS = float64(time.Now().UnixNano()-stats.StoppedAt) / 1e6
@@ -366,9 +362,15 @@ func checkAdoptable(m *handoffManifest) error {
 }
 
 // adoptSession rebuilds one session around its adopted panes, and returns
-// the panes for the caller to start, and the closes of the windows whose
-// process had exited and that close on exit, for the caller to run once the
-// panes have started.
+// the panes for the caller to start, and what the caller runs once they have
+// started, past the point the fallback could still take them:
+//
+//   - the close of each window whose process had exited and that closes on
+//     exit. The previous image reaped it and queued the close, which runs on
+//     a goroutine after the reap, and it waited on the handoff until the exec
+//     ended it;
+//   - the timers the session's records need, armed again: the prune of agent
+//     metadata with a time to live.
 func (d *Daemon) adoptSession(rec handoffSession, panes []adoptedPane, fb *adoptFallback) ([]*PTY, []func(), error) {
 	st := rec.State
 	width, height := st.Width, st.Height
@@ -406,8 +408,8 @@ func (d *Daemon) adoptSession(rec handoffSession, panes []adoptedPane, fb *adopt
 	sess.applyReportColors(rec.ReportColors.Bg, rec.ReportColors.Fg, rec.ReportColors.Palette)
 	sessionID := sess.ID
 	var (
-		out    []*PTY
-		closes []func()
+		out   []*PTY
+		later []func()
 	)
 	for _, ap := range panes {
 		p := ap.rec
@@ -449,11 +451,13 @@ func (d *Daemon) adoptSession(rec handoffSession, panes []adoptedPane, fb *adopt
 		out = append(out, pty)
 		if p.Exited && closeWindow != nil {
 			ptyID := p.ID
-			closes = append(closes, func() { closeWindow(ptyID) })
+			later = append(later, func() { closeWindow(ptyID) })
 		}
 	}
+	metaDue := earliestAgentMetaExpiry(st.Windows)
 	sess.adoptState(st, rec)
-	return out, closes, nil
+	later = append(later, func() { sess.armAgentMetaPrune(metaDue) })
+	return out, later, nil
 }
 
 // adoptPTY enters a pane handed over by the previous image, around its
