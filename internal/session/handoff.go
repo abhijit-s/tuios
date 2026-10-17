@@ -236,10 +236,17 @@ func (r *handoffRun) prepare() error {
 	if d.federation != nil {
 		d.federation.Stop()
 	}
+	// A hook fired from here on is held, not started: one started after the
+	// wait would still run at the exec, a child the new image never waits
+	// for. A put-back starts the held ones; the exec drops them.
 	if d.hooks != nil {
+		d.hooks.Hold()
 		d.hooks.WaitTimeout(hookDrainTimeout)
 	}
 	r.undo = append(r.undo, func() {
+		if d.hooks != nil {
+			d.hooks.Release()
+		}
 		if d.federation != nil {
 			d.federation.Resume(d.ctx)
 		}

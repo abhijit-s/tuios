@@ -108,6 +108,17 @@ type Manager struct {
 	// inFlight tracks running hooks so a test (or a caller that needs the
 	// side effects to have landed) can join them instead of sleeping.
 	inFlight sync.WaitGroup
+	// holdMu guards held and pending, and is held across Fire's start of
+	// the hooks, so none starts once Hold has returned. See Hold.
+	holdMu  sync.Mutex
+	held    bool
+	pending []heldFire
+}
+
+// heldFire is an event fired while the hooks were held.
+type heldFire struct {
+	event Event
+	ctx   Context
 }
 
 // NewManager creates a new hooks manager.
@@ -224,6 +235,12 @@ func (m *Manager) Fire(event Event, ctx Context) {
 	if len(commands) == 0 {
 		return
 	}
+	m.holdMu.Lock()
+	defer m.holdMu.Unlock()
+	if m.held {
+		m.pending = append(m.pending, heldFire{event, ctx})
+		return
+	}
 
 	ctx.EventType = event
 
@@ -234,6 +251,28 @@ func (m *Manager) Fire(event Event, ctx Context) {
 			}
 			m.record(event, i, cmdStr, run(cmdStr, ctx))
 		})
+	}
+}
+
+// Hold keeps every hook fired from now on from starting, until Release. A
+// hook already running goes on; WaitTimeout joins it. A daemon holds its
+// hooks for a live upgrade: a hook started after the last wait would still
+// run at the exec, a child the new image never waits for.
+func (m *Manager) Hold() {
+	m.holdMu.Lock()
+	defer m.holdMu.Unlock()
+	m.held = true
+}
+
+// Release ends Hold, and starts the hooks fired meanwhile, in the order
+// fired.
+func (m *Manager) Release() {
+	m.holdMu.Lock()
+	pending := m.pending
+	m.held, m.pending = false, nil
+	m.holdMu.Unlock()
+	for _, f := range pending {
+		m.Fire(f.event, f.ctx)
 	}
 }
 
