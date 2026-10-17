@@ -442,6 +442,7 @@ func (r *handoffRun) writeManifest(sessions []*Session, refs []handoffPaneRef) e
 		Fallback:     r.prev.path,
 		Stats:        r.stats,
 	}
+	dr.Buffers, dr.BufferNext = d.buffers.Snapshot()
 	d.handoffWindowRecords(&dr)
 	d.handoffSessionRecords(&dr)
 	for name, l := range d.namedListeners() {

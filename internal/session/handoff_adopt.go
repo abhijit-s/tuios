@@ -113,6 +113,9 @@ func (d *Daemon) adopt(fd int, fb *adoptFallback, kept map[int]int) error {
 	d.agents.restore(m.Daemon.Mail)
 	d.replyHistory.restore(m.Daemon.Replies)
 	d.activity.restore(m.Daemon.Activity)
+	if n := d.buffers.Restore(m.Daemon.Buffers, m.Daemon.BufferNext); n > 0 {
+		LogBasic("Live upgrade: %d paste buffers past this image's limits were dropped", n)
+	}
 	d.restoreWindowRecords(m.Daemon)
 	listeners := map[string]net.Listener{}
 	// FileListener works on a copy of each descriptor. The inherited ones
