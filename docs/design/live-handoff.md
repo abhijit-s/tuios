@@ -703,7 +703,7 @@ The session state, the pane records and the daemon record of version 2 carried t
 | Daemon: pane creators | no | yes, with the agent features off: a pane can no longer type into a pane it opened | carried, `PaneCreators` |
 | Daemon: moved windows | no | yes: a hook in a moved pane names the session in its `TUIOS_SESSION` and gets `window_not_found` | carried, `MovedWindows` |
 | Daemon: delivery queue (`queue-prompt`) | no | yes: waiting prompts are dropped | not carried: an entry being typed is in the prompt gate's hands, and the queue's timers and stall marks need a design of their own. Completeness step |
-| Daemon: agent activity rings (`agent-activity`) | no | yes: the recap is empty until the agent's next event | not carried: completeness step |
+| Daemon: agent activity rings (`agent-activity`) | no | yes: the recap is empty until the agent's next event | carried, `Activity`: each pane's entries, oldest first, the turns each finished (kept off the wire) and the ring's numbering, which goes on from where it stopped |
 | Daemon: paste buffers | no | yes, but not per window | outside this inventory; a completeness step like the mailbox |
 | Daemon: Inbox question an outbound `ship` call waits on | no | rarely: a caller that comes back with its `request_id` after the upgrade is asked again | not carried |
 | Daemon: last prompt each window was answered on (`respond`) | no | rarely: a second answer to the same prompt is not caught as a duplicate | not carried |
