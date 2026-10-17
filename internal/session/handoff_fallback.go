@@ -138,7 +138,7 @@ func withoutEnv(env []string, key string) []string {
 
 // adoptWatchdogTimeout is adoptWatchdogDefault, or the test's override.
 func adoptWatchdogTimeout() time.Duration {
-	if os.Getenv(handoffTestEnv) == "1" {
+	if handoffTestsOn() {
 		if ms, err := strconv.Atoi(os.Getenv("TUIOS_TEST_HANDOFF_WATCHDOG_MS")); err == nil && ms > 0 {
 			return time.Duration(ms) * time.Millisecond
 		}
@@ -150,7 +150,7 @@ func adoptWatchdogTimeout() time.Duration {
 // image a handoff execs but never in its fallback: TUIOS_TEST_HANDOFF_FAIL is
 // error, hang or panic. apply-panic is handoffTestApplyPanic's.
 func handoffTestFailure() error {
-	if os.Getenv(handoffTestEnv) != "1" || os.Getenv(handoffFallbackEnv) != "" {
+	if !handoffTestsOn() || os.Getenv(handoffFallbackEnv) != "" {
 		return nil
 	}
 	switch os.Getenv("TUIOS_TEST_HANDOFF_FAIL") {
@@ -168,7 +168,7 @@ func handoffTestFailure() error {
 // when a test asks, with TUIOS_TEST_HANDOFF_FAIL=apply-panic, in the image a
 // handoff execs but never in its fallback.
 func handoffTestApplyPanic() {
-	if os.Getenv(handoffTestEnv) != "1" || os.Getenv(handoffFallbackEnv) != "" {
+	if !handoffTestsOn() || os.Getenv(handoffFallbackEnv) != "" {
 		return
 	}
 	if os.Getenv("TUIOS_TEST_HANDOFF_FAIL") == "apply-panic" {
@@ -198,7 +198,7 @@ const (
 // fallback fires at the adopt point of the fallback image instead. It never
 // fires in an image a keeper started.
 func handoffTestCrash(point string) {
-	if os.Getenv(handoffTestEnv) != "1" || startedByKeeper {
+	if !handoffTestsOn() || startedByKeeper {
 		return
 	}
 	want := os.Getenv("TUIOS_TEST_HANDOFF_CRASH")
