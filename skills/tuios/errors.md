@@ -121,7 +121,7 @@ agent state died with the old daemon. Treat a restored session as panes to be
 started again, addressed by the ids and names you already know. An agent
 conversation can come back with `resume-agent` (`tuios --skill state`).
 
-A live upgrade is different: `tuios daemon upgrade` swaps the daemon's binary with every pane's program still running, so your process, its pid and its pane id stay as they were and nothing is restored. A call in flight ends with `daemon_upgrading`; call again. An event stream drops and resumes with `--after-seq` and the same `boot_id`. Run `tuios daemon upgrade` only when the person asks: it restarts what every session runs under.
+A live upgrade is different: `tuios daemon upgrade` swaps the daemon's binary with every pane's program still running, so your process, its pid and its pane id stay as they were and nothing is restored. A call in flight ends with `daemon_upgrading`; call again. An event stream drops and resumes with `--after-seq` and the same `boot_id`. Run `tuios daemon upgrade` only when the person asks: it restarts what every session runs under. Never add `--or-restart` on your own: when the daemon cannot be upgraded live, it restarts it, which ends every program in every pane, yours included.
 
 ## The person's setup
 
