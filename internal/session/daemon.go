@@ -331,6 +331,9 @@ type Daemon struct {
 
 	// shutdownOnce makes shutdown idempotent (Run and Stop can both call it).
 	shutdownOnce sync.Once
+	// signalsOnce starts handleSignals once: at serve, or earlier, at the
+	// start of a handoff's adoption. See watchSignals.
+	signalsOnce sync.Once
 
 	// startLock is the exclusive lock that serialises daemon startup. It is held
 	// open for the daemon's life, since releasing it early would let a second
@@ -1509,7 +1512,7 @@ func (d *Daemon) serve() {
 	// their event hooks follow the stream from here on.
 	d.plugins.start()
 
-	go d.handleSignals()
+	d.watchSignals()
 	d.startAccepting()
 	go d.cleanupLoop()
 	go d.stallMonitor()
@@ -1792,6 +1795,12 @@ func (d *Daemon) shutdown() error {
 		log.Println("Daemon shutdown complete")
 	})
 	return nil
+}
+
+// watchSignals has SIGINT and SIGTERM stop the daemon from now on, once
+// however often it is called.
+func (d *Daemon) watchSignals() {
+	d.signalsOnce.Do(func() { go d.handleSignals() })
 }
 
 // handleSignals is defined in platform-specific files:

@@ -7225,3 +7225,17 @@ TUIOS_E2E=1 TUIOS_E2E_BIN=/path/to/tuios go test -count=1 -run '^TestDaemonUpgra
 TUIOS_E2E=1 TUIOS_E2E_BIN=/path/to/tuios \
   go test -count=1 -run '^(TestHandoffExecFailureCarriesOn|TestHandoffAbandonedWhenNotCommitted|TestDaemonUpgradeFallsBackToPreviousBinary|TestDaemonUpgradeNamesAReplacedBinary|TestHandoffPutBackAppliesWhatWasHeld)$' .
 ```
+
+### A stop while the new image adopts the panes
+
+- `TestKillServerWhileTheNewImageAdopts`: a daemon with `TUIOS_TEST_HANDOFF_ADOPT_PAUSE_MS=2500` hands its panes over, and `tuios kill-server` runs 0.7 s later, while the new image adopts them. kill-server must succeed, the daemon's pid must be gone with no daemon or keeper left under the test's folder, and the pane's program must have ended.
+
+Run on 2026-10-17 on macOS arm64 (Darwin 27, Go 1.26.9) against feat/live-handoff.
+
+| Control | How | Test that fails | Verdict |
+| --- | --- | --- | --- |
+| Signals are caught only once the image serves | the build before the fix: `handleSignals` started in `serve` alone | `TestKillServerWhileTheNewImageAdopts`: "kill-server failed while the new image adopted the panes: exit status 1" (it waited 10 s), "the daemon stopped on purpose came back: ... daemons [.../handoff/tuios.prev daemon ...]", "the pane's program 71950 outlived kill-server". The `SIGTERM` ended the adopting image, and the keeper restored the panes under its own pid | **caught** |
+
+```sh
+TUIOS_E2E=1 TUIOS_E2E_BIN=/path/to/tuios go test -count=1 -run '^TestKillServerWhileTheNewImageAdopts$' .
+```
