@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"os/exec"
+	"strconv"
 	"sync"
 	"time"
 )
@@ -20,14 +21,26 @@ import (
 // handoffTestEnv enables the verbs.
 const handoffTestEnv = "TUIOS_TEST_HANDOFF"
 
-// registerHandoffTestVerbs adds the verbs, once, when the variable asks. It
-// runs from NewDaemon: the registry is built by an init of its own, which an
-// init here could run before.
+// registerHandoffTestVerbs adds the verbs and the hooks, once, when the
+// variable asks. It runs from NewDaemon: the registry is built by an init of
+// its own, which an init here could run before.
 func registerHandoffTestVerbs() {
 	if os.Getenv(handoffTestEnv) != "1" {
 		return
 	}
-	handoffTestOnce.Do(addHandoffTestVerbs)
+	handoffTestOnce.Do(func() {
+		addHandoffTestVerbs()
+		setHandoffTestHooks()
+	})
+}
+
+// setHandoffTestHooks sets the test-only pauses the variables ask for:
+// TUIOS_TEST_HANDOFF_VERIFY_PAUSE_MS holds every fan check that long between
+// its window starting and the check being recorded.
+func setHandoffTestHooks() {
+	if ms, err := strconv.Atoi(os.Getenv("TUIOS_TEST_HANDOFF_VERIFY_PAUSE_MS")); err == nil && ms > 0 {
+		fanVerifySpawnedHook = func() { time.Sleep(time.Duration(ms) * time.Millisecond) }
+	}
 }
 
 var handoffTestOnce sync.Once
