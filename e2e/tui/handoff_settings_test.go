@@ -778,3 +778,100 @@ func TestDaemonUpgradeAcrossHandoffVersions(t *testing.T) {
 	})
 	writeHandoffArtifact(t, results)
 }
+
+// historyRows is how many rows of history the daemon holds above a pane's
+// screen, as get-window reports it.
+func historyRows(t *testing.T, base, sess, window string) int {
+	t.Helper()
+	res := mustCall(t, base, "get-window", map[string]any{"session": sess, "window": window})
+	n, _ := res["history_rows"].(float64)
+	return int(n)
+}
+
+// TestSelfExecKeepsScrollbackDepth starts a daemon whose config keeps 300
+// rows of history, opens a pane, and then changes the config to 5000 rows
+// without applying it, as a person does before an upgrade. A daemon reads its
+// config at start and its sessions keep the depth they were made with, so the
+// new image must build the pane with 300 rows: on libghostty-vt the depth is
+// fixed when an emulator is made, and on either backend the depth is what the
+// person's session had. After the handoff the pane prints 2000 lines, and must
+// hold 300 rows of history at most. The handoff's stats name the same
+// emulator before and after.
+//
+// How it could pass wrongly: the lines could be printed before the handoff,
+// when the old emulator caps them. They are printed after it.
+func TestSelfExecKeepsScrollbackDepth(t *testing.T) {
+	base := t.TempDir()
+	writeConfig(t, base, "[appearance]\nscrollback_lines = 300\n")
+	startHandoffDaemon(t, base)
+	const sess = "e2e-depth"
+	newCommandWindow(t, base, sess, "anchor", false, "sh", "-c", "exec sleep 600")
+	win := newCommandWindow(t, base, sess, "lines", false, "sh", "-c",
+		`echo ready; read x; i=0; while [ $i -lt 2000 ]; do i=$((i+1)); echo line-$i; done; echo all-printed; exec sleep 600`)
+	waitHandoffPane(t, base, sess, win, regexp.MustCompile(`^ready`), 10*time.Second)
+	writeConfig(t, base, "[appearance]\nscrollback_lines = 5000\n")
+
+	handOver(t, base, map[string]any{})
+	st := handoffStats(t, base)
+	_ = mustCall(t, base, "send-text", map[string]any{"session": sess, "window": win, "text": "go\n"})
+	waitHandoffPane(t, base, sess, win, regexp.MustCompile(`^all-printed`), 20*time.Second)
+	rows := historyRows(t, base, sess, win)
+
+	writeHandoffArtifact(t, map[string]any{"history_rows": rows, "stats": st})
+	if rows > 300 {
+		t.Errorf("ASSERTION: after the handoff the pane holds %d rows of history, more than the 300 its session was made with", rows)
+	}
+	if rows == 0 {
+		t.Fatalf("the pane holds no history after printing 2000 lines, so the test measured nothing")
+	}
+	if st["from_backend"] == nil || st["from_backend"] != st["backend"] {
+		t.Errorf("ASSERTION: the handoff's stats name the emulator %v before and %v after, want the same one named", st["from_backend"], st["backend"])
+	}
+}
+
+// TestDaemonUpgradeAcrossBackends upgrades a daemon of the binary under test
+// to a tuios with the other emulator, named by TUIOS_E2E_OTHER_BACKEND_BIN: a
+// build with -tags ghostty when the binary under test is pure Go, or a pure
+// Go build when it is ghostty. The panes must be kept with their programs and
+// their screens, the handoff's stats must name both emulators, and the
+// daemon's log must say the panes were rebuilt in the other one.
+func TestDaemonUpgradeAcrossBackends(t *testing.T) {
+	other := os.Getenv("TUIOS_E2E_OTHER_BACKEND_BIN")
+	if other == "" {
+		t.Skip("set TUIOS_E2E_OTHER_BACKEND_BIN to a tuios built with the other emulator backend to run this")
+	}
+	base := t.TempDir()
+	startHandoffDaemon(t, base)
+	const sess = "e2e-backend"
+	win := newCommandWindow(t, base, sess, "a", false, "sh", "-c", "echo pid-$$; printf 'kept-on-screen\\n'; exec sleep 600")
+	waitHandoffPane(t, base, sess, win, regexp.MustCompile(`^kept-on-screen`), 10*time.Second)
+	before := panePIDs(t, base, sess)
+	img := helloImage(t, base)
+
+	res, out, err := daemonUpgrade(t, base, other)
+	after := helloImage(t, base)
+	afterPIDs := panePIDs(t, base, sess)
+	lines := mustScrollback(t, base, sess, win)
+	st := handoffStats(t, base)
+	logs, _ := handoffCLI(t, base, 30*time.Second, "logs")
+
+	writeHandoffArtifact(t, map[string]any{"outcome": res, "output": out, "error": errString(err), "stats": st, "screen": lines})
+	if err != nil || after.PID != img.PID || after.Instance == img.Instance {
+		t.Fatalf("ASSERTION: the upgrade to %s did not go through: %v\n%s", other, err, out)
+	}
+	for id, pid := range before {
+		if afterPIDs[id] != pid {
+			t.Errorf("ASSERTION: window %s had pid %d, and %d after the upgrade", id, pid, afterPIDs[id])
+		}
+	}
+	if !screenLinesHave(lines, "kept-on-screen") {
+		t.Errorf("ASSERTION: the pane's screen lost its line across the change of emulator: %q", lines)
+	}
+	from, to := st["from_backend"], st["backend"]
+	if from == nil || to == nil || from == to {
+		t.Errorf("ASSERTION: the handoff's stats name the emulator %v before and %v after, want two", from, to)
+	}
+	if !strings.Contains(logs, "are rebuilt in the") {
+		t.Errorf("ASSERTION: the daemon's log does not say the panes were rebuilt in another emulator:\n%s", logs)
+	}
+}

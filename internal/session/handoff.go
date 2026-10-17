@@ -133,6 +133,11 @@ type HandoffStats struct {
 	ApplyHeapEnd       uint64  `json:"apply_heap_end,omitempty"`
 	// PausedMS is from the first pane stopping to every pane reading again.
 	PausedMS float64 `json:"paused_ms,omitempty"`
+	// FromBackend is the emulator the panes were written down from, and
+	// Backend the one this image rebuilt them in: pure or ghostty. A
+	// handoff may change it.
+	FromBackend string `json:"from_backend,omitempty"`
+	Backend     string `json:"backend,omitempty"`
 	// Fallback says the new image could not adopt the panes, and the
 	// previous binary did.
 	Fallback bool `json:"fallback,omitempty"`
@@ -589,6 +594,7 @@ func (s *Session) handoffRecord() handoffSession {
 	if used := s.LastUsed(); !used.IsZero() {
 		rec.LastUsed = used.UnixNano()
 	}
+	rec.ScrollbackLines = s.scrollbackLines()
 	rec.Created = s.Created.UnixNano()
 	rec.LastActive = s.LastActive().UnixNano()
 	s.stateMu.RLock()
