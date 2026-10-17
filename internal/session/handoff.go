@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"slices"
 	"sync"
 	"time"
@@ -578,7 +579,10 @@ func (s *Session) allPTYs() []*PTY {
 }
 
 // forEachBounded runs fn for 0..n-1 on at most workers goroutines and returns
-// the first error.
+// the first error. A panic in fn is returned as an error: a recover covers
+// only its own goroutine, so one on a worker would not reach the caller's,
+// and in an adopting image it would end the process instead of letting the
+// fallback run.
 func forEachBounded(n, workers int, fn func(i int) error) error {
 	var (
 		wg    sync.WaitGroup
@@ -586,10 +590,18 @@ func forEachBounded(n, workers int, fn func(i int) error) error {
 		first error
 		next  = make(chan int)
 	)
+	run := func(i int) (err error) {
+		defer func() {
+			if r := recover(); r != nil {
+				err = fmt.Errorf("panic: %v\n%s", r, debug.Stack())
+			}
+		}()
+		return fn(i)
+	}
 	for range min(workers, n) {
 		wg.Go(func() {
 			for i := range next {
-				if err := fn(i); err != nil {
+				if err := run(i); err != nil {
 					mu.Lock()
 					if first == nil {
 						first = err

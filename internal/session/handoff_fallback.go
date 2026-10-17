@@ -148,7 +148,7 @@ func adoptWatchdogTimeout() time.Duration {
 
 // handoffTestFailure fails an adoption on purpose when a test asks, in the
 // image a handoff execs but never in its fallback: TUIOS_TEST_HANDOFF_FAIL is
-// error, hang or panic.
+// error, hang or panic. apply-panic is handoffTestApplyPanic's.
 func handoffTestFailure() error {
 	if os.Getenv(handoffTestEnv) != "1" || os.Getenv(handoffFallbackEnv) != "" {
 		return nil
@@ -162,6 +162,18 @@ func handoffTestFailure() error {
 		panic("adoption panicked on purpose (TUIOS_TEST_HANDOFF_FAIL=panic)")
 	}
 	return nil
+}
+
+// handoffTestApplyPanic panics on a worker that rebuilds a pane's emulator
+// when a test asks, with TUIOS_TEST_HANDOFF_FAIL=apply-panic, in the image a
+// handoff execs but never in its fallback.
+func handoffTestApplyPanic() {
+	if os.Getenv(handoffTestEnv) != "1" || os.Getenv(handoffFallbackEnv) != "" {
+		return
+	}
+	if os.Getenv("TUIOS_TEST_HANDOFF_FAIL") == "apply-panic" {
+		panic("rebuilding a pane panicked on purpose (TUIOS_TEST_HANDOFF_FAIL=apply-panic)")
+	}
 }
 
 // How this image was started, read before adoption clears the variables
