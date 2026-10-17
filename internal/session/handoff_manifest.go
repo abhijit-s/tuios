@@ -70,6 +70,10 @@ type handoffSession struct {
 	// with. The new image builds them with it, not with what its config says
 	// now: libghostty-vt takes the depth only when an emulator is made.
 	ScrollbackLines int `json:"scrollback_lines,omitempty"`
+	// Subagents is each window's subagent records, and SubagentShownAt when
+	// a subagent change was last put on a window. See handoff_subagents.go.
+	Subagents       map[string]handoffPaneSubagents `json:"subagents,omitempty"`
+	SubagentShownAt int64                           `json:"subagent_shown_at,omitempty"`
 }
 
 // handoffReportColors is a session's report colours, as the client pushed
