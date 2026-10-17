@@ -5080,8 +5080,9 @@ func (p *PTY) noteExit(code int) {
 // (DA1, CPR and the rest) to the program. Client emulators drain theirs, so
 // the program gets one copy.
 //
-// The emulator queues a reply only while vtWriter writes to it, so vtWriter
-// wakes this loop after each write, and the replies are taken and written
+// The emulator queues a reply while vtWriter writes to it, and when the
+// colours it reports change (setReportColors). Each of them wakes this loop,
+// and the replies are taken and written
 // under respMu. Taking them under the lock is what lets a quiesce flush
 // them: once it holds respMu, no reply is in this goroutine's hands. See
 // pty_quiesce.go.
