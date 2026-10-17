@@ -494,6 +494,8 @@ The new binary is run once first and must say it reads this daemon's state; a re
 
 Attached clients are dropped. A tuios client says the daemon was upgraded and that the programs are still running, and exits; run `tuios attach <session>` to continue. Copy-mode state and input mode start fresh, as for any attach. Each pane carries the last 1000 lines of its history; deeper history is not carried.
 
+What the daemon holds about a window carries over too: a window made with `close_on_exit` still closes when its program exits, also when the program exits during the upgrade, and so do popups and plugin panes; a session whose workspace empties still goes back where `xpanes` or the trail of workspaces says; and a session with no client attached keeps telling its programs the colours the last client pushed. Prompts waiting in the delivery queue, agent activity and paste buffers are memory only and do not carry; [CLI_REFERENCE.md](CLI_REFERENCE.md#tuios-daemon-upgrade) lists both in full.
+
 The daemon refuses an upgrade while it holds something it cannot hand over: a pane hosted for another machine or one running on another machine, a running `tuios fan verify` check, or a popup capturing its output. It is refused on Windows, where `tuios kill-server` restarts the daemon and ends the programs.
 
 `--or-restart` is for scripts that install a tuios and want the daemon on it in any case: when the daemon cannot be upgraded live, the command says why and restarts it with the binary instead, which ends the programs. With no daemon running it starts one. A daemon that went back to its old binary is not restarted, since its programs still run. The paths that install tuios use it:
