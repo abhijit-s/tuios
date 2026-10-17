@@ -7257,6 +7257,21 @@ Run on 2026-10-16 on macOS. The tests are in `space_session_menus_test.go`. The 
 | Escape not cancelling the drag | `TestRailDragGlobalSessionOntoHeadingChangesNothing` ("after Escape mid-drag, the sessions and their spaces are ... e2e-loose:beta") | **caught** |
 | The global check in `sidebarTrackSpaceDrop` (the verb would still refuse the drop) | `TestRailDragGlobalSessionOntoHeadingChangesNothing` ("beta's heading is lit under a global session's row") | **caught** |
 
+### New space rows and action
+
+Run on 2026-10-17 on macOS. The tests are in `space_new_test.go`. The fixture is the one above, with the client attached to `e2e-a1`, and the config also binds `new_space` to `ctrl+b @`; `TestBlankRailNewSpaceRow` draws the sessions section alone and binds nothing. Spaces are read from `tuios ls --json`. Each control cuts one wire from the fixed build, builds it, restores the source, and runs the five tests; the fixed build passes all five.
+
+| Control: what was cut | Tests that fail | Verdict |
+| --- | --- | --- |
+| Action not registered: `new_space` (the key path and every row) | all five ("ctrl+b @ / blank rail's New space / the session row's New space / the heading's New space opened no new space dialog") | **caught** |
+| Row not wired: blank rail's "New space..." row | `TestBlankRailNewSpaceRow` ("blank rail's menu offered no New space") | **caught** |
+| Row not wired: the session menu's "New space..." row | `TestSessionMenuNewSpaceRow` ("the menu of e2e-b1 offered no \"New space\"") | **caught** |
+| Row not wired: the space heading menu's "New space..." row | `TestSpaceHeadingNewSpaceRow` ("the menu of beta offered no \"New space\"") | **caught** |
+| Typed space not passed: the commit makes the session in the attached session's space | `TestBlankRailNewSpaceRow`, `TestSessionMenuNewSpaceRow`, `TestSpaceHeadingNewSpaceRow`, `TestNewSpaceKey` (each: "made session-... in space \"alpha\", want gamma / delta / epsilon / zeta") | **caught** |
+| Empty field not a cancel: Enter on an empty field makes a plain session | `TestNewSpaceCancelMakesNothing` ("after cancelling new_space twice, the sessions and their spaces are map[... session-0:]") | **caught** |
+
+Not covered: a name the daemon refuses (the refusal comes from `new-session`'s space check, which `TestNewSpaceFilesTheSession` and the CLI tests hold), and an older daemon, which goes through the same `createSessionVerb` stale-daemon path as `new_session_in_space`.
+
 Each test that names a negative half has its positive half in the file: the global row's dimmed "Move to space..." opens no dialog where every other row's does, a global row over beta lights nothing where `e2e-loose` over beta lights it, and `TestRailDragWithinSpaceReorders` is the drag that must not touch a space.
 
 Not covered: a drop on a repository header inside a space's group (no fixture session is a worktree), the split space layout (drops file nothing there, by design), a session on another machine (it has no session menu, and its row is no session row a drag can start from), and the lit row in no space, which only the heading's ground is read for.
