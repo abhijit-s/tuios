@@ -2588,6 +2588,9 @@ func (pty *PTY) startPTY() {
 	// (DA, CPR, etc.) which must be sent to the PTY for applications to receive.
 	// Client emulators DRAIN their responses to prevent duplicates. Woken once
 	// for anything the emulator queued before it started.
+	if pty.terminal != nil {
+		pty.terminal.OnResponse(pty.wakeResponses)
+	}
 	go pty.forwardTerminalResponses()
 	pty.wakeResponses()
 
@@ -4949,7 +4952,6 @@ func (p *PTY) vtWriter() {
 				p.vtResizes++
 			}
 			p.terminalMu.Unlock()
-			p.wakeResponses()
 			continue
 		}
 		p.terminalMu.Lock()
@@ -4965,7 +4967,6 @@ func (p *PTY) vtWriter() {
 		p.vtSeq = chunk.seq
 		focusOn := p.terminal != nil && p.terminal.FocusReportingEnabled()
 		p.terminalMu.Unlock()
-		p.wakeResponses()
 		p.noteFocusReporting(focusOn)
 		p.flushProgramStatus()
 	}
@@ -5102,10 +5103,10 @@ func (p *PTY) noteExit(code int) {
 // (DA1, CPR and the rest) to the program. Client emulators drain theirs, so
 // the program gets one copy.
 //
-// The emulator queues a reply while vtWriter writes to it, and when the
-// colours it reports change (setReportColors). Each of them wakes this loop,
-// and the replies are taken and written
-// under respMu. Taking them under the lock is what lets a quiesce flush
+// The emulator queues a reply while vtWriter writes to it, and from elsewhere:
+// when the colours or the cell size it reports change, and when a kitty file
+// upload's check ends. Every reply wakes this loop through OnResponse, set in
+// startPTY, and the replies are taken and written under respMu. Taking them under the lock is what lets a quiesce flush
 // them: once it holds respMu, no reply is in this goroutine's hands. See
 // pty_quiesce.go.
 func (p *PTY) forwardTerminalResponses() {
