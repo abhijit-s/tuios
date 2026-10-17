@@ -7199,3 +7199,21 @@ Run on 2026-10-17 on macOS arm64 (Darwin 27, Go 1.26.9) against feat/live-handof
 ```sh
 TUIOS_E2E=1 TUIOS_E2E_BIN=/path/to/tuios go test -count=1 -run '^TestHandoffHoldsHooks$' .
 ```
+
+### History depth and the emulator backend across a handoff
+
+- `TestSelfExecKeepsScrollbackDepth`: a daemon started with `scrollback_lines = 300`, whose config is then changed to 5000 without applying it, hands a pane over; the pane then prints 2000 lines and must hold at most 300 rows of history. The handoff's stats must name the same emulator before and after. On libghostty-vt a depth of 300 held 40 rows here, and 1976 without the record, so the test bounds the depth from above only.
+- `TestDaemonUpgradeAcrossBackends`, with `TUIOS_E2E_OTHER_BACKEND_BIN` naming a build with the other backend: `tuios daemon upgrade` to it keeps every pane's pid and its screen, the stats name two emulators, and `tuios logs` says the panes were rebuilt in the other one. Skipped without the variable. Run both ways: a pure Go daemon to a `-tags ghostty` build, and back.
+
+Run on 2026-10-17 on macOS arm64 (Darwin 27, Go 1.26.9) against feat/live-handoff. A control of the new image's adoption is built with the backend of the image that adopts.
+
+| Control | How | Test that fails | Verdict |
+| --- | --- | --- | --- |
+| The depth is not carried (pure Go) | `rec.ScrollbackLines = s.scrollbackLines()` cut from `Session.handoffRecord` | `TestSelfExecKeepsScrollbackDepth`: "after the handoff the pane holds 1976 rows of history, more than the 300 its session was made with" | **caught** |
+| The depth is not carried (ghostty) | the same cut, `-tags ghostty`, with a ghostty binary under test | `TestSelfExecKeepsScrollbackDepth`: the same message, 1976 rows | **caught** |
+| The backend change is not recorded | the stats' backends and the log line cut from adoption, in the ghostty build the pure Go daemon upgrades to | `TestDaemonUpgradeAcrossBackends`: "the handoff's stats name the emulator <nil> before and <nil> after, want two", "the daemon's log does not say the panes were rebuilt in another emulator" | **caught** |
+
+```sh
+TUIOS_E2E=1 TUIOS_E2E_BIN=/path/to/tuios TUIOS_E2E_OTHER_BACKEND_BIN=/path/to/tuios-ghostty \
+  go test -count=1 -run '^(TestSelfExecKeepsScrollbackDepth|TestDaemonUpgradeAcrossBackends)$' .
+```

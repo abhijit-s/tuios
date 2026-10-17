@@ -151,15 +151,24 @@ func (d *Daemon) adopt(fd int, fb *adoptFallback, kept map[int]int) error {
 
 	stats := m.Daemon.Stats
 	stats.ManifestBytes = m.Size
+	stats.FromBackend, stats.Backend = m.Header.Backend, vt.Backend
+	if stats.FromBackend != stats.Backend {
+		LogBasic("Live upgrade: the panes were written down by the %s emulator and are rebuilt in the %s one", stats.FromBackend, stats.Backend)
+	}
+	// A session from an image that predates the record keeps the depth this
+	// image's config gives.
 	lines := d.manager.scrollbackLines
 	if lines <= 0 {
 		lines = vt.DefaultScrollbackSize
 	}
-	colors := make(map[string]handoffReportColors, len(m.Sessions))
+	sessions := make(map[string]handoffSession, len(m.Sessions))
 	for _, s := range m.Sessions {
-		colors[s.ID] = s.ReportColors
+		if s.ScrollbackLines <= 0 {
+			s.ScrollbackLines = lines
+		}
+		sessions[s.ID] = s
 	}
-	terms, err := applyHandoffPanes(m.Panes, colors, lines, &stats)
+	terms, err := applyHandoffPanes(m.Panes, sessions, &stats)
 	if err != nil {
 		return err
 	}
@@ -255,13 +264,14 @@ type adoptedPane struct {
 const handoffGCPercent = 25
 
 // applyHandoffPanes rebuilds every pane's emulator from its snapshot, a few
-// at a time, under a lowered GC target. It drops each snapshot once applied.
+// at a time, under a lowered GC target, at its session's history depth. It
+// drops each snapshot once applied.
 //
 // Each emulator is given its session's report colours before the snapshot
 // goes in. After it, a program that turned on mode 2031 would be sent a
 // change of scheme from the emulator's own black to the colours it was
 // already told.
-func applyHandoffPanes(panes []handoffPane, colors map[string]handoffReportColors, lines int, stats *HandoffStats) ([]vt.Terminal, error) {
+func applyHandoffPanes(panes []handoffPane, sessions map[string]handoffSession, stats *HandoffStats) ([]vt.Terminal, error) {
 	t0 := time.Now()
 	stats.ApplyHeapStart = heapInuse()
 	prevGC := debug.SetGCPercent(handoffGCPercent)
@@ -269,8 +279,9 @@ func applyHandoffPanes(panes []handoffPane, colors map[string]handoffReportColor
 	terms := make([]vt.Terminal, len(panes))
 	err := forEachBounded(len(panes), min(runtime.GOMAXPROCS(0), 4), func(i int) error {
 		handoffTestApplyPanic()
-		t := vt.NewWithScrollback(panes[i].Width, panes[i].Height, lines)
-		colors[panes[i].Session].applyTo(t)
+		sess := sessions[panes[i].Session]
+		t := vt.NewWithScrollback(panes[i].Width, panes[i].Height, sess.ScrollbackLines)
+		sess.ReportColors.applyTo(t)
 		if st := panes[i].State; st != nil {
 			ApplyTerminalState(t, st)
 			panes[i].Live.vtSeq = st.Seq
@@ -367,7 +378,7 @@ func (d *Daemon) adoptSession(rec handoffSession, panes []adoptedPane, fb *adopt
 	if height <= 0 {
 		height = 24
 	}
-	cfg := &SessionConfig{restoreID: rec.ID, Space: st.Space}
+	cfg := &SessionConfig{restoreID: rec.ID, Space: st.Space, ScrollbackLines: rec.ScrollbackLines}
 	if rec.Created > 0 {
 		cfg.restoreCreated = time.Unix(0, rec.Created)
 	}
