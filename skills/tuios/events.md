@@ -98,7 +98,7 @@ Every type, and what it reports:
 | `host-changed` | A host link connects or drops |
 | `transfer`, `transfer-progress` | A copy the daemon runs is created, changes state, ends, or leaves the list (`action` `removed`, after `transfer-clear` or 30 minutes after it ended); its progress, opt-in (`tuios --skill files`) |
 | `transfer-file` | One file of a copy ended: `file` has `id`, `rel`, `state` (`done`, `same`, `skipped`, `conflict` or `failed`), `sha256`, `code`, `error`. Opt-in |
-| `daemon-upgraded` | A live upgrade (`tuios daemon upgrade`) replaced the daemon: `title` is the build the panes came from, `body` the build that has them, `state` is `upgraded` or `fallback` |
+| `daemon-upgraded` | A live upgrade (`tuios daemon upgrade`) replaced the daemon: `title` is the build the panes came from, `body` the build that has them, `state` is `upgraded`, `fallback`, or `recovered` when the new image died and the previous binary took the panes back under a new daemon pid |
 | `gap` | Events were lost. See below |
 
 The hook names (`after-new-window` and the rest) are not event types. The

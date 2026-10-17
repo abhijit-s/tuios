@@ -66,6 +66,10 @@ type Daemon struct {
 	// handoff_prev.go.
 	prevMu sync.Mutex
 	prev   *prevBinary
+	// keeper holds a copy of the panes' descriptors from before a handoff's
+	// exec until the image it made is up. See handoff_keeper.go.
+	keeperMu sync.Mutex
+	keeper   *handoffKeeper
 	// lastHandoff is what the handoff that made this image measured, nil
 	// for an image that started fresh.
 	lastHandoff atomic.Pointer[HandoffStats]
@@ -1654,6 +1658,10 @@ func (cs *connState) drop() {
 func (d *Daemon) shutdown() error {
 	d.shutdownOnce.Do(func() {
 		log.Println("Shutting down daemon...")
+
+		// A daemon stopped on purpose before a handoff's new image was up is
+		// not a crash: the keeper stands down rather than bring it back.
+		d.releaseKeeper()
 
 		// The Inbox is saved first and not again. Everything below closes
 		// panes, and a pane closing on shutdown is not the person dealing
