@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Gaurav-Gosain/tuitest"
 )
 
 // What the daemon holds about a pane, a session or itself outside the
@@ -57,5 +59,39 @@ func TestSelfExecKeepsFocusReporting(t *testing.T) {
 	}
 	if n != 1 {
 		t.Errorf("ASSERTION: the program heard %d focus-in reports after one client attached to the new image, want 1", n)
+	}
+}
+
+// TestSelfExecPrunesMetadataWithATimeToLive gives a working agent's pane a
+// metadata token that lives 7 s (set-agent-meta ttl_ms), and hands the panes
+// over at once. A client attached to the new image draws the token on the
+// agent's rail row. Clients draw only what the daemon pushes, and keep no
+// clock of their own, so the token leaves the rail only when the daemon's
+// prune drops it from the state: the new image must arm that prune again.
+//
+// How it could pass wrongly: the token could expire before the client
+// attached, and never be drawn. The test waits for it on the rail first.
+func TestSelfExecPrunesMetadataWithATimeToLive(t *testing.T) {
+	base := t.TempDir()
+	writeConfig(t, base, "[appearance.sidebar]\nenabled = true\n")
+	startHandoffDaemon(t, base)
+	const sess = "e2e-ttl"
+	const token = "ttlmark7"
+	newCommandWindow(t, base, sess, "agent", false, "sh", "-c", "exec sleep 600")
+	if out, err := tuiosCLI(t, base, "set-agent-state", "-s", sess, "working", "--harness", "claude-code"); err != nil {
+		t.Fatalf("set-agent-state: %v\n%s", err, out)
+	}
+	setAt := time.Now()
+	_ = mustCall(t, base, "set-agent-meta", map[string]any{"session": sess, "window": "0", "tokens": map[string]any{"phase": token}, "ttl_ms": 7000})
+
+	handOver(t, base, map[string]any{})
+	term := attachIn(t, base, sess, startOpts{})
+	waitForAll(t, term, 5*time.Second, "the token on the rail of a client of the new image", token)
+	time.Sleep(time.Until(setAt.Add(9 * time.Second)))
+	err := term.WaitFor(func(s tuitest.Screen) bool { return !strings.Contains(s.Text(), token) }, 3*time.Second)
+
+	writeHandoffArtifact(t, map[string]any{"still_drawn_at_12s": err != nil, "screen": term.Screen().Text()})
+	if err != nil {
+		t.Errorf("ASSERTION: the token outlived its 7 s on the rail by %s after the handoff:\n%s", time.Since(setAt.Add(7*time.Second)).Round(time.Second), term.Snapshot())
 	}
 }
