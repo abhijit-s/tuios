@@ -133,6 +133,8 @@ type handoffDaemon struct {
 	// Activity is every pane's agent activity ring. An image that predates
 	// it reads none, and agent-activity and the recap start empty.
 	Activity []handoffActivityRing `json:"activity,omitempty"`
+	// Queue is the delivery queues. See handoff_queue.go.
+	Queue handoffQueue `json:"queue,omitzero"`
 	// Buffers are the paste buffers, newest first, and BufferNext the
 	// number the next automatic name takes. Like the reply history they ride
 	// with the pane screens, under the manifest's rules: a memfd on Linux, an
