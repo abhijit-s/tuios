@@ -7239,3 +7239,20 @@ Run on 2026-10-17 on macOS arm64 (Darwin 27, Go 1.26.9) against feat/live-handof
 ```sh
 TUIOS_E2E=1 TUIOS_E2E_BIN=/path/to/tuios go test -count=1 -run '^TestKillServerWhileTheNewImageAdopts$' .
 ```
+
+### The keeper when something other than the new image dies
+
+- `TestHandoffSurvivesItsKeeperDying`: the keeper is killed with `SIGKILL` in a 2 s hold between the manifest and the exec. The upgrade must go through with the same daemon pid and every pane's pid, the counter must read on with no gap, and the new image must leave no zombie child and no keeper.
+- `TestKeeperRestoresWhenTheOldImageDiesBeforeTheExec`: the daemon is killed with `SIGKILL` in a 3 s hold after the manifest is written. The daemon must answer from the keeper's pid, say it was recovered, keep every pane's pid, and read the counter on with no gap.
+
+Run on 2026-10-17 on macOS arm64 (Darwin 27, Go 1.26.9) against feat/live-handoff.
+
+| Control | How | Test that fails | Verdict |
+| --- | --- | --- | --- |
+| A released keeper is not reaped | `go reapKeeper(k.pid)` cut from `releaseKeeper` | `TestHandoffSurvivesItsKeeperDying`: "the dead keeper was left behind: zombies [84391 <defunct> <defunct>], keepers []" | **caught** |
+| The keeper stands down at the end of its socket | `RunHandoffKeeper` returns on `n >= 0`, so end of file reads as a release | `TestKeeperRestoresWhenTheOldImageDiesBeforeTheExec`: "the daemon never answered from a new image within 20s: ... The TUIOS daemon is not running, but a stale socket is left over" | **caught** |
+
+```sh
+TUIOS_E2E=1 TUIOS_E2E_BIN=/path/to/tuios \
+  go test -count=1 -run '^(TestHandoffSurvivesItsKeeperDying|TestKeeperRestoresWhenTheOldImageDiesBeforeTheExec)$' .
+```
