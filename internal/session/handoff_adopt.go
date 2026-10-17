@@ -267,6 +267,7 @@ func applyHandoffPanes(panes []handoffPane, colors map[string]handoffReportColor
 	stopSampling := sampleHeapInuse(&stats.ApplyPeakHeapInuse)
 	terms := make([]vt.Terminal, len(panes))
 	err := forEachBounded(len(panes), min(runtime.GOMAXPROCS(0), 4), func(i int) error {
+		handoffTestApplyPanic()
 		t := vt.NewWithScrollback(panes[i].Width, panes[i].Height, lines)
 		colors[panes[i].Session].applyTo(t)
 		if st := panes[i].State; st != nil {
