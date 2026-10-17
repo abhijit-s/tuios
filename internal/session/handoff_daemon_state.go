@@ -136,3 +136,59 @@ func (h *replyHistory) restore(r handoffReplies) {
 		}
 	}
 }
+
+// handoffActivityRing is one pane's agent activity ring, as agent-activity
+// and the recap read it.
+type handoffActivityRing struct {
+	Session string `json:"session"`
+	Window  string `json:"window"`
+	// Seq is the newest entry's, which is also how many the pane has had.
+	Seq uint64 `json:"seq"`
+	// Entries are oldest first, and Turns each one's finished turns, which
+	// the entry keeps off the wire.
+	Entries []AgentActivityEntry `json:"entries,omitempty"`
+	Turns   []uint64             `json:"turns,omitempty"`
+}
+
+// handoffState is every pane's ring.
+func (a *activityStore) handoffState() []handoffActivityRing {
+	if a == nil {
+		return nil
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	out := make([]handoffActivityRing, 0, len(a.rings))
+	for key, ring := range a.rings {
+		rec := handoffActivityRing{Session: key.session, Window: key.window, Seq: ring.seq, Entries: ring.ordered()}
+		for _, e := range rec.Entries {
+			rec.Turns = append(rec.Turns, e.turns)
+		}
+		out = append(out, rec)
+	}
+	return out
+}
+
+// restore puts carried rings into an empty store, numbering on from where
+// each stopped.
+func (a *activityStore) restore(rings []handoffActivityRing) {
+	if a == nil {
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for _, rec := range rings {
+		ring := &activityRing{seq: rec.Seq}
+		for i, e := range rec.Entries {
+			if i < len(rec.Turns) {
+				e.turns = rec.Turns[i]
+			}
+			if len(ring.entries) < activityRingSize {
+				ring.entries = append(ring.entries, e)
+				continue
+			}
+			ring.entries[ring.start] = e
+			ring.start = (ring.start + 1) % len(ring.entries)
+		}
+		a.rings[activityKey{rec.Session, rec.Window}] = ring
+	}
+}
