@@ -15,6 +15,7 @@
 #       scripts/install-tuios-local.sh                # force a specific install path
 #   TUIOS_BACKEND=ghostty scripts/install-tuios-local.sh  # build the libghostty-vt backend
 #   TUIOS_SKIP_BUILD=1 scripts/install-tuios-local.sh     # swap an already-built target
+#   TUIOS_UPGRADE_DAEMON=1 scripts/install-tuios-local.sh # then upgrade the running daemon live
 #
 # Notable choices (the "why"):
 #   * Backend auto-detect: defaults to whatever backend the existing binary
@@ -146,8 +147,23 @@ else
   socket="/tmp/tuios-$(id -u)/tuios.sock"
 fi
 if [ -f "$socket.pid" ] && pid="$(cat "$socket.pid" 2>/dev/null)" && [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-  echo
-  echo "A daemon (pid $pid) is still running the previous build, and every"
-  echo "attached session goes through it. Restart it to run the new binary:"
-  echo "    tuios kill-server        # layouts and working directories come back with new shells"
+  # The path on PATH, not the Cellar path, so the daemon execs what a shell
+  # runs as tuios after the next install too.
+  live="$(command -v tuios 2>/dev/null || echo "$TARGET")"
+  if [ "${TUIOS_UPGRADE_DAEMON:-}" = 1 ]; then
+    echo "==> upgrading the daemon (pid $pid) live"
+    # Live only: a daemon that cannot be upgraded keeps running the previous
+    # build, and nothing a pane runs is stopped behind the user's back.
+    if ! TUIOS_SERVER='' "$TARGET" daemon upgrade --binary "$live"; then
+      echo "The daemon still runs the previous build. To restart it, which ends running programs:"
+      echo "    tuios kill-server"
+    fi
+  else
+    echo
+    echo "A daemon (pid $pid) is still running the previous build, and every"
+    echo "attached session goes through it. Move it to the new binary:"
+    echo "    tuios daemon upgrade --binary $live   # live: every program keeps running"
+    echo "    tuios kill-server                      # restart: layouts come back with new shells"
+    echo "TUIOS_UPGRADE_DAEMON=1 runs the live upgrade as part of the install."
+  fi
 fi
