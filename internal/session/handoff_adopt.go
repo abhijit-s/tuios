@@ -34,6 +34,12 @@ import (
 // An adoption that fails, panics or hangs re-execs the binary the previous
 // image ran, which adopts the panes as it wrote them. See adoptFallback.
 func (d *Daemon) RunAdopted(fd int) error {
+	// From the start, not once the image serves: a kill-server that comes
+	// while the panes are adopted is a stop asked for. Left to the default,
+	// SIGTERM would end this image as a crash does, and the keeper would
+	// bring the previous binary back. Caught, it lets the adoption finish,
+	// and the shutdown that follows releases the keeper first.
+	d.watchSignals()
 	InstallDaemonLogging(d.foreground, d.logFile)
 	LogBasic("Daemon %s adopting its predecessor's panes (pid %d)", d.version, os.Getpid())
 	handoffTestCrash(crashAtStart)
@@ -47,13 +53,18 @@ func (d *Daemon) RunAdopted(fd int) error {
 		LogError("Live upgrade: %v", err)
 		return fmt.Errorf("live upgrade: %w", err)
 	}
-	fb := &adoptFallback{manifestFD: fd}
+	fb := &adoptFallback{manifestFD: fd, stopped: func() bool { return d.ctx.Err() != nil }}
 	stopWatch := fb.watch(adoptWatchdogTimeout())
 	err = d.adoptGuarded(fd, fb, kept)
 	stopWatch()
 	if err != nil {
 		LogError("Live upgrade: adopting the panes failed: %v", err)
 		fb.reexec(err)
+		// Asked to stop: the panes end with this image, as a stop ends
+		// them, and the keeper does not bring them back.
+		if d.ctx.Err() != nil {
+			d.releaseKeeper()
+		}
 		return fmt.Errorf("live upgrade: adopting the panes: %w", err)
 	}
 	<-d.ctx.Done()

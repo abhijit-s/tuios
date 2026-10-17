@@ -35,8 +35,11 @@ type adoptFallback struct {
 	mu         sync.Mutex
 	state      int // 0 armed, 1 disarmed, 2 falling back
 	manifestFD int
-	path       string
-	fds        []int
+	// stopped says the daemon was asked to stop during the adoption, when
+	// no fallback runs: a stop ends the panes.
+	stopped func() bool
+	path    string
+	fds     []int
 	// held keeps every wrapper around an inherited descriptor reachable: an
 	// os.File that is collected closes its descriptor, and the fallback
 	// needs every one of them.
@@ -105,6 +108,10 @@ func (f *adoptFallback) reexec(why error) {
 	f.state = 2
 	path, fds := f.path, f.fds
 	f.mu.Unlock()
+	if f.stopped != nil && f.stopped() {
+		LogError("Live upgrade: no fallback, the daemon was asked to stop while it adopted the panes (%v). They end with this process", why)
+		return
+	}
 	if path == "" {
 		LogError("Live upgrade: no fallback, the manifest was not read (%v). The panes end with this process", why)
 		return
