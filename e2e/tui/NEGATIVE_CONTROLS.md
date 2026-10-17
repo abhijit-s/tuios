@@ -7163,3 +7163,17 @@ Run on 2026-10-17 on macOS arm64 (Darwin 27, Go 1.26.9) against feat/live-handof
 ```sh
 TUIOS_E2E=1 TUIOS_E2E_BIN=/path/to/tuios go test -count=1 -run '^TestHandoffTestHooksNeedTheirVariable$' .
 ```
+
+### Who can upgrade the daemon
+
+- `TestDaemonUpgradeFromAPaneNeedsAdmin`: a pane given `read,write` with `set-pane-grants` runs `tuios daemon upgrade --binary <copy>`. It must exit non-zero naming the admin grant, and the daemon's image must not change.
+
+Run on 2026-10-17 on macOS arm64 (Darwin 27, Go 1.26.9) against feat/live-handoff.
+
+| Control | How | Test that fails | Verdict |
+| --- | --- | --- | --- |
+| daemon-upgrade needs no grant | `"daemon-upgrade": scopeOpen` in `verbScopes` | `TestDaemonUpgradeFromAPaneNeedsAdmin`: "a pane without admin upgraded the daemon (...)" | **caught** |
+
+```sh
+TUIOS_E2E=1 TUIOS_E2E_BIN=/path/to/tuios go test -count=1 -run '^TestDaemonUpgradeFromAPaneNeedsAdmin$' .
+```
