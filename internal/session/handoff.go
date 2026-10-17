@@ -249,6 +249,16 @@ func (r *handoffRun) prepare() error {
 	}
 
 	sessions := d.manager.AllSessions()
+	// Before any pane stops, so the record of each session names the colours
+	// its emulators were given.
+	for _, sess := range sessions {
+		sess.holdReportColors()
+	}
+	r.undo = append(r.undo, func() {
+		for _, sess := range sessions {
+			sess.releaseReportColors()
+		}
+	})
 	var refs []handoffPaneRef
 	for _, sess := range sessions {
 		for _, w := range sess.GetState().Windows {
