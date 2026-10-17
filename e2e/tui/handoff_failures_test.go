@@ -129,3 +129,45 @@ func TestHandoffAbandonedWhenNotCommitted(t *testing.T) {
 	raw, _ := json.Marshal(failed)
 	checkCarriedOn(t, base, sess, win, img, map[string]any{"upgrade_failed": string(raw), "answered_after_ms": answeredAfter.Milliseconds()})
 }
+
+// TestKillServerWhileTheNewImageAdopts stops the daemon with `tuios
+// kill-server` while a handoff's new image is still adopting the panes,
+// held 2.5 s before it applies anything (TUIOS_TEST_HANDOFF_ADOPT_PAUSE_MS).
+// A daemon stopped on purpose is not a crash: it must stop, as kill-server
+// says it does, ending the programs in its panes, and the handoff's keeper
+// must stand down rather than bring the old binary back.
+func TestKillServerWhileTheNewImageAdopts(t *testing.T) {
+	base := t.TempDir()
+	startHandoffDaemon(t, base, "TUIOS_TEST_HANDOFF_ADOPT_PAUSE_MS=2500")
+	const sess = "e2e-killadopt"
+	win := newCommandWindow(t, base, sess, "a", false, "sh", "-c", "echo pid-$$; exec sleep 600")
+	waitHandoffPane(t, base, sess, win, regexp.MustCompile(`^pid-\d+`), 10*time.Second)
+	panePID := panePIDs(t, base, sess)[win]
+	img := helloImage(t, base)
+	_ = mustCall(t, base, "test-handoff", map[string]any{})
+	time.Sleep(700 * time.Millisecond)
+	started := time.Now()
+	out, killErr := handoffCLI(t, base, 30*time.Second, "kill-server")
+	took := time.Since(started)
+	time.Sleep(4 * time.Second)
+	daemonAlive, paneAlive := processAlive(img.PID), processAlive(panePID)
+	keepers := keeperProcesses(t, base)
+	var restored []string
+	for _, line := range commandLinesContaining(t, base) {
+		if regexp.MustCompile(`\bdaemon\b`).MatchString(line) {
+			restored = append(restored, line)
+		}
+	}
+
+	writeHandoffArtifact(t, map[string]any{"kill_server": out, "kill_error": errString(killErr), "took_ms": took.Milliseconds(),
+		"daemon_alive": daemonAlive, "pane_alive": paneAlive, "keepers": keepers, "daemons_left": restored})
+	if killErr != nil {
+		t.Errorf("ASSERTION: kill-server failed while the new image adopted the panes: %v\n%s", killErr, out)
+	}
+	if daemonAlive || len(restored) > 0 || len(keepers) > 0 {
+		t.Errorf("ASSERTION: the daemon stopped on purpose came back: pid %d alive %v, daemons %v, keepers %v", img.PID, daemonAlive, restored, keepers)
+	}
+	if paneAlive {
+		t.Errorf("ASSERTION: the pane's program %d outlived kill-server", panePID)
+	}
+}
