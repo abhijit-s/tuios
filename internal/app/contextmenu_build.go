@@ -420,6 +420,8 @@ func (m *OS) sessionMenu(sessionID string) (string, []ContextMenuItem) {
 		// A plain new session, the new_session action the sessions header's
 		// "+" runs. It is about no row, so it reads no menu target.
 		m.item(glyphNew, "New session", "new_session", false),
+		// A session in a space named in a dialog. About no row either.
+		m.item(glyphNew, "New space...", "new_space", false),
 		separator(),
 	}, kill...)
 }
@@ -447,7 +449,7 @@ func (m *OS) repoHeaderMenu(repo string) (string, []ContextMenuItem) {
 
 // spaceHeaderMenu is the menu for a space's heading on the rail. A left-click on
 // the heading folds it, so the menu holds what the heading offers that no click
-// on it suggests: switching to the space, renaming it, making a session in it, and ending it. What the menu is about rides in
+// on it suggests: switching to the space, renaming it, making a session in it or in a new space, and ending it. What the menu is about rides in
 // ContextMenu.Space; see TakeMenuSpace.
 func (m *OS) spaceHeaderMenu(space string) (string, []ContextMenuItem) {
 	title := printableTitle(space)
@@ -467,6 +469,7 @@ func (m *OS) spaceHeaderMenu(space string) (string, []ContextMenuItem) {
 	return title, append(items,
 		m.item(glyphRename, "Rename", "rename_space", false),
 		m.item(glyphNew, "New session here", "new_session_in_space", false),
+		m.item(glyphNew, "New space...", "new_space", false),
 		separator(),
 		// The sessions keep running and join the ones in no space.
 		m.item(glyphClear, "Remove space", "remove_space", false),

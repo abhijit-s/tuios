@@ -853,6 +853,7 @@ var ActionDescriptions = map[string]string{
 	"rename_space":         "Rename the space of the attached session, or of the heading the menu was opened on",
 	"set_session_space":    "Move the attached session, or the one the menu was opened on, to a space",
 	"new_session_in_space": "Make a session in the space of the heading the menu was opened on, or of the attached session (a plain new session when it is in no space)",
+	"new_space":            "Name a new space, then make a session in it and switch to it",
 	"remove_space":         "Take every session out of the space of the heading the menu was opened on, or of the attached session",
 	"close_space":          "Close every session in the space of the heading the menu was opened on, or of the attached session, after a confirmation",
 	"kill_session":         "Kill the session the menu was opened on",

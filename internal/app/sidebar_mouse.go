@@ -1134,11 +1134,16 @@ func (m *OS) filesBandContains(y int) bool {
 
 // openRailSettingsMenu is the menu for a right-click on blank rail: there is no
 // row to act on, so the click means the rail itself, and, with a daemon, the
-// rail's add affordance: a new session, as the sessions header's "+" makes.
+// rail's add affordances: a new session, as the sessions header's "+" makes,
+// and a new space.
 func (m *OS) openRailSettingsMenu(x, y int) {
 	items := []ContextMenuItem{m.railSettingsItem()}
 	if m.IsDaemonSession {
-		items = append([]ContextMenuItem{m.item(glyphNew, "New session", "new_session", false), separator()}, items...)
+		items = append([]ContextMenuItem{
+			m.item(glyphNew, "New session", "new_session", false),
+			m.item(glyphNew, "New space...", "new_space", false),
+			separator(),
+		}, items...)
 	}
 	m.ContextMenu = &ContextMenu{
 		AnchorX:     x,

@@ -66,7 +66,9 @@ from the client with the rail heading's Rename row or the `rename_space`
 action, which call the same `rename-space` verb. A session row's "Move to
 space..." row, the `set_session_space` action and a drag of the row onto a
 space call `set-session-space`; a heading's "New session here" and the
-`new_session_in_space` action call `new-session` with `space`. A heading's
+`new_session_in_space` action call `new-session` with `space`, and so do the
+"New space..." rows and the `new_space` action, with the space the person
+types. A heading's
 "Remove space" row and the `remove_space` action call `remove-space`; "Close
 space..." and `close_space` ask the person first, then call `kill-space` with
 `force`.

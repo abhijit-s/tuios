@@ -456,6 +456,7 @@ var actionsWithNoDefaultBinding = map[string]string{
 	"rename_space":          "rail space heading menu row and user binding",
 	"set_session_space":     "rail session row menu row and user binding",
 	"new_session_in_space":  "rail space heading menu row and user binding",
+	"new_space":             "rail menu rows and user binding",
 	"remove_space":          "rail space heading menu row and user binding",
 	"close_space":           "rail space heading menu row and user binding",
 

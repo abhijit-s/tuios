@@ -950,6 +950,19 @@ set_session_space = ["&"]
 new_session_in_space = ["^"]
 ```
 
+## New space
+
+The `new_space` action opens the rename dialog titled "new space", with an empty field. Enter makes a session in the typed space and switches to it, through the daemon's `new-session` verb with the space, as [`tuios new NAME --space SPACE`](CLI_REFERENCE.md#tuios-new) does, so a space is made in one step instead of a new session and then a move. The daemon names the session, on the daemon the client is attached to. A name that is already a space gets a session in that space, as `tuios new --space` does, rather than a refusal: the space asked for is there either way. A name the daemon refuses (one that breaks the session name rules, or longer than 64 bytes) is refused with its message ("Create failed: ...") and nothing is made. An empty field, or Esc, cancels and makes nothing. A daemon too old for the space parameter is reported as stale, as for `new_session_in_space`. Without the daemon the action opens nothing and says "Sessions need the daemon".
+
+The menu of blank rail, the session menu on a rail row and a space heading's menu each have a "New space..." row, which runs the same action whichever row it was opened on.
+
+The action has no default key, and the command palette lists it. `ctrl+b @` is free in the default prefix table; to bind it there:
+
+```toml
+[keybindings.prefix_mode]
+new_space = ["@"]
+```
+
 ## Remove or close a space
 
 The `remove_space` action takes every session out of the attached session's space, through the daemon, as [`tuios remove-space`](CLI_REFERENCE.md#tuios-remove-space) does: the sessions join the ones in no space and keep running, and the space's heading leaves the rail. It asks nothing, since nothing is lost.

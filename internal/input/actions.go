@@ -253,6 +253,7 @@ func (d *ActionDispatcher) registerHandlers() {
 	d.Register("rename_space", handleRenameSpace)
 	d.Register("set_session_space", handleSetSessionSpace)
 	d.Register("new_session_in_space", handleNewSessionInSpace)
+	d.Register("new_space", handleNewSpace)
 	d.Register("remove_space", handleRemoveSpace)
 	d.Register("close_space", handleCloseSpace)
 	d.Register("kill_session", handleKillSession)
@@ -1271,6 +1272,13 @@ func handleNewSessionInSpace(_ tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
 		return o, nil
 	}
 	o.NewSessionInSpace(space)
+	return o, nil
+}
+
+// handleNewSpace opens the dialog that names a new space and makes a session
+// in it. It is about no row or heading, so it reads no menu target.
+func handleNewSpace(_ tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
+	o.BeginNewSpace()
 	return o, nil
 }
 

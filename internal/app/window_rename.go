@@ -38,6 +38,11 @@ const (
 	// the session out of every space. The daemon's set-session-space applies
 	// it, so the dialog refuses what tuios set-session-space refuses.
 	RenameSessionSpace
+	// RenameNewSpace names a space that a new session is made in. It targets
+	// nothing that exists yet: the buffer starts empty, and committing it makes
+	// a session in the typed space and switches to it, as new_session_in_space
+	// does for a space that exists.
+	RenameNewSpace
 )
 
 // Renaming reports whether a rename editor is open, whatever it targets.
@@ -107,6 +112,23 @@ func (m *OS) BeginSetSessionSpace(name string) {
 	m.RenameKind = RenameSessionSpace
 	m.RenameTargetID = name
 	m.RenameBuffer = m.sessionSpaceOf(name)
+}
+
+// BeginNewSpace opens the dialog that names a new space, which committing makes
+// by making a session in it. A space exists only as a label on sessions, so a
+// session is what the new space is made of. Without the daemon no session can
+// be made, so it says so instead of opening a dialog that could only fail.
+func (m *OS) BeginNewSpace() {
+	if m.learnOff(learnNoteSessions) {
+		return
+	}
+	if !m.CanCreateSession() {
+		m.ShowNotification("Sessions need the daemon", "info", m.Settings.NotificationDuration)
+		return
+	}
+	m.RenameKind = RenameNewSpace
+	m.RenameTargetID = ""
+	m.RenameBuffer = ""
 }
 
 // sessionSpaceOf is the space a session is filed under. The attached session's
@@ -226,6 +248,8 @@ func (m *OS) RenameDialogTitle() string {
 		return "rename space " + printableTitle(m.RenameTargetID)
 	case RenameSessionSpace:
 		return "move " + printableTitle(m.SessionLabel(m.RenameTargetID)) + " to space"
+	case RenameNewSpace:
+		return "new space"
 	default:
 		return "rename"
 	}
@@ -253,6 +277,17 @@ func (m *OS) CommitRename() tea.Cmd {
 		return nil
 	}
 	if kind == RenameSpace && label == target {
+		return nil
+	}
+	if kind == RenameNewSpace {
+		// An empty name backs out, as it does for a space rename. A name that
+		// is a space already gets a session in that space, as tuios new
+		// --space does: the person asked for a session in a space of that
+		// name, and one now exists. Every other name is checked by
+		// new-session, so it is refused in that verb's words.
+		if label != "" {
+			m.NewSessionInSpace(label)
+		}
 		return nil
 	}
 	what := "Rename"
