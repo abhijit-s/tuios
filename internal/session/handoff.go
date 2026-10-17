@@ -308,6 +308,8 @@ func (r *handoffRun) prepare() error {
 			sess.releaseReportColors()
 		}
 	})
+	d.queue.hold()
+	r.undo = append(r.undo, func() { d.queue.release(d) })
 	var refs []handoffPaneRef
 	for _, sess := range sessions {
 		for _, w := range sess.GetState().Windows {
@@ -448,6 +450,7 @@ func (r *handoffRun) writeManifest(sessions []*Session, refs []handoffPaneRef) e
 		Mail:         d.agents.handoffState(),
 		Replies:      d.replyHistory.handoffState(),
 		Activity:     d.activity.handoffState(),
+		Queue:        d.queue.handoffState(),
 		Fallback:     r.prev.path,
 		Stats:        r.stats,
 	}

@@ -176,6 +176,9 @@ type agentQueues struct {
 	stamped atomic.Int64
 	// max is [agents.queue] max; zero reads as the default.
 	max atomic.Int64
+	// held stops every delivery and every new entry while a live upgrade
+	// writes the queues down. Guarded by mu. See handoff_queue.go.
+	held bool
 	// rest replaces queueRestDefault, and quiet queueQuietDefault, when set.
 	// Only tests set them.
 	rest  time.Duration
@@ -331,6 +334,10 @@ func (d *Daemon) queuePrompt(sess *Session, target WindowState, e *queueEntry) (
 	rest := d.readPaneRest(sess, target)
 	now := time.Now()
 	q.mu.Lock()
+	if q.held {
+		q.mu.Unlock()
+		return queuedResult{}, errQueueHeld()
+	}
 	if q.panes == nil {
 		q.panes = make(map[string]*paneQueue)
 	}
@@ -603,7 +610,7 @@ func (d *Daemon) deliverQueued(window string) {
 	pq := q.panes[window]
 	// Nothing is typed while the agent features are off. The switch empties
 	// the queues; this covers a look armed before it did.
-	if d.agentsOff.Load() || pq == nil || pq.delivering || len(pq.entries) == 0 || pq.entries[0].state != queueWaiting {
+	if d.agentsOff.Load() || q.held || pq == nil || pq.delivering || len(pq.entries) == 0 || pq.entries[0].state != queueWaiting {
 		q.mu.Unlock()
 		return
 	}

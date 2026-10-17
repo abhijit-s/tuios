@@ -113,6 +113,7 @@ func (d *Daemon) adopt(fd int, fb *adoptFallback, kept map[int]int) error {
 	d.agents.restore(m.Daemon.Mail)
 	d.replyHistory.restore(m.Daemon.Replies)
 	d.activity.restore(m.Daemon.Activity)
+	stalled := d.restoreQueue(m.Daemon.Queue)
 	if n := d.buffers.Restore(m.Daemon.Buffers, m.Daemon.BufferNext); n > 0 {
 		LogBasic("Live upgrade: %d paste buffers past this image's limits were dropped", n)
 	}
@@ -222,6 +223,7 @@ func (d *Daemon) adopt(fd int, fb *adoptFallback, kept map[int]int) error {
 	d.noteHostProblems(d.configProblems())
 	d.outbox.load(outboxPath())
 	d.reviewNotes.load(reviewNotesPath(), func(window string) bool { return d.sessionOfWindow(window) != "" })
+	d.resumeQueue(stalled)
 	// The binary a later handoff falls back to is kept below, once the keeper
 	// has stood down, since the keeper would exec it. A handoff asked for as
 	// soon as this image serves waits for it rather than being refused: a
