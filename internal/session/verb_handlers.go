@@ -356,17 +356,18 @@ func (d *Daemon) verbNewWindow(cs *connState, params json.RawMessage) (any, *ver
 		}
 	}
 	win, bverr, err := d.addWindowFor(cs, "new-window", sess, NewWindowOptions{
-		keepOpen:  p.KeepOpen,
-		Title:     p.Name,
-		Cwd:       p.Cwd,
-		Workspace: p.Workspace,
-		Focus:     focus,
-		Command:   p.Command,
-		Name:      p.Name,
-		Host:      p.Host,
-		Grants:    grants,
-		Kind:      p.Kind,
-		URI:       p.URI,
+		keepOpen:    p.KeepOpen,
+		closeOnExit: p.CloseOnExit,
+		Title:       p.Name,
+		Cwd:         p.Cwd,
+		Workspace:   p.Workspace,
+		Focus:       focus,
+		Command:     p.Command,
+		Name:        p.Name,
+		Host:        p.Host,
+		Grants:      grants,
+		Kind:        p.Kind,
+		URI:         p.URI,
 	}, onExit)
 	if bverr != nil {
 		return nil, bverr

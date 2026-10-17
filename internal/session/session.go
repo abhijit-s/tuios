@@ -967,6 +967,12 @@ type PTY struct {
 	// writes the exit status into it. Nil for every other pane. See
 	// keep_open.go.
 	keepOpen *exitNote
+	// closeOnExit is set for a pane whose window closes when its process
+	// exits, even with no client attached (new-window's close_on_exit, a
+	// plugin's pane). The close itself is the onExit closure; this is what a
+	// live handoff writes down so the next image builds the same closure.
+	// Set once at creation.
+	closeOnExit bool
 
 	// Single-goroutine VT writer channel. Closed by readOutput on exit so
 	// vtWriter's range terminates.
@@ -1659,6 +1665,12 @@ type SessionConfig struct {
 	// so a client's ids for it stay valid. Empty, or an id already in use,
 	// mints a new one.
 	restoreID string
+	// restoreCreated and restoreActive are when a session a live handoff
+	// carries was made and last active. The session listing is in order of
+	// creation, and a call that names no session acts on the one active
+	// last, so a session adopted at the handoff's own time would move in
+	// both. Zero is now.
+	restoreCreated, restoreActive time.Time
 }
 
 // SetStartDir sets the directory new local windows start in when nothing
@@ -1858,6 +1870,12 @@ func NewSession(name string, cfg *SessionConfig, width, height int) (*Session, e
 		Created:    now,
 		lastActive: now,
 		config:     cfg,
+	}
+	if cfg != nil && !cfg.restoreCreated.IsZero() {
+		session.Created = cfg.restoreCreated
+	}
+	if cfg != nil && !cfg.restoreActive.IsZero() {
+		session.lastActive = cfg.restoreActive
 	}
 	if cfg != nil {
 		session.state.Space = cfg.Space
@@ -2204,6 +2222,9 @@ type ptySpawn struct {
 	// keepOpen writes the exit status into the pane when its process exits.
 	// See keep_open.go.
 	keepOpen bool
+	// closeOnExit marks a pane whose onExit closes its window. See
+	// PTY.closeOnExit.
+	closeOnExit bool
 }
 
 // createPTY starts a pane's process. sp.command, when non-empty, is an argv
@@ -2405,6 +2426,7 @@ func (s *Session) installPTY(ctx context.Context, cancel context.CancelFunc, id 
 	if sp.keepOpen {
 		pty.keepOpen = newExitNote()
 	}
+	pty.closeOnExit = sp.closeOnExit
 	if sp.host == "" {
 		pty.gate = newReadGate(ptyInstance)
 	}
