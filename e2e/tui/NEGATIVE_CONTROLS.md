@@ -6828,10 +6828,14 @@ Each control is a build that cuts one line, run on 2026-10-17 on macOS arm64 (Da
 | Close-on-exec left on the masters | drop `r.fds = append(r.fds, rec.FD)` in `writeManifest` | `TestSelfExecAdoptsPanes`: "the daemon never answered from a new image within 20s: ... a stale socket is left over" (the new image found no master to adopt) | **caught** |
 | No `syscall.ForkLock` around the exposed span | drop `syscall.ForkLock.Lock()` and its unlock from `execHandoff` | `TestSelfExecAdoptsPanes/fork_in_the_exposed_window`: "start-server after kill-server failed, so something kept the start lock" | **caught** |
 | A colour change does not wake the reply forwarder | drop `p.wakeResponses()` from `setReportColors` | `TestOmarchyThemeSwitchIsFollowed`: "after the switch to Catppuccin Latte the program that turned on mode 2031 was not told light" (the report waits in the emulator until the program next prints) | **caught** |
+| Only writes and resizes wake the reply forwarder | the build before `OnResponse`, where `vtWriter` and `setReportColors` wake it by hand | `TestPaneCellFollowsOneClient`, 2 runs of 2: "client a left: the guest's 2048 reports ... never came to a 12x24 cell"; `TestKittyUploadReply/daemon`, 3 runs of 15: "i=12 got no answer" (a temporary file upload is answered from a goroutine after the write returns) | **caught** |
+| `OnResponse` is never set | drop `pty.terminal.OnResponse(pty.wakeResponses)` from `startPTY` | `TestOmarchyThemeSwitchIsFollowed`, `TestPaneCellFollowsOneClient` and `TestKittyUploadReply/daemon`, 3 runs of 3 each ("i=12 got no answer", and every other reply with it) | **caught** |
+
+With `OnResponse` set, `TestKittyUploadReply` and `TestPaneCellFollowsOneClient` passed 10 runs of 10 each.
 
 ```sh
 TUIOS_E2E=1 TUIOS_E2E_BIN=/path/to/tuios \
-  go test -count=1 -run '^(TestQuiesceLosesNoBytes|TestExitDuringQuiesceKeepsStatus|TestSelfExecAdoptsPanes|TestOmarchyThemeSwitchIsFollowed)$' .
+  go test -count=1 -run '^(TestQuiesceLosesNoBytes|TestExitDuringQuiesceKeepsStatus|TestSelfExecAdoptsPanes|TestOmarchyThemeSwitchIsFollowed|TestPaneCellFollowsOneClient|TestKittyUploadReply)$' .
 ```
 
 ### PR 3: the handoff format

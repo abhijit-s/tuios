@@ -51,10 +51,6 @@ func (p *PTY) setReportColors(fg, bg color.Color, pal [16]color.Color) {
 	if p.terminal != nil {
 		p.terminal.SetReportColors(fg, bg)
 		p.terminal.SetReportPalette(pal)
-		// A switch between dark and light queues the mode 2031 report here,
-		// outside any write of the program's output, so nothing else would
-		// wake the forwarder to send it.
-		p.wakeResponses()
 	}
 }
 
