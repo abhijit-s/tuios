@@ -95,3 +95,48 @@ func TestSelfExecPrunesMetadataWithATimeToLive(t *testing.T) {
 		t.Errorf("ASSERTION: the token outlived its 7 s on the rail by %s after the handoff:\n%s", time.Since(setAt.Add(7*time.Second)).Round(time.Second), term.Snapshot())
 	}
 }
+
+// TestSelfExecFadesAFinishedSubagent runs a subagent through the real Claude
+// Code hook in a pane, start and stop, so the pane's list holds it as done,
+// fading for 4 s (TUIOS_SUBAGENT_FADE_SECONDS). The panes are handed over at
+// once. An agent whose subagent finished reports nothing more, so only the
+// daemon's own prune drops the finished subagent, and it needs the record of
+// when the subagent ended: after the fade the list must be empty.
+//
+// How it could pass wrongly: the subagent could fade before the handoff. The
+// test checks the list still holds it after the handoff.
+func TestSelfExecFadesAFinishedSubagent(t *testing.T) {
+	base := t.TempDir()
+	startHandoffDaemon(t, base, "TUIOS_SUBAGENT_FADE_SECONDS=4")
+	const sess = "e2e-fade"
+	newCommandWindow(t, base, sess, "agent", false, "sh", "-c", "exec sleep 600")
+	dir := workDirIn(t, base)
+	for _, payload := range []string{
+		`{"hook_event_name":"SessionStart","session_id":"fade-1","source":"startup"}`,
+		`{"hook_event_name":"UserPromptSubmit","session_id":"fade-1","prompt":"look around"}`,
+		`{"hook_event_name":"SubagentStart","session_id":"fade-1","agent_id":"afade0c2e71d4b5a6","agent_type":"Explore"}`,
+		`{"hook_event_name":"SubagentStop","session_id":"fade-1","agent_id":"afade0c2e71d4b5a6","agent_type":"Explore","last_assistant_message":"Looked."}`,
+	} {
+		if explained, err := subagentHook(base, dir, sess, payload); err != nil {
+			t.Fatalf("%s: %v", explained, err)
+		}
+	}
+	stoppedAt := time.Now()
+	before := readSubagents(t, base, sess)
+
+	handOver(t, base, map[string]any{})
+	carried := readSubagents(t, base, sess)
+	time.Sleep(time.Until(stoppedAt.Add(6 * time.Second)))
+	after := readSubagents(t, base, sess)
+
+	writeHandoffArtifact(t, map[string]any{"before": before.raw, "after_handoff": carried.raw, "after_fade": after.raw})
+	if len(before.List) != 1 || before.List[0].State != "done" {
+		t.Fatalf("before the handoff the pane lists %+v, want one done subagent", before.List)
+	}
+	if len(carried.List) != 1 {
+		t.Fatalf("the subagent faded before the handoff was checked, so the test exercised nothing: %+v", carried.List)
+	}
+	if len(after.List) != 0 {
+		t.Errorf("ASSERTION: 6 s after it stopped, past its 4 s fade, the pane still lists %+v", after.List)
+	}
+}
