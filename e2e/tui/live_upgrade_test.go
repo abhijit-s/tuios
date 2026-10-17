@@ -504,6 +504,83 @@ func TestDaemonUpgradeRefusesWhileVerifyFanRuns(t *testing.T) {
 	}
 }
 
+// TestDaemonUpgradeRefusesWhileAFanCheckStarts asks for an upgrade while a
+// fan check's window has started and the check is not yet recorded, which
+// TUIOS_TEST_HANDOFF_VERIFY_PAUSE_MS holds open for three seconds. The pipe
+// the check reports on is already open there, so the upgrade must be refused
+// as it is once the check runs, and the check's result must still arrive.
+func TestDaemonUpgradeRefusesWhileAFanCheckStarts(t *testing.T) {
+	t.Setenv("TUIOS_TEST_HANDOFF", "1")
+	t.Setenv("TUIOS_TEST_HANDOFF_VERIFY_PAUSE_MS", "3000")
+	base, repo := fanFixture(t)
+	if out, err := tuiosCLI(t, base, "new", "plain", "--detach"); err != nil {
+		t.Fatalf("start the daemon: %v: %s", err, out)
+	}
+	if out, err := tuiosCLI(t, base, "fan", "2", "--agent", "claude", "--repo", repo, "--name", "try/up", "Do the thing."); err != nil {
+		t.Fatalf("fan: %v: %s", err, out)
+	}
+	verify := make(chan string, 1)
+	go func() {
+		out, err := handoffCLI(t, base, 60*time.Second, "fan", "verify", "repo-try-up", "--", "sh", "-c", "sleep 1")
+		verify <- out + errString(err)
+	}()
+	deadline := time.Now().Add(15 * time.Second)
+	for !hasWindowNamed(t, base, "repo-try-up", "verify") {
+		if time.Now().After(deadline) {
+			t.Fatal("the fan check's window never started")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	compare, _ := tuiosCLI(t, base, "fan", "compare", "repo-try-up", "--json", "--no-changes")
+	img := helloImage(t, base)
+	_, err := callVerb(t, base, "test-handoff", map[string]any{})
+	var result string
+	select {
+	case result = <-verify:
+	case <-time.After(60 * time.Second):
+		t.Fatal("fan verify never returned")
+	}
+	after := helloImage(t, base)
+
+	writeHandoffArtifact(t, map[string]any{"refusal": errString(err), "verify": result,
+		"compare_in_the_pause": compare, "instance_kept": after.Instance == img.Instance})
+	if strings.Contains(compare, `"running"`) {
+		t.Fatalf("the check was recorded before the upgrade was asked for, so this is not the span between its start and its record:\n%s", compare)
+	}
+	if err == nil || !strings.Contains(err.Error(), "fan check") {
+		t.Errorf("ASSERTION: the upgrade was not refused while a fan check started: %v", err)
+	}
+	if after.Instance != img.Instance {
+		t.Errorf("ASSERTION: the daemon's image changed although the upgrade was refused")
+	}
+	if !strings.Contains(result, "2 of 2 passed") {
+		t.Errorf("ASSERTION: the fan check's result did not arrive as passed:\n%s", result)
+	}
+}
+
+// hasWindowNamed reports whether session has a window of that name.
+func hasWindowNamed(t *testing.T, base, session, name string) bool {
+	t.Helper()
+	out, err := tuiosOut(base, "list-windows", "-s", session, "--json")
+	if err != nil {
+		return false
+	}
+	var list struct {
+		Windows []struct {
+			Name string `json:"custom_name"`
+		} `json:"windows"`
+	}
+	if json.Unmarshal([]byte(out), &list) != nil {
+		return false
+	}
+	for _, w := range list.Windows {
+		if w.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
 // TestDaemonUpgradeMeasuresABusyDaemon measures an upgrade of a busy daemon:
 // 60 panes at 200x50, each of which has printed 1000 coloured lines of 190
 // characters, so every pane carries a full screen and 1000 rows of history.
