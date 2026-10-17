@@ -66,6 +66,10 @@ type handoffSession struct {
 	// ReportColors are the colours the last client pushed for the panes'
 	// emulators to answer OSC 10, 11 and 4 with. See report_colors.go.
 	ReportColors handoffReportColors `json:"report_colors,omitzero"`
+	// ScrollbackLines is the history depth the session's panes were built
+	// with. The new image builds them with it, not with what its config says
+	// now: libghostty-vt takes the depth only when an emulator is made.
+	ScrollbackLines int `json:"scrollback_lines,omitempty"`
 }
 
 // handoffReportColors is a session's report colours, as the client pushed
