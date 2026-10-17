@@ -476,6 +476,7 @@ func (r *handoffRun) writeManifest(sessions []*Session, refs []handoffPaneRef) e
 	if dr.FallbackFD >= 0 {
 		r.fds = append(r.fds, dr.FallbackFD)
 	}
+	dr.Buffers, dr.BufferNext = d.buffers.Snapshot()
 	d.handoffWindowRecords(&dr)
 	d.handoffSessionRecords(&dr)
 	for name, l := range d.namedListeners() {
