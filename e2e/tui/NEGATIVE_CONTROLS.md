@@ -7147,3 +7147,19 @@ Run on 2026-10-17 on macOS arm64 (Darwin 27, Go 1.26.9) against feat/live-handof
 ```sh
 TUIOS_E2E=1 TUIOS_E2E_BIN=/path/to/tuios go test -count=1 -run '^TestDaemonUpgradeRefusesAChangedKeptBinary$' .
 ```
+
+### The test hooks need their variable
+
+- `TestHandoffTestHooksNeedTheirVariable/off`: a daemon started with `TUIOS_TEST_HANDOFF_HOLD_MS=5000` and `TUIOS_TEST_HANDOFF_FAIL=error` but without `TUIOS_TEST_HANDOFF` answers `test-handoff` with `unknown_verb`, and `tuios daemon upgrade` to a copy goes through, with no fallback, in under 4 s.
+- `TestHandoffTestHooksNeedTheirVariable/restricted`: with the variable, a connection that called `restrict-connection` is refused `test-handoff` (`forbidden`), and the daemon's image does not change.
+
+Run on 2026-10-17 on macOS arm64 (Darwin 27, Go 1.26.9) against feat/live-handoff.
+
+| Control | How | Test that fails | Verdict |
+| --- | --- | --- | --- |
+| The hooks are on in every daemon | `handoffTestsOn` returns true | `TestHandoffTestHooksNeedTheirVariable/off`: "a daemon without TUIOS_TEST_HANDOFF answered test-handoff with <nil>, want unknown_verb", "an upgrade of a daemon without TUIOS_TEST_HANDOFF took a test hook", "the upgrade took 5.63s, so the hold ... ran" | **caught** |
+| A restricted connection may call the test verb | `"test-handoff": scopeOpen` added to `verbScopes` | `TestHandoffTestHooksNeedTheirVariable/restricted`: "a restricted connection was not refused test-handoff: <nil>", "a restricted connection's test-handoff replaced the daemon's image" | **caught** |
+
+```sh
+TUIOS_E2E=1 TUIOS_E2E_BIN=/path/to/tuios go test -count=1 -run '^TestHandoffTestHooksNeedTheirVariable$' .
+```
