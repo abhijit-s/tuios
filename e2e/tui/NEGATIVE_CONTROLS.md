@@ -7043,3 +7043,23 @@ A first form of the wait control, `false &&` in front of the condition, also ski
 TUIOS_E2E=1 TUIOS_E2E_BIN=/path/to/tuios \
   go test -count=1 -run '^(TestDaemonUpgradeRightAfterAnUpgrade|TestSelfExecAdoptsPanes|TestDaemonUpgradeSurvivesACrashOfTheNewImage)$' .
 ```
+
+### The spec review's fixes: fan check race, apply panic, session records
+
+- `TestDaemonUpgradeRefusesWhileAFanCheckStarts`: a test-only pause (`TUIOS_TEST_HANDOFF_VERIFY_PAUSE_MS`) holds a fan check between its verify window starting and its record being set, and the test asks for a handoff inside that gap. It must be refused naming the fan check, the daemon's image must not change, and the check's result must arrive as passed. It fails its own guard if the check already reads running, so it can only pass inside the gap.
+- `TestDaemonUpgradeFallsBackToPreviousBinary/apply-panic`: `TUIOS_TEST_HANDOFF_FAIL=apply-panic` panics inside a worker that rebuilds a pane's emulator in the new image. The daemon must fall back in place: same pid, running `handoff/tuios.prev`, `fallback` true, `recovered` false, every pane's pid kept and no gap in the counter.
+- `TestSelfExecFollowsRenamedSession`: alpha is renamed omega before a self-exec, and a call naming alpha afterwards must reach the window, which omega then reads.
+- `TestSelfExecKeepsStash`: a file stashed before a self-exec is listed and reads back the same bytes after it, and its stored copy is deleted within 5 s once its session is killed.
+
+Each control is one build with one cut, run on 2026-10-17 on macOS arm64 (Darwin 27, Go 1.26.9) against the branch feat/live-handoff. With the fixes, the handoff set and these tests passed 58 with 2 skips.
+
+| Control | How | Test that fails | Verdict |
+| --- | --- | --- | --- |
+| The fan check's hold is taken once its window is in | the hold before `AddDaemonWindowWith` cut, and taken again in the reader's branch after it | `TestDaemonUpgradeRefusesWhileAFanCheckStarts`: "the upgrade was not refused while a fan check started: <nil>", "the daemon's image changed although the upgrade was refused", "the fan check's result did not arrive as passed" | **caught** |
+| A worker's panic is not recovered | `forEachBounded` calls `fn(i)` instead of `run(i)` | `TestDaemonUpgradeFallsBackToPreviousBinary/apply-panic`: "the daemon's pid changed from 15935 to 15973" (the new image died, and the keeper restored the panes under a new daemon) | **caught** |
+| The session records are not restored | the `restoreSessionRecords` call cut from adoption | `TestSelfExecFollowsRenamedSession`: "after the handoff a call naming alpha did not reach the renamed session: ... session_not_found"; `TestSelfExecKeepsStash`: "after the handoff the stash does not list ...", "the stashed file does not read back", "the stashed file ... outlived its session after the handoff" | **caught** |
+
+```sh
+TUIOS_E2E=1 TUIOS_E2E_BIN=/path/to/tuios \
+  go test -count=1 -run '^(TestDaemonUpgradeRefusesWhileAFanCheckStarts|TestDaemonUpgradeFallsBackToPreviousBinary|TestSelfExecFollowsRenamedSession|TestSelfExecKeepsStash)$' .
+```
