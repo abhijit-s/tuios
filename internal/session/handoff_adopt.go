@@ -301,6 +301,11 @@ func applyHandoffPanes(panes []handoffPane, sessions map[string]handoffSession, 
 			panes[i].Live.vtSeq = st.Seq
 			panes[i].State = nil
 		}
+		// A reply the rebuild queued answers nothing the program asked:
+		// libghostty-vt reports the size when the snapshot turns mode 2048
+		// on. The previous image sent every reply the program was owed
+		// before it stopped the pane.
+		_ = t.TakeResponses()
 		terms[i] = t
 		return nil
 	})
