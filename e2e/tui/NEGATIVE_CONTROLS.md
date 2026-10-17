@@ -7340,3 +7340,28 @@ Run on 2026-10-17 on macOS arm64 (Darwin 27, Go 1.26.9) against feat/live-handof
 TUIOS_E2E=1 TUIOS_E2E_BIN=/path/to/tuios \
   go test -count=1 -run '^(TestHandoffSurvivesItsKeeperDying|TestKeeperRestoresWhenTheOldImageDiesBeforeTheExec)$' .
 ```
+
+### What a live handoff refuses
+
+`e2e/tui/handoff_refusals_test.go`. Each refusal must leave the daemon's image and pid as they were. Windows, which refuses every live upgrade, cannot be driven on macOS or Linux. Run on 2026-10-17 on macOS arm64 (Darwin 27, Go 1.26.9) against feat/live-handoff.
+
+- `TestDaemonUpgradeRefusesPanesOfOtherMachines`: three daemons linked through the ssh stand-in (`startGlobalFleet`); a window of this machine's session runs on alpha. `tuios daemon upgrade` must be refused here naming "a pane running on alpha", and on alpha naming the pane it runs "here for another machine".
+- `TestDaemonUpgradeRefusesWhileAPopupCaptures`: with a client attached, a `popup` with `wait` and `capture_stdout` runs `sleep 4; echo captured-output`. An upgrade in that span must be refused naming the capture, and the popup's output must arrive.
+- `TestDaemonUpgradeRefusesASecondWhileOneRuns`: a `daemon-upgrade` on a connection opened before a held handoff must be answered `busy`.
+- `TestDaemonUpgradeRefusedOverALink`: `daemon-upgrade` on the daemon's `.link` socket, where a hub's proxy delivers a call from another machine, must be answered `forbidden`.
+- `TestDaemonUpgradeRefusesAnEmbeddedDaemon`: tuios-web started with no daemon runs one inside itself; an upgrade must be refused naming it as running inside another program.
+
+| Control | How | Test that fails | Verdict |
+| --- | --- | --- | --- |
+| A pane on another machine is not refused up front | the `p.host` loop of `handoffRefusal` made `if false` | `TestDaemonUpgradeRefusesPanesOfOtherMachines`: "the upgrade was not refused with \"a pane running on alpha\"". The upgrade is still refused, by `prepare`'s own check of each carried pane, after accepting has paused and the hooks are held; only its text differs | **caught** (a second guard refuses too) |
+| Hosted panes are not refused | the `hosted > 0` check made `if false` | `TestDaemonUpgradeRefusesPanesOfOtherMachines`: on alpha, "the upgrade was not refused with \"here for another machine\": <nil>", "a refused upgrade changed the daemon" | **caught** |
+| A capturing popup takes no pipe hold | its `d.pipes.hold(...)` replaced by a no-op | `TestDaemonUpgradeRefusesWhileAPopupCaptures`: "the upgrade was not refused ...: <nil>", "a refused upgrade changed the daemon", "the capturing popup's output did not arrive: ... daemon_upgrading" | **caught** |
+| A second upgrade waits rather than refuses | `handoffMu.TryLock` replaced by `Lock` | `TestDaemonUpgradeRefusesASecondWhileOneRuns`: "a second upgrade while one ran was answered ... (daemon_upgrading), want busy" | **caught** |
+| The handler does not refuse a link | `verbDaemonUpgrade`'s `viaLink` check made `if false` | none: the link policy refuses the verb too (`daemon-upgrade` needs `capRelay`) | **not caught** (a second guard) |
+| Neither the handler nor the link policy refuses a link | the same, and `"daemon-upgrade": nil` in `verbCapabilities` | `TestDaemonUpgradeRefusedOverALink`: "daemon-upgrade over a link was answered <nil>, want forbidden", "daemon-upgrade over a link replaced the daemon's image" | **caught** |
+| An embedded daemon is not refused | the `handoffArgs == nil` check cut, in the tuios-web build (`TUIOS_E2E_WEB_BIN`) | `TestDaemonUpgradeRefusesAnEmbeddedDaemon`: "the upgrade was not refused with \"runs inside another program\"". The upgrade is still refused, by the missing `tuios.prev` an embedded daemon never keeps; only its text differs | **caught** (a second guard refuses too) |
+
+```sh
+TUIOS_E2E=1 TUIOS_E2E_BIN=/path/to/tuios \
+  go test -count=1 -run '^(TestDaemonUpgradeRefusesPanesOfOtherMachines|TestDaemonUpgradeRefusesWhileAPopupCaptures|TestDaemonUpgradeRefusesASecondWhileOneRuns|TestDaemonUpgradeRefusedOverALink|TestDaemonUpgradeRefusesAnEmbeddedDaemon)$' .
+```
