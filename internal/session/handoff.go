@@ -45,14 +45,14 @@ import (
 // no keeper, which is what a version 2 image started, so MinHandoffVersion
 // stays at 2.
 //
-// Version 4 added the window settings and records versions 2 and 3 dropped: a
+// Version 4 added the window and session records versions 2 and 3 dropped: a
 // pane's close_on_exit; a session's creation and last activity, workspace
-// return and report colours; and the daemon's plugin panes, protocol panes,
-// pane creators and moved windows. See docs/design/live-handoff.md, section
-// 7.3. An older manifest reads with each of them empty, which is what an
-// older image adopted, so MinHandoffVersion stays at 2. An image of version
-// 3 or older refuses a version 4 manifest, and its preflight answer says so
-// before anything pauses.
+// return, report colours, old names and stash index; and the daemon's plugin
+// panes, protocol panes, pane creators and moved windows. See
+// docs/design/live-handoff.md, section 7.3. An older manifest reads with each
+// of them empty, which is what an older image adopted, so MinHandoffVersion
+// stays at 2. An image of version 3 or older refuses a version 4 manifest, and
+// its preflight answer says so before anything pauses.
 const (
 	HandoffVersion    = 4
 	MinHandoffVersion = 2
@@ -450,6 +450,7 @@ func (r *handoffRun) writeManifest(sessions []*Session, refs []handoffPaneRef) e
 		r.fds = append(r.fds, dr.FallbackFD)
 	}
 	d.handoffWindowRecords(&dr)
+	d.handoffSessionRecords(&dr)
 	for name, l := range d.namedListeners() {
 		var fd int
 		if !listenerFD(l, func(n int) { fd = n }) {
