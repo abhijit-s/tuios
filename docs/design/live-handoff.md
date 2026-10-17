@@ -675,6 +675,7 @@ The session state, the pane records and the daemon record of version 2 carried t
 | Pane: a waiting new-window or popup caller's exit status (`popupExit`) | no | no: the waiting call ends with `daemon_upgrading` | not carried |
 | Pane: cell size in pixels | no | briefly: the kernel keeps the window size until the next resize, which writes no pixels until a client reports its cell | not carried (section 2.3) |
 | Pane: asked size, size leases, lease timer | no | no: a lease lives as long as its stream, and a stream that resumes sends its lease again | not carried |
+| Pane: pane marks (`paneMarks`, the bell and output bits a workspace tab is marked from) | no | no: the old image's clients are closed and every one attaches again, and an attach clears the bits of its session, so the first bell or output after the upgrade is reported as it would be after any attach | not carried, deliberately: each pane starts the new image clear |
 | Pane: last OSC 9;4 report (`lastProgress`) | no | briefly: a harness rule that reads it misses it until the harness reports again, which it does on every step | not carried |
 | Pane: detection and screen-scan pacing, parked notifications, the run claim, pacing and coalescing counters | no | no | not carried |
 | Pane: session the pane was made in (`sessionID`) | no | no: the owner is carried, and that is what every callback reads | not carried |
@@ -695,6 +696,7 @@ The session state, the pane records and the daemon record of version 2 carried t
 | Daemon: last prompt each window was answered on (`respond`) | no | rarely: a second answer to the same prompt is not caught as a duplicate | not carried |
 | Daemon: herdr workspace metadata tokens | no | until the tool reports again; they expire | not carried |
 | Daemon: herdr sequence numbers, per-pane rate buckets, connection counts | no | no | not carried |
+| Daemon: the person's reply history (`replyHistory`, `reply-history`) | no | yes: up and ctrl+r in the reply editor bring nothing back | carried, `Replies`. It is held in memory only and never written to disk, and the manifest is a memfd on Linux and an unlinked owner-only file elsewhere, as for the pane screens and the pane-token key. An image that predates it reads none |
 | Daemon: paste image files written (`pastes.written`) | no | no: the files stay on disk, and are not deleted when this daemon stops | not carried |
 
 **Failure modes, written down before the change.**

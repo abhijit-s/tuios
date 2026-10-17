@@ -22,6 +22,11 @@ package session
 // The hello's PaneMarks asks for it and the welcome's offers it. A daemon that
 // predates it sends none, and its clients show no marks for panes they do not
 // stream. A client that predates it is sent none.
+//
+// A live handoff does not carry the bits: every pane starts the new image
+// clear. The old image's clients are closed at the handoff and every one of
+// them attaches again, and an attach clears the bits of its session anyway,
+// so a carried bit could only hold back a report the new client is owed.
 
 // The pane mark bits, as PaneMarkPayload.Marks carries them.
 const (
