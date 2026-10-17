@@ -5,9 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"maps"
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"time"
 
@@ -33,8 +35,17 @@ import (
 // HandoffVersion is the manifest version this build writes, and
 // MinHandoffVersion the oldest it reads. A change to what a record means, or
 // to a field a record carries, moves HandoffVersion.
+//
+// Version 3 added the window settings and records version 2 dropped: a
+// pane's close_on_exit; a session's creation and last activity, workspace
+// return and report colours; and the daemon's plugin panes, protocol panes,
+// pane creators and moved windows. See docs/design/live-handoff.md, section
+// 7.2. A version 2 manifest reads with each of them empty, which is what
+// a version 2 image adopted, so MinHandoffVersion stays at 2. An image of
+// version 2 refuses a version 3 manifest, and its preflight answer says so
+// before anything pauses.
 const (
-	HandoffVersion    = 2
+	HandoffVersion    = 3
 	MinHandoffVersion = 2
 )
 
@@ -377,6 +388,7 @@ func (r *handoffRun) writeManifest(sessions []*Session, refs []handoffPaneRef) e
 		Fallback:     r.prev.path,
 		Stats:        r.stats,
 	}
+	d.handoffWindowRecords(&dr)
 	for name, l := range d.namedListeners() {
 		var fd int
 		if !listenerFD(l, func(n int) { fd = n }) {
@@ -521,13 +533,22 @@ func (s *Session) handoffRecord() handoffSession {
 	if used := s.LastUsed(); !used.IsZero() {
 		rec.LastUsed = used.UnixNano()
 	}
+	rec.Created = s.Created.UnixNano()
+	rec.LastActive = s.LastActive().UnixNano()
+	s.stateMu.RLock()
+	rec.ReturnTo = maps.Clone(s.returnTo)
+	rec.WorkspaceTrail = slices.Clone(s.workspaceTrail)
+	s.stateMu.RUnlock()
+	s.ptysMu.RLock()
+	rec.ReportColors = handoffReportColors{Bg: s.reportBgHex, Fg: s.reportFgHex, Palette: s.reportPalHex}
+	s.ptysMu.RUnlock()
 	return rec
 }
 
 // handoffRecord is the pane as the next image adopts it, and false for a pane
 // whose bytes do not come from a descriptor here. The pane is quiesced.
 func (p *PTY) handoffRecord(sess *Session, window string) (handoffPane, bool) {
-	rec := handoffPane{ID: p.ID, Session: sess.ID, Window: window, FD: -1, TTY: p.TTYName(), KeepOpen: p.keepOpen != nil}
+	rec := handoffPane{ID: p.ID, Session: sess.ID, Window: window, FD: -1, TTY: p.TTYName(), KeepOpen: p.keepOpen != nil, CloseOnExit: p.closeOnExit}
 	if !ptyspawn.ControlMaster(p.pty, func(fd int) { rec.FD = fd }) || rec.FD < 0 {
 		return rec, false
 	}
