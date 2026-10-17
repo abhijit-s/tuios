@@ -6,7 +6,7 @@ toolchain go1.26.9
 
 require (
 	github.com/Gaurav-Gosain/tuitest v0.1.0
-	tuios.dev/vt v0.2.0
+	tuios.dev/vt v0.2.1-0.20261017222145-ac99aa7e7e9e
 )
 
 require (
