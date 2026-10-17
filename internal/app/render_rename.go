@@ -10,9 +10,14 @@ import (
 const renameDialogWidth = 28
 
 // renameHints are built per render because the key glyph follows ASCII mode.
-func renameHints() []overlay.Hint {
+// Enter on the new space dialog makes a session rather than saving a name.
+func (m *OS) renameHints() []overlay.Hint {
+	enter := "save"
+	if m.RenameKind == RenameNewSpace {
+		enter = "create"
+	}
 	return []overlay.Hint{
-		{Key: overlay.EnterKey(), Label: "save"},
+		{Key: overlay.EnterKey(), Label: enter},
 		{Key: "esc", Label: "cancel"},
 	}
 }
@@ -49,7 +54,7 @@ func (m *OS) renderRenameDialog() (string, overlay.Geometry, int, int, bool) {
 		Title: m.RenameDialogTitle(),
 		Width: inner,
 		Body:  body,
-		Hints: renameHints(),
+		Hints: m.renameHints(),
 	}.Render(pal)
 
 	x, y := m.centerOrigin(geo.Width, geo.Height)

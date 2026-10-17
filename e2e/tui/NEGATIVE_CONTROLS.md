@@ -7269,6 +7269,7 @@ Run on 2026-10-17 on macOS. The tests are in `space_new_test.go`. The fixture is
 | Row not wired: the space heading menu's "New space..." row | `TestSpaceHeadingNewSpaceRow` ("the menu of beta offered no \"New space\"") | **caught** |
 | Typed space not passed: the commit makes the session in the attached session's space | `TestBlankRailNewSpaceRow`, `TestSessionMenuNewSpaceRow`, `TestSpaceHeadingNewSpaceRow`, `TestNewSpaceKey` (each: "made session-... in space \"alpha\", want gamma / delta / epsilon / zeta") | **caught** |
 | Empty field not a cancel: Enter on an empty field makes a plain session | `TestNewSpaceCancelMakesNothing` ("after cancelling new_space twice, the sessions and their spaces are map[... session-0:]") | **caught** |
+| Enter hint not set: the dialog keeps the rename's "save" (the build before the hint, 30052b03) | all five ("... opened a new space dialog whose Enter hint is not create") | **caught** |
 
 Not covered: a name the daemon refuses (the refusal comes from `new-session`'s space check, which `TestNewSpaceFilesTheSession` and the CLI tests hold), and an older daemon, which goes through the same `createSessionVerb` stale-daemon path as `new_session_in_space`.
 

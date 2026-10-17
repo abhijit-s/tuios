@@ -37,11 +37,15 @@ func newSpaceFixture(t *testing.T) (string, *tuitest.Terminal) {
 	return base, term
 }
 
-// waitNewSpaceDialog waits for the new space dialog to open.
+// waitNewSpaceDialog waits for the new space dialog to open, and fails unless
+// its Enter hint says what Enter does there: create, not the rename's save.
 func waitNewSpaceDialog(t *testing.T, term *tuitest.Terminal, how string) {
 	t.Helper()
 	if err := term.WaitForText("new space", uiTimeout); err != nil {
 		t.Fatalf("ASSERTION: %s opened no new space dialog: %v\n%s", how, err, term.Snapshot())
+	}
+	if text := term.Screen().Text(); !strings.Contains(text, "create") || strings.Contains(text, "save") {
+		t.Fatalf("ASSERTION: %s opened a new space dialog whose Enter hint is not create\n%s", how, term.Snapshot())
 	}
 }
 
