@@ -7162,6 +7162,8 @@ Run on 2026-10-17 on macOS arm64 (Darwin 27, Go 1.26.9) against feat/live-handof
 | A put-back drops the held size | `Resume`'s `thaw` skips the `resizeStreamLocked` of the held size | `TestHandoffPutBackAppliesWhatWasHeld`: "after the put-back the pane is 28x98, want 33x117", "the kernel gives the program 28x98", "the program's last in-band size report is not 33x117: [28x98]" | **caught** |
 | A put-back drops the held colours | `releaseReportColors` skips the apply of the push it held | `TestHandoffPutBackAppliesWhatWasHeld`: "the program was not told of the light scheme pushed during the freeze: []" | **caught** |
 
+| A reply the rebuild queues is sent (ghostty) | the `TakeResponses` drain cut from `applyHandoffPanes`, `-tags ghostty` | `TestSelfExecFreezesPaneDuringHandoff`: "the program heard 2 in-band size reports by the handoff's end, 1 before it: [28x98 28x98]". The pure Go emulator queues none on a snapshot, so the pure build passes either way; the first ghostty run of the handoff set found it | **caught** (ghostty) |
+
 Not covered by a test: the cell size in pixels a TUI client reports (`UpdatePixelDimensions`), which no verb sends. It is held by the same flag, under `terminalMu` for the emulator and `winsizeMu` for the kernel, and applied by the same `thaw`.
 
 ```sh
