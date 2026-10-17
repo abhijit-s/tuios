@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"io"
 	"sync/atomic"
+
+	"github.com/Gaurav-Gosain/tuios/internal/pastebuf"
 )
 
 // The handoff manifest: what one daemon image writes down for the image it
@@ -131,6 +133,12 @@ type handoffDaemon struct {
 	// Activity is every pane's agent activity ring. An image that predates
 	// it reads none, and agent-activity and the recap start empty.
 	Activity []handoffActivityRing `json:"activity,omitempty"`
+	// Buffers are the paste buffers, newest first, and BufferNext the
+	// number the next automatic name takes. Like the reply history they ride
+	// with the pane screens, under the manifest's rules: a memfd on Linux, an
+	// unlinked owner-only file elsewhere.
+	Buffers    []pastebuf.Buffer `json:"buffers,omitempty"`
+	BufferNext int               `json:"buffer_next,omitempty"`
 	// Fallback is the binary the writing image runs, kept for the new image
 	// to re-exec when it cannot adopt the panes. See handoff_prev.go.
 	Fallback string `json:"fallback"`

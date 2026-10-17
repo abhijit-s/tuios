@@ -211,3 +211,55 @@ func TestSelfExecKeepsAgentActivity(t *testing.T) {
 		t.Errorf("ASSERTION: the entries after the handoff do not go on from %d: %+v", before.LastSeq, next.Entries)
 	}
 }
+
+// bufferListing is list-buffers' answer, by name: each buffer's version.
+func bufferListing(t *testing.T, base string) map[string]float64 {
+	t.Helper()
+	res := mustCall(t, base, "list-buffers", map[string]any{})
+	raw, _ := json.Marshal(res["buffers"])
+	var list []struct {
+		Name    string  `json:"name"`
+		Version float64 `json:"version"`
+	}
+	_ = json.Unmarshal(raw, &list)
+	out := map[string]float64{}
+	for _, b := range list {
+		out[b.Name] = b.Version
+	}
+	return out
+}
+
+// TestSelfExecKeepsPasteBuffers sets an automatic paste buffer and a named
+// one, and hands the panes over. The new image must list the same buffers
+// with the same versions, so a caller that read one can still act on it; show
+// the named one's bytes; and name the next automatic buffer after the last,
+// so no name is given twice.
+func TestSelfExecKeepsPasteBuffers(t *testing.T) {
+	base := t.TempDir()
+	startHandoffDaemon(t, base)
+	newCommandWindow(t, base, "e2e-buffers", "a", false, "sh", "-c", "exec sleep 600")
+	auto := mustCall(t, base, "set-buffer", map[string]any{"data": "first yank"})
+	_ = mustCall(t, base, "set-buffer", map[string]any{"name": "keep", "data": "named\x00bytes"})
+	before := bufferListing(t, base)
+
+	handOver(t, base, map[string]any{})
+	after := bufferListing(t, base)
+	shown, err := callVerb(t, base, "show-buffer", map[string]any{"name": "keep"})
+	next := mustCall(t, base, "set-buffer", map[string]any{"data": "second yank"})
+
+	writeHandoffArtifact(t, map[string]any{"before": before, "after": after, "show_keep": shown, "show_error": errString(err), "first": auto, "next": next})
+	if len(before) != 2 {
+		t.Fatalf("before the handoff list-buffers names %v, want two buffers", before)
+	}
+	for name, v := range before {
+		if after[name] != v {
+			t.Errorf("ASSERTION: after the handoff buffer %s has version %v, and %v before it", name, after[name], v)
+		}
+	}
+	if err != nil || shown["data"] != "named\x00bytes" {
+		t.Errorf("ASSERTION: after the handoff show-buffer keep answered %v (%v)", shown, err)
+	}
+	if next["name"] == auto["name"] || next["name"] == nil {
+		t.Errorf("ASSERTION: the first automatic buffer after the handoff is named %v, as the one before it, %v", next["name"], auto["name"])
+	}
+}
