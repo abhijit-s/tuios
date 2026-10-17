@@ -379,3 +379,70 @@ func TestHandoffHoldsTheDeliveryQueue(t *testing.T) {
 		t.Errorf("ASSERTION: a queue-prompt in the hold was answered %v, want daemon_upgrading", queueErr)
 	}
 }
+
+// replyHistoryOf reads target's reply history as the person: on a connection
+// of its own that holds a presence for every session, whose nonce the reply
+// history needs.
+func replyHistoryOf(t *testing.T, base, target string, add string) []string {
+	t.Helper()
+	c := dialEarly(t, base)
+	defer c.Close()
+	raw, err := c.Call("attach-presence", map[string]any{})
+	if err != nil {
+		t.Fatalf("attach-presence: %v", err)
+	}
+	var presence struct {
+		Nonce string `json:"human_nonce"`
+	}
+	_ = json.Unmarshal(raw, &presence)
+	if add != "" {
+		if _, err := c.Call("add-reply-history", map[string]any{"target": target, "human_nonce": presence.Nonce,
+			"parts": []map[string]any{{"kind": "text", "text": add}}}); err != nil {
+			t.Fatalf("add-reply-history: %v", err)
+		}
+	}
+	raw, err = c.Call("reply-history", map[string]any{"target": target, "human_nonce": presence.Nonce})
+	if err != nil {
+		t.Fatalf("reply-history: %v", err)
+	}
+	var h struct {
+		Entries []struct {
+			Parts []struct {
+				Text string `json:"text"`
+			} `json:"parts"`
+		} `json:"entries"`
+	}
+	_ = json.Unmarshal(raw, &h)
+	var out []string
+	for _, e := range h.Entries {
+		for _, p := range e.Parts {
+			out = append(out, p.Text)
+		}
+	}
+	return out
+}
+
+// TestSelfExecKeepsReplyHistory keeps two messages the person sent to an
+// agent in the reply history, which the reply editor brings back with up and
+// ctrl+r, and hands the panes over. The new image must read the same two, in
+// the same order, to a presence made after it: the history is held in memory
+// only, and an upgrade must not empty it as a restart does.
+func TestSelfExecKeepsReplyHistory(t *testing.T) {
+	base := t.TempDir()
+	startHandoffDaemon(t, base)
+	newCommandWindow(t, base, "e2e-replies", "a", false, "sh", "-c", "exec sleep 600")
+	const target = "claude-code:/work/api"
+	replyHistoryOf(t, base, target, "rerun with -count=1")
+	before := replyHistoryOf(t, base, target, "and print the flaky one")
+
+	handOver(t, base, map[string]any{})
+	after := replyHistoryOf(t, base, target, "")
+
+	writeHandoffArtifact(t, map[string]any{"before": before, "after": after})
+	if len(before) != 2 {
+		t.Fatalf("before the handoff the reply history holds %q, want the two messages", before)
+	}
+	if strings.Join(after, "\n") != strings.Join(before, "\n") {
+		t.Errorf("ASSERTION: after the handoff the reply history holds %q, and %q before it", after, before)
+	}
+}
