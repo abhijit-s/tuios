@@ -43,7 +43,7 @@ func (d *Daemon) verbDaemonUpgrade(cs *connState, params json.RawMessage) (any, 
 	if p.Binary == "" || !filepath.IsAbs(p.Binary) {
 		return nil, invalidParam("binary", "binary must be the absolute path of a tuios binary")
 	}
-	req := handoffRequest{binary: p.Binary}
+	req := handoffRequest{binary: p.Binary, holdAfterWrite: handoffTestHold()}
 	if confirm {
 		// The dialog shows the binary's path and version, so the preflight
 		// runs first, and the upgrade then takes only the file it ran.
