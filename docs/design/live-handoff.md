@@ -709,7 +709,7 @@ The session state, the pane records and the daemon record of version 2 carried t
 | Daemon: last prompt each window was answered on (`respond`) | no | rarely: a second answer to the same prompt is not caught as a duplicate | not carried |
 | Daemon: herdr workspace metadata tokens | no | until the tool reports again; they expire | not carried |
 | Daemon: herdr sequence numbers, per-pane rate buckets, connection counts | no | no | not carried |
-| Daemon: the person's reply history (`replyHistory`, `reply-history`) | no | yes: up and ctrl+r in the reply editor bring nothing back | carried, `Replies`. It is held in memory only and never written to disk, and the manifest is a memfd on Linux and an unlinked owner-only file elsewhere, as for the pane screens and the pane-token key. An image that predates it reads none |
+| Daemon: the person's reply history (`replyHistory`, `reply-history`) | no | yes: up and ctrl+r in the reply editor bring nothing back | carried, `Replies`. It is held in memory only and never written to disk, and the manifest is a memfd on Linux and an unlinked owner-only file elsewhere, as for the pane screens and the pane-token key. An image that predates it reads none (`TestSelfExecKeepsReplyHistory`) |
 | Daemon: paste image files written (`pastes.written`) | no | no: the files stay on disk, and are not deleted when this daemon stops | not carried |
 | Daemon: hooks whose events come from the drain to the exec | no | rarely: the hook of a focus change, a workspace switch or an agent state in that span does not run | not carried, deliberately: held from the drain, started by a put-back, dropped by the exec (section 7, "Hooks across the handoff") |
 
