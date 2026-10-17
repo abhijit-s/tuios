@@ -7270,6 +7270,7 @@ TUIOS_E2E=1 TUIOS_E2E_BIN=/path/to/tuios go test -count=1 -run '^TestDaemonUpgra
 - `TestSelfExecPrunesMetadataWithATimeToLive`: a working agent's pane gets a `phase` token with `ttl_ms` 7000, the panes are handed over at once, and a client with the rail on attaches to the new image and draws the token. It must be gone from the rail 9 to 12 s after it was set.
 - `TestSelfExecFadesAFinishedSubagent`: a subagent is started and stopped through the real Claude Code hook in a pane, on a daemon with `TUIOS_SUBAGENT_FADE_SECONDS=4`, and the panes are handed over at once. The pane must still list the finished subagent after the handoff, and list none 6 s after it stopped.
 - `TestSelfExecKeepsAgentActivity`: a turn reported through the real Claude Code hook (a prompt, a tool call, the turn's end) is listed by `agent-activity`, whose recap counts one turn. After the handoff the entries, their numbers and the turn must be the same, and the next entry must be numbered after them.
+- `TestSelfExecKeepsPasteBuffers`: an automatic buffer and a named one with a NUL byte are set before the handoff. After it `list-buffers` must name both with the same versions, `show-buffer keep` must give the same bytes, and the next automatic buffer must not take the first one's name.
 
 | Control | How | Test that fails | Verdict |
 | --- | --- | --- | --- |
@@ -7279,3 +7280,5 @@ TUIOS_E2E=1 TUIOS_E2E_BIN=/path/to/tuios go test -count=1 -run '^TestDaemonUpgra
 | The subagent prune is not armed again | `sess.armSubagentPrune(pruneDue)` cut from adoption, the records carried | `TestSelfExecFadesAFinishedSubagent`: the same message | **caught** |
 | The activity rings are not carried | `d.activity.restore(...)` cut from adoption | `TestSelfExecKeepsAgentActivity`: "after the handoff agent-activity lists [] (last 0), and before it [...]", "the recap counts 0 turns, and before it 1", "the entries after the handoff do not go on from 7" | **caught** |
 | A ring is carried without its turns | the `e.turns = rec.Turns[i]` line cut from `activityStore.restore` | `TestSelfExecKeepsAgentActivity`: "after the handoff the recap counts 0 turns, and before it 1" | **caught** |
+| The paste buffers are not carried | `d.buffers.Restore(nil, 0)` in adoption | `TestSelfExecKeepsPasteBuffers`: "after the handoff buffer keep has version 0", "show-buffer keep answered ... no_buffer", "the first automatic buffer after the handoff is named buffer0, as the one before it" | **caught** |
+| The automatic name counter is not carried | `d.buffers.Restore(m.Daemon.Buffers, 0)` | `TestSelfExecKeepsPasteBuffers`: "the first automatic buffer after the handoff is named buffer0, as the one before it, buffer0" | **caught** |
