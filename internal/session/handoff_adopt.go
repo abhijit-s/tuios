@@ -485,6 +485,10 @@ func (s *Session) adoptPTY(rec handoffPane, w WindowState, onExit func(string), 
 	sp := ptySpawn{windowID: w.ID, onExit: onExit, workspace: w.Workspace, keepOpen: rec.KeepOpen && !rec.Exited, closeOnExit: rec.CloseOnExit}
 	pty := s.installPTY(ctx, cancel, rec.ID, master, nil, rec.Width, rec.Height, sp, terminal)
 	pty.spawnW, pty.spawnH = rec.SpawnW, rec.SpawnH
+	// From the snapshot, before vtWriter starts: a program that turned focus
+	// reporting on in the previous image is not sent a focus-in again by the
+	// first write here, as noteFocusReporting does when the mode comes on.
+	pty.focusReporting = terminal != nil && terminal.FocusReportingEnabled()
 	pty.restoreLive(rec.Live)
 	if rec.Exited {
 		pty.exitedMu.Lock()
