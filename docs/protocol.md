@@ -135,7 +135,8 @@ Result:
   "sessions": 2,
   "link_policy": true,
   "pane_grants": true,
-  "os": "linux"
+  "os": "linux",
+  "handoff": 3
 }}
 ```
 
@@ -151,6 +152,8 @@ and then presents `$TUIOS_PANE_ID` and `$TUIOS_PANE_TOKEN` on every
 connection it opens from a pane. It is absent from an older daemon.
 
 `instance` is an id for the running daemon image. It changes when a live upgrade execs another binary, while `pid` stays the same.
+
+`handoff` is the live handoff manifest version this image writes: a binary that `daemon-upgrade` names must read it, which `<binary> daemon handoff-accepts` says. `tuios daemon upgrade` checks it before it calls the verb, since the CLI may be another build than the daemon. It is absent from an older daemon, which writes version 2.
 
 `upgrade` is present only on an image that took its panes over in a live upgrade (see [daemon-upgrade](#daemon-upgrade)), and says what the handoff measured: `from` (the build the panes came from), `panes`, `manifest_bytes`, `preflight_ms`, `quiesce_ms`, `capture_ms`, `pending_max`, `pending_total` (bytes the programs wrote while their panes were stopped), `stopped_at` (Unix nanoseconds), `apply_ms`, `apply_heap_start`, `apply_peak_heap_inuse`, `apply_heap_end`, `paused_ms`, `fallback`, set when the new binary could not take the panes over and the binary that was running took them back, and `recovered`, set with `fallback` when the new image died before it was up and the handoff's keeper started the binary that was running in its place, under the keeper's pid.
 
@@ -1767,7 +1770,7 @@ The daemon first runs `<binary> daemon handoff-accepts`, which prints the handof
 
 ```json
 {"id": 1, "result": {"type": "daemon_upgrading", "pid": 8615, "instance": "5b0e9c1f2a7d4e83",
- "from": "v0.10.0", "to": "v0.10.1", "binary": "/usr/local/bin/tuios", "handoff": 1,
+ "from": "v0.10.0", "to": "v0.10.1", "binary": "/usr/local/bin/tuios", "handoff": 3,
  "panes": 4, "manifest_bytes": 35123, "clients": 2, "preflight_ms": 41}}
 ```
 
