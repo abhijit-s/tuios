@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"os/exec"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -270,5 +271,78 @@ func TestDaemonUpgradeRefusalNamesTheServer(t *testing.T) {
 	}
 	if strings.Contains(text, "'tuios kill-server'") {
 		t.Errorf("ASSERTION: the refusal on server %s says to run the bare 'tuios kill-server', which stops the default daemon:\n%s", server, text)
+	}
+}
+
+// awaitKeeper waits until the daemon under base has started a handoff's
+// keeper, which it does once the preflight has passed and before any pane
+// stops, and fails the test if it never does.
+func awaitKeeper(t *testing.T, base string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if len(keeperProcesses(t, base)) > 0 {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("the daemon never started a handoff's keeper within %s", timeout)
+}
+
+// TestDaemonUpgradeNamesAReplacedBinary runs `tuios daemon upgrade` on a
+// daemon that holds the handoff 4 s before the exec
+// (TUIOS_TEST_HANDOFF_HOLD_MS), and replaces the binary with a script that is
+// not a tuios once the daemon has checked it. The daemon has already answered
+// that the upgrade started; at the exec it finds another file at the path,
+// checks it again, the check fails, and it puts everything back. The command
+// must say so: the binary was replaced and the file there failed the check,
+// with nothing changed. It must not say the exec failed, which would tell the
+// person their clients were dropped.
+func TestDaemonUpgradeNamesAReplacedBinary(t *testing.T) {
+	base := t.TempDir()
+	startHandoffDaemon(t, base, "TUIOS_TEST_HANDOFF_HOLD_MS=4000")
+	const sess = "e2e-replaced"
+	win := newCommandWindow(t, base, sess, "a", false, "sh", "-c", "echo pid-$$; exec sleep 600")
+	waitHandoffPane(t, base, sess, win, regexp.MustCompile(`^pid-\d+`), 10*time.Second)
+	pids := panePIDs(t, base, sess)
+	img := helloImage(t, base)
+	second := copyTuios(t)
+
+	type result struct {
+		out string
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		out, err := handoffCLI(t, base, 90*time.Second, "daemon", "upgrade", "--binary", second, "--json")
+		done <- result{out, err}
+	}()
+	awaitKeeper(t, base, 30*time.Second)
+	replaceWithNonTuios(t, second)
+	r := <-done
+	res := jsonLineOf(r.out)
+	after := helloImage(t, base)
+	afterPIDs := panePIDs(t, base, sess)
+
+	writeHandoffArtifact(t, map[string]any{"out": r.out, "error": errString(r.err), "outcome": res, "before": img, "after": after})
+	if after.Instance != img.Instance || after.PID != img.PID {
+		t.Fatalf("ASSERTION: the daemon changed (%+v then %+v), so the replaced binary was not caught", img, after)
+	}
+	if r.err == nil {
+		t.Errorf("ASSERTION: daemon upgrade succeeded although nothing was upgraded:\n%s", r.out)
+	}
+	if strings.Contains(r.out, "could not exec") {
+		t.Errorf("ASSERTION: daemon upgrade says the exec failed, which it never ran:\n%s", r.out)
+	}
+	if !strings.Contains(r.out, "was replaced after the daemon checked it") || !strings.Contains(r.out, "nothing was changed") {
+		t.Errorf("ASSERTION: daemon upgrade does not say the binary was replaced after the check, with nothing changed:\n%s", r.out)
+	}
+	if res["action"] != "refused" {
+		t.Errorf("ASSERTION: daemon upgrade --json reports action %v, want refused", res["action"])
+	}
+	for id, pid := range pids {
+		if afterPIDs[id] != pid {
+			t.Errorf("ASSERTION: window %s had pid %d, and %d after the put-back", id, pid, afterPIDs[id])
+		}
 	}
 }
