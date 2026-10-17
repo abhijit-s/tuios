@@ -117,6 +117,9 @@ type handoffDaemon struct {
 	PaneTokenKey []byte        `json:"pane_token_key,omitempty"`
 	Events       handoffEvents `json:"events"`
 	Mail         handoffMail   `json:"mail"`
+	// Replies is the person's reply history. An image that predates it
+	// reads none, and the reply editor starts empty, as after a restart.
+	Replies handoffReplies `json:"replies"`
 	// Fallback is the binary the writing image runs, kept for the new image
 	// to re-exec when it cannot adopt the panes. See handoff_prev.go.
 	Fallback string `json:"fallback"`

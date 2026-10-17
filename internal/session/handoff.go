@@ -418,6 +418,7 @@ func (r *handoffRun) writeManifest(sessions []*Session, refs []handoffPaneRef) e
 		PaneTokenKey: d.manager.paneTokenKey,
 		Events:       d.events.handoffState(),
 		Mail:         d.agents.handoffState(),
+		Replies:      d.replyHistory.handoffState(),
 		Fallback:     r.prev.path,
 		FallbackFD:   r.prev.fd(),
 		Stats:        r.stats,
