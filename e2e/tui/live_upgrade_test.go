@@ -315,7 +315,8 @@ func TestDaemonUpgradeRefusesAndChangesNothing(t *testing.T) {
 // and the same pid. The failure is an error; a hang that only the watchdog
 // ends; and a panic on a worker that rebuilds a pane's emulator, outside the
 // goroutine that recovers the adoption's own panics, which must take the
-// same fallback and not end the image for the keeper to recover.
+// same fallback and not end the image for the keeper to recover; and a panic
+// on the adoption's own goroutine, which its recover turns into the fallback.
 func TestDaemonUpgradeFallsBackToPreviousBinary(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -324,6 +325,7 @@ func TestDaemonUpgradeFallsBackToPreviousBinary(t *testing.T) {
 		{"error", []string{"TUIOS_TEST_HANDOFF_FAIL=error"}},
 		{"hang", []string{"TUIOS_TEST_HANDOFF_FAIL=hang", "TUIOS_TEST_HANDOFF_WATCHDOG_MS=1500"}},
 		{"apply-panic", []string{"TUIOS_TEST_HANDOFF_FAIL=apply-panic"}},
+		{"panic", []string{"TUIOS_TEST_HANDOFF_FAIL=panic"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			base := t.TempDir()

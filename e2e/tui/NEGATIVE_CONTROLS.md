@@ -7204,3 +7204,24 @@ TUIOS_E2E=1 TUIOS_E2E_BIN=/path/to/tuios go test -count=1 -run '^TestDaemonUpgra
 | The queues are not carried | `d.restoreQueue(...)` cut from adoption | `TestSelfExecKeepsTheDeliveryQueue`: "after the handoff list-queued says [], and [q1 waiting] before it", "the queued message was typed 0 times once the agent rested after the handoff"; `TestHandoffHoldsTheDeliveryQueue`: "typed 0 times across the handoff" | **caught** |
 | The queues are not held | `d.queue.hold()` cut from the handoff's prepare | `TestHandoffHoldsTheDeliveryQueue`: "the queued message was typed 2 times across the handoff, want once", "a queue-prompt in the hold was answered <nil>, want daemon_upgrading" | **caught** |
 | The reply history is not restored | `d.replyHistory.restore(...)` cut from adoption | `TestSelfExecKeepsReplyHistory`: "after the handoff the reply history holds [], and [\"rerun with -count=1\" \"and print the flaky one\"] before it" | **caught** |
+
+### Failure paths put back in place
+
+`e2e/tui/handoff_failures_test.go`. Each test checks the daemon carries on as the same image with its counter pane reading and no gap, no keeper left and no zombie child, and a handoff after it going through. Run on 2026-10-17 on macOS arm64 (Darwin 27, Go 1.26.9) against feat/live-handoff, one build per control.
+
+- `TestHandoffExecFailureCarriesOn`: `test-handoff` with `exec_fail` makes the exec return an error with every carried descriptor exposed. A client connected before must have been closed, and hello must report `upgrade_failed` stage `exec` with the clients dropped.
+- `TestHandoffAbandonedWhenNotCommitted`: `test-handoff` with `commit_delay_ms` 7000. A hello made at once waits in the backlog and must be answered by the same image within 6.5 s; hello must report stage `abandoned`; at 8 s the image must still be the same.
+- `TestDaemonUpgradeFallsBackToPreviousBinary/panic`: `TUIOS_TEST_HANDOFF_FAIL=panic` panics on the adoption's own goroutine; the daemon must fall back in place to `tuios.prev`, same pid, not recovered by the keeper.
+- `TestDaemonUpgradeNamesAReplacedBinary` and `TestHandoffPutBackAppliesWhatWasHeld` (above) replace the binary in the hold with a script that is not a tuios, so the second preflight fails and the handoff is put back.
+
+| Control | How | Test that fails | Verdict |
+| --- | --- | --- | --- |
+| An exec that returns is not put back | `commit` records the failure and unlocks, without `putBack` | `TestHandoffExecFailureCarriesOn`: "call hello: signal: killed" (the 30 s call timed out: accepting stayed paused) | **caught** |
+| A prepared handoff is never abandoned | the commit timer armed for an hour instead of `handoffCommitTimeout` | `TestHandoffAbandonedWhenNotCommitted`: "a call made during the prepared handoff was answered after 7.068s by ..., want the same image within the 5 s", "hello reports the put-back as map[], want stage abandoned", "the commit that came after the abandon execed the new image" | **caught** |
+| A panic in the adoption is not recovered | `adoptGuarded`'s `recover()` made `any(nil)` | `TestDaemonUpgradeFallsBackToPreviousBinary/panic`: "the daemon's pid changed from 63570 to 63626" (the image died, and the keeper restored the panes) | **caught** |
+| A binary replaced since the preflight is execed unchecked | `commit`'s `stillThere` check made `if false` | `TestDaemonUpgradeNamesAReplacedBinary`: "the daemon changed (... PID:64281 ...) then (... PID:64319 ...)"; `TestHandoffPutBackAppliesWhatWasHeld`: "the handoff went through" (the script was execed and exited, and the keeper restored the panes under a new pid) | **caught** |
+
+```sh
+TUIOS_E2E=1 TUIOS_E2E_BIN=/path/to/tuios \
+  go test -count=1 -run '^(TestHandoffExecFailureCarriesOn|TestHandoffAbandonedWhenNotCommitted|TestDaemonUpgradeFallsBackToPreviousBinary|TestDaemonUpgradeNamesAReplacedBinary|TestHandoffPutBackAppliesWhatWasHeld)$' .
+```

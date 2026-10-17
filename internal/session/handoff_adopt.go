@@ -101,6 +101,7 @@ func (d *Daemon) adopt(fd int, fb *adoptFallback, kept map[int]int) error {
 	if err := handoffTestFailure(); err != nil {
 		return err
 	}
+	handoffTestAdoptPause()
 
 	socketPath := m.Daemon.SocketPath
 	d.manager.SetSocketPath(socketPath)
