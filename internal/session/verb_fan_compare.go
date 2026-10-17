@@ -560,6 +560,9 @@ func (d *Daemon) startFanVerify(sess *Session, dir, command string, env []string
 		}
 		return err
 	}
+	if fanVerifySpawnedHook != nil {
+		fanVerifySpawnedHook()
+	}
 
 	run := &fanVerifyRun{window: win.ID, stop: make(chan struct{})}
 	d.fanVerifies.put(sess.ID, run)
@@ -585,6 +588,10 @@ func (d *Daemon) startFanVerify(sess *Session, dir, command string, env []string
 	go d.watchFanVerify(sess, run, rec, status, timeout)
 	return nil
 }
+
+// fanVerifySpawnedHook runs once a check's window has started and before the
+// check is recorded. Tests set it to hold a check in that span.
+var fanVerifySpawnedHook func()
 
 // readVerifyStatus reads the status the script writes on fd 3. A pipe that
 // ends with no number in it is a script that was killed, and the window's
