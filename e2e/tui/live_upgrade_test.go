@@ -312,8 +312,10 @@ func TestDaemonUpgradeRefusesAndChangesNothing(t *testing.T) {
 // TestDaemonUpgradeFallsBackToPreviousBinary makes the new image fail to
 // adopt the panes, on purpose, and checks the daemon comes back on the binary
 // it ran before, from the copy it kept at start, with every pane's process
-// and the same pid. The failure is an error, and in the second case a hang
-// that only the watchdog ends.
+// and the same pid. The failure is an error; a hang that only the watchdog
+// ends; and a panic on a worker that rebuilds a pane's emulator, outside the
+// goroutine that recovers the adoption's own panics, which must take the
+// same fallback and not end the image for the keeper to recover.
 func TestDaemonUpgradeFallsBackToPreviousBinary(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -321,6 +323,7 @@ func TestDaemonUpgradeFallsBackToPreviousBinary(t *testing.T) {
 	}{
 		{"error", []string{"TUIOS_TEST_HANDOFF_FAIL=error"}},
 		{"hang", []string{"TUIOS_TEST_HANDOFF_FAIL=hang", "TUIOS_TEST_HANDOFF_WATCHDOG_MS=1500"}},
+		{"apply-panic", []string{"TUIOS_TEST_HANDOFF_FAIL=apply-panic"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			base := t.TempDir()
@@ -355,6 +358,9 @@ func TestDaemonUpgradeFallsBackToPreviousBinary(t *testing.T) {
 			}
 			if fb, _ := stats["fallback"].(bool); !fb {
 				t.Errorf("ASSERTION: the image does not say it is the fallback: %v", stats)
+			}
+			if rec, _ := stats["recovered"].(bool); rec {
+				t.Errorf("ASSERTION: the keeper recovered the daemon, so the new image died instead of falling back: %v", stats)
 			}
 			for id, pid := range before {
 				if afterPIDs[id] != pid {
