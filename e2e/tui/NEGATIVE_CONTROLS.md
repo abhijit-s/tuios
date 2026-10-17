@@ -7168,3 +7168,19 @@ Not covered by a test: the cell size in pixels a TUI client reports (`UpdatePixe
 TUIOS_E2E=1 TUIOS_E2E_BIN=/path/to/tuios \
   go test -count=1 -run '^(TestSelfExecFreezesPaneDuringHandoff|TestHandoffPutBackAppliesWhatWasHeld)$' .
 ```
+
+### A handoff put back after it answered names its cause
+
+- `TestDaemonUpgradeNamesAReplacedBinary`: a daemon started with `TUIOS_TEST_HANDOFF_HOLD_MS=4000` holds `daemon-upgrade`'s handoff before the exec. `tuios daemon upgrade --binary <copy> --json` runs, and once the daemon has started the handoff's keeper (its preflight passed) the copy is replaced by a script that is not a tuios. The command must fail saying the binary was replaced after the daemon checked it, with nothing changed, never that the exec failed; `--json` must report `refused`; the daemon's image and every pane's pid must be unchanged.
+
+Run on 2026-10-17 on macOS arm64 (Darwin 27, Go 1.26.9) against feat/live-handoff.
+
+| Control | How | Test that fails | Verdict |
+| --- | --- | --- | --- |
+| The put-back is not recorded | the `handoffFailed.Store` in `handoffRun.fail` cut | `TestDaemonUpgradeNamesAReplacedBinary`: "daemon upgrade does not say the binary was replaced after the check, with nothing changed", "daemon upgrade --json reports action failed, want refused" | **caught** |
+
+The branch before the record reported this case as "The daemon could not exec the new binary and carried on as it was. ... the exec failed after the clients were dropped", which is the cause the test rules out.
+
+```sh
+TUIOS_E2E=1 TUIOS_E2E_BIN=/path/to/tuios go test -count=1 -run '^TestDaemonUpgradeNamesAReplacedBinary$' .
+```

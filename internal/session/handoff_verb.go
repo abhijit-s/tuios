@@ -28,7 +28,7 @@ func (d *Daemon) verbDaemonUpgrade(cs *connState, params json.RawMessage) (any, 
 		return nil, invalidParam("binary", "binary must be the absolute path of a tuios binary")
 	}
 	clients := d.tuiClientCount()
-	run, err := d.prepareHandoff(handoffRequest{binary: p.Binary})
+	run, err := d.prepareHandoff(handoffRequest{binary: p.Binary, holdAfterWrite: handoffTestHold()})
 	if err != nil {
 		code := ErrVerbUpgradeRefused
 		if errors.Is(err, errHandoffBusy) {

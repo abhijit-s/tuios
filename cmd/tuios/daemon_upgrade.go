@@ -469,6 +469,8 @@ type upgradedDaemon struct {
 	Instance string                `json:"instance"`
 	Version  string                `json:"daemon_version"`
 	Upgrade  *session.HandoffStats `json:"upgrade"`
+	// Failed is why the image that answers put an upgrade back.
+	Failed *session.HandoffFailure `json:"upgrade_failed"`
 }
 
 // awaitUpgradedDaemon waits for a hello from an image other than old. Between
@@ -490,11 +492,7 @@ func awaitUpgradedDaemon(old string, wait time.Duration) (upgradedDaemon, error)
 					if h.Instance != old {
 						return h, nil
 					}
-					return h, &diagnosticError{
-						What:  "The daemon could not exec the new binary and carried on as it was.",
-						Cause: "the exec failed after the clients were dropped. The daemon log says why.",
-						Fix:   "every program is still running. Attach again, and run 'tuios logs' to see what failed.",
-					}
+					return h, putBackError(h)
 				}
 			}
 		}
@@ -505,6 +503,45 @@ func awaitUpgradedDaemon(old string, wait time.Duration) (upgradedDaemon, error)
 		What:  fmt.Sprintf("The daemon did not answer within %s of the upgrade: %v.", wait, last),
 		Cause: "the new image is still adopting the panes, or it and the fallback both failed.",
 		Fix:   "run 'tuios ls' to check. If the daemon is gone, 'tuios start-server' restores the sessions, and the programs in them have ended.",
+	}
+}
+
+// putBackError is the failure of an upgrade the daemon answered and then put
+// back, by the stage the daemon's hello reports. One put back before the exec
+// changed nothing, as a refusal does, so --or-restart may restart.
+func putBackError(h upgradedDaemon) error {
+	f := h.Failed
+	if f == nil {
+		return &diagnosticError{
+			What:  "The daemon did not take the new binary and carried on as it was.",
+			Cause: "it put the upgrade back after it answered. The daemon log says why.",
+			Fix:   "every program is still running. Run 'tuios logs' to see what failed.",
+		}
+	}
+	switch f.Stage {
+	case session.HandoffFailedPreflight:
+		return &notLiveError{
+			reason: "the binary was replaced after it was checked, and the file there now failed the check", running: true, from: h.Version,
+			err: &diagnosticError{
+				What:  fmt.Sprintf("%s was replaced after the daemon checked it, and the file there now cannot take the daemon over.", f.Binary),
+				Cause: plainLine(f.Error),
+				Fix:   "nothing was changed: every pane and client is as it was. Run 'tuios daemon upgrade' again once the binary is in place.",
+			},
+		}
+	case session.HandoffFailedAbandoned:
+		return &notLiveError{
+			reason: "the daemon put the upgrade back before it started it", running: true, from: h.Version,
+			err: &diagnosticError{
+				What:  "The daemon put the upgrade back before it started the new binary.",
+				Cause: plainLine(f.Error),
+				Fix:   "nothing was changed: every pane and client is as it was. Run 'tuios daemon upgrade' again.",
+			},
+		}
+	}
+	return &diagnosticError{
+		What:  "The daemon could not exec the new binary and carried on as it was.",
+		Cause: plainLine(f.Error),
+		Fix:   "every program is still running. Attach again, and run 'tuios logs' to see what failed.",
 	}
 }
 

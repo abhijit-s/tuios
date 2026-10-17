@@ -73,6 +73,9 @@ type Daemon struct {
 	// lastHandoff is what the handoff that made this image measured, nil
 	// for an image that started fresh.
 	lastHandoff atomic.Pointer[HandoffStats]
+	// handoffFailed is why the last handoff this image prepared was put back
+	// after it answered, nil when none was. See HandoffFailure.
+	handoffFailed atomic.Pointer[HandoffFailure]
 	// herdrSeqs is the highest seq each pane's herdr reporter has sent.
 	herdrSeqs herdrSeqs
 	// herdrWorkspaceMeta holds the tokens tools report on a session with

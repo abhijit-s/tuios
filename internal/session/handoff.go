@@ -141,6 +141,33 @@ type HandoffStats struct {
 	Recovered bool `json:"recovered,omitempty"`
 }
 
+// HandoffFailure is why a handoff that answered its caller was put back, as
+// the hello of the image that carried on reports it. The caller was told the
+// upgrade had started, so it learns the outcome from the image that answers
+// next.
+type HandoffFailure struct {
+	// Stage is HandoffFailedPreflight, HandoffFailedExec or
+	// HandoffFailedAbandoned.
+	Stage  string `json:"stage"`
+	Binary string `json:"binary"`
+	Error  string `json:"error"`
+	// ClientsKept says the clients were not closed: a failure before the
+	// exec's step that closes them.
+	ClientsKept bool `json:"clients_kept"`
+}
+
+// The stages a handoff that answered can be put back at.
+const (
+	// HandoffFailedPreflight is a binary replaced since its preflight, whose
+	// second preflight failed. Nothing was changed.
+	HandoffFailedPreflight = "preflight"
+	// HandoffFailedExec is an exec that returned. The clients were closed.
+	HandoffFailedExec = "exec"
+	// HandoffFailedAbandoned is a handoff not committed in time. Nothing
+	// was changed.
+	HandoffFailedAbandoned = "abandoned"
+)
+
 // handoffPaneRef is a pane the manifest carries.
 type handoffPaneRef struct {
 	sess   *Session
@@ -163,6 +190,7 @@ func (d *Daemon) prepareHandoff(req handoffRequest) (*handoffRun, error) {
 	if !d.handoffMu.TryLock() {
 		return nil, errHandoffBusy
 	}
+	d.handoffFailed.Store(nil)
 	run := &handoffRun{d: d, req: req, started: time.Now()}
 	run.stats.From = d.version
 	// Both checks run before anything is paused, so a refusal changes
@@ -490,9 +518,8 @@ func (r *handoffRun) commit() error {
 	if !r.bin.stillThere() {
 		bin, err := preflightBinary(r.bin.path)
 		if err != nil {
-			r.putBack()
-			d.handoffMu.Unlock()
-			return err
+			r.fail(HandoffFailedPreflight, err, true)
+			return fmt.Errorf("%s was replaced after it was checked, and the file there now failed the check: %w", r.bin.path, err)
 		}
 		r.bin = bin
 	}
@@ -502,9 +529,18 @@ func (r *handoffRun) commit() error {
 	log.Printf("Live upgrade: exec %s with %d panes (manifest %d bytes, stopped %s)", r.bin.path, r.panes, r.manifestBytes, time.Since(r.started).Round(time.Millisecond))
 	err := execHandoff(r.bin.path, argv, withoutEnv(os.Environ(), handoffFallbackEnv), r.fds, r.req.inWindow)
 	LogError("Live upgrade: exec %s failed, the daemon carries on: %v", r.bin.path, err)
+	err = fmt.Errorf("exec %s: %w", r.bin.path, err)
+	r.fail(HandoffFailedExec, err, false)
+	return err
+}
+
+// fail records why the run was put back, for the next hello to report, and
+// puts it back. The record is made first: the put-back resumes accepting, and
+// the caller's next hello must find it.
+func (r *handoffRun) fail(stage string, err error, clientsKept bool) {
+	r.d.handoffFailed.Store(&HandoffFailure{Stage: stage, Binary: r.bin.path, Error: err.Error(), ClientsKept: clientsKept})
 	r.putBack()
-	d.handoffMu.Unlock()
-	return fmt.Errorf("exec %s: %w", r.bin.path, err)
+	r.d.handoffMu.Unlock()
 }
 
 // abandon puts back a prepared run that was never committed. It reports
@@ -517,8 +553,7 @@ func (r *handoffRun) abandon() bool {
 	}
 	r.state = 2
 	r.mu.Unlock()
-	r.putBack()
-	r.d.handoffMu.Unlock()
+	r.fail(HandoffFailedAbandoned, fmt.Errorf("the upgrade was not committed within %s", handoffCommitTimeout), true)
 	return true
 }
 

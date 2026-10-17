@@ -2911,6 +2911,11 @@ func (d *Daemon) verbHello(cs *connState, params json.RawMessage) (any, *verbErr
 	if st := d.lastHandoff.Load(); st != nil {
 		res["upgrade"] = st
 	}
+	// upgrade_failed is why the last upgrade this image answered was put
+	// back, which daemon upgrade reports when this image answers it again.
+	if f := d.handoffFailed.Load(); f != nil {
+		res["upgrade_failed"] = f
+	}
 	return res, nil
 }
 
