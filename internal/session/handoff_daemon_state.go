@@ -100,3 +100,39 @@ func (b *agentBus) restore(m handoffMail) {
 		b.boxes[name] = &agentMailbox{msgs: box.Msgs, bytes: box.Bytes, evicted: box.Evicted, buckets: map[string]*sendBucket{}}
 	}
 }
+
+// handoffReplies is the person's reply history. It rides in the manifest
+// with the pane screens and the pane-token key, under the same rules: a
+// memfd on Linux, an unlinked owner-only file elsewhere. Losing it would make
+// the reply editor forget what was sent, which a live upgrade promises not to.
+type handoffReplies struct {
+	Targets map[string][]replyHistoryEntry `json:"targets,omitempty"`
+	// Order is the targets, least recently used first.
+	Order []string `json:"order,omitempty"`
+}
+
+// handoffState is the history, every target's entries copied.
+func (h *replyHistory) handoffState() handoffReplies {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	r := handoffReplies{Order: slices.Clone(h.order)}
+	if len(h.targets) > 0 {
+		r.Targets = make(map[string][]replyHistoryEntry, len(h.targets))
+		for t, l := range h.targets {
+			r.Targets[t] = slices.Clone(l)
+		}
+	}
+	return r
+}
+
+// restore puts a carried history into an empty one, and counts its bytes.
+func (h *replyHistory) restore(r handoffReplies) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.targets, h.order, h.bytes = r.Targets, r.Order, 0
+	for _, l := range h.targets {
+		for _, e := range l {
+			h.bytes += entryBytes(e)
+		}
+	}
+}
