@@ -1,6 +1,7 @@
 package tuie2e
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -69,4 +70,37 @@ func TestHandoffTestHooksNeedTheirVariable(t *testing.T) {
 			t.Errorf("ASSERTION: a restricted connection's test-handoff replaced the daemon's image")
 		}
 	})
+}
+
+// TestDaemonUpgradeFromAPaneNeedsAdmin runs `tuios daemon upgrade` from a
+// pane that holds read and write but not admin. daemon-upgrade execs a binary
+// as the daemon, which holds every pane's terminal and the key that signs
+// every pane's token, so a pane held to its grants must not reach it: it
+// needs admin, as every verb outside the grants' own classes does. The
+// daemon's image must not change. Under the default open mode every pane
+// holds admin, and the same user's processes may upgrade, as they may run any
+// binary (docs/design/live-handoff.md, section 6).
+func TestDaemonUpgradeFromAPaneNeedsAdmin(t *testing.T) {
+	base := t.TempDir()
+	startHandoffDaemon(t, base)
+	const sess = "e2e-upgrade-grants"
+	win := newCommandWindow(t, base, sess, "agent", false, "sh")
+	if out, err := tuiosCLI(t, base, "set-pane-grants", "-s", sess, "-w", win, "--grants", "read,write"); err != nil {
+		t.Fatalf("set-pane-grants: %v\n%s", err, out)
+	}
+	img := helloImage(t, base)
+	second := copyTuios(t)
+	_ = mustCall(t, base, "send-text", map[string]any{"session": sess, "window": win,
+		"text": tuiosBin + " daemon upgrade --binary " + second + "; echo UP_EXIT=$?\n"})
+	m := waitHandoffPane(t, base, sess, win, regexp.MustCompile(`UP_EXIT=(\d+)`), 60*time.Second)
+	lines := mustScrollback(t, base, sess, win)
+	after := helloImage(t, base)
+
+	writeHandoffArtifact(t, map[string]any{"exit": m[1], "screen": lines, "before": img, "after": after})
+	if after.Instance != img.Instance || after.PID != img.PID {
+		t.Fatalf("ASSERTION: a pane without admin upgraded the daemon (%+v then %+v)", img, after)
+	}
+	if m[1] == "0" || !screenLinesHave(lines, "admin grant") {
+		t.Errorf("ASSERTION: the pane's daemon upgrade was not refused for the admin grant (exit %s):\n%s", m[1], strings.Join(lines, "\n"))
+	}
 }
