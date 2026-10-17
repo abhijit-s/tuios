@@ -728,6 +728,18 @@ The session state, the pane records and the daemon record of version 2 carried t
 
 Each carried field has an E2E test and a negative control: `e2e/tui/handoff_settings_test.go`, and `e2e/tui/NEGATIVE_CONTROLS.md` under "Live handoff".
 
+### 7.4 Known limits
+
+What a live upgrade does not do, on purpose or not yet. Each is refused or said, never silent.
+
+- **Panes on other machines stay refused.** A window whose process runs on another host (`WindowState.Host`), and a pane this daemon runs for another machine (a hosted pane), make the upgrade refuse with nothing changed, naming the session or the count (`TestDaemonUpgradeRefusesPanesOfOtherMachines`). Carrying them needs the link's streams to cross the exec, or the far daemon to rebind them, and is deferred to the completeness step. Until then: close those windows first, or restart with `tuios kill-server`, which ends their programs.
+- **Windows.** No live upgrade: a ConPTY is a pseudoconsole handle and pipe handles, not descriptors an exec keeps (section 2.7). `tuios daemon upgrade --or-restart` restarts instead.
+- **Clients do not follow.** Every attached client is told to attach again and exits (section 2.6); the clients-follow step is not built.
+- **A write between the manifest and the exec.** The manifest is written once the panes stop, and the clients are closed only at the commit, a few milliseconds later. A call already open in that span that changes what the manifest holds, such as an agent's state reported on a connection opened before the upgrade, changes the old image only, and the new image does not have it; the next report puts it right. Resizes, cell sizes, report colours, hooks and the delivery queues are held for the span instead (section 7, "Freezing a quiesced pane", "Hooks across the handoff", and the queue's row in section 7.3).
+- **A stop while an adoption hangs.** A kill-server during an adoption that never finishes is not acted on until the adoption returns; kill-server says the daemon has not stopped after 10 s (section 7.1).
+- **History depth.** Fixed at 1000 rows a pane, on both emulators (section 3.3); the cap the spec suggests for ghostty's slower capture is not built.
+- **Cell size in pixels.** Not carried: the kernel keeps the window size until the next resize, which writes no pixels until a client reports its cell (section 7.3).
+
 ## Appendix A: measurements made for this spec
 
 The probes are short scratch programs, kept with their raw outputs under `docs/design/live-handoff-probes/`. None touches a running tuios daemon; the heap measurement starts its own throwaway one. Each finding was rerun independently, and each mechanism claim has a negative control.
