@@ -263,3 +263,119 @@ func TestSelfExecKeepsPasteBuffers(t *testing.T) {
 		t.Errorf("ASSERTION: the first automatic buffer after the handoff is named %v, as the one before it, %v", next["name"], auto["name"])
 	}
 }
+
+// queuedEntries is list-queued's entries for a session, as "id state".
+func queuedEntries(t *testing.T, base, sess string) []string {
+	t.Helper()
+	res := mustCall(t, base, "list-queued", map[string]any{"session": sess})
+	raw, _ := json.Marshal(res["entries"])
+	var list []struct {
+		ID    string `json:"id"`
+		State string `json:"state"`
+	}
+	_ = json.Unmarshal(raw, &list)
+	var out []string
+	for _, e := range list {
+		out = append(out, e.ID+" "+e.State)
+	}
+	return out
+}
+
+// queueProbeScript is an agent stand-in: each line typed into it is printed
+// once, as got:<line>.
+const queueProbeScript = `stty -echo; echo ready; while read l; do echo "got:$l"; done`
+
+// queueTyped counts the times the probe printed the line marker.
+func queueTyped(t *testing.T, base, sess, window, marker string) int {
+	t.Helper()
+	lines, err := daemonScrollback(base, sess, window, 2000)
+	if err != nil {
+		t.Fatalf("capture the pane: %v", err)
+	}
+	return strings.Count(strings.Join(lines, "\n"), "got:"+marker)
+}
+
+// TestSelfExecKeepsTheDeliveryQueue queues a message for a pane whose agent
+// reports working, and hands the panes over. The new image must list the
+// same entry, waiting, and type it into the pane once the agent reports
+// idle, as the old image would have.
+func TestSelfExecKeepsTheDeliveryQueue(t *testing.T) {
+	base := t.TempDir()
+	startHandoffDaemon(t, base)
+	const sess = "e2e-queue"
+	const marker = "queued-marker-9"
+	win := newCommandWindow(t, base, sess, "agent", false, "sh", "-c", queueProbeScript)
+	waitHandoffPane(t, base, sess, win, regexp.MustCompile(`^ready`), 10*time.Second)
+	_ = mustCall(t, base, "set-agent-state", map[string]any{"session": sess, "window": win, "state": "working"})
+	_ = mustCall(t, base, "queue-prompt", map[string]any{"session": sess, "window": win, "text": marker})
+	before := queuedEntries(t, base, sess)
+
+	handOver(t, base, map[string]any{})
+	after := queuedEntries(t, base, sess)
+	_ = mustCall(t, base, "set-agent-state", map[string]any{"session": sess, "window": win, "state": "idle"})
+	deadline := time.Now().Add(10 * time.Second)
+	for queueTyped(t, base, sess, win, marker) == 0 && time.Now().Before(deadline) {
+		time.Sleep(100 * time.Millisecond)
+	}
+	typed := queueTyped(t, base, sess, win, marker)
+
+	writeHandoffArtifact(t, map[string]any{"before": before, "after": after, "typed": typed})
+	if len(before) != 1 || !strings.HasSuffix(before[0], " waiting") {
+		t.Fatalf("before the handoff list-queued says %v, want one waiting entry", before)
+	}
+	if len(after) != 1 || after[0] != before[0] {
+		t.Errorf("ASSERTION: after the handoff list-queued says %v, and %v before it", after, before)
+	}
+	if typed != 1 {
+		t.Errorf("ASSERTION: the queued message was typed %d times once the agent rested after the handoff, want once", typed)
+	}
+}
+
+// TestHandoffHoldsTheDeliveryQueue queues a message for a working agent, and
+// holds a handoff 3 s between the manifest and the exec. In the hold, on
+// connections opened before the handoff, the agent reports idle and another
+// message is queued. The old image must type nothing in the hold: the
+// manifest has the message waiting, and the new image types it once the
+// agent reports idle to it, so a message typed in the hold would be typed
+// twice. The second queue-prompt must be answered daemon_upgrading, not
+// queued into an image the exec ends.
+func TestHandoffHoldsTheDeliveryQueue(t *testing.T) {
+	base := t.TempDir()
+	startHandoffDaemon(t, base)
+	const sess = "e2e-queue-hold"
+	const marker = "held-marker-4"
+	win := newCommandWindow(t, base, sess, "agent", false, "sh", "-c", queueProbeScript)
+	waitHandoffPane(t, base, sess, win, regexp.MustCompile(`^ready`), 10*time.Second)
+	_ = mustCall(t, base, "set-agent-state", map[string]any{"session": sess, "window": win, "state": "working"})
+	_ = mustCall(t, base, "queue-prompt", map[string]any{"session": sess, "window": win, "text": marker})
+
+	early := dialEarly(t, base)
+	img := helloImage(t, base)
+	_ = mustCall(t, base, "test-handoff", map[string]any{"hold_ms": 3000})
+	if _, err := early.Call("set-agent-state", map[string]any{"session": sess, "window": win, "state": "idle"}); err != nil {
+		t.Fatalf("set-agent-state idle in the hold: %v", err)
+	}
+	_, queueErr := early.Call("queue-prompt", map[string]any{"session": sess, "window": win, "text": "in-the-hold"})
+	inHold := answeredBy(t, early) == img.Instance
+	awaitNewImage(t, base, img, 20*time.Second)
+	// The idle in the hold came after the manifest, so the new image has the
+	// agent working; it reports again, as a harness does.
+	_ = mustCall(t, base, "set-agent-state", map[string]any{"session": sess, "window": win, "state": "idle"})
+	deadline := time.Now().Add(10 * time.Second)
+	for queueTyped(t, base, sess, win, marker) == 0 && time.Now().Before(deadline) {
+		time.Sleep(100 * time.Millisecond)
+	}
+	time.Sleep(2 * time.Second)
+	typed := queueTyped(t, base, sess, win, marker)
+
+	writeHandoffArtifact(t, map[string]any{"typed": typed, "queue_in_hold": errString(queueErr), "calls_in_hold": inHold})
+	if !inHold {
+		t.Fatalf("the calls in the hold were answered by the new image, so the test exercised nothing")
+	}
+	if typed != 1 {
+		t.Errorf("ASSERTION: the queued message was typed %d times across the handoff, want once", typed)
+	}
+	if queueErr == nil || !strings.Contains(queueErr.Error(), "daemon_upgrading") {
+		t.Errorf("ASSERTION: a queue-prompt in the hold was answered %v, want daemon_upgrading", queueErr)
+	}
+}
