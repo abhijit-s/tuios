@@ -87,9 +87,10 @@ type handoffRequest struct {
 	// put there since is refused, not run.
 	pinned *fileID
 	// holdAfterWrite and inWindow are for tests: a wait after the manifest
-	// is written, and a function run while the descriptors are exposed.
+	// is written, and a function run while the descriptors are exposed, whose
+	// error stands for the exec's.
 	holdAfterWrite time.Duration
-	inWindow       func()
+	inWindow       func() error
 }
 
 // handoffRun is a handoff that has stopped the daemon's parts, holding what it
