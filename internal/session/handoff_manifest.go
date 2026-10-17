@@ -128,6 +128,9 @@ type handoffDaemon struct {
 	// Replies is the person's reply history. An image that predates it
 	// reads none, and the reply editor starts empty, as after a restart.
 	Replies handoffReplies `json:"replies"`
+	// Activity is every pane's agent activity ring. An image that predates
+	// it reads none, and agent-activity and the recap start empty.
+	Activity []handoffActivityRing `json:"activity,omitempty"`
 	// Fallback is the binary the writing image runs, kept for the new image
 	// to re-exec when it cannot adopt the panes. See handoff_prev.go.
 	Fallback string `json:"fallback"`

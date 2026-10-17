@@ -7269,6 +7269,7 @@ TUIOS_E2E=1 TUIOS_E2E_BIN=/path/to/tuios go test -count=1 -run '^TestDaemonUpgra
 - `TestSelfExecKeepsFocusReporting`: a `cat -v` pane turns on focus reporting and is handed over with no client attached; a client then attaches to the new image and reports the pane's focus. The program must hear exactly one focus-in.
 - `TestSelfExecPrunesMetadataWithATimeToLive`: a working agent's pane gets a `phase` token with `ttl_ms` 7000, the panes are handed over at once, and a client with the rail on attaches to the new image and draws the token. It must be gone from the rail 9 to 12 s after it was set.
 - `TestSelfExecFadesAFinishedSubagent`: a subagent is started and stopped through the real Claude Code hook in a pane, on a daemon with `TUIOS_SUBAGENT_FADE_SECONDS=4`, and the panes are handed over at once. The pane must still list the finished subagent after the handoff, and list none 6 s after it stopped.
+- `TestSelfExecKeepsAgentActivity`: a turn reported through the real Claude Code hook (a prompt, a tool call, the turn's end) is listed by `agent-activity`, whose recap counts one turn. After the handoff the entries, their numbers and the turn must be the same, and the next entry must be numbered after them.
 
 | Control | How | Test that fails | Verdict |
 | --- | --- | --- | --- |
@@ -7276,3 +7277,5 @@ TUIOS_E2E=1 TUIOS_E2E_BIN=/path/to/tuios go test -count=1 -run '^TestDaemonUpgra
 | Metadata with a time to live is never pruned | the re-arm of `armAgentMetaPrune` cut from `adoptSession` | `TestSelfExecPrunesMetadataWithATimeToLive`: "the token outlived its 7 s on the rail by 5s after the handoff" | **caught** |
 | The subagent records are not carried | `rec.Subagents = s.handoffSubagentsLocked()` cut from `Session.handoffRecord` | `TestSelfExecFadesAFinishedSubagent`: "6 s after it stopped, past its 4 s fade, the pane still lists [{ID:afade0c2e71d4b5a6 ... State:done ...}]" | **caught** |
 | The subagent prune is not armed again | `sess.armSubagentPrune(pruneDue)` cut from adoption, the records carried | `TestSelfExecFadesAFinishedSubagent`: the same message | **caught** |
+| The activity rings are not carried | `d.activity.restore(...)` cut from adoption | `TestSelfExecKeepsAgentActivity`: "after the handoff agent-activity lists [] (last 0), and before it [...]", "the recap counts 0 turns, and before it 1", "the entries after the handoff do not go on from 7" | **caught** |
+| A ring is carried without its turns | the `e.turns = rec.Turns[i]` line cut from `activityStore.restore` | `TestSelfExecKeepsAgentActivity`: "after the handoff the recap counts 0 turns, and before it 1" | **caught** |
