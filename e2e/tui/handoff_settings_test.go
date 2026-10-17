@@ -2,11 +2,13 @@ package tuie2e
 
 import (
 	"bufio"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"image/color"
 	"net"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -24,7 +26,8 @@ import (
 // one a call naming none acts on, where a session goes when its workspace
 // empties, the colours its programs are told, the plugin that opened a pane,
 // the protocol a headless agent's pane speaks, the pane that opened another,
-// and the session a moved window came from. Each test sets one up, hands the
+// the session a moved window came from, the name a session was renamed from,
+// and a session's stash. Each test sets one up, hands the
 // panes to a new image with test-handoff, and reads the outcome back through
 // the verbs a user has. Each writes what it measured to handoff.json under
 // artifactDir.
@@ -517,6 +520,89 @@ func TestSelfExecFollowsMovedWindow(t *testing.T) {
 	}
 	if errAfter != nil || state != "done" {
 		t.Errorf("ASSERTION: after the handoff a call naming alpha did not reach the moved window: %v, beta reads %q", errAfter, state)
+	}
+}
+
+// TestSelfExecFollowsRenamedSession renames alpha to omega, and after the
+// handoff makes the call an agent's hook in alpha's pane makes: one that names
+// alpha, the session its TUIOS_SESSION still holds, and the window. It must
+// reach the window in omega, as it did before the handoff.
+func TestSelfExecFollowsRenamedSession(t *testing.T) {
+	base := t.TempDir()
+	startHandoffDaemon(t, base)
+	win := newCommandWindow(t, base, "alpha", "agent", false, "sh", "-c", "echo ready; exec sleep 600")
+	waitHandoffPane(t, base, "alpha", win, regexp.MustCompile(`^ready`), 10*time.Second)
+	mustCall(t, base, "rename-session", map[string]any{"session": "alpha", "name": "omega"})
+	_, errBefore := callVerb(t, base, "set-agent-state", map[string]any{"session": "alpha", "window": win, "state": "working"})
+
+	handOver(t, base, map[string]any{})
+	_, errAfter := callVerb(t, base, "set-agent-state", map[string]any{"session": "alpha", "window": win, "state": "done"})
+	state := readPSState(t, base, "omega", win).State
+
+	writeHandoffArtifact(t, map[string]any{"before": fmt.Sprint(errBefore), "after": fmt.Sprint(errAfter), "state_in_omega": state})
+	if errBefore != nil {
+		t.Fatalf("before the handoff a call naming alpha did not reach the renamed session: %v", errBefore)
+	}
+	if errAfter != nil || state != "done" {
+		t.Errorf("ASSERTION: after the handoff a call naming alpha did not reach the renamed session: %v, omega reads %q", errAfter, state)
+	}
+}
+
+// TestSelfExecKeepsStash stashes a file in alpha, and after the handoff lists
+// the stash and reads the file back through it. Then alpha is killed, and the
+// stored file must go with it: a stash whose index the handoff lost lists
+// nothing, refuses the read, and leaves the file on disk for good.
+func TestSelfExecKeepsStash(t *testing.T) {
+	base := t.TempDir()
+	startHandoffDaemon(t, base)
+	newCommandWindow(t, base, "keep", "anchor", false, "sh", "-c", "exec sleep 600")
+	newCommandWindow(t, base, "alpha", "home", false, "sh", "-c", "exec sleep 600")
+	src := filepath.Join(t.TempDir(), "notes.txt")
+	content := "stashed before the handoff\n"
+	if err := os.WriteFile(src, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	put := mustCall(t, base, "stash-put", map[string]any{"session": "alpha", "path": src})
+	stored, _ := put["path"].(string)
+	if stored == "" {
+		t.Fatalf("stash-put returned no path: %v", put)
+	}
+
+	handOver(t, base, map[string]any{})
+	list, errList := callVerb(t, base, "stash-list", map[string]any{"session": "alpha"})
+	got, errGet := callVerb(t, base, "stash-get", map[string]any{"session": "alpha", "path": stored})
+	var listed bool
+	if entries, ok := list["entries"].([]any); ok {
+		for _, e := range entries {
+			if m, ok := e.(map[string]any); ok && m["path"] == stored && m["source"] == src && m["missing"] == false {
+				listed = true
+			}
+		}
+	}
+	var read string
+	if b64, ok := got["content"].(string); ok {
+		raw, _ := base64.StdEncoding.DecodeString(b64)
+		read = string(raw)
+	}
+	mustCall(t, base, "kill-session", map[string]any{"session": "alpha"})
+	gone := false
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(100 * time.Millisecond) {
+		if _, err := os.Stat(stored); os.IsNotExist(err) {
+			gone = true
+			break
+		}
+	}
+
+	writeHandoffArtifact(t, map[string]any{"stored": stored, "list": list, "list_err": fmt.Sprint(errList),
+		"get_err": fmt.Sprint(errGet), "read": read, "removed_with_session": gone})
+	if errList != nil || !listed {
+		t.Errorf("ASSERTION: after the handoff the stash does not list %s from %s: %v %v", stored, src, errList, list)
+	}
+	if errGet != nil || read != content {
+		t.Errorf("ASSERTION: after the handoff the stashed file does not read back: %v, read %q", errGet, read)
+	}
+	if !gone {
+		t.Errorf("ASSERTION: the stashed file %s outlived its session after the handoff", stored)
 	}
 }
 
