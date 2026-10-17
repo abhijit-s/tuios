@@ -1,6 +1,7 @@
 package tuie2e
 
 import (
+	"encoding/json"
 	"regexp"
 	"strings"
 	"testing"
@@ -138,5 +139,75 @@ func TestSelfExecFadesAFinishedSubagent(t *testing.T) {
 	}
 	if len(after.List) != 0 {
 		t.Errorf("ASSERTION: 6 s after it stopped, past its 4 s fade, the pane still lists %+v", after.List)
+	}
+}
+
+// agentActivity is a pane's agent-activity answer: its entries' kinds and
+// seqs, the ring's last seq, and its recap's finished turns.
+type agentActivity struct {
+	Entries []struct {
+		Seq  uint64 `json:"seq"`
+		Kind string `json:"kind"`
+		Tool string `json:"tool"`
+	} `json:"entries"`
+	LastSeq uint64 `json:"last_seq"`
+	Recap   struct {
+		Turns int `json:"turns"`
+	} `json:"recap"`
+}
+
+func readAgentActivity(t *testing.T, base, sess string) agentActivity {
+	t.Helper()
+	res := mustCall(t, base, "agent-activity", map[string]any{"session": sess, "window": "0", "recap": true})
+	raw, _ := json.Marshal(res)
+	var a agentActivity
+	_ = json.Unmarshal(raw, &a)
+	return a
+}
+
+// TestSelfExecKeepsAgentActivity reports a turn through the real Claude Code
+// hook in a pane: a prompt, a tool call and the turn's end. agent-activity
+// then lists the entries and the recap counts one turn. After the handoff it
+// must list the same entries with the same numbers and count the same turn,
+// and the next entry must be numbered after them: the recap of an agent that
+// was mid-task is what the person reads after an upgrade.
+func TestSelfExecKeepsAgentActivity(t *testing.T) {
+	base := t.TempDir()
+	startHandoffDaemon(t, base)
+	const sess = "e2e-activity"
+	newCommandWindow(t, base, sess, "agent", false, "sh", "-c", "exec sleep 600")
+	dir := workDirIn(t, base)
+	hook := func(payload string) {
+		t.Helper()
+		if explained, err := subagentHook(base, dir, sess, payload); err != nil {
+			t.Fatalf("%s: %v", explained, err)
+		}
+	}
+	hook(`{"hook_event_name":"SessionStart","session_id":"act-1","source":"startup"}`)
+	hook(`{"hook_event_name":"UserPromptSubmit","session_id":"act-1","prompt":"run the tests"}`)
+	hook(`{"hook_event_name":"PreToolUse","session_id":"act-1","tool_name":"Bash","tool_input":{"command":"go test ./..."},"tool_use_id":"call-1"}`)
+	hook(`{"hook_event_name":"PostToolUse","session_id":"act-1","tool_name":"Bash","tool_input":{"command":"go test ./..."},"tool_response":{"stdout":"ok"},"tool_use_id":"call-1"}`)
+	hook(`{"hook_event_name":"Stop","session_id":"act-1","last_assistant_message":"Tests pass."}`)
+	before := readAgentActivity(t, base, sess)
+
+	handOver(t, base, map[string]any{})
+	after := readAgentActivity(t, base, sess)
+	hook(`{"hook_event_name":"UserPromptSubmit","session_id":"act-1","prompt":"and lint"}`)
+	next := readAgentActivity(t, base, sess)
+
+	writeHandoffArtifact(t, map[string]any{"before": before, "after": after, "after_next_prompt": next})
+	if len(before.Entries) < 3 || before.Recap.Turns != 1 {
+		t.Fatalf("before the handoff agent-activity lists %d entries and %d turns, want a prompt, a tool call and a finished turn", len(before.Entries), before.Recap.Turns)
+	}
+	b, _ := json.Marshal(before.Entries)
+	a, _ := json.Marshal(after.Entries)
+	if string(a) != string(b) || after.LastSeq != before.LastSeq {
+		t.Errorf("ASSERTION: after the handoff agent-activity lists %s (last %d), and before it %s (last %d)", a, after.LastSeq, b, before.LastSeq)
+	}
+	if after.Recap.Turns != before.Recap.Turns {
+		t.Errorf("ASSERTION: after the handoff the recap counts %d turns, and before it %d", after.Recap.Turns, before.Recap.Turns)
+	}
+	if len(next.Entries) <= len(before.Entries) || next.Entries[len(before.Entries)].Seq != before.LastSeq+1 {
+		t.Errorf("ASSERTION: the entries after the handoff do not go on from %d: %+v", before.LastSeq, next.Entries)
 	}
 }
