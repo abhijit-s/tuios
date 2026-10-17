@@ -7133,3 +7133,17 @@ Run on 2026-10-17 on macOS arm64 (Darwin 27, Go 1.26.9) against feat/live-handof
 TUIOS_E2E=1 TUIOS_E2E_BIN=/path/to/tuios TUIOS_E2E_OTHER_BACKEND_BIN=/path/to/tuios-ghostty \
   go test -count=1 -run '^(TestSelfExecKeepsScrollbackDepth|TestDaemonUpgradeAcrossBackends)$' .
 ```
+
+### A kept binary written in place
+
+- `TestDaemonUpgradeRefusesAChangedKeptBinary`: a daemon started from a copy of the binary keeps `tuios.prev` as a hard link to the copy; a line is then appended to the copy in place, with its inode the same. `tuios daemon upgrade` must be refused saying the kept binary has changed, and the daemon's image must not change. It skips when the daemon kept a copy rather than a link, which a write to the path cannot reach.
+
+Run on 2026-10-17 on macOS arm64 (Darwin 27, Go 1.26.9) against feat/live-handoff.
+
+| Control | How | Test that fails | Verdict |
+| --- | --- | --- | --- |
+| A link is checked by its inode alone | `checkPrevBinary` compares `now.file != prev.file` instead of `prev.same(now)` | `TestDaemonUpgradeRefusesAChangedKeptBinary`: "the daemon changed (...) although its kept binary was written to" | **caught** |
+
+```sh
+TUIOS_E2E=1 TUIOS_E2E_BIN=/path/to/tuios go test -count=1 -run '^TestDaemonUpgradeRefusesAChangedKeptBinary$' .
+```

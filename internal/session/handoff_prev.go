@@ -30,10 +30,35 @@ const prevBinaryName = "tuios.prev"
 type prevBinary struct {
 	path string
 	file fileID
+	// size and modified are the file's when it was kept. A hard link shares
+	// its inode with the path the binary was installed at, so a write in
+	// place there (cp onto it, an editor, a truncate) changes what the link
+	// names with the inode the same; the write moves the modification time.
+	// The change time is no use: it moves when the inode gains or loses a
+	// link, which an installer renaming a new binary over the path does.
+	size     int64
+	modified int64
 	// sum is the copy's SHA-256, when the binary was copied rather than
 	// linked: a copy has an inode of its own, so only its content says it
 	// is still the binary.
 	sum []byte
+}
+
+// keptBinary is the binary kept at path, as it is now.
+func keptBinary(path string) (*prevBinary, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
+		return nil, errNotAnExecutable
+	}
+	return &prevBinary{path: path, file: fileIDOf(info), size: info.Size(), modified: info.ModTime().UnixNano()}, nil
+}
+
+// same says now is the file p was kept as.
+func (p *prevBinary) same(now *prevBinary) bool {
+	return now.file == p.file && now.size == p.size && now.modified == p.modified
 }
 
 // keepPrevBinary keeps this image's binary for a later handoff to fall back
@@ -74,11 +99,7 @@ func keepRunningBinary(dir string) (*prevBinary, error) {
 		if err := os.Rename(tmp, dst); err != nil {
 			return nil, err
 		}
-		id, err := statFileID(dst)
-		if err != nil {
-			return nil, err
-		}
-		return &prevBinary{path: dst, file: id}, nil
+		return keptBinary(dst)
 	}
 
 	// Another file system, or a binary whose name is gone already (Linux
@@ -95,17 +116,18 @@ func keepRunningBinary(dir string) (*prevBinary, error) {
 	if err := os.Rename(tmp, dst); err != nil {
 		return nil, err
 	}
-	id, err := statFileID(dst)
+	kept, err := keptBinary(dst)
 	if err != nil {
 		return nil, err
 	}
+	kept.sum = sum
 	// The first run of a new file is slow on macOS. It is paid now, not in a
 	// fallback.
 	go func() {
 		//tuios:allow-exec runs the kept copy once so a fallback does not pay its first exec
 		_ = exec.Command(dst, "daemon", "handoff-accepts").Run()
 	}()
-	return &prevBinary{path: dst, file: id, sum: sum}, nil
+	return kept, nil
 }
 
 // copyExecutable copies src to dst, owner only, and returns its SHA-256.
@@ -138,8 +160,8 @@ func (d *Daemon) checkPrevBinary() (*prevBinary, error) {
 	if prev == nil {
 		return nil, errors.New("this daemon kept no copy of its binary to fall back to (see the daemon log); restart it with 'tuios kill-server' to upgrade")
 	}
-	id, err := statFileID(prev.path)
-	if err != nil || id != prev.file {
+	now, err := keptBinary(prev.path)
+	if err != nil || !prev.same(now) {
 		return nil, fmt.Errorf("the copy of this daemon's binary kept for a fallback, %s, has changed; restart it with 'tuios kill-server' to upgrade", prev.path)
 	}
 	if prev.sum != nil {
