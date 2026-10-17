@@ -717,3 +717,55 @@ func TestDaemonUpgradeRightAfterAnUpgrade(t *testing.T) {
 		}
 	}
 }
+
+// TestDaemonUpgradeRefusesAChangedKeptBinary starts a daemon from a copy of
+// the binary, so the daemon keeps tuios.prev as a hard link to the copy's
+// inode, and then writes to the copy in place: a few bytes appended, as a cp
+// onto the path or an editor would change it, with the inode the same. The
+// file a fallback would exec is no longer the binary the daemon runs, so an
+// upgrade must be refused, naming the kept copy as changed, with nothing
+// changed.
+//
+// The bytes are appended rather than written over the code: the daemon runs
+// from that inode, and on macOS a page of a running binary that no longer
+// matches its signature gets the process killed.
+func TestDaemonUpgradeRefusesAChangedKeptBinary(t *testing.T) {
+	base := t.TempDir()
+	first := copyTuios(t)
+	killDaemon(t, base)
+	if out, err := tuiosCLIBinEnv(t, first, base, handoffTestEnv, "start-server"); err != nil {
+		t.Fatalf("start-server: %v\n%s", err, out)
+	}
+	const sess = "e2e-prev-changed"
+	win := newCommandWindow(t, base, sess, "a", false, "sh", "-c", "echo pid-$$; exec sleep 600")
+	waitHandoffPane(t, base, sess, win, regexp.MustCompile(`^pid-\d+`), 10*time.Second)
+	kept, _ := keptBinary(t, base)
+	keptInfo, err1 := os.Stat(kept)
+	firstInfo, err2 := os.Stat(first)
+	if err1 != nil || err2 != nil || !os.SameFile(keptInfo, firstInfo) {
+		t.Skipf("the daemon kept %s as a copy, not a link to %s, so a write in place cannot reach it", kept, first)
+	}
+	img := helloImage(t, base)
+
+	f, err := os.OpenFile(first, os.O_WRONLY|os.O_APPEND, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = f.Write([]byte("\nnot part of the binary\n"))
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, out, upErr := daemonUpgrade(t, base, tuiosBin)
+	after := helloImage(t, base)
+
+	writeHandoffArtifact(t, map[string]any{"kept": kept, "outcome": res, "output": out, "error": errString(upErr), "before": img, "after": after})
+	if after.PID != img.PID || after.Instance != img.Instance {
+		t.Fatalf("ASSERTION: the daemon changed (%+v then %+v) although its kept binary was written to", img, after)
+	}
+	if upErr == nil || !strings.Contains(out, "has changed") {
+		t.Errorf("ASSERTION: the upgrade was not refused naming the kept binary as changed: %v\n%s", upErr, out)
+	}
+}
