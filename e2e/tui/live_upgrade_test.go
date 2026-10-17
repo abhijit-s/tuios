@@ -2,6 +2,7 @@ package tuie2e
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"os/exec"
@@ -11,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -749,6 +751,9 @@ func TestDaemonUpgradeRefusesAChangedKeptBinary(t *testing.T) {
 
 	f, err := os.OpenFile(first, os.O_WRONLY|os.O_APPEND, 0)
 	if err != nil {
+		if errors.Is(err, syscall.ETXTBSY) {
+			t.Skipf("this system refuses a write to a running binary (%v), so the in-place change this test models cannot happen here", err)
+		}
 		t.Fatal(err)
 	}
 	_, err = f.Write([]byte("\nnot part of the binary\n"))
