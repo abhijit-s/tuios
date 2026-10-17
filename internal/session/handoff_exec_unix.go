@@ -39,9 +39,9 @@ func listenerFD(l net.Listener, fn func(fd int)) bool {
 // and the start lock to one that holds it after the daemon is gone, so no
 // daemon can start again. Every fork in the process takes ForkLock, so none
 // can start until the exec has replaced the process or the descriptors are
-// closed-on-exec again. inWindow, when not nil, runs inside that span; only a
-// test sets it.
-func execHandoff(path string, argv, env []string, fds []int, inWindow func()) error {
+// closed-on-exec again. inWindow, when not nil, runs inside that span, and an
+// error from it is returned in place of the exec's; only a test sets it.
+func execHandoff(path string, argv, env []string, fds []int, inWindow func() error) error {
 	syscall.ForkLock.Lock()
 	defer syscall.ForkLock.Unlock()
 	cleared := make([]int, 0, len(fds))
@@ -57,7 +57,9 @@ func execHandoff(path string, argv, env []string, fds []int, inWindow func()) er
 		cleared = append(cleared, fd)
 	}
 	if inWindow != nil {
-		inWindow()
+		if err := inWindow(); err != nil {
+			return err
+		}
 	}
 	return syscall.Exec(path, argv, env)
 }

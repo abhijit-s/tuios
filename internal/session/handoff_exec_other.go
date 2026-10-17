@@ -13,7 +13,9 @@ func handoffSupported() bool { return false }
 
 func listenerFD(net.Listener, func(int)) bool { return false }
 
-func execHandoff(string, []string, []string, []int, func()) error { return ErrHandoffUnsupported }
+func execHandoff(string, []string, []string, []int, func() error) error {
+	return ErrHandoffUnsupported
+}
 
 func adoptedFile(int, string) *os.File { return nil }
 

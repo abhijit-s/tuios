@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"strconv"
@@ -57,6 +58,20 @@ func handoffTestHold() time.Duration {
 	return time.Duration(max(ms, 0)) * time.Millisecond
 }
 
+// handoffTestAdoptPause holds an adoption that long before anything is
+// applied, when a test asks with TUIOS_TEST_HANDOFF_ADOPT_PAUSE_MS, in the
+// image a handoff execs but never in its fallback or an image a keeper
+// started: a span in which the new image is not up yet.
+func handoffTestAdoptPause() {
+	if !handoffTestsOn() || os.Getenv(handoffFallbackEnv) != "" || os.Getenv(handoffKeptEnv) != "" {
+		return
+	}
+	if ms, err := strconv.Atoi(os.Getenv("TUIOS_TEST_HANDOFF_ADOPT_PAUSE_MS")); err == nil && ms > 0 {
+		LogBasic("Live upgrade: pausing the adoption %d ms (TUIOS_TEST_HANDOFF_ADOPT_PAUSE_MS)", ms)
+		time.Sleep(time.Duration(ms) * time.Millisecond)
+	}
+}
+
 var handoffTestOnce sync.Once
 
 func addHandoffTestVerbs() {
@@ -67,6 +82,8 @@ func addHandoffTestVerbs() {
 			{Name: "binary", Type: "string", Description: "The binary to exec. Omit for this one."},
 			{Name: "hold_ms", Type: "int", Description: "Wait this long after the manifest is written, before the clients are closed."},
 			{Name: "fork_in_window", Type: "bool", Description: "Start a long-lived child while the descriptors are exposed."},
+			{Name: "exec_fail", Type: "bool", Description: "Fail the exec, with the descriptors exposed, as an exec that returns does."},
+			{Name: "commit_delay_ms", Type: "int", Description: "Wait this long after the answer before committing."},
 		},
 		handler: (*Daemon).verbTestHandoff,
 	}
@@ -87,9 +104,11 @@ func addHandoffTestVerbs() {
 
 func (d *Daemon) verbTestHandoff(cs *connState, params json.RawMessage) (any, *verbError) {
 	var p struct {
-		Binary       string `json:"binary"`
-		HoldMS       int    `json:"hold_ms"`
-		ForkInWindow bool   `json:"fork_in_window"`
+		Binary        string `json:"binary"`
+		HoldMS        int    `json:"hold_ms"`
+		ForkInWindow  bool   `json:"fork_in_window"`
+		ExecFail      bool   `json:"exec_fail"`
+		CommitDelayMS int    `json:"commit_delay_ms"`
 	}
 	if verr := decodeParams(params, &p); verr != nil {
 		return nil, verr
@@ -102,18 +121,26 @@ func (d *Daemon) verbTestHandoff(cs *connState, params json.RawMessage) (any, *v
 		p.Binary = exe
 	}
 	req := handoffRequest{binary: p.Binary, holdAfterWrite: time.Duration(p.HoldMS) * time.Millisecond}
-	if p.ForkInWindow {
-		req.inWindow = func() {
+	switch {
+	case p.ForkInWindow:
+		req.inWindow = func() error {
 			//tuios:allow-exec a test-only child that must not inherit the exposed descriptors
 			go func() { _ = exec.Command("sleep", "20.4242").Start() }()
 			time.Sleep(300 * time.Millisecond)
+			return nil
 		}
+	case p.ExecFail:
+		req.inWindow = func() error { return errors.New("the exec failed on purpose (test-handoff exec_fail)") }
 	}
 	run, err := d.prepareHandoff(req)
 	if err != nil {
 		return nil, newVerbError(ErrVerbInternal, err.Error())
 	}
-	cs.takeover = func(*bufio.Reader) { _ = run.commit() }
+	delay := time.Duration(p.CommitDelayMS) * time.Millisecond
+	cs.takeover = func(*bufio.Reader) {
+		time.Sleep(delay)
+		_ = run.commit()
+	}
 	return map[string]any{"pid": os.Getpid(), "panes": run.panes, "manifest_bytes": run.manifestBytes}, nil
 }
 
