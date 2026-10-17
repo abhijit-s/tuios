@@ -44,7 +44,7 @@ func (d *Daemon) verbDaemonUpgrade(cs *connState, params json.RawMessage) (any, 
 	if p.Binary == "" || !filepath.IsAbs(p.Binary) {
 		return nil, invalidParam("binary", "binary must be the absolute path of a tuios binary")
 	}
-	req := handoffRequest{binary: p.Binary}
+	req := handoffRequest{binary: p.Binary, holdAfterWrite: handoffTestHold()}
 	if confirm {
 		// The preflight runs the pane's file as the daemon's own child, so it
 		// runs only when a dialog could be shown, and only on the file that was

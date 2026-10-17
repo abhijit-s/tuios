@@ -21,11 +21,14 @@ import (
 // handoffTestEnv enables the verbs.
 const handoffTestEnv = "TUIOS_TEST_HANDOFF"
 
+// handoffTestsOn says the test verbs and hooks are on.
+func handoffTestsOn() bool { return os.Getenv(handoffTestEnv) == "1" }
+
 // registerHandoffTestVerbs adds the verbs and the hooks, once, when the
 // variable asks. It runs from NewDaemon: the registry is built by an init of
 // its own, which an init here could run before.
 func registerHandoffTestVerbs() {
-	if os.Getenv(handoffTestEnv) != "1" {
+	if !handoffTestsOn() {
 		return
 	}
 	handoffTestOnce.Do(func() {
@@ -41,6 +44,17 @@ func setHandoffTestHooks() {
 	if ms, err := strconv.Atoi(os.Getenv("TUIOS_TEST_HANDOFF_VERIFY_PAUSE_MS")); err == nil && ms > 0 {
 		fanVerifySpawnedHook = func() { time.Sleep(time.Duration(ms) * time.Millisecond) }
 	}
+}
+
+// handoffTestHold is how long daemon-upgrade holds a handoff between the
+// manifest and the exec, as test-handoff's hold_ms does:
+// TUIOS_TEST_HANDOFF_HOLD_MS, with the test verbs on.
+func handoffTestHold() time.Duration {
+	if !handoffTestsOn() {
+		return 0
+	}
+	ms, _ := strconv.Atoi(os.Getenv("TUIOS_TEST_HANDOFF_HOLD_MS"))
+	return time.Duration(max(ms, 0)) * time.Millisecond
 }
 
 var handoffTestOnce sync.Once
