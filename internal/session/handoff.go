@@ -34,8 +34,8 @@ import (
 // MinHandoffVersion the oldest it reads. A change to what a record means, or
 // to a field a record carries, moves HandoffVersion.
 const (
-	HandoffVersion    = 1
-	MinHandoffVersion = 1
+	HandoffVersion    = 2
+	MinHandoffVersion = 2
 )
 
 // ErrHandoffUnsupported is a platform with no live handoff.
@@ -123,6 +123,9 @@ type HandoffStats struct {
 	// Fallback says the new image could not adopt the panes, and the
 	// previous binary did.
 	Fallback bool `json:"fallback,omitempty"`
+	// Recovered says the new image died before it was up, and the keeper
+	// started the previous binary in its place, with a pid of its own.
+	Recovered bool `json:"recovered,omitempty"`
 }
 
 // handoffPaneRef is a pane the manifest carries.
@@ -251,6 +254,23 @@ func (r *handoffRun) prepare() error {
 	}
 	r.panes = len(refs)
 
+	// The manifest's descriptor is made now and written once the panes have
+	// stopped, so the keeper can hold a copy of it from the start. The keeper
+	// starts before any pane stops, and its start is no part of the pause.
+	f, err := newHandoffFile(handoffDir())
+	if err != nil {
+		return fmt.Errorf("making the handoff manifest: %w", err)
+	}
+	r.file = f
+	r.undo = append(r.undo, func() { _ = f.Close() })
+	restore := append([]string{r.prev.path}, d.handoffArgs(int(f.Fd()))...) //nolint:gosec // a descriptor number
+	k, err := startKeeper(r.prev.path, r.keptDescriptors(refs), restore)
+	if err != nil {
+		return fmt.Errorf("starting the handoff keeper: %w", err)
+	}
+	d.setKeeper(k)
+	r.undo = append(r.undo, d.releaseKeeper)
+
 	ctx, cancel := context.WithTimeout(d.ctx, handoffQuiesceTimeout)
 	defer cancel()
 	quiesced := make([]*PTY, len(refs))
@@ -282,12 +302,6 @@ func (r *handoffRun) prepare() error {
 		})
 	}
 
-	f, err := newHandoffFile(handoffDir())
-	if err != nil {
-		return fmt.Errorf("making the handoff manifest: %w", err)
-	}
-	r.file = f
-	r.undo = append(r.undo, func() { _ = f.Close() })
 	if err := r.writeManifest(sessions, refs); err != nil {
 		return fmt.Errorf("writing the handoff manifest: %w", err)
 	}
@@ -375,6 +389,11 @@ func (r *handoffRun) writeManifest(sessions []*Session, refs []handoffPaneRef) e
 		dr.LockFD = int(d.startLock.Fd()) //nolint:gosec // a descriptor number
 		r.fds = append(r.fds, dr.LockFD)
 	}
+	// The daemon's end of the keeper's socket crosses the exec: it closes
+	// only when the daemon's process is gone.
+	if dr.Keeper = d.keeperRecord(); dr.Keeper.PID > 0 {
+		r.fds = append(r.fds, dr.Keeper.FD)
+	}
 	if err := mw.json(handoffRecDaemon, dr); err != nil {
 		return err
 	}
@@ -391,6 +410,24 @@ func (r *handoffRun) writeManifest(sessions []*Session, refs []handoffPaneRef) e
 	}
 	r.fds = append(r.fds, int(r.file.Fd())) //nolint:gosec // a descriptor number
 	return nil
+}
+
+// keptDescriptors is every descriptor the exec carries, which the keeper
+// holds a copy of: the manifest, each pane's master, the sockets and the start
+// lock.
+func (r *handoffRun) keptDescriptors(refs []handoffPaneRef) []int {
+	d := r.d
+	out := []int{int(r.file.Fd())} //nolint:gosec // a descriptor number
+	for _, ref := range refs {
+		ptyspawn.ControlMaster(ref.pty.pty, func(fd int) { out = append(out, fd) })
+	}
+	for _, l := range d.namedListeners() {
+		listenerFD(l, func(fd int) { out = append(out, fd) })
+	}
+	if d.startLock != nil {
+		out = append(out, int(d.startLock.Fd())) //nolint:gosec // a descriptor number
+	}
+	return out
 }
 
 // namedListeners is every listening socket, by the name the manifest gives it.

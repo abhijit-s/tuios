@@ -699,7 +699,7 @@ Debug log levels:
 	// descriptor of the manifest its predecessor wrote. See daemon_upgrade.go.
 	daemonCmd.Flags().IntVar(&daemonAdoptFD, adoptFDFlag, 0, "Adopt the panes a live upgrade handed over on this descriptor")
 	_ = daemonCmd.Flags().MarkHidden(adoptFDFlag)
-	daemonCmd.AddCommand(handoffAcceptsCommand(), daemonUpgradeCommand())
+	daemonCmd.AddCommand(handoffAcceptsCommand(), handoffKeeperCommand(), daemonUpgradeCommand())
 
 	killDaemonCmd := &cobra.Command{
 		Use:   "kill-server",
