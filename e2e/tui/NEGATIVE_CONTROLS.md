@@ -7230,7 +7230,7 @@ TUIOS_E2E=1 TUIOS_E2E_BIN=/path/to/tuios \
 
 ### A stop while the new image adopts the panes
 
-- `TestKillServerWhileTheNewImageAdopts`: a daemon with `TUIOS_TEST_HANDOFF_ADOPT_PAUSE_MS=2500` hands its panes over, and `tuios kill-server` runs 0.7 s later, while the new image adopts them. kill-server must succeed, the daemon's pid must be gone with no daemon or keeper left under the test's folder, and the pane's program must have ended.
+- `TestKillServerWhileTheNewImageAdopts`: a daemon with `TUIOS_TEST_HANDOFF_ADOPT_PAUSE_MS=3000` hands its panes over, and `tuios kill-server` runs once the new image's line in `daemon.log` says it paused its adoption. A first form of the test slept 0.7 s instead, and under the load of the ghostty run the signal came before the new image's first line, which is a crash by design. kill-server must succeed, the daemon's pid must be gone with no daemon or keeper left under the test's folder, and the pane's program must have ended.
 
 Run on 2026-10-17 on macOS arm64 (Darwin 27, Go 1.26.9) against feat/live-handoff.
 

@@ -2,6 +2,8 @@ package tuie2e
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -135,20 +137,33 @@ func TestHandoffAbandonedWhenNotCommitted(t *testing.T) {
 
 // TestKillServerWhileTheNewImageAdopts stops the daemon with `tuios
 // kill-server` while a handoff's new image is still adopting the panes,
-// held 2.5 s before it applies anything (TUIOS_TEST_HANDOFF_ADOPT_PAUSE_MS).
+// held 2.5 s before it applies anything (TUIOS_TEST_HANDOFF_ADOPT_PAUSE_MS),
+// once its log says it paused.
 // A daemon stopped on purpose is not a crash: it must stop, as kill-server
 // says it does, ending the programs in its panes, and the handoff's keeper
 // must stand down rather than bring the old binary back.
 func TestKillServerWhileTheNewImageAdopts(t *testing.T) {
 	base := t.TempDir()
-	startHandoffDaemon(t, base, "TUIOS_TEST_HANDOFF_ADOPT_PAUSE_MS=2500")
+	startHandoffDaemon(t, base, "TUIOS_TEST_HANDOFF_ADOPT_PAUSE_MS=3000")
 	const sess = "e2e-killadopt"
 	win := newCommandWindow(t, base, sess, "a", false, "sh", "-c", "echo pid-$$; exec sleep 600")
 	waitHandoffPane(t, base, sess, win, regexp.MustCompile(`^pid-\d+`), 10*time.Second)
 	panePID := panePIDs(t, base, sess)[win]
 	img := helloImage(t, base)
 	_ = mustCall(t, base, "test-handoff", map[string]any{})
-	time.Sleep(700 * time.Millisecond)
+	// The new image says in the daemon's log file when it pauses; a stop
+	// before then, in the exec or the runtime's start, is a crash.
+	logPath := filepath.Join(xdgDir(base, "XDG_STATE_HOME"), "tuios", "daemon.log")
+	deadline := time.Now().Add(20 * time.Second)
+	for {
+		if data, _ := os.ReadFile(logPath); strings.Contains(string(data), "pausing the adoption") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the new image never said it paused its adoption in %s", logPath)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 	started := time.Now()
 	out, killErr := handoffCLI(t, base, 30*time.Second, "kill-server")
 	took := time.Since(started)
