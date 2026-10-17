@@ -3,6 +3,9 @@ package tuie2e
 import (
 	"encoding/json"
 	"regexp"
+	"strconv"
+	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -169,5 +172,102 @@ func TestKillServerWhileTheNewImageAdopts(t *testing.T) {
 	}
 	if paneAlive {
 		t.Errorf("ASSERTION: the pane's program %d outlived kill-server", panePID)
+	}
+}
+
+// keeperPID is the pid of the one keeper of the daemon under base.
+func keeperPID(t *testing.T, base string) int {
+	t.Helper()
+	awaitKeeper(t, base, 30*time.Second)
+	keepers := keeperProcesses(t, base)
+	if len(keepers) != 1 {
+		t.Fatalf("want one keeper, have %v", keepers)
+	}
+	fields := strings.Fields(keepers[0])
+	pid, err := strconv.Atoi(fields[0])
+	if err != nil {
+		t.Fatalf("read the keeper's pid from %q: %v", keepers[0], err)
+	}
+	return pid
+}
+
+// TestHandoffSurvivesItsKeeperDying kills the handoff's keeper with SIGKILL
+// in a 2 s hold between the manifest and the exec. The keeper only guards the
+// new image's start, so the upgrade must go through with every pane, and the
+// new image, whose child the dead keeper is, must reap it: no zombie and no
+// keeper left.
+func TestHandoffSurvivesItsKeeperDying(t *testing.T) {
+	base := t.TempDir()
+	startHandoffDaemon(t, base)
+	const sess = "e2e-keeperdies"
+	win := counterPane(t, base, sess, "x-")
+	before := panePIDs(t, base, sess)
+	img := helloImage(t, base)
+	_ = mustCall(t, base, "test-handoff", map[string]any{"hold_ms": 2000})
+	keeper := keeperPID(t, base)
+	if err := syscall.Kill(keeper, syscall.SIGKILL); err != nil {
+		t.Fatalf("kill the keeper %d: %v", keeper, err)
+	}
+	after := awaitNewImage(t, base, img, 20*time.Second)
+	time.Sleep(500 * time.Millisecond)
+	afterPIDs := panePIDs(t, base, sess)
+	zombies := defunctChildren(t, after.PID)
+	_, keepers := awaitNoKeeper(t, base, 3*time.Second)
+	moved, gap := counterMoves(t, base, sess, win, "x-")
+
+	writeHandoffArtifact(t, map[string]any{"keeper": keeper, "before": img, "after": after, "defunct": zombies, "keepers_left": keepers, "counter_moved": moved, "gap_at": gap})
+	if after.PID != img.PID {
+		t.Fatalf("ASSERTION: the daemon's pid changed from %d to %d", img.PID, after.PID)
+	}
+	for id, pid := range before {
+		if afterPIDs[id] != pid {
+			t.Errorf("ASSERTION: window %s had pid %d, and %d after the upgrade", id, pid, afterPIDs[id])
+		}
+	}
+	if len(zombies) > 0 || len(keepers) > 0 {
+		t.Errorf("ASSERTION: the dead keeper was left behind: zombies %v, keepers %v", zombies, keepers)
+	}
+	if !moved || gap >= 0 {
+		t.Errorf("ASSERTION: the counter pane did not read on after the upgrade (moved %v, gap at %d)", moved, gap)
+	}
+}
+
+// TestKeeperRestoresWhenTheOldImageDiesBeforeTheExec kills the daemon with
+// SIGKILL in a 3 s hold after it wrote the manifest and before its exec. The
+// keeper holds every pane's terminal and the complete manifest, so it must
+// bring the previous binary up in its own place: the daemon answers from the
+// keeper's pid, says it was recovered, and every pane keeps its process and
+// its output, with no gap.
+func TestKeeperRestoresWhenTheOldImageDiesBeforeTheExec(t *testing.T) {
+	base := t.TempDir()
+	startHandoffDaemon(t, base)
+	const sess = "e2e-olddies"
+	win := counterPane(t, base, sess, "x-")
+	before := panePIDs(t, base, sess)
+	img := helloImage(t, base)
+	_ = mustCall(t, base, "test-handoff", map[string]any{"hold_ms": 3000})
+	keeper := keeperPID(t, base)
+	if err := syscall.Kill(img.PID, syscall.SIGKILL); err != nil {
+		t.Fatalf("kill the daemon %d: %v", img.PID, err)
+	}
+	after := awaitNewImage(t, base, img, 20*time.Second)
+	stats := handoffStats(t, base)
+	afterPIDs := panePIDs(t, base, sess)
+	moved, gap := counterMoves(t, base, sess, win, "x-")
+
+	writeHandoffArtifact(t, map[string]any{"keeper": keeper, "before": img, "after": after, "stats": stats, "counter_moved": moved, "gap_at": gap})
+	if after.PID != keeper {
+		t.Errorf("ASSERTION: the daemon answers from pid %d, want the keeper's %d", after.PID, keeper)
+	}
+	if rec, _ := stats["recovered"].(bool); !rec {
+		t.Errorf("ASSERTION: the daemon does not say it was recovered: %v", stats)
+	}
+	for id, pid := range before {
+		if afterPIDs[id] != pid {
+			t.Errorf("ASSERTION: window %s had pid %d, and %d after the recovery", id, pid, afterPIDs[id])
+		}
+	}
+	if !moved || gap >= 0 {
+		t.Errorf("ASSERTION: the counter pane did not read on after the recovery (moved %v, gap at %d)", moved, gap)
 	}
 }
