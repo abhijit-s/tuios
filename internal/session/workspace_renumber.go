@@ -206,11 +206,12 @@ func RenumberWorkspaceMap[V any](m map[int]V, newOf map[int]int) map[int]V {
 // applyLegacyWorkspaceOrder turns a display order saved by a build that kept
 // one into the numbering it showed, once, and drops it. The workspaces come
 // back numbered the way their pills were arranged, which is what the person
-// was looking at.
-func (st *SessionState) applyLegacyWorkspaceOrder() {
+// was looking at. It returns where each workspace went, nil when none moved,
+// for a caller that keeps records by workspace number beside the state.
+func (st *SessionState) applyLegacyWorkspaceOrder() map[int]int {
 	if len(st.WorkspaceOrder) == 0 {
 		st.WorkspaceOrder = nil
-		return
+		return nil
 	}
 	full := slices.Clone(st.WorkspaceOrder)
 	for ws := 1; ws <= st.workspaceBound(); ws++ {
@@ -219,10 +220,12 @@ func (st *SessionState) applyLegacyWorkspaceOrder() {
 		}
 	}
 	newOf, err := workspacePlaces(full, st.workspaceBound())
-	if err == nil {
-		st.renumberWorkspaces(newOf)
-	}
 	st.WorkspaceOrder = nil
+	if err != nil {
+		return nil
+	}
+	st.renumberWorkspaces(newOf)
+	return newOf
 }
 
 // RenumberWorkspaces moves the workspaces into the order given (see

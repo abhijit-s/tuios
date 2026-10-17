@@ -546,6 +546,12 @@ func (s *Session) adoptState(st *SessionState, rec handoffSession) (pruneDue, fl
 	s.state = st
 	s.returnTo = maps.Clone(rec.ReturnTo)
 	s.workspaceTrail = slices.Clone(rec.WorkspaceTrail)
+	// An image that kept a display order beside the numbers hands it over
+	// as it saved it. It becomes the numbering it showed, as on a restore,
+	// and what this Session keeps by number moves with it.
+	if newOf := st.applyLegacyWorkspaceOrder(); newOf != nil {
+		s.renumberSessionRecordsLocked(newOf)
+	}
 	s.restoreSubagentsLocked(rec.Subagents, rec.SubagentShownAt)
 	s.noteStateChangeLocked()
 	return s.subagentTimersLocked()

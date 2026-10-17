@@ -7835,3 +7835,11 @@ Run on 2026-10-17, each against a build with the fix line or lines cut, built to
 | The pane asked for on a new workspace landed on the old number when the switch closed up a workspace below it | yes | the client sends no tab key with `SendNewWindowFrom` | `TestEmptyWorkspaceOpensAPane` ("workspace 2 has 0 panes, want 1") | **caught** |
 
 The move controls were run against builds of 691b0394 (the move fix alone); the close controls against the final tree. The fixed build passes every test above, three times in a row for the move tests. Every E2E test that failed on the fixed build in a full run fails the same way on upstream/main at 84715194 (`TestDockFloodingComponentStaysBounded`, `TestMaxFPSAutoReadsTheDisplay`, the risk, GUI bridge, ports, OSC 7, kitten, nested-attach, page-binding, pty-log and stream-memory tests), apart from the ones this change moved on purpose, which are updated: a workspace's number is its position, so a test that put a pane on workspace 3 with nothing on 2, or pressed `Alt+3` in a one-workspace session, now reads the number the workspace holds. The option-key tests open a pane on every workspace first, so each `Alt+N` still reaches its own number and a misread digit still lands elsewhere. The Collie herdr fixture now expects `tab.close` on a tab whose last pane closed to answer `tab_not_found`, as herdr does.
+
+### A display order carried across a live upgrade
+
+Run on 2026-10-18 on macOS, on the local integration stack (live handoff merged with workspace renumbering). `TestDaemonUpgradeAppliesADisplayOrder` starts a daemon of a build that keeps a dragged workspace order as a display order (`TUIOS_E2E_DISPLAY_ORDER_BIN`, dev+f12d864d), sets the order DPLY, EDIT, REVW, and upgrades it live to the build under test. The fixed build passes.
+
+| Control: what was cut | Tests that fail | Verdict |
+| --- | --- | --- |
+| Adoption does not apply the display order (`adoptState` without `applyLegacyWorkspaceOrder`) | `TestDaemonUpgradeAppliesADisplayOrder` ("the daemon has workspace 1 named \"EDIT\", want \"DPLY\"") | **caught** |
