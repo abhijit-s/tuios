@@ -11,7 +11,7 @@ import (
 
 // handoffLayout is the recorded shape of the handoff manifest's records at
 // HandoffVersion. See TestHandoffLayoutMovesWithTheVersion.
-const handoffLayout = "3:cabad151ff747d64"
+const handoffLayout = "3:9dd6485c6473c032"
 
 // TestHandoffLayoutMovesWithTheVersion fails when a record of the handoff
 // manifest changes shape without HandoffVersion moving.

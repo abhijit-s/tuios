@@ -370,7 +370,7 @@ func checkAdoptable(m *handoffManifest) error {
 //     a goroutine after the reap, and it waited on the handoff until the exec
 //     ended it;
 //   - the timers the session's records need, armed again: the prune of agent
-//     metadata with a time to live.
+//     metadata with a time to live, and the prune and flush of subagents.
 func (d *Daemon) adoptSession(rec handoffSession, panes []adoptedPane, fb *adoptFallback) ([]*PTY, []func(), error) {
 	st := rec.State
 	width, height := st.Width, st.Height
@@ -455,8 +455,12 @@ func (d *Daemon) adoptSession(rec handoffSession, panes []adoptedPane, fb *adopt
 		}
 	}
 	metaDue := earliestAgentMetaExpiry(st.Windows)
-	sess.adoptState(st, rec)
-	later = append(later, func() { sess.armAgentMetaPrune(metaDue) })
+	pruneDue, flushDue := sess.adoptState(st, rec)
+	later = append(later, func() {
+		sess.armAgentMetaPrune(metaDue)
+		sess.armSubagentPrune(pruneDue)
+		sess.subagentFlush.arm(flushDue, sess.flushHeldSubagents)
+	})
 	return out, later, nil
 }
 
@@ -508,17 +512,20 @@ func (s *Session) adoptPTY(rec handoffPane, w WindowState, onExit func(string), 
 }
 
 // adoptState installs a session's state as its previous image held it, with
-// the workspace return the record carries. It is not a client's push, so
-// nothing is merged and no window event is raised: every window in it was
-// already there.
-func (s *Session) adoptState(st *SessionState, rec handoffSession) {
+// the workspace return and the subagent records the record carries. It is
+// not a client's push, so nothing is merged and no window event is raised:
+// every window in it was already there. It returns when the subagent prune
+// and flush are due, for the caller to arm once the panes have started.
+func (s *Session) adoptState(st *SessionState, rec handoffSession) (pruneDue, flushDue int64) {
 	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
 	st.Name = s.Name()
 	s.state = st
 	s.returnTo = maps.Clone(rec.ReturnTo)
 	s.workspaceTrail = slices.Clone(rec.WorkspaceTrail)
+	s.restoreSubagentsLocked(rec.Subagents, rec.SubagentShownAt)
 	s.noteStateChangeLocked()
-	s.stateMu.Unlock()
+	return s.subagentTimersLocked()
 }
 
 // applyTo gives an emulator the colours, before anything else is written to
