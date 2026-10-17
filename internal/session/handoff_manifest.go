@@ -134,6 +134,11 @@ type handoffDaemon struct {
 	ProtocolPanes map[string]string            `json:"protocol_panes,omitempty"`
 	PaneCreators  map[string]string            `json:"pane_creators,omitempty"`
 	MovedWindows  map[string]handoffMovedFrom  `json:"moved_windows,omitempty"`
+
+	// What the daemon keeps about sessions outside their state, each by
+	// session id. See handoff_session_records.go.
+	Aliases map[string]string          `json:"aliases,omitempty"`
+	Stash   map[string]handoffStashBox `json:"stash,omitempty"`
 }
 
 // handoffPluginPane is a pluginPane.

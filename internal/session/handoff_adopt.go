@@ -182,6 +182,7 @@ func (d *Daemon) adopt(fd int, fb *adoptFallback, kept map[int]int) error {
 		closes = append(closes, exited...)
 	}
 	d.adopting.Store(false)
+	d.restoreSessionRecords(m.Daemon)
 	handoffTestCrash(crashWhileAdopting)
 
 	// The point of no return: from here the panes are read and the sockets
