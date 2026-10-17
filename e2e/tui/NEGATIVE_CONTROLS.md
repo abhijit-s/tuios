@@ -7177,3 +7177,13 @@ Run on 2026-10-17 on macOS arm64 (Darwin 27, Go 1.26.9) against feat/live-handof
 ```sh
 TUIOS_E2E=1 TUIOS_E2E_BIN=/path/to/tuios go test -count=1 -run '^TestDaemonUpgradeFromAPaneNeedsAdmin$' .
 ```
+
+### State outside the session state, carried or re-armed
+
+`e2e/tui/handoff_carry_test.go` covers what section 7.3 of the spec carries or re-arms beyond the window records. Run on 2026-10-17 on macOS arm64 (Darwin 27, Go 1.26.9) against feat/live-handoff, one build per control.
+
+- `TestSelfExecKeepsFocusReporting`: a `cat -v` pane turns on focus reporting and is handed over with no client attached; a client then attaches to the new image and reports the pane's focus. The program must hear exactly one focus-in.
+
+| Control | How | Test that fails | Verdict |
+| --- | --- | --- | --- |
+| Focus reporting starts off in the new image | the `pty.focusReporting = ...FocusReportingEnabled()` line cut from `adoptPTY` | `TestSelfExecKeepsFocusReporting`: "the program heard 2 focus-in reports after one client attached to the new image, want 1" | **caught** |
