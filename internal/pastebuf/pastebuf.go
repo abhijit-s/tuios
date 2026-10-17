@@ -26,7 +26,10 @@
 // The daemon holds one store, so every client and every session can share the
 // buffers, as tmux's server does. A client with no daemon behind it holds its
 // own. Nothing is written to disk: buffers often hold what a person copied
-// out of a terminal, which includes secrets, and they end with the process.
+// out of a terminal, which includes secrets, and they end with the process. A
+// daemon's live upgrade hands them to its next image (Snapshot, Restore) in
+// the manifest that carries the panes' screens, which is a memfd on Linux and
+// an unlinked owner-only file elsewhere.
 package pastebuf
 
 import (
@@ -34,6 +37,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -161,6 +165,27 @@ func (s *Store) Bytes() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.bytes
+}
+
+// Snapshot is every buffer, newest first, and the number the next automatic
+// name takes. A daemon that hands its state to its next image carries them.
+func (s *Store) Snapshot() ([]Buffer, int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Clone(s.bufs), s.next
+}
+
+// Restore puts buffers, newest first, and the automatic name counter into
+// an empty store, as Snapshot gave them, and drops what the store's limits do
+// not hold. It returns how many it dropped.
+func (s *Store) Restore(bufs []Buffer, next int) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.bufs, s.next, s.bytes = slices.Clone(bufs), next, 0
+	for _, b := range s.bufs {
+		s.bytes += len(b.Data)
+	}
+	return s.trim()
 }
 
 // trim drops buffers until the limits hold: the oldest automatic buffers
