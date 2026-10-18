@@ -570,7 +570,7 @@
     {
       "path": "appearance.sidebar.show_numbers",
       "type": "bool",
-      "description": "Show the switch number ahead of each session name",
+      "description": "Show the switch number ahead of each session name and space heading",
       "default": "false"
     },
     {
@@ -726,13 +726,14 @@
         "ram",
         "session",
         "session-controls",
+        "space",
         "tape",
         "trail",
         "transfers",
         "windows",
         "workspaces"
       ],
-      "max_items": 26,
+      "max_items": 28,
       "max_bytes": 32
     },
     {
@@ -745,7 +746,7 @@
       "path": "dock.left",
       "type": "list",
       "description": "The built-in cells on the left end of the dock, in order. An empty list draws nothing there.",
-      "default": "[\"mode\", \"workspaces\", \"trail\", \"tape\"]",
+      "default": "[\"mode\", \"workspaces\", \"trail\", \"space\", \"tape\"]",
       "items": [
         "clock",
         "copy-help",
@@ -755,13 +756,14 @@
         "ram",
         "session",
         "session-controls",
+        "space",
         "tape",
         "trail",
         "transfers",
         "windows",
         "workspaces"
       ],
-      "max_items": 26,
+      "max_items": 28,
       "max_bytes": 32
     },
     {
@@ -778,13 +780,14 @@
         "ram",
         "session",
         "session-controls",
+        "space",
         "tape",
         "trail",
         "transfers",
         "windows",
         "workspaces"
       ],
-      "max_items": 26,
+      "max_items": 28,
       "max_bytes": 32
     },
     {
