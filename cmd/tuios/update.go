@@ -452,9 +452,11 @@ func explainLookupError(err error, prerelease bool) error {
 //
 // The daemon holds the old binary open. It goes on running the code it started
 // with, and a new client attaching to it gets a build-mismatch warning, so the
-// instruction has to be here and not left to be discovered.
+// instruction has to be here and not left to be discovered. update leaves the
+// daemon alone: a live upgrade is still experimental, and the person decides
+// when their attached clients are dropped.
 func reportDaemonAfterUpdate(out io.Writer) {
 	fmt.Fprintln(out, "The daemon is still running the old build. Sessions you have open keep working.")
-	fmt.Fprintln(out, "To move them to the new one, detach, then run `tuios kill-server` and start tuios again.")
-	fmt.Fprintln(out, "Panes are restored, but programs running in them are not.")
+	fmt.Fprintln(out, "To move it to the new one and keep every program running, run `"+serverCommand("daemon upgrade")+"` (experimental).")
+	fmt.Fprintln(out, "It says why when the daemon cannot be upgraded live. `"+killServerCommand()+"` then restarts it: panes are restored, but programs running in them are not.")
 }

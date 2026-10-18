@@ -609,6 +609,17 @@ func runDaemonSessionOn(host, sessionName string, createNew bool) error {
 		return nil
 	}
 
+	// A live upgrade replaced the daemon's image. The session and every
+	// program in it run on, and nothing failed here.
+	if reason == app.ExitDaemonUpgraded {
+		to, _ := exitClient.UpgradedTo()
+		if to == "" {
+			to = "a new version"
+		}
+		fmt.Printf("The daemon was upgraded to %s. Your programs are still running. Run 'tuios attach %s' to continue.\n", to, exitSession)
+		return nil
+	}
+
 	return reportSessionExit(exitSession, exitHost, reason, killed)
 }
 
@@ -1185,6 +1196,16 @@ func runDaemon(foreground, disableAutoRestore bool) error {
 		return startDaemonBackground()
 	}
 
+	daemonCfg := foregroundDaemonConfig()
+	daemonCfg.DisableAutoRestore = disableAutoRestore
+	daemon := session.NewDaemon(daemonCfg)
+
+	return daemon.Run()
+}
+
+// foregroundDaemonConfig is the configuration of the daemon this process
+// runs, with its logging installed.
+func foregroundDaemonConfig() *session.DaemonConfig {
 	// The file's daemon settings first, the same way every other starter maps
 	// them, then what only this command knows.
 	var daemonCfg *session.DaemonConfig
@@ -1194,7 +1215,7 @@ func runDaemon(foreground, disableAutoRestore bool) error {
 		daemonCfg = session.DaemonConfigFromUser(nil)
 	}
 	daemonCfg.Version = version
-	daemonCfg.DisableAutoRestore = disableAutoRestore
+	daemonCfg.HandoffArgs = handoffArgs
 	// A terminal on stderr is what makes this daemon a foreground one for
 	// logging. `tuios daemon` is also the command startDaemonBackground
 	// spawns for a detached daemon, with stderr pointed at the log file, so
@@ -1209,10 +1230,7 @@ func runDaemon(foreground, disableAutoRestore bool) error {
 	// is what answers "did my hook run at all". The sinks are in place above,
 	// so the line reaches the ring and the file in a background daemon.
 	hooks.SetVerbose(session.GetDebugLevel() >= session.DebugBasic)
-
-	daemon := session.NewDaemon(daemonCfg)
-
-	return daemon.Run()
+	return daemonCfg
 }
 
 func runKillDaemon() error {

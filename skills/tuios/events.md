@@ -98,6 +98,7 @@ Every type, and what it reports:
 | `host-changed` | A host link connects or drops |
 | `transfer`, `transfer-progress` | A copy the daemon runs is created, changes state, ends, or leaves the list (`action` `removed`, after `transfer-clear` or 30 minutes after it ended); its progress, opt-in (`tuios --skill files`) |
 | `transfer-file` | One file of a copy ended: `file` has `id`, `rel`, `state` (`done`, `same`, `skipped`, `conflict` or `failed`), `sha256`, `code`, `error`. Opt-in |
+| `daemon-upgraded` | A live upgrade (`tuios daemon upgrade`) replaced the daemon: `title` is the build the panes came from, `body` the build that has them, `state` is `upgraded`, `fallback`, or `recovered` when the new image died and the previous binary took the panes back under a new daemon pid |
 | `gap` | Events were lost. See below |
 
 The hook names (`after-new-window` and the rest) are not event types. The
@@ -117,6 +118,8 @@ line with `"type":"gap"` means events are gone for good (the daemon restarted,
 or they aged out): read current state again with `tuios list-agents` or
 `tuios list-attention` rather than trusting the stream to be complete. Output
 events are never replayed.
+
+A live upgrade (`tuios daemon upgrade`) drops every stream but keeps the `boot_id`, the numbering and the replay, so resume the same way and expect no gap.
 
 To follow a list without missing a change, list first, then subscribe from the
 listing's `seq` and `boot_id` (`list-attention --json` carries both).

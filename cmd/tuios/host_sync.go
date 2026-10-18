@@ -36,9 +36,10 @@ import (
 // runs: the daemon keeps the file it started from. Restarting it ends every
 // program in every pane it holds, and resurrection brings back the layout with
 // new shells, not the programs. So the default installs and leaves the daemon
-// alone, and says what that means. --restart restarts only the daemons whose
-// version differs, and only after it has listed what ends and the person has
-// agreed.
+// alone, and says what that means. --restart moves only the daemons whose
+// version differs, and only after it has listed what a restart would end and
+// the person has agreed. It upgrades each live where it can, which ends
+// nothing, and restarts it where it cannot, saying why.
 //
 // The work goes in four steps, and nothing is changed before the third:
 //
@@ -57,7 +58,9 @@ const syncParallel = 4
 const (
 	syncProbeTimeout   = 90 * time.Second
 	syncInstallTimeout = 15 * time.Minute
-	syncRestartTimeout = 90 * time.Second
+	// A restart may be a live upgrade, which waits up to a minute for the
+	// new image, then a restart if the upgrade could not start.
+	syncRestartTimeout = 150 * time.Second
 )
 
 // syncOptions are the flags.
@@ -112,6 +115,9 @@ type syncDaemon struct {
 	// not known.
 	Unread    bool `json:"unread,omitzero"`
 	Restarted bool `json:"restarted"`
+	// Upgraded says --restart upgraded the daemon live: it kept its pid and
+	// every program in its panes.
+	Upgraded bool `json:"upgraded"`
 	// Started says --start started a daemon that was not running.
 	Started bool `json:"started"`
 }
@@ -161,10 +167,13 @@ type syncTarget struct {
 	sha         string
 
 	// The plan.
-	platform   string
-	install    bool
-	targetArg  string
-	restart    bool
+	platform  string
+	install   bool
+	targetArg string
+	restart   bool
+	// liveOnly says a restart may only be a live upgrade: one that cannot
+	// be live leaves the daemon as it is.
+	liveOnly   bool
 	start      bool
 	oldArg     string
 	newVersion string
@@ -267,18 +276,25 @@ not find it there. sync never uses sudo. It writes the binary to a temporary
 file in the same folder, checks it, runs it once, and renames it into place.
 
 The daemon on a host keeps the old version after an install. sync does not
-restart it, because a restart ends every program in its panes. The layout
-comes back with new shells. sync tells you which daemons are old and gives
-the command to restart them.
+touch it without --restart, because a restart ends every program in its
+panes. The layout comes back with new shells. sync tells you which daemons
+are old and gives the command to move them.
 
 --start starts the daemon on each host where it does not run. On a host
 with no tuios, sync installs tuios first and then starts the daemon. sync
 never starts a daemon where tuios is missing.
 
---restart restarts each daemon whose version is different. First it lists the
-sessions and the panes with a running program on each host. Then it asks you
-to agree. Without a terminal, add --yes. A daemon with no sessions restarts
-without a question. A daemon with the new version is never restarted.
+--restart moves each daemon whose version is different onto the new binary.
+It runs 'tuios daemon upgrade --or-restart' on the host, with the binary just
+installed there: the daemon is upgraded live, keeping its pid and every
+program in its panes, where it can be. Where it cannot (a daemon from before
+live upgrades, a refusal such as a pane on another machine, a new binary
+without live upgrades) it is restarted, and the row says why. First sync
+lists the sessions and the panes with a running program that a restart would
+end on each host. Then it asks you to agree. Without a terminal, add --yes. A
+daemon with no sessions is moved without a question. A daemon with the new
+version is never touched. Run in a pane of this machine's daemon, --local
+upgrades that daemon live or leaves it, and never restarts it.
 
 If Tailscale SSH asks you to approve a login, sync shows the link to open.
 On a terminal, sync asks to wait for the approvals. Each host continues when
@@ -311,7 +327,7 @@ scripts/install.sh ghostty.`,
 	f.BoolVar(&opts.dev, "dev", false, "Build the binary from a tuios checkout, not from a release")
 	f.StringVar(&opts.src, "src", "", "The tuios checkout to build from. Sets --dev")
 	f.StringVar(&opts.binary, "binary", "", "Send this tuios binary")
-	f.BoolVar(&opts.restart, "restart", false, "Restart each daemon whose version is different")
+	f.BoolVar(&opts.restart, "restart", false, "Move each daemon whose version is different onto the new binary: live where it can, else by a restart")
 	f.BoolVar(&opts.start, "start", false, "Start the daemon on each host where it does not run")
 	f.BoolVarP(&opts.yes, "yes", "y", false, "Restart without a question. Needed for --restart without a terminal")
 	f.BoolVar(&opts.dryRun, "dry-run", false, "Show the plan and change nothing")
@@ -732,7 +748,9 @@ func planSyncTarget(t *syncTarget, src *syncSource, opts syncOptions) {
 		if opts.restart {
 			switch {
 			case t.local && os.Getenv("TUIOS_PANE_ID") != "":
-				t.note("This command runs in a pane of the daemon on this machine, so it does not restart that daemon. Run the restart from a terminal outside tuios.")
+				// A live upgrade keeps this command's pane and this command;
+				// a restart would end both halfway.
+				t.restart, t.liveOnly = true, true
 			case d.Unread && d.SessionCount != 0:
 				t.note("The sessions of the daemon could not be read, so it is not restarted. Restart it by hand on the host.")
 			default:
@@ -816,7 +834,7 @@ func syncRestartCommand(t *syncTarget, src *syncSource) string {
 func confirmSyncRestarts(targets []*syncTarget, opts syncOptions) error {
 	var costly []*syncTarget
 	for _, t := range targets {
-		if t.restart && !t.failed && t.res.Daemon.SessionCount > 0 {
+		if t.restart && !t.liveOnly && !t.failed && t.res.Daemon.SessionCount > 0 {
 			costly = append(costly, t)
 		}
 	}
@@ -824,7 +842,8 @@ func confirmSyncRestarts(targets []*syncTarget, opts syncOptions) error {
 		return nil
 	}
 	w := opts.errOut
-	fmt.Fprintln(w, "A restart ends every program that runs in the panes of these daemons.")
+	fmt.Fprintln(w, "Each daemon is upgraded live where it can be, which keeps every program running.")
+	fmt.Fprintln(w, "Where it cannot, it is restarted, which ends every program that runs in its panes.")
 	fmt.Fprintln(w, "The sessions come back with their layout and new shells.")
 	for _, t := range costly {
 		writeRestartCost(w, t)
@@ -888,10 +907,7 @@ func applySyncTarget(t *syncTarget, src *syncSource) {
 		if t.newVersion == "" {
 			t.newVersion = b.version
 		}
-		restart := "0"
-		if t.restart {
-			restart = "1"
-		}
+		restart := t.restartMode()
 		ctx, cancel := context.WithTimeout(context.Background(), syncInstallTimeout)
 		defer cancel()
 		out, stderr, err := t.runner.run(ctx, syncInstallScript(),
@@ -935,7 +951,7 @@ func applySyncTarget(t *syncTarget, src *syncSource) {
 		if arg == "-" {
 			arg = t.targetArg
 		}
-		out, stderr, err := t.runner.run(ctx, syncRestartScript(), []string{arg}, nil)
+		out, stderr, err := t.runner.run(ctx, syncRestartScript(), []string{arg, t.restartMode()}, nil)
 		f := parseSyncFacts(out)
 		if err != nil && !f.has("stopfail") && !f.has("startfail") {
 			t.fail(remoteRunError("the restart failed", stderr, err))
@@ -976,10 +992,27 @@ func startSyncDaemon(t *syncTarget) {
 	t.res.RestartCommand = ""
 }
 
+// restartMode is the daemon mode of the install and restart scripts.
+func (t *syncTarget) restartMode() string {
+	switch {
+	case !t.restart:
+		return "0"
+	case t.liveOnly:
+		return "2"
+	}
+	return "1"
+}
+
 // restartResult reads what the install or restart script said about the
 // daemon.
 func restartResult(t *syncTarget, f syncFacts) {
+	if lines := f["upgrade"]; len(lines) > 0 {
+		upgradeResult(t, lines[len(lines)-1])
+		return
+	}
 	switch {
+	case f.has("nolive"):
+		t.note("The new binary cannot upgrade a daemon live, and this command runs in a pane of that daemon, so the daemon was left running the old version. Run the restart from a terminal outside tuios.")
 	case f.has("stopfail"):
 		t.fail(errors.New("the old daemon did not stop. It still runs the old version"))
 	case f.has("startfail"):
@@ -988,6 +1021,53 @@ func restartResult(t *syncTarget, f syncFacts) {
 		t.res.Daemon.Restarted = true
 		t.res.RestartNeeded = false
 		t.res.RestartCommand = ""
+	}
+}
+
+// upgradeResult reads the JSON outcome of `tuios daemon upgrade` on the host.
+func upgradeResult(t *syncTarget, line string) {
+	var o struct {
+		Action string `json:"action"`
+		PID    int    `json:"pid"`
+		To     string `json:"to"`
+		Panes  int    `json:"panes"`
+		Reason string `json:"reason"`
+		Error  string `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(line), &o); err != nil {
+		t.fail(fmt.Errorf("the daemon upgrade answered with something that is not its answer: %s", plainLine(line)))
+		return
+	}
+	d := &t.res.Daemon
+	moved := func() {
+		d.State = daemonRunning
+		d.Version = cmp.Or(plainLine(o.To), d.Version)
+		if o.PID > 0 {
+			d.PID = o.PID
+		}
+		t.res.RestartNeeded = false
+		t.res.RestartCommand = ""
+	}
+	reason := plainLine(o.Reason)
+	switch o.Action {
+	case upgradeActionUpgraded:
+		moved()
+		d.Upgraded = true
+		t.note(fmt.Sprintf("The daemon was upgraded live, with its pid. %s and their programs kept.", plural.Count(o.Panes, "pane")))
+	case upgradeActionRestarted:
+		moved()
+		d.Restarted = true
+		t.note("The daemon could not be upgraded live, so it was restarted: " + reason + ".")
+	case upgradeActionStarted:
+		moved()
+		d.Started = true
+		t.note("No daemon was running when the binary was in place, so one was started.")
+	case upgradeActionFallback:
+		t.fail(fmt.Errorf("the new binary could not take the panes over, so the daemon went back to %s with every program still running. Run 'tuios logs' on the host to see why", cmp.Or(plainLine(o.To), "the old version")))
+	case upgradeActionRefused:
+		t.note("The daemon could not be upgraded live: " + reason + ". This command runs in a pane of that daemon, so it was not restarted, and it still runs the old version. Run the restart from a terminal outside tuios.")
+	default:
+		t.fail(fmt.Errorf("the daemon was not moved to the new version: %s", plainLine(cmp.Or(o.Error, "the upgrade did not say why"))))
 	}
 }
 
@@ -1048,13 +1128,17 @@ func finishSyncTarget(t *syncTarget, src *syncSource, opts syncOptions) {
 		parts = append(parts, "would start daemon")
 	case d.State == daemonStopped && !opts.start && !t.local:
 		t.note(fmt.Sprintf("The daemon does not run. To start it, run: tuios hosts sync %s --start", t.name))
+	case d.Upgraded:
+		parts = append(parts, "daemon upgraded live")
 	case d.Restarted:
 		parts = append(parts, "daemon restarted")
 		if d.SessionCount == 0 {
 			t.note("The daemon held no sessions, so it restarted without a question.")
 		}
+	case opts.dryRun && t.liveOnly:
+		parts = append(parts, "would upgrade daemon live")
 	case opts.dryRun && t.restart:
-		parts = append(parts, "would restart daemon")
+		parts = append(parts, "would upgrade or restart daemon")
 	case r.RestartNeeded:
 		parts = append(parts, "daemon restart needed")
 		if !t.restart {
@@ -1146,6 +1230,9 @@ func daemonCell(d syncDaemon) string {
 		v := cmp.Or(d.Version, "unknown")
 		if d.Started {
 			return "started"
+		}
+		if d.Upgraded {
+			return "upgraded"
 		}
 		if d.Restarted {
 			return "restarted"
