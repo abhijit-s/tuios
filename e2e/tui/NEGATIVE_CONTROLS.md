@@ -7327,3 +7327,17 @@ Run on 2026-10-16 on macOS. The tests are in `space_number_keys_test.go`. The fi
 `TestSwitchSpaceNumberPastTheEnd` is the negative half ("No space 3", and "No spaces" on a daemon with no space), and `TestSwitchSpaceByNumber` its positive half on the same fixture.
 
 Not covered: a space past the ninth (no action, no number, no menu row), a session attached on another machine (only that machine's spaces are numbered, as `next_space` cycles), a daemon from before `pick-space` (the same path as `next_space`, covered there), and Learn mode, which lists the nine actions as unavailable.
+
+## Agent row after exit
+
+The test is `TestHookClaimLapsesWithTheHarness` in `harness_integrations_test.go`. A program named `claude` (`testdata/fakeclaude`) runs the stand-in script, which replays a Claude Code session with tool calls through the real `tuios agent-hook claude-code`, ends the turn with `Stop`, and then leaves the pane at its shell. The `unreadable-pid` case runs no stand-in: it reports for the pane from outside it with `tuios call set-agent-state` and a `harness_pid` of 2000000000, which no pid namespace on Linux or macOS reaches, as an agent in a container with the socket passed in would, and holds the pane at its shell for three detection ticks. Each control is a text replacement in the branch's checkout, built to a separate binary and put back before the next. Run on 2026-10-18 on macOS against upstream main at 55590f29. The fixed build passes all six cases.
+
+Upstream main, which has no fix, passes every case but `crash`: with no `SessionEnd` the daemon kept the pane `done` with harness `claude-code` and source `report`, and the row (`○ pilot`) stayed with the shell running until the pane closed. The first version of the fix, which took a harness pid that did not read for exited, fails `unreadable-pid`: the pane went to `none` at the first detection pass, to be set again by the agent's next report.
+
+| Control: what was cut | Tests that fail | Verdict |
+| --- | --- | --- |
+| The lapse not wired: the detector's `exited` check on a report claim at the shell replaced with `false` | `crash` ("the agents section still lists the pane after its agent left it, with the shell running") | **caught** |
+| The harness pid kept past `none`: `applyAgentReport` no longer forgets it on a `none` report | `note-after-exit` ("a person's note on the pane was cleared as if the harness had said it") | **caught** |
+| A pid recorded without its start time: `readHarnessProc` marks every pid timed, so one that does not read is taken for exited | `unreadable-pid` ("a harness pid this machine cannot read was taken for exited: the pane is {State:none ...}") | **caught** |
+
+Not covered end to end: a pid given to another process between the harness exiting and the detector looking, which the start time comparison in `harnessProc.exited` tells apart. A test cannot make the system hand a chosen pid to a new process. Nor Windows and other platforms that read no processes, where no start time is recorded and a report claim stays until it is cleared.
