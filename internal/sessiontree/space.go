@@ -64,7 +64,7 @@ func GroupBySpace(nodes []Node, within func([]Node) []Node) []Node {
 
 	out := make([]Node, 0, len(nodes)+2*len(spaces))
 	for _, space := range spaces {
-		out = append(out, Node{Kind: KindSpace, ID: space, Title: space, Space: space})
+		out = append(out, spaceNode(space, members[space]))
 		for _, n := range within(members[space]) {
 			n.Space = space
 			out = append(out, n)
@@ -73,6 +73,10 @@ func GroupBySpace(nodes []Node, within func([]Node) []Node) []Node {
 	return append(out, within(rest)...)
 }
 
+// SpaceOf is the space GroupBySpace files a node under, or "" for a node it
+// leaves with the sessions in no space.
+func SpaceOf(n Node) string { return groupSpace(n) }
+
 // groupSpace is the space a node is grouped under, or "" for a node that is
 // not grouped by space at all.
 func groupSpace(n Node) string {
@@ -80,4 +84,64 @@ func groupSpace(n Node) string {
 		return ""
 	}
 	return n.Space
+}
+
+// spaceNode builds the heading for one space. Like a repository's row it
+// carries its members' roll-up and their count, which a folded space shows in
+// place of the rows it hides.
+func spaceNode(space string, members []Node) Node {
+	node := repoNode(space, members)
+	node.Kind = KindSpace
+	node.Space = space
+	return node
+}
+
+// SpaceRows is one KindSpace row per space, in the order GroupBySpace puts the
+// spaces, then one row with an empty ID standing for the sessions in no space
+// when there are any. It is nil when no session is in a space, so a surface
+// that draws it draws nothing for a person who never files one.
+//
+// Each row carries its members' roll-up and count as a space's heading does,
+// plus whether any member has a client attached.
+func SpaceRows(nodes []Node) []Node {
+	members := map[string][]Node{}
+	var rest []Node
+	for _, n := range nodes {
+		if n.Kind != KindSession || n.Host != "" {
+			continue
+		}
+		space := groupSpace(n)
+		if space == "" {
+			rest = append(rest, n)
+			continue
+		}
+		members[space] = append(members[space], n)
+	}
+	if len(members) == 0 {
+		return nil
+	}
+	spaces := make([]string, 0, len(members))
+	for space := range members {
+		spaces = append(spaces, space)
+	}
+	slices.Sort(spaces)
+	out := make([]Node, 0, len(spaces)+1)
+	for _, space := range spaces {
+		out = append(out, spaceSummary(spaceNode(space, members[space]), members[space]))
+	}
+	if len(rest) > 0 {
+		none := spaceSummary(spaceNode("", rest), rest)
+		none.ID, none.Title = "", ""
+		out = append(out, none)
+	}
+	return out
+}
+
+// spaceSummary adds what a row standing for a whole space says beyond its
+// heading in the sessions section: whether any member has a client attached.
+func spaceSummary(node Node, members []Node) Node {
+	for _, m := range members {
+		node.Attached = node.Attached || m.Attached
+	}
+	return node
 }

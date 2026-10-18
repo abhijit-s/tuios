@@ -48,3 +48,35 @@ func (c *TUIClient) RepoRoot(repo string) string {
 	}
 	return ""
 }
+
+// SessionSpace returns the space the cached listing files the named session
+// under, or "" when it is in none, is unknown, or is served by a daemon too
+// old to send the field.
+func (c *TUIClient) SessionSpace(name string) string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, s := range c.availableSessions {
+		if s.Name == name {
+			if s.Global {
+				// A daemon that sends a global session's space anyway: it is
+				// in none (Session.Space).
+				return ""
+			}
+			return s.Space
+		}
+	}
+	return ""
+}
+
+// SessionAttached reports whether the cached listing says a client is
+// attached to the named session. False when it is unknown.
+func (c *TUIClient) SessionAttached(name string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, s := range c.availableSessions {
+		if s.Name == name {
+			return s.Attached
+		}
+	}
+	return false
+}

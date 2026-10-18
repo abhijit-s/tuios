@@ -49,9 +49,9 @@ const (
 	// sessions of that repository, which follow it in the same list. See
 	// GroupByRepo in worktree.go.
 	KindRepo
-	// KindSpace is a space's heading. Its rows are the sessions filed under
-	// that space, which follow it in the same list. See GroupBySpace in
-	// space.go.
+	// KindSpace is a space's group header. Its rows are the sessions filed
+	// under that space, with their own repository groups, which follow it in
+	// the same list. See GroupBySpace in space.go.
 	KindSpace
 )
 

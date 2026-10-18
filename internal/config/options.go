@@ -974,6 +974,11 @@ var optionSpecs = []Option{
 		Default:     SubagentHideOff, Check: CheckSubagentHide,
 	},
 	{
+		Path: "appearance.sidebar.spaces", Type: OptionString, Section: "sidebar",
+		Description: "How the rail shows spaces: grouped draws a heading per space in the sessions section, split draws a spaces section above it and lists only the current space's sessions, off ignores spaces",
+		Accepted:    SidebarSpacesValues, Default: SidebarSpacesGrouped,
+	},
+	{
 		Path: "appearance.sidebar.workspaces", Type: OptionString, Section: "sidebar",
 		Description: "Workspace chip band the rail used to draw",
 		Default:     "",

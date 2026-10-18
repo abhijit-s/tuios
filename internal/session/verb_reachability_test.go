@@ -95,6 +95,19 @@ var exampleOutcomes = map[string]exampleOutcome{
 	"set-layout#1":    {errCode: ErrVerbNeedsClient, why: "the master-stack shape is laid out by a client"},
 	"split-window#0":  {errCode: ErrVerbNeedsClient, why: "a split is the client's arithmetic"},
 	"split-window#1":  {errCode: ErrVerbNeedsClient, why: "a split is the client's arithmetic"},
+	// The fixture's session is in no space, so the space the examples name
+	// does not exist. The verbs are proved end to end in
+	// e2e/tui/space_cli_test.go.
+	"rename-space#0": {errCode: ErrVerbInvalidParams, why: "no session in the fixture is in a space"},
+	"kill-space#0":   {errCode: ErrVerbInvalidParams, why: "no session in the fixture is in a space"},
+	"kill-space#1":   {errCode: ErrVerbInvalidParams, why: "no session in the fixture is in a space"},
+	"switch-space#0": {errCode: ErrVerbInvalidParams, why: "no session in the fixture is in a space"},
+	"switch-space#1": {errCode: ErrVerbInvalidParams, why: "no session in the fixture is in a space"},
+	// The fixture's session is in no space, so none finds it, and then there
+	// is no client to switch.
+	"switch-space#2": {errCode: ErrVerbNeedsClient, why: "switch-space moves an attached client"},
+	// pick-space#1 (none) picks the fixture's session and succeeds.
+	"pick-space#0": {errCode: ErrVerbInvalidParams, why: "no session in the fixture is in a space"},
 
 	// The fixture has no agent panes, so no hook ever recorded a conversation
 	// to resume. Typing and dry runs are proved in agent_resume_test.go.

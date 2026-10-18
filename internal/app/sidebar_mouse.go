@@ -450,6 +450,10 @@ func (m *OS) sidebarClick(x, y int, right bool) bool {
 		m.SidebarToggleCollapsed()
 	case sidebarRowRepo:
 		m.SidebarToggleRepoCollapsed(hit.SessionID)
+	case sidebarRowSpace:
+		m.SidebarToggleSpaceCollapsed(hit.SessionID)
+	case sidebarRowSpaceSwitch:
+		m.sidebarSwitchSpace(hit.SessionID)
 	case sidebarRowFiles:
 		m.queueSidebarCmd(m.ToggleFileView())
 	case sidebarRowFileCd:
@@ -636,6 +640,10 @@ func (m *OS) sidebarActivateRow(hit sidebarRowHit) {
 		m.SidebarToggleCollapsed()
 	case sidebarRowRepo:
 		m.SidebarToggleRepoCollapsed(hit.SessionID)
+	case sidebarRowSpace:
+		m.SidebarToggleSpaceCollapsed(hit.SessionID)
+	case sidebarRowSpaceSwitch:
+		m.sidebarSwitchSpace(hit.SessionID)
 	case sidebarRowHost:
 		m.SidebarToggleHostCollapsed(hit.SessionID)
 	case sidebarRowFiles:
@@ -985,9 +993,10 @@ func (m *OS) openSidebarContextMenu(hit sidebarRowHit, x, y int) {
 		// a field of its own so no session action can be handed it.
 		cm.Repo = hit.SessionID
 		cm.Title, cm.Items = m.repoHeaderMenu(hit.SessionID)
-	case sidebarRowHostSession, sidebarRowHostNew, sidebarRowHostSignIn, sidebarRowGlobalNew:
-		// A session on another machine. It is not a local session and has no
-		// per-row menu in this release, so the right-click opens the rail's own
+	case sidebarRowHostSession, sidebarRowHostNew, sidebarRowHostSignIn, sidebarRowGlobalNew, sidebarRowSpace, sidebarRowSpaceSwitch:
+		// A session on another machine, a space's group header, and a row of
+		// the spaces section. None is a local session and none has a per-row
+		// menu in this release, so the right-click opens the rail's own
 		// settings the way a click on blank rail would, rather than building a
 		// session menu for a name that is not a local session.
 		m.openRailSettingsMenu(x, y)

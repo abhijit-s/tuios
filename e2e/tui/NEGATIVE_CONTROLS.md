@@ -7017,3 +7017,191 @@ light `1` for Latte. Run on 2026-10-18.
 | --- | --- | --- | --- |
 | A served client runs the operator's hook | `noteThemeChange`: the `m.Client != ClientLocal` check cut | `TestServedClientsDoNotRunTheThemeHook` ssh and web rows ("the hook ran 1 times for a theme change in a ssh client, want 0") | **caught** |
 | The light flag uses another rule | `noteThemeChange`: the `vt.IsLightBackground` result inverted | `TestServedClientsDoNotRunTheThemeHook` local row (light "0" for Latte) | **caught** |
+### Space persistence
+
+Run on 2026-10-13 on macOS. The control cuts one wire from the fixed build and runs `TestSpaceSurvivesTheDaemon`. Rerun on 2026-10-14 on macOS on the tree rebased onto upstream `main` (`7f25ec35`): the restore control is still caught, with the same message.
+
+| Control: what was cut | Tests that fail | Verdict |
+| --- | --- | --- |
+| The restore creating the session without `Space: state.Space` in its `SessionConfig` (the space is saved but the restore's client sync keeps the new session's empty one) | `TestSpaceSurvivesTheDaemon` ("after a restart, list-spaces is map[]") | **caught** |
+| `incoming.Space = canonical.Space` left out of `retainDaemonExclusive` | not run | **not covered**: the test attaches no client, so nothing pushes state. A client of the same build echoes the space it was sent, so only an older client's push could clear it, and the suite runs one build. The line stays, for the reason `Global` has its own. |
+
+### Space CLI
+
+Run on 2026-10-13 on macOS. The tests are in `space_cli_test.go`: `TestNewSpaceFilesTheSession`, `TestRenameSpaceMovesEveryMember`, `TestKillSpaceNeedsForceAndCascades`, `TestSwitchSpaceLandsOnTheLastUsedSession` and `TestLsGroupsSessionsBySpace`. Each control cuts one wire from the fixed build and runs the test named.
+
+`TestSwitchSpaceLandsOnTheLastUsedSession` puts three sessions in one space. The person types in `e2e-a`, then in `e2e-b`, then windows are opened in `e2e-c` from the CLI, which bumps its activity and is not the person. The client sits on a session in no space. So the right answer, `e2e-b`, is neither the first nor the last member by name nor the latest by activity.
+
+| Control: what was cut | Tests that fail | Verdict |
+| --- | --- | --- |
+| `verbRenameSpace` stops after the first member | `TestRenameSpaceMovesEveryMember` ("rename-space did not report moving 2 sessions: ... 1 session (e2e-a)") | **caught** |
+| The `already` answer in `verbRenameSpace` (a rename with nothing left under the old name is refused) | `TestRenameSpaceMovesEveryMember` ("running the same rename again failed: ... no session is in space payments") | **caught** |
+| `verbRenameSpace` refuses a new name that holds sessions already (no merge) | `TestRenameSpaceMovesEveryMember` ("the rename that repairs a split failed: ... space exists") | **caught** |
+| The `force` check in `verbKillSpace` | `TestKillSpaceNeedsForceAndCascades` ("kill-space without --force succeeded: Killed space 'doomed': 2 sessions") | **caught** |
+| `verbKillSpace` kills only the first member | `TestKillSpaceNeedsForceAndCascades` ("the sessions are [e2e-doomed-2 e2e-kept e2e-loose], want [e2e-kept e2e-loose]") | **caught** |
+| `verbSwitchSpace` picks the first member by name | `TestSwitchSpaceLandsOnTheLastUsedSession` ("Switched to session e2e-a of space payments") | **caught** |
+| `verbSwitchSpace` ranks by activity (`mostRecentSession(..., false)`) | `TestSwitchSpaceLandsOnTheLastUsedSession` ("Switched to session e2e-c of space payments") | **caught** |
+| `verbNewSession` creates the session with `&SessionConfig{}` (the space dropped) | `TestNewSpaceFilesTheSession` ("after tuios new --space --detach, list-spaces is map[]") | **caught** |
+| `tuios new --space` without `--detach` falls through to the plain attach (the space dropped on the attached path only) | `TestNewSpaceFilesTheSession` ("after an attached tuios new --space, list-spaces is map[payments:[e2e-api]]") | **caught** |
+| `renderSpaceGroups` draws one table of every row | `TestLsGroupsSessionsBySpace` ("ls does not list \"Space: alpha\"") | **caught** |
+| `renderSpaceGroups` draws the sessions in no space first | `TestLsGroupsSessionsBySpace` ("ls does not list \"No space\" after what comes before it") | **caught** |
+
+A first cut of the attached-path control also removed the `--global` refusal and failed on that assertion instead, so it was narrowed to the attached branch and run again. The row above is the narrowed run.
+
+Not covered: a crash part way through `rename-space`. The test stands in for it by putting one member back under the old name with `set-session-space`, which is the state such a crash leaves, and checks the same rename moves it.
+
+### Space UI
+
+Run on 2026-10-13 on macOS. The tests are in `space_ui_test.go`: `TestSpaceRailHeadersFoldAndPersist`, `TestSpaceSwitcherGroupsAndNarrows`, `TestSpaceDockLabel`, `TestSpaceDockLabelNarrow` and `TestSpacesInvisibleWithoutSpaces`. Each control cuts one wire from the fixed build, builds it, and runs the tests named; the fixed build passes all five.
+
+The fixture makes `e2e-loose` (no space) first, then `e2e-b1` in beta, then `e2e-a1` and `e2e-a2` in alpha, so a surface that shows the daemon's order puts the ungrouped session first and alpha after beta's member, and only grouping gives beta, alpha, then e2e-loose.
+
+`TestSpacesInvisibleWithoutSpaces` compares this build's rail, switcher and dock, whole screens, with a build without spaces, named with `TUIOS_E2E_BASELINE_BIN`; it is skipped when that is not set. The runs below used a build of the branch's commit before the space UI, which draws what upstream/main draws; on 2026-10-14 it was rerun against a build of upstream/main itself (`1a34acbe`) and passes. The pane's generated ID and the temporary path in the files header are the only parts masked.
+
+| Control: what was cut | Tests that fail | Verdict |
+| --- | --- | --- |
+| `GroupBySpace` returns the list ungrouped | `TestSpaceRailHeadersFoldAndPersist` (the grouped rail never drew the headers), `TestSpaceSwitcherGroupsAndNarrows` ("the switcher never listed the four sessions under their headings") | **caught** |
+| `saveSidebarState` does not write `spaces_collapsed` | `TestSpaceRailHeadersFoldAndPersist` ("sidebar.json spaces_collapsed is <nil>, want [beta]") | **caught** |
+| `loadSidebarState` reads `spaces_collapsed` and drops it | `TestSpaceRailHeadersFoldAndPersist` ("beta came back open after a reattach") | **caught** |
+| `filterSessionSwitcher` treats `space/session` as plain text | `TestSpaceSwitcherGroupsAndNarrows` ("alpha/ did not narrow the switcher to alpha's two sessions") | **caught** |
+| `sessionSwitcherSettle` leaves the selection on a header | `TestSpaceSwitcherGroupsAndNarrows` ("no client shows session e2e-a2": Enter on the header switched nowhere) | **caught** |
+| `dockSpaceText` never draws the label | `TestSpaceDockLabel` ("the dock never said alpha > e2e-a1 ..."), `TestSpaceDockLabelNarrow` ("at 100 columns the dock did not cut the space and keep e2e-a1") | **caught** |
+| `dockSpaceText` returns one blank cell for a session in no space | `TestSpaceDockLabel` ("with the session in no space, listing the space component changed the dock") | **caught** |
+| `dockSpaceLabel` never cuts (the whole label at any width) | `TestSpaceDockLabelNarrow` ("at 100 columns the space was not cut: ... payments-platform > e2e-a1") | **caught** |
+| `dockSpaceLabel` cuts the whole label from the right when the session name does not fit, instead of dropping it | `TestSpaceDockLabelNarrow` ("at 60 columns the dock of a spaced session differs from a session in no space") | **caught** |
+| `sidebarNodeIndent` steps every session row in, space or not | `TestSpacesInvisibleWithoutSpaces` ("with no spaces the rail differs from the baseline's", and the switcher over it) | **caught** |
+| The switcher steps every local session row in, space or not | `TestSpacesInvisibleWithoutSpaces` ("with no spaces the switcher differs from the baseline's") | **caught** |
+| The rail's window-count column counts a space header's member count | `TestSpaceRailHeadersFoldAndPersist` ("the e2e-loose row carries a figure after its name") | **caught** |
+| A space header draws the quiet dot instead of the fold mark (`▾`/`▸`) | `TestSpaceRailHeadersFoldAndPersist` ("the open beta header carries \"·\" before its name, want the open fold mark ▾") | **caught** |
+
+The one-blank-cell control first ran against `TestSpacesInvisibleWithoutSpaces` and the original `TestSpaceDockLabel`, and both passed: in the default list the label is the last thing in the dock's left block before the gap the layout fills, so a stray cell there moves nothing on screen. `TestSpaceDockLabel` now puts a custom probe cell straight after the label and compares the dock with and without the component listed, and the control is caught by that. The row above is that run.
+
+Not covered: a repository folded inside a space folds the same repository in every other space too, because repository folds are keyed by repository name. That is the existing key, and changing it is not this work.
+
+### Space layouts
+
+Run on 2026-10-13 on macOS. The tests are in `space_layout_test.go`: `TestSpaceSplitLayout`, `TestSpaceOffLayout`, `TestSpaceLayoutLiveSwitch`, `TestSpaceLayoutSettingsRow` and `TestSpaceLayoutsInvisibleWithoutSpaces`. They use the Space UI fixture. Each control cuts one wire from the fixed build, builds it, and runs the test named. The fixed build passes all five, and the existing `space_ui_test.go` tests cover `grouped`.
+
+`TestSpaceSplitLayout` uses `e2e-a1` and then gives `e2e-a2` later activity with no use, by opening a window in it from the CLI. So among alpha's two sessions, the use rule picks `e2e-a1`, while the activity rule and the creation rule both pick `e2e-a2`.
+
+`TestSpaceLayoutsInvisibleWithoutSpaces` compares this build's rail under `grouped`, `split` and `off`, with no session in a space, against a build without spaces, named with `TUIOS_E2E_BASELINE_BIN`. The runs below used a build of the branch's commit before any space UI; on 2026-10-14 it was rerun against a build of upstream/main itself (`1a34acbe`) and passes. It compares styled screens, so a moved mark or ink fails as well as a moved cell.
+
+| Control: what was cut | Test that fails | Verdict |
+| --- | --- | --- |
+| `RanksAboveByUse` ignores `last_used` (ranks by activity, then creation) | `TestSpaceSplitLayout` ("no client shows session e2e-a1": the click landed on e2e-a2) | **caught** |
+| `split` lists every session in the sessions section, not the current space's | `TestSpaceSplitLayout` ("from e2e-loose the sessions section lists [e2e-loose e2e-b1 e2e-a1 e2e-a2], want e2e-loose alone") | **caught** |
+| `sidebarSwitchSpace` does not ask for a fresh listing after the switch | `TestSpaceSplitLayout` ("after the switch the attached mark is not on alpha alone": none still read attached at 2.5s) | **caught** |
+| `off` falls through to `grouped` | `TestSpaceOffLayout` ("with spaces off the sessions section lists [beta e2e-b1 alpha e2e-a1 e2e-a2 e2e-loose]") | **caught** |
+| `ApplyAppearanceConfig` never takes the file's `spaces` value | `TestSpaceLayoutLiveSwitch` ("saving spaces = split did not give the attached client the split rail") | **caught** |
+| `spacesSeen` is always true (the Spaces row with no space anywhere) | `TestSpaceLayoutSettingsRow` ("with no session in a space the Sidebar tab carries the Spaces row") | **caught** |
+| `SpaceRows` draws a `none` row with no space anywhere | `TestSpaceLayoutsInvisibleWithoutSpaces` ("with no spaces and spaces = split the rail differs from the baseline's") | **caught** |
+| `listingsAgree` ignores `Space` and `Attached` | `TestSpaceLayoutSettingsRow` ("the grouped rail: the rail never drew [beta alpha]": a session filed under a space while another is attached never reached the rail) | **caught** |
+| `sidebarSignature` leaves out `appearance.sidebar.spaces` | `TestSpaceLayoutLiveSwitch` passes | **not caught** |
+
+The render-cache control is not caught because a config reload re-keys the rail on its own, so the rail redraws either way. The key stays because the layout is drawn state, and it costs one string. What a reload needs, the value reaching the settings, is the apply-path control above it.
+
+The `listingsAgree` row is a Phase 4 bug this work found. A session filed under a space, or a client attaching to a session, moves no window. So the cached listing changed without its generation, and the rail kept drawing the old frame. Phase 4's tests file only the attached session, whose space arrives on its own state, so they could not see it.
+
+### Rail peek holds the terminals height
+
+Run on 2026-10-13 on macOS. The test is `TestRailPeekHoldsTheTerminalsHeight` in `rail_peek_hold_test.go`, with the section order `terminals,spacer:5,agents,spacer:5,sessions,spacer:5,git,files`, under `spaces = off` and `spaces = split`. The attached session `pk-main` has three panes, `pk-few` one and `pk-many` six. The pointer hovers the session rows in the order main, few, many, few, main, many, and after every hover every session row, every header below terminals and every spaces row must be on the row it held at rest. The fixed build passes both subtests. Each control cuts one wire from the fixed build, builds it, and runs the test.
+
+| Control: what was cut | Test that fails | Verdict |
+| --- | --- | --- |
+| The hold: the budget counts the peeked session's rows (`if false && len(resting) > 0` in `sidebarPanelLinesForTree`) | `off` and `split` ("hovering pk-few moved pk-main from row 7 to row 5", and from 10 to 8 in split) | **caught** |
+| The padding: the held lines a shorter peek leaves are not filled (`for false && len(lines) < end` in `drawTerminals`) | `off` and `split` (the same two-row jump up on pk-few) | **caught** |
+
+### hello verb: the caller's terminal reaches a session it creates
+
+Run on 2026-10-13 on macOS. `new --space` goes through the `new-session` verb over the JSON verb connection (`VerbClient`), not the binary protocol `new`/`attach` use. The binary protocol's `MsgHello` sets `cs.hello` from the caller's real terminal, and `verbNewSession` (and `switch-session`'s `create`) read it; the JSON verb connection's own handshake, the `hello` verb, never set `cs.hello` at all, so every session a verb created got the daemon's own default (`xterm-256color`, no `COLORTERM`) regardless of the caller's real terminal. The `hello` verb now takes `term`/`color_term`, and `VerbClient`'s handshake sends them with the same detection `client.go`'s binary-protocol `sendHello` uses.
+
+| Control: what was cut | Test that fails | Verdict |
+| --- | --- | --- |
+| `cs.hello = &HelloPayload{...}` in `verbHello` | `TestNewSpaceGivesItsPaneTheCallersTerm` ("gave its pane \"TERM=xterm-256color COLORTERM=truecolor\", want \"TERM=xterm-ghostty COLORTERM=truecolor\"") | **caught** |
+
+`TestSessionMadeWithoutATerminalGivesItsPanesARealTerm` (`pane_term_headless_test.go`) is the other half: a caller with no terminal still gets the daemon's fallback, and still does after this change, since an empty `term`/`color_term` on the hello verb leaves `cs.hello` holding the same empty strings the binary protocol's no-terminal case already produces.
+
+### herdr workspace.close close_group
+
+Run on 2026-10-13 on macOS. The test is `TestHerdrWorkspaceCloseGroupKillsTheSpace` in `herdr_space_close_test.go`. Each control cuts one wire from the fixed build, builds it, restores the source, and runs the test against the cut binary; the fixed build passes.
+
+Sessions `e2e-a` and `e2e-b` are in space `s`, `e2e-d` and `e2e-e` in space `t`, and `e2e-c` in none. The test closes `e2e-a` with `close_group`, then `e2e-d` plainly, then `e2e-c` with `close_group`, reading the live sessions after each, and a herdr subscriber must see `workspace_closed` for both `e2e-a` and `e2e-b`.
+
+| Control: what was cut | Test that fails | Verdict |
+| --- | --- | --- |
+| `close_group` never reaches the handler (`in.CloseGroup` read as `false`) | "after close_group on e2e-a the sessions are [e2e-b e2e-c e2e-d e2e-e], want [e2e-c e2e-d e2e-e]" | **caught** |
+| herdr's refusal copied: a plain close of a session in a space answers `workspace_group_close_required` | "workspace.close: map[code:workspace_group_close_required ...]" on the plain close of `e2e-d` | **caught** |
+| The space check dropped: `close_group` on a session in no space runs `kill-space` with an empty space | "workspace.close: map[code:invalid_params message:space is required ...]" on `e2e-c` | **caught** |
+| A plain close cascades to the space (`close_group` ignored, every spaced close runs `kill-space`) | "after a plain close of e2e-d the sessions are [e2e-c], want [e2e-c e2e-e]" | **caught** |
+| `workspace_closed` not emitted for a closed session (`herdrTranslator` returns nothing on session-closed) | "the stream ended before workspace_closed for e2e-a (...) and e2e-b (...): i/o timeout; saw map[]" | **caught** |
+
+The last control is outside this change: it shows the test's event assertion is live, so `kill-space` reaching each member through `DeleteSession` is what raises the two events, not a stream that reports anything.
+
+### Space keys: next_session_in_space and prev_session_in_space
+
+Run on 2026-10-13 on macOS. The tests are in `space_keys_test.go`. Each control cuts one wire from the fixed build, builds it, restores the source, and runs every `TestSpaceKeys` test against the cut binary; the fixed build passes all four.
+
+| Control: what was cut | Test that fails | Verdict |
+| --- | --- | --- |
+| The `>` and `<` defaults in `prefix_mode` | `TestSpaceKeysCycleInsideTheSpace` ("the attached clients show [e2e-a1], want exactly one on e2e-a2"), `TestSpaceKeysStayPutWithoutSpaces` ("ctrl+b > with no spaces never said so"), `TestSpaceKeysListedInThePalette` ("the palette never listed ..."), `TestSpaceKeysYieldToTheUsersPrefixKeys` ("prev_session_in_space has prefix keys [], want [ctrl+b <]") | **caught** |
+| `CycleSessionInSpace` runs `CycleSession`, ignoring the space | `TestSpaceKeysCycleInsideTheSpace` ("the attached clients show [e2e-loose2], want exactly one on e2e-a1"), `TestSpaceKeysStayPutWithoutSpaces` ("ctrl+b > with no spaces never said so") | **caught** |
+| The no-spaces guard: with no space anywhere, the keys walk the sessions in no space, which is every session | `TestSpaceKeysStayPutWithoutSpaces` ("ctrl+b > with no spaces never said so") | **caught** |
+| The two actions left out of `yieldingDefaults` | `TestSpaceKeysYieldToTheUsersPrefixKeys` ("prefix_help has prefix keys [], want [ctrl+b >] kept", "next_session_in_space has prefix keys [ctrl+b >], want none while the user holds >") | **caught** |
+
+The yield control first ran against a config binding `launcher = [">"]` and passed: a key two actions in one table claim goes to the first by name, and `launcher` sorts before `next_session_in_space`, so the user kept `>` with or without the yield. The test binds `prefix_help`, which sorts after it, and the row above is that run.
+
+### Space switching: the daemon picks, the client switches itself
+
+Run on 2026-10-13 on macOS. The tests are in `space_switch_test.go`: `TestSpaceKeysMoveOnlyThisClient`, `TestSpaceKeysWithOneSpace`, `TestSpaceRowLandsOnTheDaemonsPick`, `TestSwitchSpaceNone`, `TestSpaceKeysOnAHost`, `TestSpaceSwitchWithAnOlderDaemon` and `TestSpaceKeyChordInTerminalMode`. A space key or a space row asks `pick-space` on the daemon that holds the attached session, and the client then switches itself as a click on a session row does. Each control cuts one wire from the fixed build, builds it, restores the source, and runs the first six tests against the cut binary (control E only `TestSpaceKeysOnAHost`, controls D, F and G only the test they name); the fixed build passes all seven. `TUIOS_E2E_BASELINE_BIN` named a build of the commit before this change (`feat(ui): choose how the rail shows spaces: grouped, split or off`), which has no `pick-space`. Controls A and F were rerun on 2026-10-14 on macOS on the tree rebased onto upstream `main` (`7f25ec35`), and both are still caught, with the messages in their rows.
+
+`TestSpaceRowLandsOnTheDaemonsPick` puts `e2e-a1`, `e2e-a2` and `e2e-a3` in alpha, made a second apart, uses `e2e-a3` and then `e2e-a2` inside one wall-clock second, and checks from `list-spaces` and `list-sessions` that the two tie on `last_used` and `last_active` in whole seconds before it clicks. The daemon picks `e2e-a2`, the client's listing rank `e2e-a3` and the rail's first member `e2e-a1`. That older build, which ranked in the client from that listing, lands on `e2e-a3` ("client pid ... shows \"e2e-a3\", want e2e-a2"). That build also fails `TestSpaceKeysMoveOnlyThisClient`, since it has no `}` key. Its row in "Space layouts" above, about `RanksAboveByUse`, names code this change removed.
+
+| Control: what was cut | Test that fails | Verdict |
+| --- | --- | --- |
+| A: `verbPickSpace` ignores the space filter and answers the session used last of all | `TestSpaceKeysMoveOnlyThisClient` ("client pid ... shows \"e2e-a1\", want e2e-loose"), `TestSpaceRowLandsOnTheDaemonsPick` ("client pid ... shows \"e2e-loose\", want e2e-a2"), `TestSwitchSpaceNone` ("pick-space none picked \"e2e-a1\", want e2e-g"), `TestSpaceKeysOnAHost` ("the attached clients show [far-a1], want exactly one on far-b1") | **caught** |
+| B: the client does not ask: it switches to the space's first member in the rail's order | `TestSpaceRowLandsOnTheDaemonsPick` ("client pid ... shows \"e2e-a1\", want e2e-a2"), `TestSpaceSwitchWithAnOlderDaemon` ("} on an older daemon never said why it did nothing") | **caught** |
+| C: the none filter removed: `none` picks among every session | `TestSwitchSpaceNone` ("pick-space none picked \"e2e-a1\", want e2e-g"), `TestSpaceKeysMoveOnlyThisClient` ("client pid ... shows \"e2e-a1\", want e2e-loose"), `TestSpaceRowLandsOnTheDaemonsPick` ("client pid ... shows \"e2e-a2\", want e2e-loose") | **caught** |
+| D: on `unknown_verb` from an older daemon the client guesses (switches to the space's first member) instead of saying so | `TestSpaceSwitchWithAnOlderDaemon` ("} on an older daemon never said why it did nothing") | **caught** |
+| E: a client attached on a host asks this machine's daemon (`session.DialVerbClient`) instead of the far one | `TestSpaceKeysOnAHost` ("the attached clients show [far-a1], want exactly one on far-b1") | **caught** |
+| F: `railSpace` ignores the global mark, so a global session filed under a space is not in none | `TestSwitchSpaceNone` ("pick-space none picked \"e2e-loose2\", want e2e-g") | **caught** |
+
+| G: `handleTerminalModeBinds` drops the command a main-section action returns (`_, _, ok := dispatchAction(...)`; `return ok, nil`), as it did before this change | `TestSpaceKeyChordInTerminalMode` ("client pid ... shows \"e2e-a1\", want e2e-loose") | **caught** |
+
+`TestSpaceKeysWithOneSpace` passes under every control: it checks the one-space notice, which comes before any pick.
+
+`TestSpaceKeyChordInTerminalMode` binds `next_space` to `alt+y` in `[keybindings.window_management]` and presses it twice from terminal mode; each press must land, alpha to none to beta. Control G is the bug it was written for: the terminal-mode router threw away the command of every action it dispatched, and the space pick is that command, so a direct chord for `next_space` moved nothing. Before the router passed the command on, no action it reached returned one: the default `terminal_mode` binds and the terminal-safe workspace and session actions all return nil.
+
+### A global session is in no space
+
+Run on 2026-10-14 on macOS. The test is `TestAGlobalSessionIsInNoSpace` in `space_global_test.go`: `set-session-space` on the global session `e2e-g` is refused, a 65-byte space name is refused by the verb and by `tuios new --space`, `kill-space --force s` kills only `e2e-a`, and herdr's `workspace.close` with `close_group` kills only the session it names, on a spaced session and on the global one. `TestSwitchSpaceNone` in `space_switch_test.go` filed its global session under a space with `set-session-space`; it now checks that the call is refused, and goes on to check the global session counts among the sessions in no space. The fixed build passes both.
+
+| Control: what was cut | Test that fails | Verdict |
+| --- | --- | --- |
+| The build before these fixes (`c9af6aea`) | `TestAGlobalSessionIsInNoSpace` ("set-session-space filed a global session under a space"), `TestSwitchSpaceNone` ("set-session-space filed the global session under alpha") | **caught** |
+| The global refusal in `verbSetSessionSpace` | `TestAGlobalSessionIsInNoSpace` ("set-session-space filed a global session under a space") | **caught** |
+| The 64-byte cap in `checkSpaceName` | `TestAGlobalSessionIsInNoSpace` ("set-session-space took a 65-byte space name") | **caught** |
+
+What the refusal prevents was checked on the build before these fixes, with the test's refusal and cap steps taken out: `kill-space --force s` killed the global session filed under `s` along with `e2e-a` ("after kill-space s the sessions are [], want [e2e-g]").
+
+Not covered: the read side, where `Session.Space` and the rail read a global session that holds a space as in none. With the refusal in place no live global session holds one: a global session is made with no space, and a restore makes it an ordinary session (it does not keep `global`), so the state cannot be reached from outside to test. It stays for state an older daemon wrote, and for `tuios ls` and the rail reading another daemon's listing. Also not covered: `kill-space` deleting by session ID, which matters only when a member is renamed between the lookup and the delete.
+
+### A repository split across spaces
+
+Run on 2026-10-14 on macOS. The test is `TestSpaceRailCursorPassesASplitRepository` in `space_rail_cursor_test.go`. Two worktree sessions of one repository are made, one filed in space `s` and one left in none, so the rail draws the repository's header twice (the test checks it does). Entering the rail puts the cursor on `plain`; two `j`, with the rail left to settle after each, must reach the second header and then `feat/two`, and enter there must switch to it. The fixed build passes.
+
+| Control: what was cut | Test that fails | Verdict |
+| --- | --- | --- |
+| The build before these fixes (`c9af6aea`: the repository header's nav row carries no space, so both headers are one row to the cursor) | `TestSpaceRailCursorPassesASplitRepository` ("no client shows session repo-feat-two": the cursor fell back to the first header, the next `j` went to `feat/one`, and enter switched there) | **caught** |
+
+### The leader's space rows wait for a space
+
+Run on 2026-10-14 on macOS. `TestOverlayLayouts` in `overlay_layout_test.go` has two runs with the session filed under a space (`dark-120x40-truecolor-spaced`, `dark-80x24-truecolor-spaced`) beside the runs without one, and `checkWhichKeySpaceRows` holds the which-key menu to the space rows (found by their keys `</>` and `{/}`, since 80 columns cuts the descriptions) being drawn exactly when a session is in a space, with no Other section either way. `TestEveryOverlayOwnsItsGround` in `overlay_ground_test.go` has a `-spaced` run at both sizes. The fixed build passes every run of both. With no session in a space the leader's menu was also compared with upstream/main's (`1a34acbe`) as data, `PrefixMenuGroups` for the local and the daemon layout: identical.
+
+| Control: what was cut | Test that fails | Verdict |
+| --- | --- | --- |
+| The build before these fixes (`c9af6aea`: the space rows always drawn, the switchers and detach/quit always paired) | `TestOverlayLayouts/dark-120x40-truecolor` ("with a session in a space false, the which-key menu draws the </> row: true") | **caught** |
+| `Spaces` always true in `prefixMenuGroups` | `TestOverlayLayouts/dark-80x24-truecolor` (the `</>` and `{/}` rows drawn with no space) | **caught** |
+| `Spaces` always false in `prefixMenuGroups` | `TestOverlayLayouts/dark-80x24-truecolor-spaced` (no `</>` or `{/}` row with a space) | **caught** |
+| The space keys not held back in `PrefixMenuGroups` with no space (they fall to the Other section) | `TestOverlayLayouts/dark-120x40-truecolor` ("the which-key menu has an Other section", and 25 rows at 120 columns) | **caught** |
+
+The last control passes at 80x24: there the menu leaves out a section that does not fit, and the Other section is the one left out. The 120x40 run catches it.

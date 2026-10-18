@@ -525,6 +525,31 @@ tuios switch-session -s work api                   # From outside tuios: switch 
 
 See [Sessionizer](SESSIONS.md#sessionizer) for a key that opens a project.
 
+### `tuios switch-space`
+
+Switch an attached client to the session of a space the person used last, in place, as `switch-session` does. The pick is the latest `last_used` that `list-spaces` reports, then the latest activity, the same ranking a bare `tuios attach` uses. The client to switch is chosen as `switch-session` chooses it. `--none` picks the same way among the sessions in no space, which the sidebar draws as its `none` row; a global session counts as in no space there, as the sidebar draws it. The daemon is the only place that makes this pick. The sidebar's space rows and the `Ctrl+B }` / `Ctrl+B {` keys ask it with the `pick-space` verb, which answers the same session and switches nothing, and the client then switches itself.
+
+**Usage:**
+```bash
+tuios switch-space <space> [flags]
+tuios switch-space --none [flags]
+```
+
+The verb is refused (`invalid_params`) when it is given both a space and `none`, or neither, and when the space, or for `none` the sessions in no space, holds no session.
+
+**Flags:**
+- `--none`: Switch among the sessions in no space instead of a named space
+- `-s, --session <name>`: Switch the client that shows this session
+- `--client <id>`: Switch the client with this id, from `tuios list-clients`
+- `--json`: Output as JSON
+
+**Examples:**
+```bash
+tuios switch-space payments            # From a pane: show the space payments
+tuios switch-space -s work payments    # From outside tuios: switch the client that shows work
+tuios switch-space --none              # The session in no space used last
+```
+
 ### `tuios ls`
 
 List all TUIOS sessions.
@@ -706,6 +731,35 @@ tuios kill-session <session-name>
 **Examples:**
 ```bash
 tuios kill-session mysession   # Kill session named "mysession"
+```
+
+### `tuios kill-space`
+
+Kill every session filed under a space, and every window in them, as `kill-session` does one session. It needs `--force`: without it nothing is killed, and the command names the sessions it would kill and exits non-zero.
+
+**Usage:**
+```bash
+tuios kill-space <space> --force
+```
+
+**Examples:**
+```bash
+tuios kill-space payments          # Kills nothing. Names the sessions it would kill
+tuios kill-space payments --force  # Kill every session in the space payments
+```
+
+### `tuios rename-space`
+
+Rename a space: every session filed under it is filed under the new name. If the new name is a space already, the two become one. The rename is made one session at a time, so if it stops part way some sessions are left under each name, and running the same command again moves the rest. Once nothing is left under the old name, running it again changes nothing and says so.
+
+**Usage:**
+```bash
+tuios rename-space <space> <new-name>
+```
+
+**Examples:**
+```bash
+tuios rename-space payments billing
 ```
 
 ### `tuios worktree`

@@ -868,6 +868,9 @@ type SidebarConfig struct {
 	// SubagentHideFinished hides a finished subagent's row this long after it
 	// ended: a duration, or off (default: off).
 	SubagentHideFinished string `toml:"subagent_hide_finished"`
+	// Spaces is how the rail lays out spaces: grouped, split or off
+	// (default: grouped). See SidebarSpacesValues.
+	Spaces string `toml:"spaces"`
 	// Custom is the [appearance.sidebar.custom] table: the command whose
 	// output the custom section draws, its heading, and when it runs. Read
 	// from the file only; see SidebarCustomConfig for why.
@@ -1090,6 +1093,7 @@ func DefaultConfig() *UserConfig {
 				SubagentCollapse:     SidebarSubagentCollapseOff,
 				SubagentFields:       DefaultSubagentFields,
 				SubagentHideFinished: SubagentHideOff,
+				Spaces:               SidebarSpacesGrouped,
 			},
 		},
 		Daemon: DaemonConfig{
@@ -1252,6 +1256,17 @@ func DefaultConfig() *UserConfig {
 				// out of the glyph table on purpose and nothing matches it.
 				"next_session": {")"},
 				"prev_session": {"("},
+				// The sessions of the current space only, on the angle
+				// brackets: a shift away from the comma and the full stop like
+				// the round brackets are from the digits, and free in this
+				// table. No direct chord, for the dead-key reason above.
+				"next_session_in_space": {">"},
+				"prev_session_in_space": {"<"},
+				// The spaces themselves, on the curly brackets beside them:
+				// free in this table, and the pair tmux and vim already read
+				// as the next and the previous block.
+				"next_space": {"}"},
+				"prev_space": {"{"},
 				// The launcher's direct chord is alt+space, which macOS turns
 				// into a non-breaking space that matches nothing. This is the
 				// way in that does not depend on the terminal.
@@ -2521,6 +2536,12 @@ func ApplyAppearanceConfig(cfg *UserConfig, s *Settings) {
 	s.SidebarAgentRestFold, _ = ParseAgentRestFold(sb.AgentRestFold)
 	// Anything but count draws rows, the default; validation names a typo.
 	s.SidebarSubagents = ResolveSidebarSubagentView(cfg.Appearance.Sidebar, primary)
+	// Assigned whatever the file says, so a value removed from it goes back to
+	// grouped. A typo reads as grouped too, and validation names it.
+	s.SidebarSpaces = SidebarSpacesGrouped
+	if slices.Contains(SidebarSpacesValues, sb.Spaces) {
+		s.SidebarSpaces = sb.Spaces
+	}
 	if sb.Tooltips != nil {
 		s.Tooltips = *sb.Tooltips
 	}
@@ -3452,6 +3473,12 @@ var yieldingDefaults = map[string]bool{
 	// j and k in window mode, new in the release after v0.8.0.
 	"focus_down": true,
 	"focus_up":   true,
+	// > and < after the prefix, new in the release after v0.9.2.
+	"next_session_in_space": true,
+	"prev_session_in_space": true,
+	// } and { after the prefix, new in the release after v0.9.2.
+	"next_space": true,
+	"prev_space": true,
 }
 
 // windowModeTables is every binding the user's config holds in the tables

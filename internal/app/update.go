@@ -1456,7 +1456,7 @@ func (m *OS) handleMsg(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 		// exists would sit there until the overlay was reopened.
 		if m.ShowSessionSwitcher {
 			m.SessionSwitcherItems = m.sessionSwitcherItems()
-			if m.SessionSwitcherSelected >= len(m.SessionSwitcherItems) && m.SessionSwitcherSelected > 0 {
+			if rows := m.sessionSwitcherRows(); m.SessionSwitcherSelected >= len(rows) && m.SessionSwitcherSelected > 0 {
 				m.SessionSwitcherSelected--
 			}
 		}
@@ -1631,6 +1631,10 @@ func (m *OS) handleMsg(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 
 	case hostRetryMsg:
 		return m, m.applyHostRetry(msg)
+
+	case spacePickedMsg:
+		m.applySpacePicked(msg)
+		return m, nil
 
 	case NewWindowOnHostMsg:
 		// The window itself arrives on the daemon's state push, the way any

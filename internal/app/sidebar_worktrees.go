@@ -43,31 +43,34 @@ func worktreeRef(info *session.WorktreeInfo) *sessiontree.WorktreeRef {
 }
 
 // sidebarSessionRows is the sessions section's own row list: the attached
-// machine's sessions under their space's heading and, inside that, the worktree
-// ones under their repository, with the members of a folded repository left
-// out, then laid out by machine with the other machines' rows (see
-// sidebarMachineRows).
+// machine's sessions gathered under their space and, inside that, the worktree
+// ones under their repository, with the members of a folded space or
+// repository left out, then laid out by machine with the other machines' rows
+// (see sidebarMachineRows).
 //
 // Only the sessions section reads it. The terminals and agents sections keep
-// reading the ungrouped list, so folding a repository or a machine hides its
-// rows here and never hides its panes or its waiting agents, which is the
-// difference between tidying a list and losing work.
+// reading the ungrouped list, so folding a space, a repository or a machine
+// hides its rows here and never hides its panes or its waiting agents, which
+// is the difference between tidying a list and losing work.
 func (m *OS) sidebarSessionRows(sessions []sessiontree.Node) []sessiontree.Node {
 	local := localSessionNodes(sessions)
 	return m.sidebarMachineRows(m.sidebarGroupedRows(local), sessions[len(local):])
 }
 
-// sidebarGroupedRows groups one machine's sessions by space and, inside each
-// space and inside the sessions in no space, gathers the worktree ones under
-// their repository. A folded repository's members are left out, in every
-// space they are in.
+// sidebarGroupedRows groups one machine's sessions by space and by repository,
+// as the space layout in force says (see sidebarLayoutRows), and leaves the
+// members of a folded group out. A space's header stays when it is folded; a
+// repository's header inside a folded space goes with the rest of the space.
 func (m *OS) sidebarGroupedRows(sessions []sessiontree.Node) []sessiontree.Node {
-	rows := sessiontree.GroupBySpace(sessions, sessiontree.GroupByRepo)
-	if len(m.SidebarCollapsedRepos) == 0 {
+	rows := m.sidebarLayoutRows(sessions)
+	if len(m.SidebarCollapsedRepos) == 0 && len(m.SidebarCollapsedSpaces) == 0 {
 		return rows
 	}
 	out := make([]sessiontree.Node, 0, len(rows))
 	for _, n := range rows {
+		if n.Kind != sessiontree.KindSpace && n.Space != "" && m.SidebarCollapsedSpaces[n.Space] {
+			continue
+		}
 		if n.Kind == sessiontree.KindSession && n.Worktree != nil && m.SidebarCollapsedRepos[n.Worktree.Repo] {
 			continue
 		}

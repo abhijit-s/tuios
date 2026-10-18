@@ -215,6 +215,11 @@ func (m *OS) sidebarSignature() uint64 {
 	// The git section scrolls like the others once it is given fewer lines
 	// than its two rows.
 	mixI(m.SidebarScrollG)
+	// The space layout decides which sections are stacked and which sessions
+	// the sessions section lists, and the spaces section scrolls like the
+	// others.
+	mixS(m.Settings.SidebarSpaces)
+	mixI(m.SidebarScrollSp)
 
 	// The agents section's two controls decide which rows it holds and in what
 	// order, so both are drawn state and both are folded. The tokens themselves
@@ -317,6 +322,23 @@ func (m *OS) sidebarSignature() uint64 {
 		repoFold ^= e
 	}
 	mixU(repoFold)
+	// The space groups, the same way: which spaces are folded, and the
+	// attached session's own space, which arrives on the session state rather
+	// than with the listing the cache generation covers.
+	var spaceFold uint64
+	for space, collapsed := range m.SidebarCollapsedSpaces {
+		if !collapsed {
+			continue
+		}
+		e := uint64(1469598103934665603)
+		for i := range len(space) {
+			e ^= uint64(space[i])
+			e *= prime
+		}
+		spaceFold ^= e
+	}
+	mixU(spaceFold)
+	mixS(m.SessionSpace)
 
 	// The machine groups: which machine the rows come from, the user's order
 	// over the others, their session orders, and which are folded. The

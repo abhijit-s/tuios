@@ -13,10 +13,13 @@ import (
 // one of these, so a user reorders the bar by reordering strings rather than by
 // waiting for an option per segment.
 const (
-	DockComponentMode            = "mode"
-	DockComponentWorkspaces      = "workspaces"
-	DockComponentTrail           = "trail"
-	DockComponentTape            = "tape"
+	DockComponentMode       = "mode"
+	DockComponentWorkspaces = "workspaces"
+	DockComponentTrail      = "trail"
+	DockComponentTape       = "tape"
+	// DockComponentSpace is "space > session" for a session filed under a
+	// space. It draws nothing for a session in none.
+	DockComponentSpace           = "space"
 	DockComponentWindows         = "windows"
 	DockComponentNotifications   = "notifications"
 	DockComponentCopyHelp        = "copy-help"
@@ -45,6 +48,7 @@ var dockBuiltins = []string{
 	DockComponentWorkspaces,
 	DockComponentTrail,
 	DockComponentTape,
+	DockComponentSpace,
 	DockComponentWindows,
 	DockComponentNotifications,
 	DockComponentCopyHelp,
@@ -99,7 +103,7 @@ func DockFixedSide(name string) string { return dockFixedSides[name] }
 // and never a first one: naming a component makes it eligible to draw, not
 // certain to.
 var (
-	defaultDockLeft   = []string{DockComponentMode, DockComponentWorkspaces, DockComponentTrail, DockComponentTape}
+	defaultDockLeft   = []string{DockComponentMode, DockComponentWorkspaces, DockComponentTrail, DockComponentSpace, DockComponentTape}
 	defaultDockCenter = []string{DockComponentWindows}
 	defaultDockRight  = []string{
 		DockComponentTransfers,

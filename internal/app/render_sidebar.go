@@ -128,6 +128,17 @@ const (
 	// one. Activating it shows them until the rail loses the keyboard. See
 	// sidebarFoldAgents.
 	sidebarRowAgentFold
+	// sidebarRowSpace is a space's group header in the sessions section, over
+	// the sessions filed under that space. Activating it folds the group shut
+	// or opens it again. It carries the space name in SessionID. See
+	// sidebar_spaces.go.
+	sidebarRowSpace
+	// sidebarRowSpaceSwitch is a row of the spaces section, which the split
+	// space layout draws above the sessions section. Activating it switches to
+	// the session of that space the person used last. It carries the space
+	// name in SessionID, empty for the row standing for the sessions in no
+	// space. See sidebar_space_layout.go.
+	sidebarRowSpaceSwitch
 	// sidebarRowSubagentToggle is the heading line over a pane's subagent
 	// rows, drawn when appearance.sidebar.subagent_collapse is not off.
 	// Activating it opens or shuts the rows. It carries the pane's session
@@ -250,6 +261,11 @@ const (
 	// the enum sizes every per-section array in this package, and one more
 	// value fits all of them as they are. See sidebar_custom.go.
 	sidebarSectionCustom
+	// sidebarSectionSpaces lists the spaces, one row each, for the split space
+	// layout. It is not a name appearance.sidebar.sections takes: the layout
+	// puts it directly above the sessions section, wherever that is, and only
+	// while appearance.sidebar.spaces is split. See sidebarLayoutFor.
+	sidebarSectionSpaces
 	sidebarSectionCount
 )
 
@@ -1500,6 +1516,11 @@ func (m *OS) sidebarPanelLinesForTree(tree sessiontree.Tree) ([]string, int) {
 	// hides rows here and hides no pane and no waiting agent. See
 	// sidebar_worktrees.go.
 	sessionRows := m.sidebarSessionRows(sessions)
+	// The spaces section's rows, for the split space layout, and the space
+	// whose row wears the focus mark. Nil in every other layout and on a rail
+	// with no session in a space, which drops the section header and all.
+	spaceRows := m.sidebarSpaceSwitchRows(sessions)
+	currentSpace := m.sidebarCurrentSpace(localSessionNodes(sessions))
 
 	// The lists, built before anything is drawn: the budget needs their counts,
 	// and hover has to resolve against the same arithmetic the draw uses.
@@ -1622,6 +1643,7 @@ func (m *OS) sidebarPanelLinesForTree(tree sessiontree.Tree) ([]string, int) {
 		sidebarSectionFiles:     filesRows,
 		sidebarSectionGit:       len(gitRows),
 		sidebarSectionCustom:    nC,
+		sidebarSectionSpaces:    len(spaceRows),
 	}
 	// The last section in the configured layout is the one pinned to the rail's
 	// bottom: the slack rides above it, and it wears a blank line of its own so
@@ -1644,7 +1666,7 @@ func (m *OS) sidebarPanelLinesForTree(tree sessiontree.Tree) ([]string, int) {
 	agentRowH := 1
 	// Row heights per section, which is what turns a section's line budget into
 	// the rows it can show and a st.lit() line back into the row under it.
-	rowH := [sidebarSectionCount]int{1, 1, agentRowH, 1, 1, 1}
+	rowH := [sidebarSectionCount]int{1, 1, agentRowH, 1, 1, 1, 1}
 
 	// The chrome each drawn section costs before a row of it appears: its own
 	// header, plus the floating blank in front of the pinned block.
@@ -1842,7 +1864,7 @@ func (m *OS) sidebarPanelLinesForTree(tree sessiontree.Tree) ([]string, int) {
 	// See sidebar_reveal.go.
 	m.sidebarRevealFocus(sessions, terminals, capRows[sidebarSectionTerminals], capRows[sidebarSectionSessions])
 	if m.sidebarRailFocused() && haveCursorTarget {
-		if sec, idx, ok := m.sidebarCursorIndex(cursorTarget, sessionRows, terminals, agents, files); ok {
+		if sec, idx, ok := m.sidebarCursorIndex(cursorTarget, sessionRows, spaceRows, terminals, agents, files); ok {
 			if rows := capRows[sec]; rows > 0 {
 				if idx < *scroll[sec] {
 					*scroll[sec] = idx
@@ -2010,7 +2032,8 @@ func (m *OS) sidebarPanelLinesForTree(tree sessiontree.Tree) ([]string, int) {
 		// either there or gone reads as a decision.
 		showCounts := false
 		for _, s := range sessionRows {
-			if s.WindowCount > 1 {
+			// A space's header counts sessions, not windows, so it has no say.
+			if s.Kind != sessiontree.KindSpace && s.WindowCount > 1 {
 				showCounts = true
 				break
 			}
@@ -2020,9 +2043,10 @@ func (m *OS) sidebarPanelLinesForTree(tree sessiontree.Tree) ([]string, int) {
 			idx := start[sidebarSectionSessions] + i
 			s := sessionRows[idx]
 			if s.Kind == sessiontree.KindSpace {
-				// A space's heading. It names the rows under it and is not a
-				// row to act on, so it records no hit and no nav row: the
-				// pointer and the cursor pass over it.
+				// A space's heading. It names the rows under it, so it is no
+				// nav row and the cursor passes over it. A click on it folds
+				// the space, so it records a click.
+				recordClick(sidebarRowSpace, s.ID, "", -1, 1)
 				lines = append(lines, compose(m.sidebarSpaceRow(s, cw, pal)))
 				continue
 			}
@@ -2282,6 +2306,20 @@ func (m *OS) sidebarPanelLinesForTree(tree sessiontree.Tree) ([]string, int) {
 		}
 	}
 
+	drawSpaces := func() {
+		lines = append(lines, compose(sidebarHeaderRowRuled("spaces", "", cw, pal, &m.Settings)))
+		for i := range count[sidebarSectionSpaces] {
+			idx := start[sidebarSectionSpaces] + i
+			s := spaceRows[idx]
+			st := m.railRowState(idx == hoverRow[sidebarSectionSpaces], isCursor(sidebarRowSpaceSwitch, s.ID, ""))
+			recordHit(sidebarRowSpaceSwitch, s.ID, "", -1, 1)
+			lines = append(lines, compose(st.mark(pal, m.sidebarSpaceSwitchRow(s, s.ID == currentSpace, cw, pal, st))))
+		}
+		if h := hidden[sidebarSectionSpaces]; h > 0 {
+			lines = append(lines, overflowRow(h, 0))
+		}
+	}
+
 	draw := [sidebarSectionCount]func(){
 		sidebarSectionSessions:  drawSessions,
 		sidebarSectionTerminals: drawTerminals,
@@ -2289,6 +2327,7 @@ func (m *OS) sidebarPanelLinesForTree(tree sessiontree.Tree) ([]string, int) {
 		sidebarSectionFiles:     drawFiles,
 		sidebarSectionGit:       drawGit,
 		sidebarSectionCustom:    drawCustom,
+		sidebarSectionSpaces:    drawSpaces,
 	}
 	drawnAt := 0
 	for i, p := range plans {
@@ -2592,10 +2631,16 @@ func (m *OS) agentEntries(sessions []sessiontree.Node) []sidebarAgentEntry {
 
 // sidebarCursorIndex locates the cursor's target inside its section, so the
 // auto-scroll knows which offset to move and by how much.
-func (m *OS) sidebarCursorIndex(target sidebarNavRow, sessions []sessiontree.Node,
+func (m *OS) sidebarCursorIndex(target sidebarNavRow, sessions, spaces []sessiontree.Node,
 	terminals []sidebarTerminalEntry, agents []sidebarAgentEntry, files []fileRowSpec,
 ) (sidebarSection, int, bool) {
 	switch target.Kind {
+	case sidebarRowSpaceSwitch:
+		for i, s := range spaces {
+			if s.ID == target.SessionID {
+				return sidebarSectionSpaces, i, true
+			}
+		}
 	case sidebarRowSession:
 		for i, s := range sessions {
 			if s.Kind == sessiontree.KindSession && s.ID == target.SessionID {

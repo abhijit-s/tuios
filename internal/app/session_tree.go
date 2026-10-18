@@ -160,6 +160,7 @@ func (m *OS) foreignSessionInput(client *session.TUIClient, name string) session
 		CurrentWorkspace: client.SessionCurrentWorkspace(name),
 		Worktree:         worktreeRef(client.SessionWorktree(name)),
 		Space:            client.SessionSpace(name),
+		Attached:         client.SessionAttached(name),
 		Windows:          windows,
 	}
 }
@@ -247,7 +248,13 @@ func clearAgentMarks(nodes []sessiontree.Node) {
 // sessions are cycled: a row on another machine is a different connection,
 // which a cycle key must not open by surprise.
 func (m *OS) railNeighbourSession(delta int) string {
-	sessions := localSessionNodes(m.BuildSessionTree().Sessions)
+	return neighbourSession(localSessionNodes(m.BuildSessionTree().Sessions), delta)
+}
+
+// neighbourSession returns the session delta places from the current one in
+// sessions, wrapping at both ends, or "" when the current one is not among
+// them or is the only one.
+func neighbourSession(sessions []sessiontree.Node, delta int) string {
 	current := slices.IndexFunc(sessions, func(s sessiontree.Node) bool { return s.IsCurrent })
 	if len(sessions) < 2 || current < 0 {
 		return ""

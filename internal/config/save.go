@@ -128,7 +128,7 @@ const configHeaderRest = "# Documentation: https://github.com/Gaurav-Gosain/tuio
 	"# reorder it, and omit a name to drop that segment.\n" +
 	"#\n" +
 	"#   [dock]\n" +
-	"#   left   = [\"mode\", \"workspaces\", \"trail\", \"tape\"]\n" +
+	"#   left   = [\"mode\", \"workspaces\", \"trail\", \"space\", \"tape\"]\n" +
 	"#   center = [\"windows\"]\n" +
 	"#   right  = [\"notifications\", \"copy-help\", \"cpu\", \"ram\", \"clock\", \"session-controls\"]\n" +
 	"#\n" +

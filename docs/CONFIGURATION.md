@@ -1274,7 +1274,7 @@ component:
 
 ```toml
 [dock]
-left   = ["mode", "workspaces", "trail", "tape"]
+left   = ["mode", "workspaces", "trail", "space", "tape"]
 center = ["windows"]
 right  = ["transfers", "notifications", "copy-help", "cpu", "ram", "clock", "session-controls"]
 
@@ -1298,6 +1298,9 @@ middle of the terminal. A notification does not move it or shorten its
 minimized pane labels. On a crowded bar, the center moves left to keep the
 right-hand cells on the screen. Click a cut notification to read the full
 message.
+
+`space` is the attached session's space and name, `work > api`, for a session filed under a space (see `tuios new --space`). It renders nothing at all for a session in no space, so it costs a bar that never uses spaces nothing. When the label does not fit, the space name is cut first; when the session name and one cell of the space do not fit, the label is left out rather than cut. A config that writes its own `left` list does not get it until it adds `"space"`: a list you wrote is the whole list.
+
 `transfers` shows the copies between machines. It shows nothing while no copy
 exists. One copy is a bar and a percent, `[####--] 61%`. More copies are a
 count and a percent, `3 copies 42%`. `waiting` means a link is down, and
@@ -1307,6 +1310,7 @@ count and a percent, `3 copies 42%`. `waiting` means a link is down, and
 default list. `[dock.session]` takes `format` (`{session}`, `{workspace}`,
 `{pane}`) and the cell style keys `fg`, `bg`, `bold`, `cap_left` and
 `cap_right`, which `[dock.custom.NAME]` takes too. Colours take any [colour value](#colour-values).
+
 A custom component's first line of stdout becomes its cell, it is hidden when
 the command fails, and `tuios list-dock-components` says which and why.
 
@@ -1545,6 +1549,21 @@ While rows are out of view, the section draws a scroll thumb in the rail's edge 
 A hover peek of another session's panes shows the peeked list from its top, ending in `+N` when the list is longer than the section. When the terminals section is above the sessions section, the peek keeps the section's resting height, so the session row under the pointer does not move. When it is below, as in the default order, the section is sized for the peeked list like any other. The peek gets a thumb on the same terms, at the top of the column, and leaves the attached session's scroll where it was. There is no thumb on the collapsed strip or on a section of one line.
 
 The glyph is the active glyph set's `scrollbar_thumb` role. It is `┃` by default, `#` under `--ascii-only`, and `█` in the `heavy` set. Where the thumb would be the same glyph as the rule, as with a heavy border style, it is drawn as `█` (`#` under `--ascii-only`). `appearance.scrollbar.*` and `appearance.hide_scrollbar` style the pane scroll bar only, not the rail's thumb.
+
+## Spaces on the rail
+
+`appearance.sidebar.spaces` picks how the rail shows [spaces](SESSIONS.md) (sessions filed with `tuios new --space` or `set-session-space`):
+
+```toml
+[appearance.sidebar]
+spaces = "grouped"   # grouped, split or off
+```
+
+- `grouped` (the default) draws a bold heading per space inside the sessions section, with that space's sessions stepped in under it and the sessions in no space after them all. A click or Enter on a heading folds it.
+- `split` draws a spaces section just before the sessions section, wherever `sections` puts that, without a change to `sections`. It is directly above the sessions section, except when sessions is the last section and the rail pins it to its bottom edge: the free lines then fall between the two. It has one row per space, in the order of each space's first session, and a `none` row for the sessions in no space. A row shows the space's name, how many sessions it holds, `attached` while a client is attached to one of them, and the worst agent state among them, as a folded heading does. The space this client is in wears the rail's focus mark. The sessions section then lists only that space's sessions, with no headings; worktree sessions are still grouped under their repository. A click or Enter on a space's row switches to the session of that space you used last, as `tuios switch-space` does; on `none`, to the session in no space you used last. The global session counts as in no space. The daemon makes that pick (the `pick-space` verb) and this client switches itself, so no other client moves; attached to a daemon too old to have `pick-space`, a click says "Switching spaces needs a newer tuios daemon" and does nothing. The section takes at most a quarter of the rail, and scrolls past that.
+- `off` lists every session in one flat list and shows no space anywhere on the rail.
+
+The setting is the rail's alone: the session switcher (`Ctrl+B S`) and the dock's `space` component are the same in all three. With no session in any space, all three draw the rail exactly as a rail with no spaces. A config reload applies a new value to an attached client at once. The settings page shows the option as **Spaces** on its Sidebar tab once a session is in a space, and a value chosen there applies at once and is written to config.toml. A value other than the three reads as `grouped`, and the validator says so.
 
 ## The rail's custom section
 

@@ -863,6 +863,34 @@ mark_pane = ["m"]
 join_marked_right = ["J"]
 ```
 
+## Cycle through the sessions of a space
+
+`ctrl+b >` and `ctrl+b <` (the `next_session_in_space` and `prev_session_in_space` actions) go to the next or the previous session in the current session's space, in the order the sidebar draws them, and wrap at the end. They never leave the space. In a session that is in no space, they go through the other sessions that are in no space. With no session in any space they stay put and the dock says "No spaces"; with no other session in the space it says so. Only the sessions on the machine of the attached session are cycled. See [SESSIONS.md](SESSIONS.md) for spaces.
+
+`ctrl+b (` and `ctrl+b )` still go through every session. The in-space actions have no direct chord by default, for the reason in [macOS](#macos). They work from terminal mode on a chord with Alt or Ctrl, like `next_session`:
+
+```toml
+[keybindings.window_management]
+next_session_in_space = ["ctrl+alt+n"]
+prev_session_in_space = ["ctrl+alt+p"]
+```
+
+A config that already binds `>` or `<` after the prefix keeps its binding, and the in-space action then has no prefix key: `tuios keybinds doctor` names it.
+
+## Switch between spaces
+
+`ctrl+b }` and `ctrl+b {` (the `next_space` and `prev_space` actions) go to the next or the previous space, in the order the sidebar draws the spaces, with the sessions in no space last when there are any, and wrap at the end. They land on the session of that space you used last, as [`tuios switch-space`](CLI_REFERENCE.md#tuios-switch-space) does: this client chooses the space, the daemon that holds the attached session chooses the session (the `pick-space` verb), and this client switches itself to it. Only this client moves, even with other clients attached to the same session. An answer that comes back after the client has moved on by some other way is dropped. With no session in any space they stay put and the dock says "No spaces"; with one space and no session outside it, "No other spaces". Only the spaces on the machine of the attached session are cycled. A daemon from before `pick-space` cannot make the pick, so with one the keys do nothing and the dock says "Switching spaces needs a newer tuios daemon"; restart the daemon to use them.
+
+They have no direct chord by default, and work from terminal mode on a chord with Alt or Ctrl:
+
+```toml
+[keybindings.window_management]
+next_space = ["ctrl+alt+j"]
+prev_space = ["ctrl+alt+k"]
+```
+
+A config that already binds `}` or `{` after the prefix keeps its binding, and the space action then has no prefix key: `tuios keybinds doctor` names it.
+
 ## Split into the same ssh
 
 These actions open a pane on the machine that the focused pane is connected to
@@ -1631,6 +1659,8 @@ ordinary `ctrl` chord that no terminal interferes with:
 | `ctrl+b` then an arrow | Focus the pane in that direction |
 | `ctrl+b n` / `ctrl+b p` | Next and previous pane |
 | `ctrl+b (` / `ctrl+b )` | Previous and next session |
+| `ctrl+b <` / `ctrl+b >` | Previous and next session in the current space |
+| `ctrl+b {` / `ctrl+b }` | Previous and next space |
 | `ctrl+b a` | Launcher |
 | `ctrl+b 0` to `ctrl+b 9` | Jump to a pane |
 
