@@ -1466,6 +1466,7 @@ func (d *Daemon) verbSetAgentState(cs *connState, params json.RawMessage) (any, 
 		SessionStart: p.SessionStart,
 		SharedServer: d.agentMatcher.registry.SharedServer(p.Harness),
 	}
+	report.foreignPane = d.harnessOutsidePane(cs, sess, target, p.HarnessPID)
 	// The identity guard is read before the report applies, because it is
 	// about the pane as the report found it, and applyAgentReport checks
 	// if_state first and so may never reach it.
@@ -1495,8 +1496,7 @@ func (d *Daemon) verbSetAgentState(cs *connState, params json.RawMessage) (any, 
 	// report the identity guard refuses is a nested run's, and its activity
 	// is not the pane's.
 	recorded := false
-	if p.Activity != nil && windowID != "" && guard == "" &&
-		reason != agentRefusedForeignSession && reason != agentRefusedForeignHarness {
+	if p.Activity != nil && windowID != "" && guard == "" && !refusedAsForeign(reason) {
 		d.recordAgentActivity(sess, windowID, p.Activity, effective)
 		recorded = true
 	} else if created {
@@ -1505,11 +1505,10 @@ func (d *Daemon) verbSetAgentState(cs *connState, params json.RawMessage) (any, 
 		// pane's agent.
 		d.activity.forgetIfEmpty(sess.ID, windowID)
 	}
-	if p.AgentCwd != "" && p.AgentSessionID != "" &&
-		reason != agentRefusedForeignSession && reason != agentRefusedForeignHarness {
+	if p.AgentCwd != "" && p.AgentSessionID != "" && !refusedAsForeign(reason) {
 		d.noteReportedAgentDir(sess, target, p.AgentSessionID, p.AgentCwd)
 	}
-	if reason == agentRefusedForeignSession || reason == agentRefusedForeignHarness {
+	if refusedAsForeign(reason) {
 		debugLog("[DEBUG] set-agent-state: %s refused session %q of %s", reason, p.AgentSessionID, p.Harness)
 	}
 	transcriptRefused := ""
@@ -1615,6 +1614,7 @@ func (d *Daemon) verbReportAgentActivity(cs *connState, params json.RawMessage) 
 		SessionID:    p.AgentSessionID,
 		HarnessPID:   p.HarnessPID,
 		SharedServer: d.agentMatcher.registry.SharedServer(p.Harness),
+		foreignPane:  d.harnessOutsidePane(cs, sess, target, p.HarnessPID),
 	})
 	if err != nil {
 		return nil, mapResolveErr(err, sess)
@@ -1644,7 +1644,7 @@ func (d *Daemon) verbReportAgentActivity(cs *connState, params json.RawMessage) 
 
 // verbSetAgentSession stores the conversation id a harness reports for a pane
 // without touching the pane's state. See applyAgentSession.
-func (d *Daemon) verbSetAgentSession(_ *connState, params json.RawMessage) (any, *verbError) {
+func (d *Daemon) verbSetAgentSession(cs *connState, params json.RawMessage) (any, *verbError) {
 	// The herdr socket calls this handler directly, past admitVerb.
 	if !d.agentsEnabled() {
 		return nil, agentsDisabledError()
@@ -1683,9 +1683,10 @@ func (d *Daemon) verbSetAgentSession(_ *connState, params json.RawMessage) (any,
 		target = id
 	}
 	stored, applied, reason, err := sess.applyAgentSession(target, AgentSessionReport{
-		Harness:    harnessID,
-		SessionID:  sid,
-		HarnessPID: p.HarnessPID,
+		Harness:     harnessID,
+		SessionID:   sid,
+		HarnessPID:  p.HarnessPID,
+		foreignPane: d.harnessOutsidePane(cs, sess, target, p.HarnessPID),
 	})
 	if err != nil {
 		return nil, mapResolveErr(err, sess)
