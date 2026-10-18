@@ -2868,6 +2868,35 @@ bytes (Go 1.26.9). The change adds 16,384 and 16,848 bytes. On linux/amd64 it
 measured 8,192 at e77a6641; the rest is alignment against #879. No dependency
 was added. The new budgets leave 5,214 and 17,294 bytes of room.
 
+The agents cockpit, wave 1 of ~/dev/tuios-notes/cockpit/DESIGN.md, raises the
+budgets once per pull request. Each pull request measures main or the branch
+under it, and sets the budget about 4 KB over its own size. By pull request,
+linux/amd64 then darwin/arm64:
+
+| pull request | linux/amd64 | darwin/arm64 | budgets |
+|---|---|---|---|
+| the agents cockpit: grouped fleet and rich rows | 53,248 | 50,992 | 37,721,000 and 35,464,000 |
+| thread cards from transcripts | 77,824 | 67,840 | 37,798,000 and 35,532,000 |
+| the reply area and the image view | 32,768 | 33,248 | 37,831,000 and 35,565,000 |
+| the side column: live pane, last turn, checkpoints | 40,960 | 33,968 | 37,872,000 and 35,599,000 |
+
+The fleet pull request measured 37,662,882 and 35,408,882 bytes before it and
+37,716,130 and 35,459,874 after (Go 1.26.9). It deletes the Inbox panel's list,
+the agents view and the thread panel it replaces. linux/amd64 grows by whole 4 KB pages, so darwin/arm64 is the measure of a change. The thread cards measured
+37,793,954 and 35,527,714 bytes. The card append is kept out of line with
+`//go:noinline`: inlined at each card it cost 8 KB more on both targets, and
+the thread is drawn once per change, never per frame. The reply area and
+the image view measured 37,826,722 and 35,560,962; they delete the reply
+editor's old frame, which the area replaces. The side column measured
+37,867,682 and 35,594,930. Its live pane is read again only after the pane
+prints, at most every third pass as the picture-in-picture view is, and
+only while the box is on screen; nothing in it runs on a timer. Parking the
+hidden host cursor at the caret for input methods (#649) measured 37,879,970
+and 35,595,330: 400 bytes on darwin/arm64, and three more pages on
+linux/amd64, so only the linux/amd64 budget moved. It scans each frame for
+the cursor visibility sequences, copies a parked frame only when it takes
+one out, and runs no timer.
+
 To raise a budget, do it on purpose in its own commit: run
 `scripts/binary-size.sh` on the Go version in go.mod, set the new budget a
 little above the printed size in the `budget` function of that script, and say

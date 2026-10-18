@@ -456,7 +456,7 @@ func TestQwenApprovalFromTheInbox(t *testing.T) {
 		t.Fatalf("open the Inbox: %v", err)
 	}
 	if err := term.WaitFor(func(s tuitest.Screen) bool {
-		return screenHas(s, "Approvals 1", "approve run_shell_command: go test", "allow", "deny")
+		return screenHas(s, "1 needs you", "Allow", "Allow run_shell_command", "go test", "allow", "reject")
 	}, uiTimeout); err != nil {
 		t.Fatalf("the Inbox never offered to answer the held approval: %v\n%s", err, term.Snapshot())
 	}
@@ -488,7 +488,7 @@ func TestQwenApprovalFromTheInbox(t *testing.T) {
 		t.Fatalf("the hook printed %q, want Qwen Code's allow decision", stdout.String())
 	}
 	if err := term.WaitFor(func(s tuitest.Screen) bool {
-		return !strings.Contains(s.Text(), "Approvals 1")
+		return strings.Contains(s.Text(), "0 needs you")
 	}, uiTimeout); err != nil {
 		t.Fatalf("the answered approval stayed in the Inbox: %v\n%s", err, term.Snapshot())
 	}

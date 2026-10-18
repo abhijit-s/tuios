@@ -432,7 +432,7 @@ a working negative control look like a broken one for half an hour.
 | The rail learned about another session's agent from the 3 second listing poll while the dock said it at once | n/a, injected | `foreignAgentRefreshCmd` in `internal/app/inbox.go` returns nil | `TestRailMarksAForeignAgentWhenTheDockDoes` ("the rail did not mark e2e-ask-a within 1.2s of its agent asking"), 3 of 3 runs | **caught** |
 | A straight box-drawing line in a capture was two arms meeting mid-cell, so every row of a border had a notch | n/a, the build before the fix | `drawArms` in `shot/boxdraw.go` without the one-rect case for two equal arms on one axis | `TestScreenshotDrawsAStraightBorderWithoutNotches` ("the stroke at x=8 loses ink at y=16: 417 against 556") | **caught** |
 | On a light theme the rail and the dock wrote the dark ramp's near-white inks on the theme's near-white ground | n/a, injected | `GroundUI` in `internal/theme/ui.go` returns `UI()` unchanged | `TestLightThemeRailAndDockAreReadable` (session names and the dock notice at 1.09:1 against a 4.5:1 floor) | **caught** |
-| An Inbox that opened empty and then filled kept the empty state's top, so the full list sat on the bottom edge | n/a, injected | `overlayAnchorY` in `internal/app/overlay_hit.go` returns the held top whenever the screen height is unchanged | `TestInboxThatFillsAfterOpeningIsCentred` ("13 rows above it and 1 below") | **caught** |
+| An Inbox that opened empty and then filled kept the empty state's top, so the full list sat on the bottom edge | n/a, injected | `overlayAnchorY` in `internal/app/overlay_hit.go` returns the held top whenever the screen height is unchanged | `TestInboxThatFillsAfterOpeningIsCentred` ("13 rows above it and 1 below") | **caught**. Retired with the panel: the agents view fills the screen and has no anchor |
 | The review footer kept a margin on its left only, so a key strip that fitted to the cell ran into the frame | n/a, injected | `reviewHints` in `internal/app/render_review.go` fits against `width-1` | `TestReviewFooterKeepsItsRightMargin` (footer ends "esc close│") | **caught** |
 | The review's "too narrow for two columns" line stayed over the unified view it had recommended | n/a, injected | the `statusID` reset in `ReviewToggleSplit` disabled | `TestReviewNarrowSplitNoticeGoesWithTheSplit` (still on screen 2s after the second s) | **caught** |
 | A panel wider than the panes' columns covered all of the rail but a column or two, leaving fragments of its rows down the panel's edge | n/a, injected | `panelCenterX` in `internal/app/overlay_hit.go` centres on the screen alone | `TestAPanelWiderThanThePanesCoversTheWholeRail` (row 2 ends in the rail's ground) | **caught** |
@@ -889,7 +889,7 @@ switch, and against this branch with one call site cut at a time.
 | Typing into a pane the caller opened | `typingRefusal`: the `offTypingAllowed` term cut | `TestAgentsOffTmuxShimTypesIntoItsOwnPane` (the shim's send-keys is refused) | **caught** |
 | The switch is the person's | `verbSetOption`: the pane check made `if false` | `TestAgentsSwitchIsThePersons` (the pane's set-config exits 0) | **caught** |
 | This machine's switch on a call to another | `VerbClient.CallWithTimeout`: the `HostCallGuard` check made `if false` | `TestAgentsOffHereRefusesACallToAnotherMachine` (list-agents on build:far succeeds) | **caught** |
-| Agent keys in the help | `HelpCategories`: the `withoutAgentHelp` call cut | `TestAgentsOffShowsNoAgentRow/off` (the help search finds "Open the Inbox on its mail") | **caught** |
+| Agent keys in the help | `HelpCategories`: the `withoutAgentHelp` call cut | `TestAgentsOffShowsNoAgentRow/off` (the help search finds "Open the agents view on the mail for you") | **caught** |
 | Another machine's agent marks | `withHostGroups`: the `clearAgentMarks` call cut | `TestAgentsOffHidesAnotherMachinesAgentMarks` (the mark stays on build's row) | **caught** |
 | get-config reads the switch | `verbGetOption`: the `agents.enabled` branch cut | `TestAgentsOffGetConfigSaysOff` (prints `true` with source `default` while every agent verb is refused) | **caught** |
 
@@ -7883,3 +7883,136 @@ The fixed build passes it three runs in a row (`-count=3`).
 process with the pane's `TUIOS_PANE_ID`, which is the case this fix refuses,
 and failed against it. The driver now runs in the pane, as a harness's plugins
 do, and both pass on the fixed build and on `ccde47cf`.
+
+## The agents cockpit: grouped fleet and rich rows
+
+`TestCockpitGroupsTheFleet` builds twelve fake agents in four sessions, one
+of them on an approval the hook holds. It opens `ctrl+b i` at 200x55 and
+checks the group order, the approval row's verb and command, that a click
+selects a row and leaves the view open, that `a` answers the approval from
+its card, and that a double-click goes to the pane.
+`TestAgentsViewOpenAddsNoIdleCost` holds two 10 s idle windows over three
+agents at rest, the view closed and then open, and counts the view's own
+ticks and fresh frames.
+
+Run on 2026-10-18.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| The groups come in another order than what each needs from you | n/a, injected | `buildCockpitRows` walks the groups as Working, Needs you, Ready for review, Idle | `TestCockpitGroupsTheFleet` ("\"Working\" is on row 6, not below the group before it (row 24)") | **caught** |
+| A click on a row goes to the pane, the agents view's old rule | n/a, injected | `CockpitClick` treats every click as the second of a double-click | `TestCockpitGroupsTheFleet` ("a click did not put bench-idle in the focus") | **caught** |
+| `a` does not answer the held approval | n/a, injected | `CockpitKey` without `inbox_allow` among the approval actions | `TestCockpitGroupsTheFleet` ("a never answered the held approval") | **caught** |
+| The open view wakes the client while nothing changes | n/a, injected | `inboxAgentsTick` at one second | `TestAgentsViewOpenAddsNoIdleCost` ("10 ticks of the view") | **caught** |
+| A held row's move waits for a message that never comes | `armCockpitHold`, the one timer for a hold | The hold set with no timer armed | `TestAgentsViewOpenAddsNoIdleCost` ("the held row never moved to Working") | **caught** |
+
+The fixed build passes them, every `TestInbox*`, `TestAskHuman*`,
+`TestChromeLooksAndFooters`, `TestEveryOverlayOwnsItsGround` and the other
+tests that open the Inbox (137 tests).
+
+### Marks and cut approvals
+
+`TestCockpitBulkActsOnlyOnSeenMarks` marks the agent that holds the approval,
+checks the mark on its row and the count in the title, folds its group with a
+click on the heading, and presses `3`. `TestCockpitCutApprovalIsNotAnswered`
+holds an approval on a 100x12 screen, where its card cannot show the command
+and where it runs. It checks the card says so inside the body, and that `a`
+and `1` leave the approval held. `TestCockpitApprovalCardOnEveryTab` holds
+an approval at 100x30, steps to the Checkpoints and Live tabs, checks the
+card on each, and answers it with `a` from the Live tab. Run on 2026-10-18.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| A mark is invisible | The mark column in `drawFleetRow` | The mark drawn only when `false` | `TestCockpitBulkActsOnlyOnSeenMarks` ("the mark is not on api-auth's row, or the title does not count it") | **caught** |
+| A bulk key acts on a mark the list does not show | `markedAgents` over `cockpitShownAgents` | `markedAgents` reads the whole agents list | `TestCockpitBulkActsOnlyOnSeenMarks` ("3 did not say no marked agent it can see waits": it rejected the folded agent's approval) | **caught** |
+| A cut command counts as read | The `cut` rule in `drawItemCard` | `noteInboxShown` told the card showed the approval whole, and no cut recorded | `TestCockpitCutApprovalIsNotAnswered` ("a answered an approval whose command was cut: 0 held") | **caught** |
+| The Checkpoints or Live tab hides a held approval's card | The card drawn before the tab's body in `drawFocus` | The card drawn on Thread and Changes only | `TestCockpitApprovalCardOnEveryTab` ("the Checkpoints tab hides the approval's card") | **caught** |
+## The agents cockpit: thread cards
+
+`TestCockpitThreadCards` joins a pane to a Claude Code transcript fixture
+(`testdata/transcript/cockpit-auth.jsonl`: three reads and a search, a todo
+list, an Edit with a structured patch, a failing Bash call) with the real
+hook, and reads it in the cockpit at 200x55 and 100x30.
+
+Run on 2026-10-18.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| The changed words of a diff line are not lit | n/a, injected | `ckDiffCard` passes no changed range to `diffview.Theme.Code` | `TestCockpitThreadCards` ("the changed words of the diff are not lit") | **caught** |
+| The newest todo list folds to its count like the older ones | n/a, injected | `ckPlanCard` called with `whole` false | `TestCockpitThreadCards` ("the thread has no plan card or diff card") | **caught** |
+| A click on a card's header does nothing | n/a, injected | the diff card's header line has no `fold:` hit | `TestCockpitThreadCards` ("a click on the header did not fold the diff") | **caught** |
+| A tool result between two reads breaks the run | n/a, injected | the run stops at a `tool_result` entry | `TestCockpitThreadCards` ("the reads did not fold to one line") | **caught** |
+| The changed words are lit three cells early per tab | `ckCodeOffset`: the word offsets mapped on the raw text | the offsets taken on the text after the tab became four spaces | `TestCockpitThreadCards` ("the cell before the changed words is lit too") | **caught** |
+
+## The agents cockpit: reply area and image view
+
+`TestCockpitReplyAreaAndImageView` opens the reply area by a click, types,
+drops a PNG's path in, opens the image view from the chip, closes it with esc
+and with a click outside the picture, and sends with the Send button. The
+picture is drawn as cells (`TUIOS_KITTY_GRAPHICS=0`), so the test reads it off
+the screen.
+
+Run on 2026-10-18.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| An image chip is not a click target | n/a, injected | the chip's `image:` hit left out of `drawReplyArea` | `TestCockpitReplyAreaAndImageView` ("a click on the chip did not open the image view") | **caught** |
+| A click outside the picture leaves the view up | n/a, injected | `cockpitImageClick` never closes | `TestCockpitReplyAreaAndImageView` ("a click outside the picture did not close the view") | **caught** |
+| The Send button does nothing | n/a, injected | `cockpitAction` has no `send` case | `TestCockpitReplyAreaAndImageView` ("waiting for the closed area after Send") | **caught** |
+
+## The agents cockpit: side column
+
+`TestCockpitSideColumn` puts an agent's pane in a git work tree, ends two
+turns (two checkpoints), joins it to the transcript fixture, and opens the
+agents view at 200x55. The side column must hold the pane's first marker,
+the last turn's file and both checkpoints, and then the marker the pane
+prints while the view is open. `TestCockpitSideTabs` reads the Checkpoints
+and Pane tabs at 100x30.
+
+Run on 2026-10-18.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| The live box does not follow the pane's output | n/a, injected | `cockpitNoteOutput` never marks the live pane | `TestCockpitSideColumn` ("the live box did not follow the pane's output") | **caught** |
+| The checkpoints are not shown | n/a, injected | `applyCheckpoints` drops the list | `TestCockpitSideColumn` ("the side column lacks the live pane, the last turn or the checkpoints") | **caught** |
+
+## #649: the host cursor sits where typing goes
+
+An input method opens its candidate window at the host terminal's cursor,
+hidden or not. `TestHiddenCursorParksAtGuestCursor` has a guest in the right
+of two tiled panes hide its cursor and put it on an empty cell away from the
+text it wrote. The host cursor has to be on that cell, hidden, within the 5
+seconds before the guest shows it. Then the guest shows its cursor and hides
+it again, both without drawing, so no frame is written for either: the host
+cursor has to be on the same cell, visible, then hidden.
+`TestRichRowReplyAndRecap` checks that the host cursor is on the Inbox reply
+editor's caret, hidden, after the person types. Run on 2026-10-18.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| The hidden cursor is left where the frame ended | Parking in `viewCursor` (cursor_park.go) | Returns no cursor when none is shown | `TestHiddenCursorParksAtGuestCursor` ("with the guest cursor hidden: the host cursor is at (102,38)"), `TestRichRowReplyAndRecap` ("in the reply editor: the host cursor is at (80,39)") | **caught** |
+| The renderer shows the parked cursor | The frame hook's handling, `cursorPark.frame` | Passes every frame through unchanged | `TestHiddenCursorParksAtGuestCursor` ("at (90,10) visible=true"), `TestRichRowReplyAndRecap` ("at (17,33) visible=true") | **caught** |
+| A visibility change without a frame never reaches the host | The write in `cursorPark.set` | Not written | `TestHiddenCursorParksAtGuestCursor` ("after the guest hid its cursor again without drawing: ... visible=true") | **caught** |
+| A draft's caret does not take the cursor | The open draft in `imeCaret` (now `draftCaret`) | Branch skipped | `TestRichRowReplyAndRecap` ("in the reply editor: the host cursor is at (80,39)") | **caught** (first version of the fix) |
+
+The exit path, where the frame that leaves the alternate screen must show the
+cursor again, is not checked here. The local client writes its own reset with
+a show after the program ends (`terminal.ResetTerminal`), so the PTY stream
+ends with the cursor shown whether or not the hook did it. The unit test
+`TestParkedFrameWire` (internal/app) checks it on the renderer's real exit
+frame, without and with mode 2026, along with the wire rules: no show in a
+parked frame, the hide written at once when the cursor parks where it is, and
+a show after the move, never before it. Each of those four fails with its part
+of the fix removed.
+
+The fixed build passes both, and every test matching `Cursor`, `PiP`,
+`Inbox`, `Reply`, `Cockpit`, `Sixel`, `Kitty`, `Composer`, `Draft`, `Mail`,
+`Spotlight` and `Zoom` (142 tests). `TestKittyVirtualPlacementLeavesThePaneToTheGuest`
+was left out: under a 6 GB address cap its host recorder runs out of memory,
+on main's build as well.
+
+Two first versions of the pane test passed on a build without the fix. One put
+the hidden cursor on the first cell of the word the guest wrote, where the
+frame had ended by chance. The other waited past the moment the guest showed
+and hid its cursor again on the same cell, which left a build without the fix
+there too. The cursor now goes to a cell no frame writes to, and the first
+wait ends before the guest shows it.

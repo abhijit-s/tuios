@@ -567,7 +567,7 @@ func clientEventMsg(event ClientEvent) tea.Msg {
 func (m *OS) tickNeedsWork() bool {
 	return m.tickAtFrameRate() || len(m.Notifications) > 0 ||
 		len(m.pendingAgentAlerts) > 0 || m.programAlertHeld() || m.spotlightMotionPending ||
-		m.tickPolledWork()
+		m.cockpitHoldDue(time.Now()) || m.tickPolledWork()
 }
 
 // tickAtFrameRate reports whether something moves on every frame and the
@@ -969,6 +969,14 @@ func (m *OS) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// the settings page opening and a pane starting an agent are both things
 	// any handler can do. See settings_agents.go.
 	agents := m.agentsSyncCmd()
+	// A reply editor the rows moved the cursor away from closes, keeping
+	// its draft.
+	m.CockpitReplyCheck()
+	// Checkpoints a frame of the agents view drew for an older state: a
+	// turn that ended with no input is read now. A flag check when not.
+	if side := m.CockpitSideWanted(); side != nil {
+		agents = tea.Batch(agents, side)
+	}
 	// The maintenance tick last, after every sync above has said what it asked
 	// for: it is armed for the earliest job that is due, and not at all when
 	// none is. See nextWake.
@@ -1124,6 +1132,13 @@ func (m *OS) handleMsg(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 		m.applyReplyPreview(msg)
 		return m, nil
 
+	case ckCheckpointsMsg:
+		m.applyCheckpoints(msg)
+		return m, nil
+	case ckLivePrimeMsg:
+		m.applyLivePrime(msg)
+		return m, nil
+
 	case PasteTimeoutMsg:
 		// The terminal never answered the clipboard query. Say so, because the
 		// alternative is a paste key that looks broken. See clipboard_paste.go.
@@ -1235,6 +1250,10 @@ func (m *OS) handleMsg(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 		m.handleMotionFrame(msg)
 		return m, nil
 
+	case ckHoldMsg:
+		m.cockpitSettleHold(time.Now())
+		return m, nil
+
 	case TickerMsg:
 		// Maintenance tick: animations, dock stats, script playback, process cleanup.
 		// Does NOT trigger rendering unless animations/interactions are active.
@@ -1254,6 +1273,9 @@ func (m *OS) handleMsg(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 			return m, nil
 		}
 		m.tickStats.Work++
+
+		// An agent row held in its group a moment moves now.
+		m.cockpitSettleHold(time.Time(msg))
 
 		// Agent alerts whose settle window has closed. Done before the window
 		// sweep below so an alert about a pane that exited this tick is dropped
@@ -2004,6 +2026,11 @@ func (m *OS) handleMsg(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 
 		// The PTY resize, the SIGWINCH it carries and the whole-screen redraw
 		// every guest answers with land in ViewportResizeSettledMsg instead.
+		// An open image view needs its picture at the new size, and a side
+		// column the new width hides lets its live pane go.
+		if cmd := tea.Batch(m.CockpitImagePicture(), m.cockpitLiveFollow()); cmd != nil {
+			return m, tea.Batch(settle, cmd)
+		}
 		return m, settle
 
 	case ViewportResizeSettledMsg:
