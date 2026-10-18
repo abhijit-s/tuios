@@ -555,10 +555,7 @@ func (s *Session) adoptState(st *SessionState, rec handoffSession) (pruneDue, fl
 // it. Empty leaves the emulator's own.
 func (c handoffReportColors) applyTo(t vt.Terminal) {
 	fg, bg := parseReportColor(c.Fg), parseReportColor(c.Bg)
-	if fg != nil || bg != nil {
-		t.SetReportColors(fg, bg)
-	}
-	if c.Palette != "" {
-		t.SetReportPalette(parseReportPalette(c.Palette))
+	if fg != nil || bg != nil || c.Palette != "" {
+		t.SetReportColors(fg, bg, parseReportPalette(c.Palette))
 	}
 }
