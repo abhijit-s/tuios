@@ -8016,3 +8016,13 @@ frame had ended by chance. The other waited past the moment the guest showed
 and hid its cursor again on the same cell, which left a build without the fix
 there too. The cursor now goes to a cell no frame writes to, and the first
 wait ends before the guest shows it.
+
+### Compacting a session's workspaces
+
+Run on 2026-10-19 on macOS, on the local integration stack. `TestCompactWorkspacesClosesTheGaps` drives `tuios compact-workspaces` against a detached session with workspaces 1, 3 and 4 and an empty workspace 2 named "beta"; `TestCompactWorkspacesKeyAndDockMenu` drives the `compact_workspaces` key and the dock tab's "Compact workspaces" row. The fixed build passes both, and the workspace, dock and menu tests beside them.
+
+| Control: what was cut | Tests that fail | Verdict |
+| --- | --- | --- |
+| `CompactWorkspaces` drops the empty workspaces' names but does not renumber (`s.renumberLocked(state, newOf)` cut) | `TestCompactWorkspacesClosesTheGaps`, `TestCompactWorkspacesKeyAndDockMenu` | **caught** |
+| The `compact_workspaces` action is not registered | `TestCompactWorkspacesKeyAndDockMenu` ("the dock never drew [1·EDIT 2·REVW 3·DPLY]") | **caught** |
+| The dock tab menu never shows the row (`HasWorkspaceGap` check replaced by `false`) | `TestCompactWorkspacesKeyAndDockMenu` ("context menu never showed [Switch to Compact workspaces Close]") | **caught** |
