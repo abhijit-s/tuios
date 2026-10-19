@@ -8,7 +8,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
-// Dialog is a hairline micro-dialog: a rounded muted frame with its title set
+// Dialog is a hairline micro-dialog: a muted frame with its title set
 // into the top border, its key hints set into the bottom border, and an
 // interior on bare canvas.
 //
@@ -42,12 +42,38 @@ func DialogFitWidth(preferred, screenW int) int {
 	return max(min(preferred, screenW-2), 1)
 }
 
-// dialogFrame returns the corner, horizontal and vertical border glyphs.
+// dialogFrame returns the corner, horizontal and vertical border glyphs: the
+// pushed Frame (see SetFrame), or the rounded built-in when none is pushed.
 func dialogFrame() (tl, tr, bl, br, h, v string) {
 	if UseASCII() {
 		return "+", "+", "+", "+", "-", "|"
 	}
+	if f := frame.Load(); f != nil {
+		return f.TopLeft, f.TopRight, f.BottomLeft, f.BottomRight, f.Horizontal, f.Vertical
+	}
 	return "╭", "╮", "╰", "╯", "─", "│"
+}
+
+// edgeFrame is dialogFrame for a frame that is the only edge its surface has:
+// a Box inside a panel, or a panel at 16 colours, whose ground is the
+// terminal's own. A blank frame (the hidden border style) would leave such a
+// surface with no edge at all, so it draws the rounded frame instead. A dialog
+// and a filled panel keep the blank frame, because their fill is an edge.
+func edgeFrame() (tl, tr, bl, br, h, v string) {
+	tl, tr, bl, br, h, v = dialogFrame()
+	if strings.TrimSpace(tl+tr+bl+br+h+v) == "" {
+		return "╭", "╮", "╰", "╯", "─", "│"
+	}
+	return tl, tr, bl, br, h, v
+}
+
+// panelFrame is the frame a framed panel draws: edgeFrame at 16 colours,
+// where the frame is the panel's only edge, else dialogFrame.
+func panelFrame(pal Palette) (tl, tr, bl, br, h, v string) {
+	if pal.Depth == Depth16 {
+		return edgeFrame()
+	}
+	return dialogFrame()
 }
 
 // DashRule returns a dashed internal separator, the micro-dialog's answer to a

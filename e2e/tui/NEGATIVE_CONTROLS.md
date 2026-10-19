@@ -8270,3 +8270,20 @@ The fixed build passes it, along with every test matching `SessionSwitcher`, `Wo
 | ctrl+c never cancels the rename | The same branch | Always `RenameClear` | `TestRenameDialogClears`: `ctrl+c on an empty field did not close the dialog` | **caught** |
 | The clear hint is not pressable | `renameClearHit` recorded in `renderOverlays` | Never recorded | `TestRenameDialogClears`: `a click on the clear hint left the dialog open with an empty field: field never read ""` | **caught** |
 | ctrl+u does nothing in the help search | The `ctrl+u` check in `handleHelpOverlayKey` | Never taken | `TestRenameDialogClears`: `ctrl+u did not clear the help search query` | **caught** |
+## Dialog and panel borders follow border_style
+
+`TestOverlayBordersFollowBorderStyle` attaches a truecolor client under four configs and reads the frame cells of the rename dialog and the command palette, found from each overlay's own title and hints so the panes' borders in the same style cannot satisfy it. The positive and negative halves share a fixture: under `double` the dialog is framed and the palette is not, and with `frame_panels` the palette is framed. Each control was built into its own binary and the test run against it. Run on 2026-10-19.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| Dialogs stay rounded whatever the style | The pushed `Frame` read in `dialogFrame` | Branch removed | `/double` (got `╭`, want `╔`), `/double-frame-panels` (palette `╭`), `/hidden` (got `╭`, want a space) | **caught** |
+| The style never reaches the overlay package | The `overlay.SetFrame` call in `syncOverlaySettings` | Call removed | `/double`, `/double-frame-panels`, `/hidden`, as above | **caught** |
+| `frame_panels` does not frame a panel | The `FramePanels` read in `overlay.Derive` | Removed | `/double-frame-panels` (palette corners are spaces, want `╔`); `/double`'s unframed palette still passes | **caught** |
+| A hidden style draws a rounded dialog | The `hidden` case in `Settings.OverlayBorder` | Removed, so it falls to rounded | `/hidden` (got `╭`, want a space) | **caught** |
+| A block style draws a solid dialog | The rounded default in `Settings.OverlayBorder` | Returns `GetBorderForStyle()` | `/block` (got `█`, want `╭`) | **caught** |
+
+After review: under `hidden`, a frame that is a surface's only edge falls back to rounded: a panel framed at 16 colours, and an `overlay.Box` region. `/hidden-16` runs the hidden style at 16 colours (`TERM=xterm`, no `COLORTERM`), with the positive half in the same fixture: the rename dialog still draws no frame, and the command palette draws `╭ ╮ ╰ ╯`. Before the fix it failed with the palette corners as spaces. Box takes the same `edgeFrame` call and has no E2E of its own under hidden. Run on 2026-10-19.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| A 16-colour panel loses its only edge under hidden | `panelFrame(pal)` at the `Panel.Render` frame site | Calls `dialogFrame()` again | `/hidden-16` (`got tl=" " … want tl="╭" tr="╮" bl="╰" br="╯" top="─" side="│"`) | **caught** |
