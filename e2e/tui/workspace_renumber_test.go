@@ -447,3 +447,153 @@ func TestWorkspaceSwitchPastTheLastOpensTheNext(t *testing.T) {
 	wantNumbering(t, base, map[string]string{"1": "EDIT", "2": "REVW", "3": "DPLY"})
 	alive(t, term, "after opening workspaces past the last")
 }
+
+// compactKeyConfig is renumberConfig with compact_workspaces bound under the
+// workspace prefix. The action ships with no key.
+const compactKeyConfig = renumberConfig + `compact_workspaces = ['g']
+`
+
+// gappedSetup builds the three workspaces on 1, 3 and 4 with nothing on 2, the
+// shape a session saved by an older build comes back in, and names the empty
+// workspace 2 too, so a name left on a gap can be seen to go. The session is
+// left detached.
+func gappedSetup(t *testing.T, config string) string {
+	t.Helper()
+	base := t.TempDir()
+	writeConfig(t, base, config)
+	killDaemon(t, base)
+	if out, err := tuiosCLI(t, base, "new", renumberSession, "--detach"); err != nil {
+		t.Fatalf("create session: %v: %s", err, out)
+	}
+	for _, ws := range []struct {
+		num, name string
+	}{{"1", "EDIT"}, {"3", "REVW"}, {"4", "DPLY"}} {
+		have := 0
+		if ws.num == "1" {
+			have = 1
+		}
+		for i := have; i < renumberPanes[ws.name]; i++ {
+			if out, err := tuiosCLI(t, base, "new-window", "-s", renumberSession, "--workspace", ws.num, "--no-focus"); err != nil {
+				t.Fatalf("new-window on %s: %v: %s", ws.num, err, out)
+			}
+		}
+		if out, err := tuiosCLI(t, base, "set-workspace-name", ws.num, ws.name, "--session", renumberSession); err != nil {
+			t.Fatalf("name workspace %s: %v: %s", ws.num, err, out)
+		}
+	}
+	if out, err := tuiosCLI(t, base, "set-workspace-name", "2", "beta", "--session", renumberSession); err != nil {
+		t.Fatalf("name the empty workspace 2: %v: %s", err, out)
+	}
+	wantNumbering(t, base, map[string]string{"1": "EDIT", "2": "beta", "3": "REVW", "4": "DPLY"})
+	wantPanesOn(t, base, map[int]string{1: "EDIT", 3: "REVW", 4: "DPLY"})
+	return base
+}
+
+// wantCompacted checks the daemon holds EDIT, REVW and DPLY on 1, 2 and 3, with
+// their panes, and no other name: the gap's stale name is gone.
+func wantCompacted(t *testing.T, base string) {
+	t.Helper()
+	info := wantNumbering(t, base, map[string]string{"1": "EDIT", "2": "REVW", "3": "DPLY"})
+	if len(info.WorkspaceNames) != 3 {
+		t.Fatalf("names after compacting are %v, want EDIT, REVW and DPLY only", info.WorkspaceNames)
+	}
+	wantPanesOn(t, base, map[int]string{1: "EDIT", 2: "REVW", 3: "DPLY"})
+}
+
+// TestCompactWorkspacesClosesTheGaps runs tuios compact-workspaces on a
+// detached session with workspaces 1, 3 and 4: they become 1, 2 and 3 with
+// their names and panes, the empty workspace's name is dropped, a second run
+// has nothing to do, and a client that attaches draws the new numbering.
+func TestCompactWorkspacesClosesTheGaps(t *testing.T) {
+	base := gappedSetup(t, renumberConfig)
+
+	out, err := tuiosCLI(t, base, "compact-workspaces", "-s", renumberSession)
+	if err != nil {
+		t.Fatalf("compact-workspaces: %v: %s", err, out)
+	}
+	if want := "workspace 3 → 2\nworkspace 4 → 3\n"; !strings.Contains(out, want) || strings.Contains(out, "→ 4") {
+		t.Fatalf("compact-workspaces printed %q, want %q and no other move", out, want)
+	}
+	wantCompacted(t, base)
+
+	out, err = tuiosCLI(t, base, "compact-workspaces", "-s", renumberSession)
+	if err != nil {
+		t.Fatalf("compact-workspaces again: %v: %s", err, out)
+	}
+	if !strings.Contains(out, "nothing to compact") || strings.Contains(out, "→") {
+		t.Fatalf("a second compact-workspaces printed %q, want nothing to compact", out)
+	}
+	wantCompacted(t, base)
+
+	term := attachIn(t, base, renumberSession, startOpts{})
+	waitPills(t, term, "1·EDIT", "2·REVW", "3·DPLY")
+	if screenHas(term.Screen(), "4·") || screenHas(term.Screen(), "beta") {
+		t.Fatalf("the dock still draws a workspace past 3 or the stale name\n%s", term.Snapshot())
+	}
+	altReaches(t, term, '2', "REVW")
+	altReaches(t, term, '3', "DPLY")
+	alive(t, term, "after compacting the workspaces")
+}
+
+// TestCompactWorkspacesKeyAndDockMenu closes the gaps from an attached client:
+// first by the compact_workspaces key under the workspace prefix, then, on a new
+// gap, from the "Compact workspaces" row of a dock tab's menu, which is offered
+// only while there is a gap.
+func TestCompactWorkspacesKeyAndDockMenu(t *testing.T) {
+	base := gappedSetup(t, compactKeyConfig)
+	term := attachIn(t, base, renumberSession, startOpts{})
+	waitPills(t, term, "1·EDIT", "3·REVW", "4·DPLY")
+
+	if err := term.SendKeys(tuitest.Ctrl('b'), "w", "g"); err != nil {
+		t.Fatalf("press the compact key: %v", err)
+	}
+	waitPills(t, term, "1·EDIT", "2·REVW", "3·DPLY")
+	if err := term.WaitFor(func(s tuitest.Screen) bool { return !screenHas(s, "4·") }, uiTimeout); err != nil {
+		t.Fatalf("the dock still draws workspace 4 after the compact key: %v\n%s", err, term.Snapshot())
+	}
+	wantCompacted(t, base)
+	altReaches(t, term, '3', "DPLY")
+	altReaches(t, term, '1', "EDIT")
+
+	// With no gap the tab's menu does not offer the row.
+	col, row, ok := dockCell(term.Screen(), "1·EDIT")
+	if !ok {
+		t.Fatalf("no dock tab 1·EDIT\n%s", term.Snapshot())
+	}
+	mouseClick(t, term, col+1, row, tuitest.MouseRight, 0)
+	waitMenu(t, term, "the 1·EDIT tab", "Switch to", "Rename", "Close")
+	if screenHas(term.Screen(), "Compact workspaces") {
+		t.Fatalf("the tab menu offers Compact workspaces with no gap\n%s", term.Snapshot())
+	}
+	if err := term.SendKeys(tuitest.Esc); err != nil {
+		t.Fatalf("press escape: %v", err)
+	}
+	waitMenuGone(t, term, "Switch to", "after esc on the 1·EDIT tab menu")
+
+	// A pane put on 5 leaves 4 empty, and the menu row closes it up.
+	if out, err := tuiosCLI(t, base, "new-window", "-s", renumberSession, "--workspace", "5", "--no-focus"); err != nil {
+		t.Fatalf("new-window on 5: %v: %s", err, out)
+	}
+	if out, err := tuiosCLI(t, base, "set-workspace-name", "5", "SHIP", "--session", renumberSession); err != nil {
+		t.Fatalf("name workspace 5: %v: %s", err, out)
+	}
+	waitPills(t, term, "1·EDIT", "2·REVW", "3·DPLY", "5·SHIP")
+	col, row, ok = dockCell(term.Screen(), "5·SHIP")
+	if !ok {
+		t.Fatalf("no dock tab 5·SHIP\n%s", term.Snapshot())
+	}
+	mouseClick(t, term, col+1, row, tuitest.MouseRight, 0)
+	waitMenu(t, term, "the 5·SHIP tab", "Switch to", "Compact workspaces", "Close")
+	col, row = screenCell(t, term, "Compact workspaces")
+	mouseClick(t, term, col, row, tuitest.MouseLeft, 0)
+	waitPills(t, term, "1·EDIT", "2·REVW", "3·DPLY", "4·SHIP")
+	if err := term.WaitFor(func(s tuitest.Screen) bool { return !screenHas(s, "5·") }, uiTimeout); err != nil {
+		t.Fatalf("the dock still draws workspace 5 after the menu row: %v\n%s", err, term.Snapshot())
+	}
+	info := wantNumbering(t, base, map[string]string{"1": "EDIT", "2": "REVW", "3": "DPLY", "4": "SHIP"})
+	if len(info.WorkspaceNames) != 4 {
+		t.Fatalf("names after the menu row are %v, want EDIT, REVW, DPLY and SHIP", info.WorkspaceNames)
+	}
+	altReaches(t, term, '2', "REVW")
+	alive(t, term, "after compacting from the key and the dock menu")
+}
