@@ -774,7 +774,7 @@ type OS struct {
 	// workspaceMoveInFlight is set while a renumber this client asked for has
 	// not come back in a state. See RenumberWorkspaces.
 	workspaceMoveInFlight bool
-	RestoredFromState bool // True after RestoreFromState, cleared after first resize
+	RestoredFromState     bool // True after RestoreFromState, cleared after first resize
 	// DaemonStateVersion is the daemon state version this client last saw. It is
 	// echoed back on every state sync so the daemon can tell a snapshot built
 	// from its current state apart from one built before a mutation of its own.
@@ -1268,6 +1268,10 @@ type OS struct {
 	SessionSwitcherScroll        int
 	SessionSwitcherItems         []sessiontree.Node
 	SessionSwitcherConfirmDelete string // non-empty = confirming deletion of this session name
+	// paneMove is a move of a pane to another session in progress. While it
+	// is set the session switcher and then the workspace switcher pick where
+	// the pane goes rather than where to go. See move_to_session.go.
+	paneMove *paneMove
 
 	// FederationHosts is what the daemon last said about the machines in the
 	// [hosts] config table, with the sessions each holds. The rail reads it and

@@ -706,6 +706,9 @@ var ActionDescriptions = map[string]string{
 	"select_window_8":    "Select window 8",
 	"select_window_9":    "Select window 9",
 
+	// The pane menu's "Move to session..." row runs it too. No key ships.
+	"move_window_to_session": "Move the focused pane to another session",
+
 	// Multifocus. Neither action has a default key.
 	"toggle_multifocus_active": "Add or remove the focused pane from multifocus",
 	"toggle_multifocus_all":    "Add all panes on the workspace to multifocus, or clear it",

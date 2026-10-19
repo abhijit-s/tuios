@@ -1472,6 +1472,10 @@ func (m *OS) handleMsg(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 		}
 		return m, cmd
 
+	case PaneMovedMsg:
+		m.handlePaneMoved(msg)
+		return m, nil
+
 	case SessionKilledMsg:
 		cmd := ListenForSessionKill(m.sessionKillChan())
 		if msg.Err != nil {

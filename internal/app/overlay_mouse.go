@@ -490,6 +490,9 @@ func (m *OS) overlayRowClick(kind string, row overlayRowHit, lx, ly int) tea.Cmd
 		return m.InboxActivate()
 	case "workspace":
 		m.WorkspaceSwitcherSelected = row.Idx
+		if m.MovingPane() {
+			return m.MoveToWorkspaceRow(row.Idx)
+		}
 		m.WorkspaceSwitcherActivate(row.Idx)
 	case overlayKindBuffers:
 		return m.BufferChooserActivate(row.Idx)
@@ -559,6 +562,10 @@ func (m *OS) sessionSwitcherActivate(idx int) {
 	if !ok {
 		return
 	}
+	if m.MovingPane() {
+		m.MoveToSessionChosen(selected)
+		return
+	}
 	if selected.IsCurrent {
 		m.ShowNotification("Already on this session", "info", m.Settings.NotificationDuration)
 	} else {
@@ -618,10 +625,7 @@ func (m *OS) closeOverlay(kind string) {
 		// Click-away closes and keeps, for the same reason.
 		m.CloseSectionEditor()
 	case "session":
-		m.ShowSessionSwitcher = false
-		m.SessionSwitcherQuery = ""
-		m.SessionSwitcherSelected = 0
-		m.SessionSwitcherScroll = 0
+		m.CloseSessionSwitcher()
 	case "agentmail":
 		m.CloseAgentMail()
 	case "inbox":

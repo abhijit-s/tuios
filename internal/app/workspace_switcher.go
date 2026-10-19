@@ -53,6 +53,7 @@ func (m *OS) buildWorkspaceItems() []WorkspaceItem {
 // OpenWorkspaceSwitcher shows the workspace switcher for the attached session.
 // It reads live state only, so there is no round trip to pay here.
 func (m *OS) OpenWorkspaceSwitcher() {
+	m.paneMove = nil
 	m.ShowWorkspaceSwitcher = true
 	m.WorkspaceSwitcherQuery = ""
 	m.WorkspaceSwitcherScroll = 0
@@ -75,6 +76,7 @@ func (m *OS) CloseWorkspaceSwitcher() {
 	m.WorkspaceSwitcherQuery = ""
 	m.WorkspaceSwitcherSelected = 0
 	m.WorkspaceSwitcherScroll = 0
+	m.paneMove = nil
 }
 
 // FilterWorkspaceItems narrows the list by a query, matching the name and the

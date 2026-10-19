@@ -821,6 +821,28 @@ See [CONFIGURATION.md](CONFIGURATION.md#workspace-numbers).
 `tuios close-workspace` does the same from a shell. See
 [CLI_REFERENCE.md](CLI_REFERENCE.md#tuios-close-workspace).
 
+## Move a pane to another session
+
+Right-click a pane and choose `Move to session...` to move that pane to another session on this machine. The program in the pane keeps running, with its scrollback, and the pane keeps its id. You stay where you are: the pane goes, you do not go with it.
+
+The move takes two steps:
+
+1. A list of the other sessions, titled `Move <pane> to session`. Type to filter it, and press `Enter` to choose one.
+2. A list of workspaces in that session, titled `Move <pane> to <session>`. The first row, marked `shown`, is the workspace that session shows. The other rows are its workspaces that hold a pane. Press `Enter` on a row, or type a digit from `1` to `9` to move the pane to that workspace whether or not it holds a pane.
+
+`Esc` at either step cancels, and nothing moves. When the move is done, the message bar says `Moved <pane> to <session> · workspace N`. When the daemon refuses the move, the message bar shows its reason as an error.
+
+The row is dimmed for a scratch pane, a popup and a pane on another machine, because those stay in their session. It is also dimmed when there is no other session, and when tuios runs without the daemon.
+
+The `move_window_to_session` action opens the same two steps for the focused pane. It has no default key. To bind it:
+
+```toml
+[keybindings.window_prefix]
+move_window_to_session = ["s"]   # Ctrl+B t s
+```
+
+`tuios move-window --to-session` does the same from a shell. See [CLI_REFERENCE.md](CLI_REFERENCE.md).
+
 ## Cycle through workspaces
 
 The `next_workspace` and `prev_workspace` actions go to the next or the
