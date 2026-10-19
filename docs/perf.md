@@ -2895,7 +2895,10 @@ hidden host cursor at the caret for input methods (#649) measured 37,879,970
 and 35,595,330: 400 bytes on darwin/arm64, and three more pages on
 linux/amd64, so only the linux/amd64 budget moved. It scans each frame for
 the cursor visibility sequences, copies a parked frame only when it takes
-one out, and runs no timer.
+one out, and runs no timer. Moving a pane to another session from the pane
+menu measured 37,896,354 and 35,612,226, four pages more on each: the action,
+the menu row, the two switchers' move mode and the move-window call. It
+reuses the session and workspace switchers and runs no timer.
 
 To raise a budget, do it on purpose in its own commit: run
 `scripts/binary-size.sh` on the Go version in go.mod, set the new budget a
