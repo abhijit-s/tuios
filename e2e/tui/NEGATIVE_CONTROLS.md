@@ -8259,3 +8259,14 @@ Real kitty icat (0.49.2) through a pane of this build and of main sends `s=`, `v
 | The action reaches no handler | `registerPrefixHandlers`: the `goto_picker` line | Deleted | `TestGotoPickerGoesAnywhere` ("the go-to picker never showed") | **caught** |
 
 The fixed build passes it, along with every test matching `SessionSwitcher`, `WorkspaceSwitcher`, `Palette` and `Inbox` (40 passed, 1 skipped: `TestRealCrushAnsweredFromTheInbox`, which needs a real crush binary).
+## Clearing the rename dialog
+
+`TestRenameDialogClears` attaches a real client to a daemon session whose window is named `oldname`, opens the rename dialog with `r`, and reads every rename back from `tuios list-windows --json`. It clears with `ctrl+u`, with `ctrl+c` on text, closes with `ctrl+c` on an empty field (the name must stay), clicks the `clear` hint, and clears the help search with `ctrl+u`. Each control cut the wiring in a build of this branch and ran only this test. Run on 2026-10-19.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| ctrl+u does nothing in the rename dialog | The `ctrl+u` case in `handleRenameMode` | Removed | `TestRenameDialogClears`: `ctrl+u left the dialog open with an empty field: field never read ""` | **caught** |
+| ctrl+c always cancels the rename | The empty-buffer branch of the `ctrl+c` case | Always `EndRename` | `TestRenameDialogClears`: `ctrl+c with text left the dialog open with an empty field: field never read ""` | **caught** |
+| ctrl+c never cancels the rename | The same branch | Always `RenameClear` | `TestRenameDialogClears`: `ctrl+c on an empty field did not close the dialog` | **caught** |
+| The clear hint is not pressable | `renameClearHit` recorded in `renderOverlays` | Never recorded | `TestRenameDialogClears`: `a click on the clear hint left the dialog open with an empty field: field never read ""` | **caught** |
+| ctrl+u does nothing in the help search | The `ctrl+u` check in `handleHelpOverlayKey` | Never taken | `TestRenameDialogClears`: `ctrl+u did not clear the help search query` | **caught** |
