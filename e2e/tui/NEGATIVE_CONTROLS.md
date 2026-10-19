@@ -8246,3 +8246,16 @@ A plain leave recalculates nothing once no client is left (`notifyClientLeft` on
 `/direct-natural` and `/direct-resend` pass on every build: an inline PNG's size was already read from its first chunk, and an inline a=t passes through without touching the placement.
 
 Real kitty icat (0.49.2) through a pane of this build and of main sends `s=`, `v=`, `c=` and `r=` itself: a 2000x400 PNG comes as a 1180x236 bitmap in 118x12 cells, and a 600x200 one as a file in 60x10 cells, the same commands on both builds. So icat at the left of a pane wide enough is not clipped; the `-natural` cases cover a guest that names no box.
+## The go-to picker (goto_picker)
+
+`TestGotoPickerGoesAnywhere` opens the picker with `Ctrl+B G` on a real client attached to `home`, with `work` and `ops` beside it and `home` and `ops` filed under the space `surge`. A fuzzy query for `zebra` has to land on the pane `zebra-ledger` on workspace 2 of `work`, read from list-clients, list-workspaces and list-windows. The queries `kind:session space:surge`, `kind:ws session:work` and `@harness:claude` each have to show the rows they name and none of the others, which another query in the same run shows. An empty query and Enter has to go back to `home`, and, after the prefix `n` moves to `homeb`, back to the first pane of `home`: the place the client left, not the place the picker last left. Each step saves its frame under `artifactDir`. Each control below was built from the feature commit with one line of wiring cut, and run alone with `-run TestGotoPicker`. Run on 2026-10-19.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| Selector terms do not narrow the list | The `q.match(r)` gate in `gotoFiltered` (goto_picker.go) | Deleted | `TestGotoPickerGoesAnywhere` ("kind:session space:surge: showing \"session  work\"") | **caught** |
+| Enter on a pane in another session does not switch session | The `sidebarFocusWindow` call in `gotoRow`'s pane case | Replaced by a focus of the pane in the attached session only | `TestGotoPickerGoesAnywhere` ("ASSERTION: no client shows session work") | **caught** |
+| The empty list does not put the place left first | The recent tier in `gotoRank` | Deleted, so a recent place ranks in the rest | `TestGotoPickerGoesAnywhere` ("ASSERTION: no client shows session home", the first flip back) | **caught** |
+| A move made without the picker is not a place left | The `m.noteGotoPlace()` call in `Update` (update.go) | Deleted, so a place is noted only when the picker opens | `TestGotoPickerGoesAnywhere` ("ASSERTION: no client shows session home", the flip back after the prefix `n`) | **caught** |
+| The action reaches no handler | `registerPrefixHandlers`: the `goto_picker` line | Deleted | `TestGotoPickerGoesAnywhere` ("the go-to picker never showed") | **caught** |
+
+The fixed build passes it, along with every test matching `SessionSwitcher`, `WorkspaceSwitcher`, `Palette` and `Inbox` (40 passed, 1 skipped: `TestRealCrushAnsweredFromTheInbox`, which needs a real crush binary).
