@@ -7271,3 +7271,15 @@ holds them. Run on 2026-10-19.
 |---|---|---|---|---|
 | A Cursor read or edit card names no file | `target_file` in `fileOf` | Removed | `TestFormatFixtures/cursor-agent.jsonl` | **caught** |
 | A Cursor edit shows an empty diff | The `code_edit` write in `cursorLine` | Never taken | `TestFormatFixtures/cursor-agent.jsonl` | **caught** |
+
+## Dialog and panel borders follow border_style
+
+`TestOverlayBordersFollowBorderStyle` attaches a truecolor client under four configs and reads the frame cells of the rename dialog and the command palette, found from each overlay's own title and hints so the panes' borders in the same style cannot satisfy it. The positive and negative halves share a fixture: under `double` the dialog is framed and the palette is not, and with `frame_panels` the palette is framed. Each control was built into its own binary and the test run against it. Run on 2026-10-19.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| Dialogs stay rounded whatever the style | The pushed `Frame` read in `dialogFrame` | Branch removed | `/double` (got `╭`, want `╔`), `/double-frame-panels` (palette `╭`), `/hidden` (got `╭`, want a space) | **caught** |
+| The style never reaches the overlay package | The `overlay.SetFrame` call in `syncOverlaySettings` | Call removed | `/double`, `/double-frame-panels`, `/hidden`, as above | **caught** |
+| `frame_panels` does not frame a panel | The `FramePanels` read in `overlay.Derive` | Removed | `/double-frame-panels` (palette corners are spaces, want `╔`); `/double`'s unframed palette still passes | **caught** |
+| A hidden style draws a rounded dialog | The `hidden` case in `Settings.OverlayBorder` | Removed, so it falls to rounded | `/hidden` (got `╭`, want a space) | **caught** |
+| A block style draws a solid dialog | The rounded default in `Settings.OverlayBorder` | Returns `GetBorderForStyle()` | `/block` (got `█`, want `╭`) | **caught** |
