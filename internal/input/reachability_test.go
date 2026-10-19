@@ -452,7 +452,9 @@ var actionsWithNoDefaultBinding = map[string]string{
 	"set_session_accent":    "context menu row",
 	"workspace_pill_switch": "context menu row",
 	"settings_sidebar":      "rail mouse row",
-	"rename_workspace":      "user binding",
+	// The pane menu's row, and a key a user binds.
+	"move_window_to_session": "context menu row, user binding",
+	"rename_workspace":       "user binding",
 
 	// ssh-aware splits. The palette lists each one, and a user binds a key
 	// or sets appearance.new_window_follow_ssh to make the ordinary keys follow.

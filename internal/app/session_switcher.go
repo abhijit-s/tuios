@@ -64,6 +64,7 @@ func (m *OS) OpenSessionSwitcher() {
 	if m.learnOff(learnNoteSessions) {
 		return
 	}
+	m.paneMove = nil
 	m.ShowSessionSwitcher = true
 	m.SessionSwitcherQuery = ""
 	m.SessionSwitcherSelected = 0
@@ -76,7 +77,12 @@ func (m *OS) OpenSessionSwitcher() {
 // would read as a session called "local" whose Enter asks the daemon for a
 // session named "\x00host/local". The sessions under each machine stay, and
 // switching to one crosses to its machine through OpenSessionNode.
+//
+// While a pane is being moved the rows are the sessions it can move to instead.
 func (m *OS) sessionSwitcherItems() []sessiontree.Node {
+	if m.paneMove != nil {
+		return m.moveTargetSessions()
+	}
 	sessions := m.BuildSessionTree().Sessions
 	out := make([]sessiontree.Node, 0, len(sessions))
 	for _, n := range sessions {
@@ -86,6 +92,16 @@ func (m *OS) sessionSwitcherItems() []sessiontree.Node {
 		out = append(out, n)
 	}
 	return out
+}
+
+// CloseSessionSwitcher hides the switcher and resets its transient state,
+// ending a pane move that was picking its session.
+func (m *OS) CloseSessionSwitcher() {
+	m.ShowSessionSwitcher = false
+	m.SessionSwitcherQuery = ""
+	m.SessionSwitcherSelected = 0
+	m.SessionSwitcherScroll = 0
+	m.paneMove = nil
 }
 
 // SessionSwitcherTarget returns the session the switcher's selection points at,

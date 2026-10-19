@@ -22,8 +22,25 @@ func (m *OS) renderWorkspaceSwitcher() (string, overlay.Geometry, []overlayRowHi
 		m.WorkspaceSwitcherSelected = clampInt(m.WorkspaceSwitcherSelected, 0, len(filtered)-1)
 	}
 
+	title, tag := "Workspaces", "current"
+	hints := []overlay.Hint{
+		{Key: overlay.EnterGlyph, Label: "go"},
+		{Key: "ctrl+r", Label: "rename"},
+		{Key: "esc", Label: "close"},
+	}
+	if mv := m.paneMove; mv != nil {
+		// The rows are the other session's, and its first row is the workspace
+		// it shows, which is where the pane lands when no number is sent.
+		title, tag = "Move "+printableTitle(mv.label)+" to "+printableTitle(mv.sessionLabel), "shown"
+		hints = []overlay.Hint{
+			{Key: overlay.EnterGlyph, Label: "move"},
+			{Key: "1-9", Label: "workspace"},
+			{Key: "esc", Label: "cancel"},
+		}
+	}
+
 	return m.renderListOverlay(listOverlay{
-		Title:      "Workspaces",
+		Title:      title,
 		Width:      workspaceSwitcherWidth,
 		MaxVisible: workspaceSwitcherRows,
 		Search:     true,
@@ -32,13 +49,9 @@ func (m *OS) renderWorkspaceSwitcher() (string, overlay.Geometry, []overlayRowHi
 		Selected:   m.WorkspaceSwitcherSelected,
 		Scroll:     &m.WorkspaceSwitcherScroll,
 		EmptyMsg:   "No workspace matches",
-		Hints: []overlay.Hint{
-			{Key: overlay.EnterGlyph, Label: "go"},
-			{Key: "ctrl+r", Label: "rename"},
-			{Key: "esc", Label: "close"},
-		},
+		Hints:      hints,
 		RenderRow: func(i int, selected bool, rowBg color.Color, pal overlay.Palette, width int) string {
-			return workspaceSwitcherRow(filtered[i], selected, rowBg, pal, width)
+			return workspaceSwitcherRow(filtered[i], tag, selected, rowBg, pal, width)
 		},
 	})
 }
@@ -46,18 +59,25 @@ func (m *OS) renderWorkspaceSwitcher() (string, overlay.Geometry, []overlayRowHi
 // workspaceSwitcherRow draws one workspace: its number, the name when it has
 // one, and its pane count. The number leads every row because it is the
 // workspace's identity and the key its jump bindings use, so it has to be
-// readable whether or not the workspace has been named.
-func workspaceSwitcherRow(w WorkspaceItem, selected bool, rowBg color.Color, pal overlay.Palette, width int) string {
+// readable whether or not the workspace has been named. tag is the word the
+// current row wears.
+func workspaceSwitcherRow(w WorkspaceItem, tag string, selected bool, rowBg color.Color, pal overlay.Palette, width int) string {
 	right := overlay.Style(rowBg).Foreground(pal.FgMute).Render(panePlural(w.Panes))
 	if w.IsCurrent {
-		right = overlay.Style(rowBg).Foreground(pal.Success).Render("current  ") + right
+		right = overlay.Style(rowBg).Foreground(pal.Success).Render(tag+"  ") + right
+	}
+	// Another session's shown workspace is 0 until its listing says, and the
+	// row still stands for wherever that session is.
+	number := strconv.Itoa(w.Number)
+	if w.Number == 0 {
+		number = "-"
 	}
 
 	numColor := pal.FgMute
 	if selected {
 		numColor = pal.Accent
 	}
-	left := overlay.Style(rowBg).Foreground(numColor).Bold(true).Render(strconv.Itoa(w.Number))
+	left := overlay.Style(rowBg).Foreground(numColor).Bold(true).Render(number)
 	if w.Name != "" {
 		labelColor := pal.FgDim
 		if selected {

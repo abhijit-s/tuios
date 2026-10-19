@@ -289,6 +289,9 @@ func (m *OS) paneMenu(windowIndex int) (string, []ContextMenuItem) {
 		m.item(glyphZoom, "Zoom", "toggle_zoom", false),
 		m.item(glyphCopy, "Screenshot this window", "screenshot_window", false),
 		m.item(glyphMinimize, "Minimize", "minimize_window", scratch),
+		// Dimmed on a pane the daemon would refuse to move, and with no other
+		// session to move it to.
+		m.item(glyphSwitch, "Move to session...", "move_window_to_session", m.MoveToSessionRefusal(windowIndex) != ""),
 		closeItem,
 	}
 }

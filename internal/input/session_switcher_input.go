@@ -37,13 +37,20 @@ func handleSessionSwitcherInput(msg tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cm
 
 	switch keyStr {
 	case "esc":
-		o.ShowSessionSwitcher = false
-		o.SessionSwitcherQuery = ""
-		o.SessionSwitcherSelected = 0
-		o.SessionSwitcherScroll = 0
+		o.CloseSessionSwitcher()
 		return o, nil
 
 	case "enter":
+		if o.MovingPane() {
+			// Picking where a pane goes. A typed name that matches nothing
+			// is not a session to create: the pane needs one that exists.
+			if selected, ok := o.SessionSwitcherTarget(o.SessionSwitcherSelected); ok {
+				o.MoveToSessionChosen(selected)
+			} else {
+				o.ShowNotification("No other session matches "+o.SessionSwitcherQuery, "info", o.Settings.NotificationDuration)
+			}
+			return o, nil
+		}
 		if selected, ok := o.SessionSwitcherTarget(o.SessionSwitcherSelected); ok {
 			if selected.IsCurrent {
 				o.ShowNotification("Already on this session", "info", o.Settings.NotificationDuration)
@@ -83,6 +90,9 @@ func handleSessionSwitcherInput(msg tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cm
 		return o, nil
 
 	case "ctrl+r":
+		if o.MovingPane() {
+			return o, nil
+		}
 		// Renames the session through the daemon, so the new name is the
 		// one ls lists and attach takes.
 		if selected, ok := o.SessionSwitcherTarget(o.SessionSwitcherSelected); ok {
@@ -97,6 +107,9 @@ func handleSessionSwitcherInput(msg tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cm
 		return o, nil
 
 	case "ctrl+d":
+		if o.MovingPane() {
+			return o, nil
+		}
 		// Request delete confirmation for the selected session
 		if selected, ok := o.SessionSwitcherTarget(o.SessionSwitcherSelected); ok {
 			if selected.Host != "" {

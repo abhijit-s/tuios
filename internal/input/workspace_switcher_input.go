@@ -18,6 +18,13 @@ func handleWorkspaceSwitcherInput(msg tea.KeyPressMsg, o *app.OS) (*app.OS, tea.
 		return o, nil
 	}
 
+	// Moving a pane, a digit is the workspace itself, listed or not: the list
+	// shows only the workspaces with panes, and an empty one is as good a place
+	// to put a pane. Otherwise a digit is a search, like any rune.
+	if o.MovingPane() && len(keyStr) == 1 && keyStr[0] >= '1' && keyStr[0] <= '9' {
+		return o, o.MoveToWorkspace(int(keyStr[0] - '0'))
+	}
+
 	switch keyStr {
 	case "esc":
 		o.CloseWorkspaceSwitcher()
@@ -25,10 +32,17 @@ func handleWorkspaceSwitcherInput(msg tea.KeyPressMsg, o *app.OS) (*app.OS, tea.
 
 	case "enter":
 		// Same entry point as the mouse click, so the two cannot drift.
+		if o.MovingPane() {
+			return o, o.MoveToWorkspaceRow(o.WorkspaceSwitcherSelected)
+		}
 		o.WorkspaceSwitcherActivate(o.WorkspaceSwitcherSelected)
 		return o, nil
 
 	case "ctrl+r":
+		if o.MovingPane() {
+			// The workspaces are another session's.
+			return o, nil
+		}
 		if target, ok := o.WorkspaceSwitcherTarget(o.WorkspaceSwitcherSelected); ok {
 			o.BeginRenameWorkspace(target.Number)
 		}

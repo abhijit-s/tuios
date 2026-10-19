@@ -52,8 +52,20 @@ func (m *OS) renderSessionSwitcher() (string, overlay.Geometry, []overlayRowHit)
 		emptyHint = overlay.Hint{Key: overlay.EnterGlyph, Label: "create it"}
 	}
 
+	title, hints := "Sessions", sessionSwitcherHints(filtered, m.SessionSwitcherSelected)
+	if m.paneMove != nil {
+		// Picking where a pane goes: nothing here creates, renames or
+		// deletes, so the footer offers only the choice.
+		title = "Move " + printableTitle(m.paneMove.label) + " to session"
+		hints = []overlay.Hint{{Key: overlay.EnterGlyph, Label: "choose"}, {Key: "esc", Label: "cancel"}}
+		empty, emptyHint = "No other session", overlay.Hint{}
+		if m.SessionSwitcherQuery != "" {
+			empty = "No other session matches '" + m.SessionSwitcherQuery + "'"
+		}
+	}
+
 	return m.renderListOverlay(listOverlay{
-		Title:      "Sessions",
+		Title:      title,
 		Width:      sessionSwitcherWidth,
 		MaxVisible: 10,
 		Search:     true,
@@ -63,7 +75,7 @@ func (m *OS) renderSessionSwitcher() (string, overlay.Geometry, []overlayRowHit)
 		Scroll:     &m.SessionSwitcherScroll,
 		EmptyMsg:   empty,
 		EmptyHint:  emptyHint,
-		Hints:      sessionSwitcherHints(filtered, m.SessionSwitcherSelected),
+		Hints:      hints,
 		RenderRow: func(i int, selected bool, rowBg color.Color, pal overlay.Palette, width int) string {
 			return m.sessionSwitcherRow(filtered[i], selected, rowBg, pal, width)
 		},
