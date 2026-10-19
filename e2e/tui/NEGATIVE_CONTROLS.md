@@ -7150,3 +7150,14 @@ frame had ended by chance. The other waited past the moment the guest showed
 and hid its cursor again on the same cell, which left a build without the fix
 there too. The cursor now goes to a cell no frame writes to, and the first
 wait ends before the guest shows it.
+
+### A pane in a detached session takes a measured cell
+
+`TestDetachedPaneTakesTheCellOfAClientElsewhere` attaches a client with an 8x16 cell to one session, opens a detached session from the command line, and has its first pane print every pixel size a program can read. Each must be in 8x16 cells, not the 10x20 fallback. Run on 2026-10-19.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| A pane made by a verb takes no cell when it is made | The `CellSize` call in `AddDaemonWindowWith` | Branch skipped | `TestDetachedPaneTakesTheCellOfAClientElsewhere` ("TIOCGWINSZ is 780x440 pixels, want 624;352") | **caught** |
+| A session nobody measures has no cell | The fallback to a client elsewhere in `sessionCellSize` | Branch skipped | `TestDetachedPaneTakesTheCellOfAClientElsewhere` (same) | **caught** |
+
+`TestDetachedPaneReportsAPixelSize`, where no client is attached anywhere and the fallback cell is right, passes with the fix.
