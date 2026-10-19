@@ -1534,8 +1534,27 @@ func (d *Daemon) verbSetAgentState(cs *connState, params json.RawMessage) (any, 
 		debugLog("[DEBUG] set-agent-state: %s refused session %q of %s", reason, p.AgentSessionID, p.Harness)
 	}
 	transcriptRefused := ""
-	if applied && p.TranscriptPath != "" {
-		transcriptRefused = d.joinReportedTranscript(cs, sess, target, p.Harness, p.TranscriptPath)
+	switch {
+	case applied && p.TranscriptPath != "":
+		transcriptRefused = d.joinReportedTranscript(cs, sess, target, p.Harness, p.TranscriptPath, "")
+	case applied && cs != nil && p.TranscriptPath == "" && p.AgentSessionID != "":
+		// A harness whose hook names its session and not its file (Amp):
+		// the manifest's session_file names the file, and it is held to the
+		// same rules as a path a hook reports, joinReportedTranscript's pane
+		// checks among them. A report with no connection (herdr's socket,
+		// which any client may write to) names no file, the same as it can
+		// name no transcript_path.
+		//
+		// A by_session harness (opencode) keeps every session in one store:
+		// the session id joins the pane to that session in it, and each
+		// report raises the transcript event, since the store does not grow
+		// as a file the daemon can watch.
+		sid := strings.TrimSpace(p.AgentSessionID)
+		if path := d.storeTranscriptPath(p.Harness); path != "" {
+			transcriptRefused = d.joinReportedTranscript(cs, sess, target, p.Harness, path, sid)
+		} else if path := d.sessionTranscriptPath(p.Harness, sid); path != "" {
+			transcriptRefused = d.joinReportedTranscript(cs, sess, target, p.Harness, path, "")
+		}
 	}
 	// state is the effective state, so a report a higher-ranked source outranked
 	// reports what the pane actually shows rather than what was asked for.
@@ -1746,7 +1765,7 @@ var agentKindNames = []string{harness.PromptKindApproval, harness.PromptKindQues
 // for its own pane, and the file must be a regular file under the harness's
 // transcript folder. A refusal is returned for the reply, so the hook's
 // --explain shows it, and logged without the path, which is the person's.
-func (d *Daemon) joinReportedTranscript(cs *connState, sess *Session, target, harnessID, path string) string {
+func (d *Daemon) joinReportedTranscript(cs *connState, sess *Session, target, harnessID, path, session string) string {
 	state := sess.GetState()
 	idx, err := findWindowStateIndex(state.Windows, target)
 	if err != nil {
@@ -1775,8 +1794,67 @@ func (d *Daemon) joinReportedTranscript(cs *connState, sess *Session, target, ha
 		LogBasic("transcript_path refused for window %s: %s", shortWindowID(w.ID), why)
 		return why
 	}
-	_ = sess.JoinAgentTranscript(w.ID, harnessID, resolved, true)
+	tr := reg.TranscriptFor(harnessID)
+	if tr.BySession {
+		if !validReportedSession(session) {
+			return "the session id is not one a store names"
+		}
+		sess.JoinAgentSession(w.ID, harnessID, tr.Reader, resolved, session)
+		return ""
+	}
+	_ = sess.JoinAgentTranscriptAs(w.ID, harnessID, tr.Reader, resolved, true)
 	return ""
+}
+
+// validReportedSession reports a session id a by_session store may be asked
+// for: letters, digits, "_" and "-", at most 128 bytes.
+func validReportedSession(id string) bool {
+	if id == "" || len(id) > 128 {
+		return false
+	}
+	for _, r := range id {
+		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '_' || r == '-') {
+			return false
+		}
+	}
+	return true
+}
+
+// storeTranscriptPath is the store file of a by_session harness, "" for any
+// other.
+func (d *Daemon) storeTranscriptPath(harnessID string) string {
+	reg := d.agentMatcher.registry
+	if reg == nil || harnessID == "" {
+		return ""
+	}
+	if tr := reg.TranscriptFor(harnessID); tr != nil {
+		return tr.StorePath()
+	}
+	return ""
+}
+
+// sessionTranscriptPath is the transcript a harness keeps for the session a
+// hook names, from the manifest's session_file, or "" when it has none.
+func (d *Daemon) sessionTranscriptPath(harnessID, sessionID string) string {
+	reg := d.agentMatcher.registry
+	if reg == nil || harnessID == "" {
+		return ""
+	}
+	tr := reg.TranscriptFor(harnessID)
+	if tr == nil {
+		return ""
+	}
+	path := tr.SessionPath(strings.TrimSpace(sessionID))
+	if path == "" {
+		return ""
+	}
+	// The file must be there already. A hook path may name a file not yet
+	// written, since the harness writes it next. A session id names a file
+	// only when the harness has made one for it.
+	if info, err := os.Lstat(path); err != nil || !info.Mode().IsRegular() {
+		return ""
+	}
+	return path
 }
 
 // paneInSession reports whether the pane pa is in sess, by ID when pa has
@@ -1810,7 +1888,7 @@ func transcriptPathAllowed(tr *harness.Transcript, path string) (string, string)
 	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return "", "the transcript is not in the harness's transcript folder"
 	}
-	if ok, _ := filepath.Match(tr.Glob, filepath.Base(resolved)); !ok {
+	if !tr.MatchesGlob(realRoot, resolved) {
 		return "", "the transcript file name does not match the harness's pattern"
 	}
 	if info, err := os.Lstat(resolved); err == nil && !info.Mode().IsRegular() {

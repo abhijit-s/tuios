@@ -2895,10 +2895,25 @@ hidden host cursor at the caret for input methods (#649) measured 37,879,970
 and 35,595,330: 400 bytes on darwin/arm64, and three more pages on
 linux/amd64, so only the linux/amd64 budget moved. It scans each frame for
 the cursor visibility sequences, copies a parked frame only when it takes
-one out, and runs no timer. Moving a pane to another session from the pane
-menu measured 37,896,354 and 35,612,226, four pages more on each: the action,
-the menu row, the two switchers' move mode and the move-window call. It
-reuses the session and workspace switchers and runs no timer.
+one out, and runs no timer. The agent thread for Codex, Gemini CLI and Qwen
+Code (#900) measured 38,023,330 and 35,730,642: about 143 KB and 135 KB for
+three transcript decoders, the hookless search that gives a file to the
+agent that started it, and the client's fallback to the recap. Before the
+cuts it measured 168 KB and 154 KB over main: one JSON walker replaced the
+struct type per record, and the small helpers stay out of line. Nothing in it
+runs unless a person reads a thread or an agent pane has no join yet. The
+Copilot CLI and Amp threads (#901) measured 38,052,002 and 35,763,698: about
+29 KB and 33 KB for two more decoders on the same walker and the join by a
+session id. The opencode thread measured 38,097,058 and 35,780,722: about
+45 KB and 17 KB for the reader of opencode's service, its export fallback,
+the check that the service's port is this user's, and the join to the
+session the plugin reports. It asks the service only
+when a person reads the thread. The Cursor Agent thread measured 38,105,250
+and 35,797,650: about 8 KB of decoder on the shared JSON walker, and one
+more 16 KB page on darwin/arm64. Moving a pane to another session from the
+pane menu measured 37,896,354 and 35,612,226, four pages more on each: the
+action, the menu row, the two switchers' move mode and the move-window call.
+It reuses the session and workspace switchers and runs no timer.
 
 To raise a budget, do it on purpose in its own commit: run
 `scripts/binary-size.sh` on the Go version in go.mod, set the new budget a

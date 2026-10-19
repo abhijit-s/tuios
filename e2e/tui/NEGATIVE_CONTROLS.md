@@ -8077,3 +8077,123 @@ The fixed build also passes every test matching `TestContextMenu`, `TestPlainRig
 | A window-mode right-click over a program tracking the mouse opens nothing | The menu opening for every sub-threshold right-click in `handleMouseRelease` | The build before the fix, which skipped the menu when the pane's program tracked the mouse | `TestPlainRightClickOpensMenuOverAMouseApp` ("in window-management mode a plain right-click over a program tracking the mouse opened no pane menu") | **caught** |
 
 A first version counted the program's reports while the menu was open and failed on the fixed build: the menu covers the echoed reports. They are counted once the menu is closed.
+## Agent thread for every harness with a transcript reader
+
+`TestCockpitThreadOtherHarnesses` reads a Codex rollout and a Gemini CLI chat
+in the agent thread. The real hook of each harness names the file. Each thread
+must show the answer, a failed command's output, a diff card with its added
+line, and the harness's error. Run on 2026-10-18.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| The cockpit reads Claude Code transcripts only | The harness set in `threadTranscriptHarness` (inbox_thread.go) | Only `claude-code` | `TestCockpitThreadOtherHarnesses/codex` and `/gemini` ("never showed the answer and the failed command") | **caught** |
+| A Gemini message written again shows twice | The key drop in `dropKeyed` (transcriptview/format.go) | Returns at once | `TestFormatFixtures/gemini-chat.jsonl` (unit). The e2e test passes: the client replaces an entry by its id, so the screen is right | **caught by the unit test only** |
+
+The hostile decoder test was checked the same way: with a tool call's target
+passed out without `Clean`, `TestFormatHostile` fails for every format.
+
+### After review
+
+The hookless search for these formats now gives a file to a pane by the
+session's start against the agent's process start (`viewCandidates`,
+transcript_search.go). `TestViewSearchSiblings` (internal/session) covers
+agents of one harness in one folder, with every file's modification time
+after every agent started. Gemini messages written again keep their first
+place, and a `$rewindTo` after a reader's cursor resets its page
+(`TestGeminiRewrites`, internal/transcriptview). Run on 2026-10-19.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| A file near two agents' starts goes to one of them | The `n != 1` check in `viewCandidates` | `n == 0` | `TestViewSearchSiblings/two_agents_started_together` (B got b, want none) | **caught** |
+| A pane takes a sibling's file | The start window in `viewCandidates` | Every file is every pane's candidate | `TestViewSearchSiblings/each_agent_its_own_session`, `/the_second_agent_has_not_written_yet` | **caught** |
+| A finished tool call moves its message to the end | The first place kept in `decode` | Appended at the record's own place | `TestGeminiRewrites` | **caught** |
+| A rewind leaves gone messages in the reader's thread | The reset in `forward` | Not reset | `TestGeminiRewrites` ("a rewind after the cursor did not reset the page") | **caught** |
+| The cockpit reads Claude Code transcripts only (rerun on the fixed build) | `threadTranscriptHarness` | Only `claude-code` | `TestCockpitThreadOtherHarnesses/codex` and `/gemini` | **caught** |
+
+The e2e test also found a bug in the first version of the Gemini glob
+excludes: `[!l]` is not a negation in Go's `filepath.Match` (it is `[^l]`),
+so every `.jsonl` chat was refused. The hook's `transcript_refused` check in
+the test failed on it.
+The Copilot CLI and Amp cases were added in the next change. Amp's plugin
+reports the thread id and not the file, so the manifest's `session_file`
+names it. Run on 2026-10-18.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| A hook that names only its session joins no file | The `session_file` join in `verbSetAgentState` (verb_handlers.go) | Condition never true | `TestCockpitThreadOtherHarnesses/amp` ("never showed the answer and the failed command") | **caught** |
+
+`TestSessionFileJoin` (internal/session) checks the rules of the session-id
+join after review: a report with no connection (herdr's socket) names no
+file, a session id names a file only when the file exists, and a refused
+report joins nothing. Run on 2026-10-19.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| A herdr client joins any thread by its id | `cs != nil` in the session-id join | Condition dropped | `TestSessionFileJoin` ("a report with no connection joined ...") | **caught** |
+| A session id joins a file that is not there | The `os.Lstat` in `sessionTranscriptPath` | Removed | `TestSessionFileJoin` ("session id \"T-missing\" joined ...") | **caught** |
+| A refused report joins a file | `applied` in the session-id join | Condition dropped | `TestSessionFileJoin` ("a refused report joined ...") | **caught** |
+
+## opencode thread
+
+`TestCockpitThreadOtherHarnesses/opencode` runs a service at 127.0.0.1 that
+answers as opencode 2.0.32 does, writes its service.json, and reports the
+session through the real plugin hook. `TestOpenCodeService`
+(internal/transcriptview) holds the rules of reading that service: the file
+must be this user's and writable by no one else, the address must be
+127.0.0.1, the service must name the file's process, the session id must be
+one, and the password must stay out of every error and page. Run on
+2026-10-19.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| The cockpit does not read opencode | `threadTranscriptHarness` | `opencode` taken out | `TestCockpitThreadOtherHarnesses/opencode` | **caught** |
+| A service.json others can write sends the password where they choose | The mode and owner check in `readServiceFile` | Removed | `TestOpenCodeService/a_file_others_can_write` | **caught** |
+| The password goes to an address other than 127.0.0.1 | The host check in `readServiceFile` and the dial guard | Both removed | `TestOpenCodeService/an_address_other_than_127.0.0.1` | **caught** |
+| A service of this user that is not the file's process is trusted | The pid check against `/api/info` | Never true | `TestOpenCodeService/another_process_on_the_port` | **caught** (the check runs after the password is sent, so it stops only a process of this user; the port owner check below is what keeps the password from another user) |
+| A reported session id goes into a URL or an argument unchecked | `validOpenCodeSession` | Any id but "" | `TestOpenCodeService/a_session_id_that_is_not_one` | **caught** |
+
+After review (F1, F2): the password goes out only to a port this user is
+shown to hold (`portOwnedByMe`, the uid column of /proc/net/tcp; on other
+systems it is never sent, and the export is read). The export runs only
+when no service is there, under the read's 4 s budget, killed with its
+process group when the budget ends, and one fetch serves a session's reads
+for 2 s. `TestOpenCodeServiceRules` (internal/transcriptview, Linux). Run
+on 2026-10-19.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| The password goes to a port another user holds | `portOwnedByMe` in `openCodeFromService` | Never refuses | `TestOpenCodeServiceRules/a_port_another_user_holds` | **caught** |
+| A slow or failing service starts an opencode process | The `errNoService` gate in `openCodeFetch` | Export on any error | `TestOpenCodeServiceRules/a_service_that_is_there_but_fails` | **caught** |
+| Each event of a streaming session starts a fetch | `openCodeShared` | No sharing | `TestOpenCodeServiceRules/reads_of_one_session_share_a_fetch` | **caught** |
+| A timed-out export leaves its processes running | `killTreeOnCancel` | Not called | `TestOpenCodeServiceRules/an_export_that_runs_too_long` (the read took 30 s) | **caught** |
+
+## Answer keys bound to their labels (Kimi Code CLI)
+
+`TestScreenAnswersFromSource` (internal/harness) draws Kimi's approval panel
+as kimi-cli 1.52.0 does, then with the session option left out, then
+reordered. Each approve must press the number its label has, and an approve
+whose label is gone must not be offered. Run on 2026-10-19.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| Approve presses a number whatever option it is | The `option` binding in kimi.toml | `keys = ["1"]` and `keys = ["2"]` | `TestScreenAnswersFromSource/kimi#01`, `/kimi#02` | **caught** |
+| Kimi's `[N] label` options are not read | The bracket form in `optionLine` | Removed | `TestScreenAnswersFromSource/kimi`, `/kimi#01`, `/kimi#02` | **caught** |
+## Cursor Agent thread
+
+`TestCockpitThreadOtherHarnesses/cursor` writes a Cursor Agent transcript
+under the fake home and joins it through the real `tuios agent-hook
+cursor-agent` sessionStart with transcript_path. Run on 2026-10-19.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| The cockpit does not read Cursor Agent | `threadTranscriptHarness` | `cursor-agent` taken out | `TestCockpitThreadOtherHarnesses/cursor` | **caught** |
+
+After review (C1): Cursor's own argument names are read, `target_file`,
+`relative_workspace_path`, `search_term`, and `edit_file`'s `code_edit`,
+which shows as the text it writes. `TestFormatFixtures/cursor-agent.jsonl`
+holds them. Run on 2026-10-19.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| A Cursor read or edit card names no file | `target_file` in `fileOf` | Removed | `TestFormatFixtures/cursor-agent.jsonl` | **caught** |
+| A Cursor edit shows an empty diff | The `code_edit` write in `cursorLine` | Never taken | `TestFormatFixtures/cursor-agent.jsonl` | **caught** |
