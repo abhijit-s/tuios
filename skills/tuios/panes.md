@@ -40,6 +40,15 @@ moving one, with the move keys, by dragging its dock pill or with
 `set-workspace-order`, renumbers it, and `select-workspace 2` then means
 whatever workspace is second now.
 
+Closing a workspace closes up behind it, but a pane put past an empty workspace
+leaves a gap, and so can a session saved with one. The verb
+`compact-workspaces` numbers the workspaces that hold panes 1 to N in their
+order, each with its name, and drops the names of the empty ones:
+
+```sh
+tuios compact-workspaces -s work   # prints "workspace 3 → 2", or "nothing to compact"
+```
+
 ## Spaces: grouping sessions
 
 A space is a name the person files related sessions under, such as every

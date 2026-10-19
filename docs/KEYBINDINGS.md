@@ -852,6 +852,7 @@ section where you want them.
 | `last_session` | Goes back to the session you were on before this one, as tmux `switch-client -l` does. |
 | `send_prefix` | Sends the leader key to the program in the focused pane, as pressing the leader two times in terminal mode does. Use it for screen's `C-a a`, or for a tmux in the pane. |
 | `move_workspace_left`, `move_workspace_right` | Swaps this workspace with the one before or after it, and follows it. The two workspaces trade numbers, so the moved one answers to its new number. |
+| `compact_workspaces` | Closes up the gaps between workspaces: the ones that hold panes are numbered 1 to N in their order, each with its name, and an empty workspace loses its name. The dock tab menu offers it as "Compact workspaces" while there is a gap, and the command palette has it too. |
 | `send_to_workspace_1` to `send_to_workspace_9` | Sends the focused pane to that workspace. |
 | `cycle_layout` | Cycles BSP, master-stack and scrolling. |
 | `reload_config` | Reads `config.toml` again, as the "Reload config" palette row does. |

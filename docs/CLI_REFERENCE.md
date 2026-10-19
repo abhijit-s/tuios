@@ -2966,6 +2966,35 @@ tuios set-workspace-name -s work 2 review
 tuios set-workspace-name 2
 ```
 
+### `tuios compact-workspaces`
+
+Close up the gaps between workspaces. The workspaces that hold panes are
+numbered 1, 2, 3 and on in the order they have, and each takes its panes, name
+and layout to its new number. An empty workspace loses its name. Closing a
+workspace closes up behind it, so a gap is left only by a pane put past an
+empty workspace, or by a session saved with one.
+
+Prints each move, such as `workspace 3 → 2`, or `nothing to compact`. Works
+whether or not a client is attached.
+
+**Usage:**
+```bash
+tuios compact-workspaces [flags]
+```
+
+**Flags:**
+- `-s, --session <name>`: Target session (default: most recently active)
+- `--json`: Output the result as JSON, with `renumbered` mapping each old number to its new one
+
+**Examples:**
+```bash
+# Close up the gaps in the most recently active session
+tuios compact-workspaces
+
+# In a named session, as JSON
+tuios compact-workspaces -s work --json
+```
+
 ---
 
 ## Inspection Commands
@@ -3771,6 +3800,7 @@ Some commands also answer to a short name: `attach` to `a`, `new` to `n`,
 | `tuios move-window [workspace]` | Move a window to another workspace (`--follow` goes with it). `--to-session NAME` moves it to another session, and its program keeps running |
 | `tuios select-workspace <workspace>` | Show a workspace |
 | `tuios list-workspaces` | List the workspaces in a session and how many windows each holds |
+| `tuios compact-workspaces` | Number the workspaces that hold panes 1 to N, closing the gaps between them |
 | `tuios set-window` | Rename a window (`--name`), minimize it (`--minimize`) or restore it (`--restore`) |
 | `tuios split-window <horizontal\|vertical\|left\|right\|up\|down>` | Divide a pane and open a new one beside it. A side names where the new pane goes. Needs an attached client and tiling on |
 | `tuios set-layout` | Turn tiling on or off (`--tiling`), reset the splits (`--equalize`: every split to half in BSP, and in master-stack the configured master ratio with even shares for the other panes), flip the focused split (`--rotate`), or shape the master-stack layout of the current workspace (`--master-position left\|right\|top\|bottom\|center`, `--masters N`). See [LAYOUT_MODES.md](LAYOUT_MODES.md#master-stack-layout) |

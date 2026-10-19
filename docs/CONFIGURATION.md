@@ -815,6 +815,12 @@ closed or moved away and it is not on screen, it loses its name and every
 workspace above it moves down one: closing workspace 2 of 1, 2 and 3 leaves
 1 and 2. An empty workspace you only looked at goes without moving anything.
 
+A pane put past an empty workspace leaves a gap, and so can a session saved
+with one. `compact_workspaces`, the "Compact workspaces" row of a dock tab's
+menu, or `tuios compact-workspaces` closes the gaps: the workspaces that hold
+panes are numbered 1 to N in their order, and an empty workspace loses its
+name. Nothing closes a gap on its own.
+
 `Alt+N` with a number past the last workspace opens the next one: with three
 workspaces, `Alt+5` opens workspace 4. When the workspace on screen is empty,
 it is the new one, and `Alt+N` to an unused number stays on it. A pane put
