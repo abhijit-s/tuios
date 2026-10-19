@@ -1741,6 +1741,32 @@ is showing.`,
 	listWorkspacesCmd.Flags().BoolVar(&listWorkspacesJSON, "json", false, "Output as JSON")
 	_ = listWorkspacesCmd.RegisterFlagCompletionFunc("session", completeSessionNames)
 
+	var compactWorkspacesSession string
+	var compactWorkspacesJSON bool
+	compactWorkspacesCmd := &cobra.Command{
+		Use:   "compact-workspaces",
+		Short: "Close up the gaps between workspaces",
+		Long: `Renumber the workspaces that hold panes to 1, 2, 3 and on, in the order they
+have, so no empty workspace sits between two that are in use. Each workspace
+takes its panes, name and layout to its new number. An empty workspace loses
+its name.
+
+Closing a workspace closes up behind it, so a gap is left only by a pane moved
+past an empty workspace, or by a session saved with one.`,
+		Example: `  # Close up the gaps in the most recently active session
+  tuios compact-workspaces
+
+  # In a named session, with what moved as JSON
+  tuios compact-workspaces -s work --json`,
+		Args: cobra.NoArgs,
+		RunE: func(_ *cobra.Command, _ []string) error {
+			return runCompactWorkspaces(compactWorkspacesSession, compactWorkspacesJSON)
+		},
+	}
+	compactWorkspacesCmd.Flags().StringVarP(&compactWorkspacesSession, "session", "s", "", "Target session (default: most recently active)")
+	compactWorkspacesCmd.Flags().BoolVar(&compactWorkspacesJSON, "json", false, "Output result as JSON")
+	_ = compactWorkspacesCmd.RegisterFlagCompletionFunc("session", completeSessionNames)
+
 	var setLayoutSession string
 	var setLayoutTiling string
 	var setLayoutEqualize bool
@@ -3130,7 +3156,7 @@ command in authorized_keys to make the policy a boundary:
 	rootCmd.AddCommand(sendTextCmd, newWindowCmd, waitForCmd, newSubscribeCommand(), newRunCommand(), newAskHumanCommand())
 	rootCmd.AddCommand(renameSessionCmd, setSessionNameCmd, setSessionAccentCmd, setSessionSpaceCmd, setWorkspaceNameCmd)
 	rootCmd.AddCommand(splitWindowCmd, popupCmd, focusWindowCmd, moveWindowCmd, setWindowCmd, newPiPCommand(), newCallCommand(), newPaneViewCommand())
-	rootCmd.AddCommand(selectWorkspaceCmd, listWorkspacesCmd, setLayoutCmd)
+	rootCmd.AddCommand(selectWorkspaceCmd, listWorkspacesCmd, compactWorkspacesCmd, setLayoutCmd)
 	rootCmd.AddCommand(listWindowsCmd, getWindowCmd, sessionInfoCmd, listVerbsCmd, listOptionsCmd, listThemesCmd, listGlyphsCmd, importThemeCmd, themeCmd)
 	rootCmd.AddCommand(listDockComponentsCmd, refreshDockCmd, listHooksCmd)
 	rootCmd.AddCommand(hostsCmd, stdioProxyCmd, newGUIBridgeCommand())

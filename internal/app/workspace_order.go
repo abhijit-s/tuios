@@ -192,7 +192,94 @@ type WorkspaceRenumberedMsg struct {
 	// Moved says the daemon renumbered something, so a state carrying the
 	// renumber is on its way.
 	Moved bool
-	Err   error
+	// Compact says the renumber was compact_workspaces', which names no order.
+	Compact bool
+	Err     error
+}
+
+// CompactWorkspaces closes up the gaps between the workspaces that hold panes,
+// so they are numbered 1 to N in the order they have, and drops the names of
+// the empty ones (see session.Session.CompactWorkspaces). A daemon session asks
+// the daemon, one renumber at a time as RenumberWorkspaces does. A session with
+// no daemon renumbers here.
+func (m *OS) CompactWorkspaces() tea.Cmd {
+	if m.IsDaemonSession && m.DaemonClient != nil {
+		if m.workspaceMoveInFlight {
+			return nil
+		}
+		cmd := compactWorkspacesCmd(m.verbDialer(), m.SessionName)
+		m.workspaceMoveInFlight = cmd != nil
+		return cmd
+	}
+	held := m.workspacesWithPanes()
+	order := slices.Clone(held)
+	for ws := 1; ws <= m.NumWorkspaces; ws++ {
+		if !slices.Contains(held, ws) {
+			order = append(order, ws)
+			delete(m.WorkspaceNames, ws)
+		}
+	}
+	newOf := make(map[int]int)
+	for i, ws := range order {
+		if ws != i+1 {
+			newOf[ws] = i + 1
+		}
+	}
+	m.renumberLocalWorkspaces(newOf)
+	m.notifyCompacted(len(newOf) > 0)
+	return nil
+}
+
+// workspacesWithPanes is the workspaces in range that hold a pane, in order.
+func (m *OS) workspacesWithPanes() []int {
+	var held []int
+	for ws := 1; ws <= m.NumWorkspaces; ws++ {
+		if m.GetWorkspaceWindowCount(ws) > 0 {
+			held = append(held, ws)
+		}
+	}
+	return held
+}
+
+// HasWorkspaceGap reports whether compact_workspaces would move anything: a
+// workspace with panes sits above one without.
+func (m *OS) HasWorkspaceGap() bool {
+	held := m.workspacesWithPanes()
+	return len(held) > 0 && held[len(held)-1] > len(held)
+}
+
+func (m *OS) notifyCompacted(moved bool) {
+	if moved {
+		m.ShowNotification("Closed up the gaps between workspaces", "info", m.Settings.NotificationDuration)
+		return
+	}
+	m.ShowNotification("No gaps between workspaces to close up", "info", m.Settings.NotificationDuration)
+}
+
+// compactWorkspacesCmd asks the daemon to close up the session's workspaces.
+func compactWorkspacesCmd(dial agentMailDial, sessionName string) tea.Cmd {
+	if sessionName == "" {
+		return nil
+	}
+	return func() tea.Msg {
+		c, err := dial()
+		if err != nil {
+			return WorkspaceRenumberedMsg{Compact: true, Err: err}
+		}
+		defer func() { _ = c.Close() }()
+		raw, err := c.Call("compact-workspaces", map[string]any{"session": sessionName})
+		if err != nil {
+			if stale := session.StaleDaemonError("compact-workspaces", err); stale != nil {
+				err = stale
+			}
+			return WorkspaceRenumberedMsg{Compact: true, Err: err}
+		}
+		var res struct {
+			Renumbered map[string]int `json:"renumbered"`
+		}
+		_ = json.Unmarshal(raw, &res)
+		return WorkspaceRenumberedMsg{Compact: true, Moved: len(res.Renumbered) > 0}
+	}
 }
 
 // setWorkspaceOrderCmd asks the daemon to renumber the session's workspaces
@@ -239,6 +326,13 @@ func (m *OS) handleWorkspaceRenumbered(msg WorkspaceRenumberedMsg) tea.Cmd {
 		m.pendingWorkspaceOrder = nil
 		m.workspaceMoveInFlight = false
 		m.ShowNotification("Moving the workspace failed: "+msg.Err.Error(), "error", m.Settings.NotificationDuration*2)
+		return nil
+	}
+	if msg.Compact {
+		if !msg.Moved {
+			m.workspaceMoveInFlight = false
+		}
+		m.notifyCompacted(msg.Moved)
 		return nil
 	}
 	if !msg.Legacy {

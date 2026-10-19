@@ -323,15 +323,19 @@ func (m *OS) dockItemMenu(windowIndex int) (string, []ContextMenuItem) {
 // on even when that workspace is not the one being shown. Every row acts on the
 // tab's workspace, Close included: it raises close_workspace's confirmation for
 // this workspace, and is dimmed when the workspace has no pane to close.
+// Compact acts on every workspace of the session, and is there only while an
+// empty workspace sits between two that hold panes.
 func (m *OS) workspacePillMenu(ws int) (string, []ContextMenuItem) {
 	closeItem := m.item(glyphClose, "Close", "close_workspace", len(m.workspacePanes(ws)) == 0)
 	closeItem.Warn = true
-	return printableTitle(m.WorkspaceLabel(ws)), []ContextMenuItem{
+	items := []ContextMenuItem{
 		m.item(glyphSwitch, "Switch to", "workspace_pill_switch", ws == m.CurrentWorkspace),
 		m.item(glyphRename, "Rename", "workspace_prefix_rename", false),
-		separator(),
-		closeItem,
 	}
+	if m.HasWorkspaceGap() {
+		items = append(items, m.item(glyphTiling, "Compact workspaces", "compact_workspaces", false))
+	}
+	return printableTitle(m.WorkspaceLabel(ws)), append(items, separator(), closeItem)
 }
 
 // dockMenu is the menu for the dock away from any of its entries.

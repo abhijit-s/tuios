@@ -768,6 +768,14 @@ func GetCommandPaletteItems(s *config.Settings) []CommandPaletteItem {
 			},
 		},
 		{
+			Name:     "Compact workspaces",
+			Category: "Window",
+			Bind:     "compact_workspaces",
+			Action: func(m *OS) (*OS, tea.Cmd) {
+				return m, m.CompactWorkspaces()
+			},
+		},
+		{
 			Name:     "Clear multifocus",
 			Category: "Window",
 			Action: func(m *OS) (*OS, tea.Cmd) {

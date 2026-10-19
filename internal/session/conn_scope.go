@@ -256,6 +256,7 @@ var verbScopes = map[string]scopeKind{
 	"switch-space":         scopeDeny,
 	"set-workspace-name":   scopeDeny,
 	"set-workspace-order":  scopeDeny,
+	"compact-workspaces":   scopeDeny,
 	"resume-agent":         scopeDeny,
 	"resolve-pane":         scopeDeny,
 	"explain-agent-detect": scopeDeny,

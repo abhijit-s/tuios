@@ -931,6 +931,7 @@ var ActionDescriptions = map[string]string{
 	"send_prefix":               "Send the leader key to the focused pane",
 	"move_workspace_left":       "Swap this workspace with the one before it",
 	"move_workspace_right":      "Swap this workspace with the one after it",
+	"compact_workspaces":        "Close up the gaps between workspaces, numbering them 1 to N",
 	"send_to_workspace_1":       "Send the focused pane to workspace 1",
 	"send_to_workspace_2":       "Send the focused pane to workspace 2",
 	"send_to_workspace_3":       "Send the focused pane to workspace 3",

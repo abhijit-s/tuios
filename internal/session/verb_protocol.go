@@ -1816,6 +1816,19 @@ func buildVerbRegistry() map[string]verbEntry {
 			examples: []string{`{"id":1,"verb":"set-workspace-order","params":{"session":"work","order":[3,1,2]}}`},
 			handler:  (*Daemon).verbSetWorkspaceOrder,
 		},
+		"compact-workspaces": {
+			description: "Close up the gaps between the workspaces that hold panes, so they are numbered 1 to N in the order they have. Each workspace takes its panes, name, focus and layout to its new number. A workspace with no pane goes past the last one and loses its name. Closing a workspace closes up behind it, so a gap is left only by a pane moved past an empty workspace or by a session saved with one.",
+			params: []verbParam{
+				sessionParam,
+			},
+			returns: []verbParam{
+				{Name: "type", Type: "string", Description: "Always workspaces_compacted."},
+				{Name: "session", Type: "string", Description: "The session compacted."},
+				{Name: "renumbered", Type: "object", Description: "Where each workspace that moved went: its old number to its new one. Empty when there was no gap."},
+			},
+			examples: []string{`{"id":1,"verb":"compact-workspaces","params":{"session":"work"}}`},
+			handler:  (*Daemon).verbCompactWorkspaces,
+		},
 		"set-agent-state": {
 			description: "Set the agent state a window's pane reports (working, needs_input, idle, done, errored, or none to clear). A pane reports its own state by calling this against the daemon socket.",
 			params: []verbParam{

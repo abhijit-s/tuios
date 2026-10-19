@@ -618,6 +618,47 @@ func runListWorkspaces(sessionName string, jsonOutput bool) error {
 	return printWorkspaceList(raw)
 }
 
+// runCompactWorkspaces closes up the gaps between a session's workspaces and
+// says which ones moved.
+func runCompactWorkspaces(sessionName string, jsonOutput bool) error {
+	client, err := dialVerb()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = client.Close() }()
+
+	raw, err := client.Call("compact-workspaces", map[string]any{"session": sessionName})
+	if err != nil {
+		return reportVerbError(explainVerbError("compact-workspaces", err), jsonOutput)
+	}
+	if jsonOutput {
+		return printVerbResult(raw, jsonOutput)
+	}
+	var res struct {
+		Renumbered map[string]int `json:"renumbered"`
+	}
+	if err := json.Unmarshal(raw, &res); err != nil {
+		return fmt.Errorf("failed to parse response: %w", err)
+	}
+	if len(res.Renumbered) == 0 {
+		fmt.Println("nothing to compact")
+		return nil
+	}
+	moved := make([][2]int, 0, len(res.Renumbered))
+	for from, to := range res.Renumbered {
+		n, err := strconv.Atoi(from)
+		if err != nil {
+			return fmt.Errorf("failed to parse response: workspace %q is not a number", from)
+		}
+		moved = append(moved, [2]int{n, to})
+	}
+	slices.SortFunc(moved, func(a, b [2]int) int { return a[0] - b[0] })
+	for _, mv := range moved {
+		fmt.Printf("workspace %d → %d\n", mv[0], mv[1])
+	}
+	return nil
+}
+
 // printWorkspaceList renders the workspace list in the same table shape as the
 // window list, so the two read as one tool.
 func printWorkspaceList(raw json.RawMessage) error {

@@ -238,21 +238,74 @@ func (s *Session) RenumberWorkspaces(order []int) (map[int]int, error) {
 		if err != nil {
 			return err
 		}
-		state.renumberWorkspaces(newOf)
 		state.WorkspaceOrder = nil
-		if newOf == nil {
-			return nil
-		}
 		moved = newOf
-		s.renumberSessionRecordsLocked(newOf)
-		// The focus maps were renumbered, so a push built before this keeps
-		// the session's focus rather than putting the old numbering back.
-		s.markFocusIntentLocked()
-		// mutateStateLocked advances the version once this returns.
-		s.renumberedAt = state.Version + 1
+		s.renumberLocked(state, newOf)
 		return nil
 	})
 	return moved, err
+}
+
+// CompactWorkspaces closes up the gaps between the workspaces that hold panes,
+// so they are numbered 1 to N in the order they have, and reports where each
+// of them that moved went. A workspace with no pane, the one shown included, goes past the
+// last one and loses its name, so a stale name cannot come back on a pane put
+// there later. Scratch workspaces are outside the range and stay where they
+// are.
+//
+// noteWorkspacesLocked closes up only behind a workspace that just went, which
+// leaves the gaps an older build saved. This is the explicit way to close them.
+func (s *Session) CompactWorkspaces() (map[int]int, error) {
+	var moved map[int]int
+	err := s.mutateState(func(state *SessionState) error {
+		held := make(map[int]bool)
+		for i := range state.Windows {
+			if w := &state.Windows[i]; !w.Scratch {
+				held[max(w.Workspace, 1)] = true
+			}
+		}
+		var empty []int
+		for ws := 1; ws <= state.workspaceBound(); ws++ {
+			if !held[ws] {
+				empty = append(empty, ws)
+			}
+		}
+		names := maps.Clone(state.WorkspaceNames)
+		for _, ws := range empty {
+			delete(names, ws)
+		}
+		if len(names) != len(state.WorkspaceNames) {
+			state.WorkspaceNames = names
+		}
+		newOf := state.closeUp(empty)
+		s.renumberLocked(state, newOf)
+		for from, to := range newOf {
+			if held[from] {
+				if moved == nil {
+					moved = make(map[int]int)
+				}
+				moved[from] = to
+			}
+		}
+		return nil
+	})
+	return moved, err
+}
+
+// renumberLocked applies newOf, a renumber a verb asked for, to the state and
+// to the records the Session keeps beside it. Called from a mutateState
+// function.
+func (s *Session) renumberLocked(state *SessionState, newOf map[int]int) {
+	if newOf == nil {
+		return
+	}
+	state.renumberWorkspaces(newOf)
+	s.renumberSessionRecordsLocked(newOf)
+	// The focus maps were renumbered, so a push built before this keeps the
+	// session's focus rather than putting the old numbering back.
+	s.markFocusIntentLocked()
+	// mutateStateLocked advances the version once this returns.
+	s.renumberedAt = state.Version + 1
 }
 
 // renumberSessionRecordsLocked moves what the Session itself keeps by

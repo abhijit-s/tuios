@@ -61,6 +61,9 @@ func (d *ActionDispatcher) registerPrefixTreeHandlers() {
 	d.Register("move_workspace_right", func(_ tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
 		return o, o.MoveWorkspaceBy(1)
 	})
+	d.Register("compact_workspaces", func(_ tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
+		return o, o.CompactWorkspaces()
+	})
 	for i := 1; i <= 9; i++ {
 		d.Register("send_to_workspace_"+strconv.Itoa(i), func(_ tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
 			if o.FocusedWindow >= 0 && o.FocusedWindow < len(o.Windows) {

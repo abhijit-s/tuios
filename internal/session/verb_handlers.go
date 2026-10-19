@@ -1358,6 +1358,28 @@ func (d *Daemon) verbSetWorkspaceOrder(_ *connState, params json.RawMessage) (an
 	return map[string]any{"type": "workspace_order_set", "workspace_order": nil, "renumbered": renumbered}, nil
 }
 
+func (d *Daemon) verbCompactWorkspaces(_ *connState, params json.RawMessage) (any, *verbError) {
+	var p struct {
+		Session string `json:"session"`
+	}
+	if verr := decodeParams(params, &p); verr != nil {
+		return nil, verr
+	}
+	sess, verr := d.resolveVerbSession(p.Session)
+	if verr != nil {
+		return nil, verr
+	}
+	moved, err := sess.CompactWorkspaces()
+	if err != nil {
+		return nil, newVerbError(ErrVerbInternal, "could not compact the workspaces: "+err.Error())
+	}
+	renumbered := make(map[string]int, len(moved))
+	for from, to := range moved {
+		renumbered[strconv.Itoa(from)] = to
+	}
+	return map[string]any{"type": "workspaces_compacted", "session": sess.Name(), "renumbered": renumbered}, nil
+}
+
 func (d *Daemon) verbSetAgentState(cs *connState, params json.RawMessage) (any, *verbError) {
 	// The herdr socket calls this handler directly, past admitVerb.
 	if !d.agentsEnabled() {

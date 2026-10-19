@@ -507,6 +507,7 @@ var actionsWithNoDefaultBinding = map[string]string{
 	"send_prefix":          "user binding",
 	"move_workspace_left":  "user binding",
 	"move_workspace_right": "user binding",
+	"compact_workspaces":   "user binding",
 	"send_to_workspace_1":  "user binding",
 	"send_to_workspace_2":  "user binding",
 	"send_to_workspace_3":  "user binding",

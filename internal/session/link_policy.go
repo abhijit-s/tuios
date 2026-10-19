@@ -225,6 +225,7 @@ var verbCapabilities = map[string][]string{
 	"switch-space":        {config.LinkAllowWrite},
 	"set-workspace-name":  {config.LinkAllowWrite},
 	"set-workspace-order": {config.LinkAllowWrite},
+	"compact-workspaces":  {config.LinkAllowWrite},
 	"set-agent-state":     {config.LinkAllowWrite},
 	"set-agent-session":   {config.LinkAllowWrite},
 	"set-agent-meta":      {config.LinkAllowWrite},
