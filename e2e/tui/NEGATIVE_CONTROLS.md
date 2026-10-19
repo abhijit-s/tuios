@@ -8068,3 +8068,12 @@ Run on 2026-10-19 on macOS on branch `feat/move-window-to-session`, from upstrea
 Each test writes `list-windows --json` of alpha and beta and the client's screen to its directory under `$TUIOS_E2E_FRAMES`; `TestMoveToSessionKey` also writes the screens of the two steps (`key-session-step.txt`, `key-workspace-step.txt`). Run them with `TUIOS_E2E=1 TUIOS_E2E_BIN=/tmp/tuios TUIOS_E2E_FRAMES=/tmp/frames go test -count=1 -run 'TestMoveToSession' .`
 
 The fixed build also passes every test matching `TestContextMenu`, `TestPlainRightClick`, `TestMenuCopies`, `TestMoveWindow`, `Switcher`, `SessionPicker`, `Rename`, `TestTmuxStyle`, `TestNewWorkspaceSkips` and `TestSendPrefixAndLastSession` (33 tests, the four above included). `TestContextMenuArrowsSkipDimmedRows` keeps its lap: it runs without a daemon, where the new row is dimmed.
+### A plain right-click in window mode over a program tracking the mouse
+
+`TestPlainRightClickOpensMenuOverAMouseApp` turns on mouse tracking in a pane, checks that a terminal-mode right-click reaches the program and opens no menu, then checks that a window-mode right-click opens the pane menu and reaches the program as no report. Run on 2026-10-19.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| A window-mode right-click over a program tracking the mouse opens nothing | The menu opening for every sub-threshold right-click in `handleMouseRelease` | The build before the fix, which skipped the menu when the pane's program tracked the mouse | `TestPlainRightClickOpensMenuOverAMouseApp` ("in window-management mode a plain right-click over a program tracking the mouse opened no pane menu") | **caught** |
+
+A first version counted the program's reports while the menu was open and failed on the fixed build: the menu covers the echoed reports. They are counted once the menu is closed.
