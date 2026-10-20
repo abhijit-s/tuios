@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"errors"
+	"fmt"
 )
 
 // Quiescing a pane: stopping its reader with every byte it took accounted for.
@@ -40,6 +41,10 @@ import (
 
 // errNotQuiescable is a pane whose bytes do not come from a descriptor here.
 var errNotQuiescable = errors.New("the pane's output does not come from a descriptor on this machine")
+
+// errRepliesUnwritten is a pane whose program is sent terminal replies and
+// does not read them.
+var errRepliesUnwritten = errors.New("the program is not reading its input, and the terminal's replies to it cannot be written")
 
 // Quiesce stops the pane's reader at a point where no byte it read is lost
 // when the process execs. Resume undoes it. It is safe to call twice.
@@ -84,9 +89,25 @@ func (p *PTY) Quiesce(ctx context.Context) error {
 	}
 
 	if p.terminal != nil {
-		p.respMu.Lock()
-		p.sendResponsesLocked()
-		p.respMu.Unlock()
+		// The write of a reply blocks while the program's input queue is
+		// full, and a program that never reads keeps it full for good. The
+		// flush runs apart so the quiesce gives up at its deadline instead,
+		// and the handoff is refused: a reply is never dropped, because the
+		// program may be waiting for it, and none is carried, because the
+		// write that holds it is still in progress. The flush finishes on its
+		// own once the program reads or exits.
+		flushed := make(chan struct{})
+		go func() {
+			p.respMu.Lock()
+			p.sendResponsesLocked()
+			p.respMu.Unlock()
+			close(flushed)
+		}()
+		select {
+		case <-flushed:
+		case <-ctx.Done():
+			return fmt.Errorf("%w: %w", errRepliesUnwritten, ctx.Err())
+		}
 	}
 	p.winsizeMu.Lock()
 	if p.winsizeHeld.Load() && !p.winsizeClosed {
