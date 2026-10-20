@@ -40,7 +40,7 @@ func handleWorkspaceSwitcherInput(msg tea.KeyPressMsg, o *app.OS) (*app.OS, tea.
 
 	case "ctrl+r":
 		if o.MovingPane() {
-			// The workspaces are another session's.
+			// The rows are where the pane goes, not workspaces to rename.
 			return o, nil
 		}
 		if target, ok := o.WorkspaceSwitcherTarget(o.WorkspaceSwitcherSelected); ok {

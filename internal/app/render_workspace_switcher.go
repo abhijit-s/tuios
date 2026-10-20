@@ -22,16 +22,22 @@ func (m *OS) renderWorkspaceSwitcher() (string, overlay.Geometry, []overlayRowHi
 		m.WorkspaceSwitcherSelected = clampInt(m.WorkspaceSwitcherSelected, 0, len(filtered)-1)
 	}
 
-	title, tag := "Workspaces", "current"
+	title, tag, empty := "Workspaces", "current", "No workspace matches"
 	hints := []overlay.Hint{
 		{Key: overlay.EnterGlyph, Label: "go"},
 		{Key: "ctrl+r", Label: "rename"},
 		{Key: "esc", Label: "close"},
 	}
 	if mv := m.paneMove; mv != nil {
-		// The rows are the other session's, and its first row is the workspace
-		// it shows, which is where the pane lands when no number is sent.
+		// The rows are the picked session's. Another session's first row is
+		// the workspace it shows, which is where the pane lands when no
+		// number is sent. This session's rows leave out the pane's own
+		// workspace, so with no other workspace holding a pane a digit is
+		// the way to name one.
 		title, tag = "Move "+printableTitle(mv.label)+" to "+printableTitle(mv.sessionLabel), "shown"
+		if mv.here && m.WorkspaceSwitcherQuery == "" {
+			empty = "No other workspace has a pane"
+		}
 		hints = []overlay.Hint{
 			{Key: overlay.EnterGlyph, Label: "move"},
 			{Key: "1-9", Label: "workspace"},
@@ -48,7 +54,7 @@ func (m *OS) renderWorkspaceSwitcher() (string, overlay.Geometry, []overlayRowHi
 		Count:      len(filtered),
 		Selected:   m.WorkspaceSwitcherSelected,
 		Scroll:     &m.WorkspaceSwitcherScroll,
-		EmptyMsg:   "No workspace matches",
+		EmptyMsg:   empty,
 		Hints:      hints,
 		RenderRow: func(i int, selected bool, rowBg color.Color, pal overlay.Palette, width int) string {
 			return workspaceSwitcherRow(filtered[i], tag, selected, rowBg, pal, width)

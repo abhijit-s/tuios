@@ -51,6 +51,7 @@ var scopedDescriptions = map[string]map[string]string{
 		"window_prefix_next":   "Next window",
 		"window_prefix_prev":   "Previous window",
 		"window_prefix_tiling": "Toggle tiling mode",
+		"move_window":          "Move the focused pane to another workspace or session",
 		"window_prefix_cancel": "Cancel the window prefix",
 	},
 	ScopePrefixMinimize: {

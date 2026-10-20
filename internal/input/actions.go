@@ -162,10 +162,10 @@ func (d *ActionDispatcher) registerHandlers() {
 	d.Register("screenshot_window", handleScreenshotWindow)
 	d.Register("screenshot_screen", handleScreenshotScreen)
 
-	// The pane menu's "Move to session..." row and a user's key open the same
-	// two-step pick, which ends in the daemon's move-window with to_session.
-	d.Register("move_window_to_session", func(_ tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
-		o.OpenMoveToSession()
+	// The pane menu's "Move to..." row and the key open the same two-step
+	// pick, which ends in the daemon's move-window.
+	d.Register("move_window", func(_ tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
+		o.OpenMovePane()
 		return o, nil
 	})
 

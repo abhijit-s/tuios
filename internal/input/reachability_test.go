@@ -452,15 +452,13 @@ var actionsWithNoDefaultBinding = map[string]string{
 	"set_session_accent":    "context menu row",
 	"workspace_pill_switch": "context menu row",
 	"settings_sidebar":      "rail mouse row",
-	// The pane menu's row, and a key a user binds.
-	"move_window_to_session": "context menu row, user binding",
-	"rename_workspace":       "user binding",
-	"rename_space":           "rail space heading menu row and user binding",
-	"set_session_space":      "rail session row menu row and user binding",
-	"new_session_in_space":   "rail space heading menu row and user binding",
-	"new_space":              "rail menu rows and user binding",
-	"remove_space":           "rail space heading menu row and user binding",
-	"close_space":            "rail space heading menu row and user binding",
+	"rename_workspace":      "user binding",
+	"rename_space":          "rail space heading menu row and user binding",
+	"set_session_space":     "rail session row menu row and user binding",
+	"new_session_in_space":  "rail space heading menu row and user binding",
+	"new_space":             "rail menu rows and user binding",
+	"remove_space":          "rail space heading menu row and user binding",
+	"close_space":           "rail space heading menu row and user binding",
 
 	// ssh-aware splits. The palette lists each one, and a user binds a key
 	// or sets appearance.new_window_follow_ssh to make the ordinary keys follow.

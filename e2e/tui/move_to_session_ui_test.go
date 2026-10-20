@@ -11,19 +11,31 @@ import (
 	"github.com/Gaurav-Gosain/tuitest"
 )
 
-// Moving a pane to another session from the UI: the move_window_to_session
-// action and the pane menu's "Move to session..." row open one flow, which
-// picks the session, then the workspace in it, and sends move-window with
-// to_session for the pane it was opened on.
+// Moving a pane from the UI: the move_window action (Ctrl+B t m) and the pane
+// menu's "Move to..." row open one flow, which picks the session, this one or
+// another, then the workspace in it, and sends move-window for the pane it
+// was opened on: with to_session for another session, without it for this
+// one.
 //
 // How it could fail, and how each check could pass wrongly, written down
 // before the code:
-//   - The action is named in the config but nothing runs it. The key opens
-//     the flow's first step, whose title names the pane, so a key that does
-//     nothing fails at the title.
-//   - The first step lists the pane's own session. alpha is made before beta,
-//     so it would be the first row and Enter would pick it; the move would be
-//     refused (same_session) and the pane would stay in alpha.
+//   - The action is named in the config but nothing runs it, or the default
+//     key is not bound. The key opens the flow's first step, whose title
+//     names the pane, so a key that does nothing fails at the title.
+//   - The first step leaves out this session, or does not mark it. The test
+//     that moves within alpha waits for the "this session" mark and takes the
+//     first row; without the row Enter picks beta and the pane leaves alpha.
+//   - Picking this session sends to_session anyway. The daemon refuses it
+//     (same_session) and the pane stays on its workspace.
+//   - This session's step offers the pane's own workspace. It would sort
+//     before the workspace that holds the other pane, so Enter on the first
+//     row would move nothing. A digit naming the pane's own workspace must
+//     move nothing and say so.
+//   - The move within alpha follows the pane. alpha must still show
+//     workspace 1 after it.
+//   - The other sessions' rows are not after this session's. Every move to
+//     beta steps down one row first, so a list without alpha first picks
+//     the wrong session.
 //   - The workspace step is shown but its choice is not sent. The pane is
 //     moved to a workspace the target does not show (3 from a row, 5 from a
 //     typed digit), so a call without the workspace lands on 1 and fails.
@@ -48,17 +60,21 @@ import (
 // the end to the artifact directory (artifactDir).
 //
 // NEGATIVE CONTROLS are in NEGATIVE_CONTROLS.md under "Move a pane to another
-// session from the UI".
+// session from the UI" and "Move a pane to another workspace or session from
+// the UI".
 
-// moveUIConfig binds the action, which ships with no key, and tiles alpha so
-// its two panes sit side by side where a click can tell them apart.
+// moveUIConfig tiles alpha so its two panes sit side by side where a click
+// can tell them apart. The action keeps its default key.
 const moveUIConfig = `[startup]
 tiled = true
 layout = "bsp"
-
-[keybindings.window_management]
-move_window_to_session = ["alt+m"]
 `
+
+// openMovePane presses the default key, Ctrl+B t m.
+func openMovePane(t *testing.T, term *tuitest.Terminal) {
+	t.Helper()
+	pressKeys(t, term, tuitest.Ctrl('b'), "t", "m")
+}
 
 // moveUIFixture makes alpha with two panes, "stay" and "mover", and beta with
 // one pane on workspace 3 while it shows workspace 1. mover runs a program
@@ -162,23 +178,31 @@ func saveMoveUIArtifact(t *testing.T, term *tuitest.Terminal, base, name string)
 // its input there.
 func waitMoved(t *testing.T, term *tuitest.Terminal, base, window, pid string, ws int, what string) {
 	t.Helper()
-	got := waitPane(t, base, "beta", window, what+": the pane in beta", func(p paneRow) bool { return p.ID == window && p.Workspace == ws })
-	if got.Workspace != ws {
-		t.Fatalf("ASSERTION: %s: the pane is on workspace %d of beta, want %d", what, got.Workspace, ws)
-	}
+	waitMovedIn(t, base, "beta", window, pid, ws, what)
 	if _, ok := listPanes(t, base, "alpha")[window]; ok {
 		t.Fatalf("ASSERTION: %s: the pane is in beta and still in alpha\n%s", what, term.Snapshot())
 	}
-	if after := moverPid(t, base, "beta", window, "MOVEUI-MARK"); after != pid {
+}
+
+// waitMovedIn waits for the pane to be on workspace ws of session, then
+// checks that its program is the same process and still reads its input
+// there.
+func waitMovedIn(t *testing.T, base, session, window, pid string, ws int, what string) {
+	t.Helper()
+	got := waitPane(t, base, session, window, what+": the pane in "+session, func(p paneRow) bool { return p.ID == window && p.Workspace == ws })
+	if got.Workspace != ws {
+		t.Fatalf("ASSERTION: %s: the pane is on workspace %d of %s, want %d", what, got.Workspace, session, ws)
+	}
+	if after := moverPid(t, base, session, window, "MOVEUI-MARK"); after != pid {
 		t.Fatalf("ASSERTION: %s: the program printed %s before the move and %s after it: it was started again", what, pid, after)
 	}
 	for _, keys := range [][]string{{"--raw", "hello"}, {"Enter"}} {
-		args := append([]string{"send-keys", "-s", "beta", "-w", window}, keys...)
+		args := append([]string{"send-keys", "-s", session, "-w", window}, keys...)
 		if out, err := tuiosCLI(t, base, args...); err != nil {
 			t.Fatalf("send-keys to the moved pane: %v\n%s", err, out)
 		}
 	}
-	if got := moverPid(t, base, "beta", window, "got-hello"); got != pid {
+	if got := moverPid(t, base, session, window, "got-hello"); got != pid {
 		t.Fatalf("ASSERTION: %s: the moved pane answered from %s, want %s", what, got, pid)
 	}
 }
@@ -210,7 +234,7 @@ func waitScreenText(t *testing.T, term *tuitest.Terminal, text, what string) {
 	}
 }
 
-// TestMoveToSessionKey: the bound key moves the focused pane to beta's
+// TestMoveToSessionKey: the default key moves the focused pane to beta's
 // workspace 3, chosen as a row of the workspace step, and the client stays on
 // alpha.
 func TestMoveToSessionKey(t *testing.T) {
@@ -219,10 +243,11 @@ func TestMoveToSessionKey(t *testing.T) {
 	pid := moverPid(t, base, "alpha", win, "MOVEUI-MARK")
 	stillHome(t, term, base, win, "before the key")
 
-	pressKeys(t, term, tuitest.Alt('m'))
+	openMovePane(t, term)
 	waitScreenText(t, term, "Move mover to session", "the key opens the session step")
 	saveArtifact(t, term, artifactDir(t), "key-session-step")
-	pressKeys(t, term, tuitest.Enter)
+	// alpha, this session, is the first row and beta the second.
+	pressKeys(t, term, tuitest.Down, tuitest.Enter)
 	waitScreenText(t, term, "Move mover to beta", "Enter on beta opens the workspace step")
 	saveArtifact(t, term, artifactDir(t), "key-workspace-step")
 
@@ -254,11 +279,11 @@ func TestMoveToSessionMenuRow(t *testing.T) {
 
 	p := listPanes(t, base, "alpha")[win]
 	shiftRightClick(t, term, p.X+p.Width/2, p.Y+p.Height/2)
-	waitMenu(t, term, "the pane menu", "Move to session...")
-	row, col := findText(t, term, "Move to session...")
+	waitMenu(t, term, "the pane menu", "Move to...")
+	row, col := findText(t, term, "Move to...")
 	leftClick(t, term, col+2, row)
 	waitScreenText(t, term, "Move mover to session", "the row opens the flow on the clicked pane")
-	pressKeys(t, term, tuitest.Enter)
+	pressKeys(t, term, tuitest.Down, tuitest.Enter)
 	waitScreenText(t, term, "Move mover to beta", "Enter on beta opens the workspace step")
 
 	pressKeys(t, term, "5")
@@ -280,16 +305,16 @@ func TestMoveToSessionEscCancels(t *testing.T) {
 	win := ids["mover"]
 	pid := moverPid(t, base, "alpha", win, "MOVEUI-MARK")
 
-	pressKeys(t, term, tuitest.Alt('m'))
+	openMovePane(t, term)
 	waitScreenText(t, term, "Move mover to session", "the key opens the session step")
 	pressKeys(t, term, tuitest.Esc)
 	waitMenuGone(t, term, "Move mover to session", "Esc at the session step")
 	time.Sleep(time.Second)
 	stillHome(t, term, base, win, "after Esc at the session step")
 
-	pressKeys(t, term, tuitest.Alt('m'))
+	openMovePane(t, term)
 	waitScreenText(t, term, "Move mover to session", "the key opens the session step again")
-	pressKeys(t, term, tuitest.Enter)
+	pressKeys(t, term, tuitest.Down, tuitest.Enter)
 	waitScreenText(t, term, "Move mover to beta", "Enter on beta opens the workspace step")
 	pressKeys(t, term, tuitest.Esc)
 	waitMenuGone(t, term, "Move mover to beta", "Esc at the workspace step")
@@ -298,9 +323,9 @@ func TestMoveToSessionEscCancels(t *testing.T) {
 
 	// Opened again, the flow starts at the session step, not where it was
 	// left.
-	pressKeys(t, term, tuitest.Alt('m'))
+	openMovePane(t, term)
 	waitScreenText(t, term, "Move mover to session", "the flow starts over after Esc")
-	pressKeys(t, term, tuitest.Enter)
+	pressKeys(t, term, tuitest.Down, tuitest.Enter)
 	waitScreenText(t, term, "Move mover to beta", "the workspace step")
 	shown := sessionInfoOf(t, base, "beta").CurrentWorkspace
 	pressKeys(t, term, tuitest.Enter)
@@ -323,24 +348,24 @@ func TestMoveToSessionRowDimmedOnScratch(t *testing.T) {
 	}
 	p := listPanes(t, base, "alpha")[scratch]
 	shiftRightClick(t, term, p.X+p.Width/2, p.Y+p.Height/2)
-	waitMenu(t, term, "the scratch pane's menu", "Move to session...", "Close pane")
+	waitMenu(t, term, "the scratch pane's menu", "Move to...", "Close pane")
 
 	// One lap and more of the menu: the marker never lands on the row.
 	for i := range 14 {
-		if strings.Contains(markedRow(term.Screen()), "Move to session") {
+		if strings.Contains(markedRow(term.Screen()), "Move to...") {
 			t.Fatalf("ASSERTION: step %d: the arrows landed on the row on a scratch pane\n%s", i, term.Snapshot())
 		}
 		pressKeys(t, term, tuitest.Down)
 		time.Sleep(60 * time.Millisecond)
 	}
 
-	row, col := findText(t, term, "Move to session...")
+	row, col := findText(t, term, "Move to...")
 	leftClick(t, term, col+2, row)
 	time.Sleep(time.Second)
 	s := term.Screen()
 	_, rows := s.Size()
 	for r := range rows {
-		if line := s.Line(r); strings.Contains(line, " to session") && !strings.Contains(line, "Move to session...") {
+		if line := s.Line(r); strings.Contains(line, " to session") {
 			t.Fatalf("ASSERTION: a click on the dimmed row opened the flow\n%s", term.Snapshot())
 		}
 	}
@@ -348,6 +373,55 @@ func TestMoveToSessionRowDimmedOnScratch(t *testing.T) {
 		t.Fatalf("ASSERTION: the scratch pane left alpha")
 	}
 	saveMoveUIArtifact(t, term, base, "scratch")
+}
+
+// TestMovePaneWithinSession: the key, then this session's row, moves the pane
+// to another workspace of alpha. A digit naming the workspace the pane is on
+// moves nothing. The pane keeps its process, and the client stays on the
+// workspace it was on.
+func TestMovePaneWithinSession(t *testing.T) {
+	term, base, must, ids := moveUIFixture(t, "mover")
+	win := ids["mover"]
+	pid := moverPid(t, base, "alpha", win, "MOVEUI-MARK")
+	// A pane on alpha's workspace 4 makes it the one row of this session's
+	// step: workspace 1 holds the mover, and moving there is no move.
+	parked, _ := must("new-window", map[string]any{"session": "alpha", "name": "parked"})["window_id"].(string)
+	must("move-window", map[string]any{"session": "alpha", "window": parked, "workspace": 4})
+	must("focus-window", map[string]any{"session": "alpha", "window": win})
+	waitPane(t, base, "alpha", parked, "the parked pane on workspace 4", func(p paneRow) bool { return p.Workspace == 4 })
+
+	openMovePane(t, term)
+	waitScreenText(t, term, "this session", "the session step marks this session")
+	saveArtifact(t, term, artifactDir(t), "here-session-step")
+	pressKeys(t, term, tuitest.Enter)
+	waitScreenText(t, term, "Move mover to alpha", "Enter on this session opens its workspace step")
+	pressKeys(t, term, "1")
+	waitScreenText(t, term, "mover is already on workspace 1", "a digit naming the pane's own workspace")
+	time.Sleep(time.Second)
+	if p := listPanes(t, base, "alpha")[win]; p.Workspace != 1 {
+		t.Fatalf("ASSERTION: the digit for the pane's own workspace moved it to %d\n%s", p.Workspace, term.Snapshot())
+	}
+
+	openMovePane(t, term)
+	waitScreenText(t, term, "this session", "the session step again")
+	pressKeys(t, term, tuitest.Enter)
+	waitScreenText(t, term, "Move mover to alpha", "this session's workspace step")
+	saveArtifact(t, term, artifactDir(t), "here-workspace-step")
+	pressKeys(t, term, tuitest.Enter)
+	waitScreenText(t, term, "Moved mover to workspace 4", "the notice says where the pane went")
+	waitMovedIn(t, base, "alpha", win, pid, 4, "the move within alpha")
+	if _, ok := listPanes(t, base, "beta")[win]; ok {
+		t.Fatalf("ASSERTION: the pane moved within alpha is in beta")
+	}
+
+	clientShows(t, base, "alpha")
+	if info := sessionInfoOf(t, base, "alpha"); info.CurrentWorkspace != 1 {
+		t.Fatalf("ASSERTION: alpha shows workspace %d after the move, want 1: the move followed the pane", info.CurrentWorkspace)
+	}
+	if p := listPanes(t, base, "alpha")[ids["stay"]]; p.Workspace != 1 {
+		t.Fatalf("ASSERTION: the pane that was not moved is on workspace %d, want 1", p.Workspace)
+	}
+	saveMoveUIArtifact(t, term, base, "here")
 }
 
 // scratchPaneOf is the id of a scratch pane in session, or "".

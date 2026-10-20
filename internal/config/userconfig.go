@@ -1383,6 +1383,7 @@ func DefaultConfig() *UserConfig {
 				"window_prefix_next":   {"tab"},
 				"window_prefix_prev":   {"shift+tab"},
 				"window_prefix_tiling": {"t"},
+				"move_window":          {"m"},
 				"window_prefix_cancel": {"esc"},
 			},
 			MinimizePrefix: map[string][]string{
