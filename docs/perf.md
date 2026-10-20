@@ -2898,7 +2898,11 @@ the cursor visibility sequences, copies a parked frame only when it takes
 one out, and runs no timer. Moving a pane to another session from the pane
 menu measured 37,896,354 and 35,612,226, four pages more on each: the action,
 the menu row, the two switchers' move mode and the move-window call. It
-reuses the session and workspace switchers and runs no timer.
+reuses the session and workspace switchers and runs no timer. One picker
+for moving a pane to another workspace or session, with Ctrl+B t m,
+measured 37,904,546 and 35,628,786, two pages more on linux/amd64 and one
+on darwin/arm64: this session's row and mark, its workspace rows, the key
+and its which-key row. It runs no timer.
 
 To raise a budget, do it on purpose in its own commit: run
 `scripts/binary-size.sh` on the Go version in go.mod, set the new budget a
