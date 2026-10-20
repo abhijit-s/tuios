@@ -3940,7 +3940,9 @@ Some commands also answer to a short name: `attach` to `a`, `new` to `n`,
 
 | Command | What it does |
 |---------|--------------|
-| `tuios plugins list [--json]` | List the herdr plugins tuios finds, with the state of each: `on`, `off` or `error`. Reads the files only. It runs no plugin code |
+| `tuios plugins install SOURCE [--ref REF] [--subdir DIR] [--yes] [--no-enable] [--no-build] [--replace]` | Get a plugin with git, build it, pin its commit in `plugins.lock` and enable it. `SOURCE` is `owner/repo[/dir][@ref]` on github.com, a git URL (`https://`, `ssh://`, `git@host:path`, `file://`) with an optional `@ref`, or a local folder. tuios shows the plan and asks first. Each install builds into a new folder. A failed build changes nothing that runs. Needs `git`. Refused inside a pane |
+| `tuios plugins install [--yes]` | With no `SOURCE`: install each plugin in `plugins.lock` at its pinned commit. It does not enable them. `--yes` trusts the author of `plugins.lock` |
+| `tuios plugins list [--json]` | List the herdr plugins tuios finds, with the state of each: `on`, `off` or `error`. An installed plugin shows `managed` and its source and commit. Reads the files only. It runs no plugin code |
 | `tuios plugins info ID [--json]` | Show a plugin's build and startup commands, actions, panes, event hooks and link handlers |
 | `tuios plugins enable ID` | Add the plugin to `[plugins] enabled`. A running daemon starts it at once. Refused inside a pane |
 | `tuios plugins disable ID` | Remove the plugin from `[plugins] enabled` and stop its processes. Refused inside a pane |
@@ -4820,7 +4822,12 @@ matches is refused: read the state with `tml get` and send it again.
 `tml list` names the open surfaces of a session.
 
 `tml close` closes a surface. VALUE is JSON, and a waiting `tml show` prints
-it. `tml validate` prints each problem with its line, the node and the fix,
+it.
+
+From a pane, these commands need the `write` grant, and `tml patch`,
+`tml replace` and `tml close` work only on the surfaces that pane opened. A
+button's `pane('send-text', ...)` runs with the opening pane's grants, and tuios
+asks the person before a surface first types into a pane. `tml validate` prints each problem with its line, the node and the fix,
 and exits with status 1 when the document has errors. It needs no daemon.
 
 **Flags of `tml show`:**

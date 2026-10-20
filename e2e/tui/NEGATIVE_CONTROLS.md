@@ -8809,3 +8809,143 @@ Upstream main fails the new case: "the agents section still lists the pane after
 | A recorded pid re-recorded: the `old.pid == pid && old.timed` early return in `setAgentHarnessPID` disabled | `outside-same-pid` ("the agents section still lists the pane after its agent left it, with the shell running") | **caught** |
 
 The early returns in `callerRunsHarness` and in `verbSetAgentState` change no outcome, only skip an ancestry walk whose answer is not used, so they have no control.
+### What a TML surface may do
+
+`TestTMLPaneActionsRunWithTheOwnersGrants` in `tml_grants_test.go`. Run on 2026-10-20, the same way.
+
+| Control: what was cut | Tests that fail | Verdict |
+| --- | --- | --- |
+| A pane() action runs with the person's rights, not the opening pane's | "the refusal was not shown" (the agent's surface typed into build) | **caught** |
+| The owner check of tml-patch, tml-replace and tml-close | "the agent's patch of the person's surface was not refused" | **caught** |
+| The rate limit of 100 patches a second | "250 patches back to back were all taken" | **caught** |
+| The question before a surface first types into a pane | "no question before the surface typed" | **caught** |
+
+### The owner label, the focus of a pane's surface, and new-window
+
+`TestTMLOwnerComesFirstAndCannotBeForged` and `TestTMLNewWindowAsksFirst` in `tml_label_test.go`, and the own-read step of `TestTMLPaneActionsRunWithTheOwnersGrants`. Run on 2026-10-20, the same way.
+
+| Control: what was cut | Tests that fail | Verdict |
+| --- | --- | --- |
+| The label with the title first ("TITLE · from OWNER") | "the window name does not start with its real owner" | **caught** |
+| The owner named from the pane's OSC title | "the owner came from the pane's own title" ("from pane tuios d02f72cd · Approve") | **caught** |
+| A pane's popup takes the focus | "the person's typing did not reach the pane they were in" | **caught** |
+| new-window runs without the question | "no question before a new window" | **caught** |
+| The pane that opened a surface may not read it without read | "the pane that opened a surface could not read it" | **caught** |
+
+### The owner by window id, one command per yes, focus on the first click
+
+`TestTMLOwnerIsNotWhatTheProgramCallsItself` and `TestTMLNewWindowYesCoversOneCommand` in `tml_label_test.go`, and the click step of `TestTMLOwnerComesFirstAndCannotBeForged`. Run on 2026-10-20, the same way.
+
+| Control: what was cut | Tests that fail | Verdict |
+| --- | --- | --- |
+| The owner named by the program in the pane (argv[0]) | "the owner is not the opening pane's id" ("from pane eac063df (prod c3c92458) · Approve deploy") | **caught** |
+| The new-window yes keyed on the command cut to 40 cells | "b asked no question" (the second command ran on the first yes) | **caught** |
+| The first click on a pane's popup presses its button | "the first click on a pane's popup pressed its button" | **caught** |
+
+### The question whole or not at all, and the window name in the yes
+
+`TestTMLQuestionWaitsForRoom` and the name step of `TestTMLNewWindowYesCoversOneCommand` in `tml_label_test.go`. Run on 2026-10-20, the same way.
+
+| Control: what was cut | Tests that fail | Verdict |
+| --- | --- | --- |
+| y and n answer while the question does not fit | "y ran a command whose question the person could not see whole" | **caught** |
+| The fit checked only at the press, drawing a cut question | "a smaller surface did not hide the cut question" | **caught** |
+| The window name left out of the new-window yes | "d asked no question showing \"with the window name prod\"" | **caught** |
+
+## Snapping left with a pixel-mouse pane on screen
+
+`TestFloatingSnapLeftWithPixelMousePastTheEdge` in `snap_pixel_edge_test.go` runs a pane that shows a kitty image and turns on SGR-pixel mouse reports (1016), as disktree does. It drags the other floating pane to the left edge in host pixels, holds the pointer past the edge at a negative x, and lets go there. A terminal in 1016 reports such a pointer at a negative position, and ghostty does. The test asserts that the pane lands on the left half at full height, and that the client draws no frame and sends no image command in the 3s after the snap lands. `standalone` and `daemon` run the same steps.
+
+Run on 2026-10-20 on Linux. The control is the build of `origin/main` at e5334a8c, which has no `rejoinSplitMouse`. Both cases fail with "the pane never landed on the left half at full height". The release came in as the keys `6;410m` and the `m` minimized a pane: the frame shows the dragged pane parked off the left edge and the other pane in the dock. With the fix both cases pass, with 0 renders and 0 image commands in the 3s after the snap.
+
+| Control: what was cut | Tests that fail | Verdict |
+| --- | --- | --- |
+| The rejoin removed: `FilterMouseMotion` without its `rejoinSplitMouse` call (`origin/main`) | `standalone`, `daemon` ("the pane never landed on the left half at full height") | **caught** |
+
+Not covered end to end: the keys typed while the pointer is held past the edge. A drag ignores them in this fixture, and a check that the screen held still passed on both builds, so it was removed. The release is what this fixture catches. Not covered either: negative y, the wheel, a report split between two reads, and a report too long for the hold. A throwaway probe checked them: each is rejoined or dropped whole, and keys held for a report that never ends are typed in order.
+## tuios plugins install
+
+`TestPluginsInstallFromGit` installs a probe plugin from a bare repository
+under the test's temp folder, over `file://`, with a daemon running. Each
+install builds into a new folder. The machine-local state file
+`%state.toml` names the folder that runs, and the folder before it.
+`plugins.lock` holds only the source, the ref, the commit, the tree and the
+approved hash. The `main` branch writes its folder to `dist/where` and
+`built-by-install` to `dist/out`. Its startup writes its folder to
+`startup.log` and sleeps, its action prints `dist/out`, and its pane
+sleeps. `next` is `main` with one more commit. The `broken` branch has a
+build command that exits 3. On `escape`, `herdr-plugin.toml` is a link to a
+manifest outside the repository. On `linkdir`, the folder `plug` is a link
+to a folder outside it. The outside manifest's build writes a marker file.
+While the file `slow` exists, the build sleeps.
+
+The test runs, in order:
+
+1. The two links: refused, with no folder, no marker and no lock entry.
+2. A kill at the prompt while the install lock is held.
+3. `main`: pinned, built in the folder the state file names, listed and
+   running, with its startup run from that folder. A plugin pane opens from
+   it.
+4. A failed build of `broken`: the lock file, the state file and the
+   running plugin are unchanged, and the failed folder is gone.
+5. A kill during the build of `next`: the lock file, the state file and the
+   running plugin are unchanged.
+6. `next`: a new folder, the startup restarted from it, `config.toml` still
+   enabled, `main` kept as the previous folder, and the killed folder gone.
+7. The lock file is set back to `main`'s commit, as after a kill between
+   the state write and the lock write: the plugin runs from `main`'s
+   folder.
+8. `main` again, in a third folder: the live folder and the one before it
+   stay, and the first folder stays because the plugin pane runs from it.
+
+Each failing half has its positive half in the same fixture. The artifacts
+are `install.txt`, `plugins.lock`, `state.toml` and `list.json` in the
+test's artifact folder.
+
+`TestManifestRefusesTerminalControls` in `internal/herdrplugin` is a
+security boundary test. It checks that `Parse` refuses ESC, OSC, CR, C1,
+bidi and DEL characters in argv, versions, events and placements, and that
+it takes a clean manifest with a tab in an argument.
+
+Each control cut the wiring in the branch, built the binary, and ran the
+one test. Run on 2026-10-18, after the fourth review of #877.
+
+| Wiring | Cut | Tests that fail | Verdict |
+| --- | --- | --- | --- |
+| A failed build stops the install | the `runPluginBuild` check in `installer.finish` never sees the error | `TestPluginsInstallFromGit` ("install of the broken branch: <nil>") | **caught** |
+| A failed build removes its new folder | the build failure returns without `fail` | `TestPluginsInstallFromGit` (".../plugins/e2e.probe holds [two folders], want [the live one]") | **caught** |
+| The daemon finds an installed plugin | the `add(OriginManaged, ...)` call in `Discover` | `TestPluginsInstallFromGit` ("the install output lacks \"is enabled\"": the daemon answers `plugin_not_found`) | **caught** |
+| A manifest that links out of the checkout is refused | the `Inside` check in `loadInside` | `TestPluginsInstallFromGit` ("install of escape: <nil>, want \"outside the repository\"") | **caught** |
+| A subdir that is a link is not a folder | the `cat-file -t` check in `fetchInto` | `TestPluginsInstallFromGit` ("install of linkdir: exit status 1, want \"has no folder plug\""). The `Inside` check still refuses the install, so the cut changes only the message | **caught** |
+| A manifest argv with a terminal control is refused | the `hasControl` check in `argvOf` | `TestManifestRefusesTerminalControls` ("Parse took \"\\u001b[2J\" in %ARG%" and five more) | **caught** |
+| A kill at the prompt does not block the next install | the kernel lock `HoldLock` in `newInstaller` becomes a guard file made with `O_EXCL` and removed on return | `TestPluginsInstallFromGit` ("install of main after a kill at the prompt: exit status 1") | **caught** |
+| The build runs in the folder the state file names | the build runs in the fetch folder, which moves into place after it | `TestPluginsInstallFromGit` ("the build ran in \".../plugins/%fetch-N\", want the folder the state file names") | **caught** |
+| The state write comes after the build | the state file is written before the build | `TestPluginsInstallFromGit` ("the state file does not name the build of main": it says `built = false`) | **caught** |
+| Old build folders go after the switch | the `collect` call in `restart` | `TestPluginsInstallFromGit` (".../plugins/e2e.probe holds [three folders], want [two]") | **caught** |
+| A failed or killed reinstall leaves the old plugin running | the plugin is stopped before the build | `TestPluginsInstallFromGit` ("plugins run ping after a failed build: exit status 1") | **caught** |
+| Discover uses the state's folder only for the lock's commit | `State.Live` takes the state's folder whatever its commit | `TestPluginsInstallFromGit` ("with the state ahead of plugins.lock, the plugin does not run from the folder of main") | **caught** |
+| `plugin.restart` restarts the plugin | the daemon's restart reports no restart and stops nothing | `TestPluginsInstallFromGit` ("the startup did not run from .../<next folder>") | **caught** |
+| The previous folder stays | `collect` keeps only the live folder | `TestPluginsInstallFromGit` (".../plugins/e2e.probe holds [two folders], want [three]" after the second install of `main`) | **caught** |
+| A folder a plugin pane runs from stays | `collect` ignores the pane folders from `plugin.restart` | `TestPluginsInstallFromGit` (".../plugins/e2e.probe holds [two folders], want [three]": the first folder of `main` is gone) | **caught** |
+
+That a restart leaves `config.toml` alone is checked only on the success
+path ("config.toml lost the plugin after the restart"). The old disable and
+enable pair ended with the plugin enabled too, so no cut makes that check
+fail without a kill in the middle of a restart.
+
+The fixed build passes `TestPluginsInstallFromGit` 3 of 3, and every
+`TestHerdrPlugin*` 3 of 3.
+
+### After the rebase onto main of 2026-10-21
+
+`TestHerdrPluginTrustAndHooks` now also sends `plugin.restart` for an
+enabled plugin from a pane, on the herdr socket. herdr's CLI has no restart
+command, so the step writes the request with python3. The pane variables
+stay set, as for the other herdr steps.
+
+| Wiring | Cut | Tests that fail | Verdict |
+| --- | --- | --- | --- |
+| `plugin.restart` is for the person | the `herdrPluginTrust` check in `herdrPluginRestart` | `TestHerdrPluginTrustAndHooks` ("plugin.restart from a pane was not refused: exit 0", with `restarted: true`) | **caught** |
+
+The fixed build passes `TestHerdrPluginTrustAndHooks` and
+`TestPluginsInstallFromGit` 3 of 3.

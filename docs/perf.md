@@ -3147,6 +3147,30 @@ push per client and surface. They add 65,536 bytes on linux/amd64
 (42,041,506) and 84,336 on darwin/arm64 (39,313,474), Go 1.26.10. The new
 budgets leave 4,194 and 4,126 bytes of room.
 
+They then went to 42,090,700 and 39,351,200 for what a TML surface may do: the
+owner rules, the pane() actions run with the opener's grants, the questions
+before a surface types or opens a window, the owner label, the rate limit,
+the minute tick of ago() and the tml skill topic. They add 45,056 bytes on
+linux/amd64 (42,086,562) and 33,616 on darwin/arm64 (39,347,090), Go 1.26.10.
+The new budgets leave 4,138 and 4,110 bytes of room.
+
+The linux/amd64 budget went to 42,098,952 for the fix that rejoins pixel
+mouse reports at a negative position (`internal/app/host_mouse_split.go`). On
+main at da356715 the binaries measured 42,086,562 and 39,347,090 bytes. With
+the fix they measured 42,094,754 and 39,347,330 (Go 1.26.10, a clean clone, as
+CI builds it), so the fix adds 8,192 and 240 bytes. No third-party dependency
+was added. The new linux/amd64 budget leaves 4,198 bytes of room.
+darwin/arm64 is unchanged, with 3,870 bytes of room.
+
+The budgets went to 42,213,640 and 39,451,800 for the plugin manager:
+`tuios plugins install`, `plugins.lock`, the build folders, the state file,
+the managed plugin origin and `plugin.restart`. On main at 9e6a518a the
+binaries measured 42,094,754 and 39,347,330 bytes. With the plugin manager
+they measured 42,209,442 and 39,447,666 (Go 1.26.10, a shallow clone, as CI
+builds it), so it adds 114,688 and 100,336 bytes. It links no new package.
+This uses the plugin system allowance. The new budgets leave 4,198 and 4,134
+bytes of room.
+
 To raise a budget, do it on purpose in its own commit: run
 `scripts/binary-size.sh` on the Go version in go.mod, set the new budget a
 little above the printed size in the `budget` function of that script, and say

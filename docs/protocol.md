@@ -2575,8 +2575,42 @@ The surface's local actions run in the client: tabs, sorting, the cursor,
 folding, scrolling, `set` and `toggle`. A change to the state goes back to the
 daemon, so another client and a later attach see it. `close(value)` closes the
 surface with that value. `copy(value)` copies through the client.
-`emit('name', value)` sends a `tml-event` to the owner. `open`, `pane` and
-links do nothing yet. A paste into a surface is dropped, with a message: no
+`emit('name', value)` sends a `tml-event` to the owner.
+`pane('send-text', params)`, `pane('focus', params)` and
+`pane('new-window', params)` run that verb (`send-text`, `focus-window`,
+`new-window`) with the grants of the pane that opened the surface, never the
+person's: a surface an agent opened cannot type into a pane that holds more
+than the agent's pane. The first `send-text` into a pane, and each
+`new-window` command, asks the person under the surface, and nothing happens
+until they press `y`. A send-text yes covers one pane, which the client
+resolves to its id in the surface's session before it asks; a number or a
+pane of another session is refused. A new-window yes covers one exact
+command, folder, window name and session, and the question shows each of
+them, quoted with any control or invisible character escaped; a command too
+long to show in the window is not run. The question is drawn whole or not at
+all: when the window is too small for it, it asks for room, and y and n do
+nothing until it fits. The client sends the session by name. A `new-window` from a surface takes only `session`, `name`, `workspace`,
+`cwd`, `focus` and `command`. A refusal shows as a message. A surface opened
+over a link, or by a pane this daemon cannot place, runs no pane action.
+`open` and links do nothing yet.
+
+Who may change a surface: a caller in a pane may patch, replace and close only
+the surfaces its pane opened, and needs the `write` grant for `tml-open`,
+`tml-patch`, `tml-replace` and `tml-close`; any other pane fails with
+`forbidden`. A caller in no pane, the person's own commands and hooks, may act
+on any surface. A surface takes at most 100 patches and replaces a second, and
+one more fails with `rate_limited`. The window's name is the owner, then the
+title, such as `from pane 3f2a91c0 (api) · Deploy`, which the document cannot
+change: the owner is the opening pane's window id, then its name in brackets
+when the person or an admin action gave it one, never the pane's title or the
+program's name; the title drops the separator dot and brackets and is cut to
+48 runes. A surface a pane opened does not take the focus: the person clicks
+it or focuses it, and the first click on a TML window only focuses it. One
+`tml-input` carries at most 4 pane actions. A surface the person
+opened takes the focus. The pane that opened a surface reads it with
+`tml-get` with the `write` grant alone. A
+binding that calls `ago()` is evaluated again once a minute while its surface
+is shown; no other surface arms a timer. A paste into a surface is dropped, with a message: no
 component takes text yet.
 
 With `wait` the call stays open until the surface closes, and answers

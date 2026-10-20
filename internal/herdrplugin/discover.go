@@ -22,6 +22,8 @@ const (
 	OriginTuios = "tuios"
 	// OriginHerdr is an entry of herdr's own registry, plugins.json.
 	OriginHerdr = "herdr"
+	// OriginManaged is a plugin tuios plugins install put in the lock file.
+	OriginManaged = "managed"
 	// OriginHerdrManaged is a checkout herdr plugin install made.
 	OriginHerdrManaged = "herdr-managed"
 )
@@ -33,6 +35,9 @@ type Dirs struct {
 	TuiosConfig string
 	// TuiosState is tuios's state folder.
 	TuiosState string
+	// TuiosData is tuios's data folder. It holds the checkouts of
+	// installed plugins.
+	TuiosData string
 	// HerdrConfig is herdr's config folder. Discover only reads it.
 	HerdrConfig string
 	// Extra are the folders and manifests [plugins] dirs names.
@@ -45,6 +50,7 @@ func DefaultDirs(configPath string, extra []string) Dirs {
 	return Dirs{
 		TuiosConfig: filepath.Dir(configPath),
 		TuiosState:  stateDir("tuios"),
+		TuiosData:   dataDir(),
 		HerdrConfig: HerdrConfigDir(),
 		Extra:       extra,
 	}
@@ -138,6 +144,9 @@ type Entry struct {
 	Enabled bool    `json:"enabled"`
 	Plugin  *Plugin `json:"plugin,omitempty"`
 	Err     *Error  `json:"error,omitempty"`
+	// Lock is the lock file entry of a plugin tuios plugins install put
+	// here.
+	Lock *LockEntry `json:"lock,omitempty"`
 }
 
 // Runnable reports whether the entry loaded and is enabled.
@@ -155,8 +164,8 @@ type registryEntry struct {
 // plugin herdr runs is off in tuios until the person enables it here.
 //
 // A plugin id found in two places is listed once, from the first place in
-// this order: [plugins] dirs, the tuios plugins folder, herdr's registry,
-// herdr's managed checkouts. The later copy is listed with the error
+// this order: [plugins] dirs, the tuios plugins folder, the lock file,
+// herdr's registry, herdr's managed checkouts. The later copy is listed with the error
 // plugin_id_shadowed and never runs.
 //
 // Discover reads files only. It runs no plugin command.
@@ -164,21 +173,31 @@ func Discover(d Dirs, enabled []string) []Entry {
 	var out []Entry
 	seen := map[string]bool{}
 	byID := map[string]bool{}
-	add := func(origin, path string, src *Source) {
-		e := Entry{Origin: origin, Path: path}
-		p, perr := Load(path)
-		if p != nil {
-			e.Path = p.ManifestPath
+	// add lists one plugin. pre is an error found before the manifest is
+	// read. lock is the lock file entry of a managed plugin.
+	add := func(origin, path string, src *Source, lock *LockEntry, dir string, pre *Error) {
+		e := Entry{Origin: origin, Path: path, Lock: lock, Err: pre}
+		var p *Plugin
+		if pre == nil {
+			p, e.Err = Load(path)
+			if p != nil {
+				e.Path = p.ManifestPath
+			}
+			if seen[e.Path] {
+				return
+			}
+			seen[e.Path] = true
+			if e.Err == nil && lock != nil {
+				e.Err = checkManaged(d, *lock, dir, p)
+			}
 		}
-		key := e.Path
-		if seen[key] {
-			return
-		}
-		seen[key] = true
 		switch {
-		case perr != nil:
-			e.Err = perr
+		case e.Err != nil:
 			e.ID = guessID(path)
+			if lock != nil {
+				e.ID = lock.ID
+				byID[e.ID] = true
+			}
 		default:
 			if src != nil && src.Kind != "" {
 				p.Source = *src
@@ -196,11 +215,38 @@ func Discover(d Dirs, enabled []string) []Entry {
 		out = append(out, e)
 	}
 	for _, p := range d.Extra {
-		add(OriginConfig, expandHome(p), nil)
+		add(OriginConfig, expandHome(p), nil, nil, "", nil)
 	}
 	for _, dir := range subdirs(d.PluginsDir()) {
 		if fileExists(filepath.Join(dir, ManifestName)) {
-			add(OriginTuios, dir, nil)
+			add(OriginTuios, dir, nil, nil, "", nil)
+		}
+	}
+	if d.TuiosConfig != "" {
+		lock, err := ReadLock(d.LockPath())
+		if err != nil {
+			add(OriginManaged, d.LockPath(), nil, &LockEntry{ID: LockName}, "", errf("plugin_lock_invalid", "%v", err))
+			lock = &Lock{}
+		}
+		state, err := ReadState(d.StatePath())
+		if err != nil {
+			add(OriginManaged, d.StatePath(), nil, &LockEntry{ID: StateName}, "", errf("plugin_state_invalid", "%v", err))
+			state = &State{}
+		}
+		for i := range lock.Plugins {
+			le := lock.Plugins[i]
+			var pre *Error
+			dir, _, live := state.Live(le)
+			if err := CheckLockEntry(le); err != nil {
+				pre = errf("plugin_lock_invalid", "%v", err)
+			} else if !le.Local() && (!live || !dirExists(d.BuildDir(dir))) {
+				pre = errf("plugin_not_installed", "the lock file pins %s at %.12s, and it is not built on this machine. Run tuios plugins install", le.ID, le.Commit)
+			}
+			src := &Source{Kind: "local", RequestedRef: le.Ref, ResolvedCommit: le.Commit, Subdir: le.Subdir}
+			if !le.Local() {
+				src.Kind, src.ManagedPath = "git", d.BuildDir(dir)
+			}
+			add(OriginManaged, d.PluginRoot(le, dir), src, &le, dir, pre)
 		}
 	}
 	if d.HerdrConfig != "" {
@@ -213,11 +259,11 @@ func Discover(d Dirs, enabled []string) []Entry {
 				continue
 			}
 			src := r.Source
-			add(OriginHerdr, r.ManifestPath, &src)
+			add(OriginHerdr, r.ManifestPath, &src, nil, "", nil)
 		}
 		for _, dir := range subdirs(filepath.Join(d.HerdrConfig, "plugins", "github")) {
 			if fileExists(filepath.Join(dir, ManifestName)) {
-				add(OriginHerdrManaged, dir, &Source{Kind: "github", ManagedPath: dir})
+				add(OriginHerdrManaged, dir, &Source{Kind: "github", ManagedPath: dir}, nil, "", nil)
 			}
 		}
 	}
@@ -291,7 +337,7 @@ func fileExists(p string) bool {
 }
 
 func expandHome(p string) string {
-	if p == "~" || strings.HasPrefix(p, "~/") {
+	if p == "~" || strings.HasPrefix(p, "~/") || filepath.Separator == '\\' && strings.HasPrefix(p, `~\`) {
 		if home, err := os.UserHomeDir(); err == nil {
 			return filepath.Join(home, strings.TrimPrefix(p, "~"))
 		}

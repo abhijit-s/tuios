@@ -165,9 +165,13 @@ type tmlSurface struct {
 	windowID  string
 	title     string
 	owner     string
-	// caller keys the surface cap: the opening pane, or "" for a caller in
-	// no pane.
+	// caller keys the surface cap and owns the surface: the opening pane,
+	// or "" for a caller in no pane. Only that pane, or a caller in no
+	// pane, may patch, replace or close the surface, and its pane()
+	// actions run with that pane's grants.
 	caller string
+	// patches bounds the patches and replaces a second.
+	patches tmlBucket
 	// ownerClient is the connection that opened the surface.
 	ownerClient string
 
@@ -279,25 +283,68 @@ const (
 // tmlCallerKey names the caller on cs for the surface cap: its pane, or ""
 // for a caller in no pane.
 func (d *Daemon) tmlCallerKey(cs *connState) string {
-	if ref := d.callerPaneRef(cs); ref != nil {
-		return ref.Window
+	if cs.viaLink {
+		return "link:" + cs.linkPeer
+	}
+	if pa := d.paneAuthority(cs); pa != nil {
+		// A pane this daemon cannot place, or one it runs for another
+		// machine, is still not the person.
+		return cmp.Or(pa.window, unplacedWindow)
 	}
 	return ""
 }
 
-// tmlOwnerLabel names the caller on cs for the frame: its pane, or the CLI.
+// tmlOwnerLabel names the caller on cs for the frame: its pane, a linked
+// machine, or the CLI.
+//
+// A pane is named by its window id, which no program chooses, and then by
+// the window's name in brackets when it has one: a name the person gave it,
+// or an admin action, which is the person's level. Never the pane's title or
+// the name of the program in it, which the program sets (OSC 2, argv[0]).
 func (d *Daemon) tmlOwnerLabel(cs *connState) string {
+	if cs.viaLink {
+		return "machine " + tmlLabelText(cmp.Or(cs.linkPeer, "unknown"), 24)
+	}
 	if ref := d.callerPaneRef(cs); ref != nil {
+		name := ""
 		if sess := d.sessionHoldingWindow(ref.Window); sess != nil {
 			for _, w := range sess.GetState().Windows {
 				if w.ID == ref.Window {
-					return "pane " + cmp.Or(w.CustomName, w.Title, shortID(w.ID))
+					name = tmlLabelText(w.CustomName, 24)
 				}
 			}
 		}
+		if name != "" {
+			return "pane " + shortID(ref.Window) + " (" + name + ")"
+		}
 		return "pane " + shortID(ref.Window)
 	}
+	if d.paneAuthority(cs) != nil {
+		return "a pane tuios cannot place"
+	}
 	return "tuios tml show"
+}
+
+// tmlTitleWidth bounds the document's part of a TML window's name.
+const tmlTitleWidth = 48
+
+// tmlLabelText makes text safe for a window name: no control characters, no
+// separator dot or brackets, which only the owner part uses, and at most max
+// runes.
+func tmlLabelText(text string, max int) string {
+	text = strings.Join(strings.Fields(tml.Sanitize(text)), " ")
+	text = strings.NewReplacer("·", "-", "(", "[", ")", "]").Replace(text)
+	if r := []rune(text); len(r) > max {
+		text = string(r[:max-1]) + "…"
+	}
+	return text
+}
+
+// tmlWindowName is a TML window's name: the owner first, which is never cut,
+// then the document's title, which the frame cuts when it must. The title
+// cannot hold the separator, so it cannot draw a second owner.
+func tmlWindowName(owner, title string) string {
+	return "from " + owner + " · " + tmlLabelText(title, tmlTitleWidth)
 }
 
 // verbTMLOpen opens a surface as a popup or a pane.
@@ -425,11 +472,17 @@ func (d *Daemon) verbTMLOpen(cs *connState, params json.RawMessage) (any, *verbE
 		d.tmlWindowGone(s.id)
 		d.closeWindowOfPTY(sess, ptyID, false)
 	}
+	// The window's name names the owner, and the document cannot change it,
+	// so a surface cannot pass for one another program opened.
+	label := tmlWindowName(s.owner, title)
 	opts := NewWindowOptions{
-		Title:       title,
-		Name:        title,
-		Workspace:   p.Workspace,
-		Focus:       true,
+		Title:     label,
+		Name:      label,
+		Workspace: p.Workspace,
+		// A surface a pane opened does not take the keys: the person
+		// focuses it with a click or a key, so text meant for another pane
+		// cannot answer it. The person's own surface takes the focus.
+		Focus:       s.caller == "",
 		Command:     tmlPlaceholderCommand(uri),
 		Popup:       target == TMLTargetPopup,
 		PopupWidth:  p.Width,
@@ -502,6 +555,11 @@ func (d *Daemon) verbTMLClose(cs *connState, params json.RawMessage) (any, *verb
 	if verr := decodeParams(params, &p); verr != nil {
 		return nil, verr
 	}
+	if s, verr := d.tmlSurfaceOf(p.Surface); verr != nil {
+		return nil, verr
+	} else if verr := d.tmlOwnerCheck(cs, s, "tml-close"); verr != nil {
+		return nil, verr
+	}
 	var value any
 	has := len(bytes.TrimSpace(p.Value)) > 0
 	if has {
@@ -535,6 +593,7 @@ func (d *Daemon) verbTMLInput(cs *connState, params json.RawMessage) (any, *verb
 			Name  string          `json:"name"`
 			Value json.RawMessage `json:"value"`
 		} `json:"events"`
+		Actions []tmlPaneAction `json:"actions"`
 	}
 	if verr := decodeParams(params, &p); verr != nil {
 		return nil, verr
@@ -557,6 +616,9 @@ func (d *Daemon) verbTMLInput(cs *connState, params json.RawMessage) (any, *verb
 	}
 	// The limits are checked before anything applies, so a refused input
 	// changes nothing.
+	if len(p.Actions) > tmlActionsPerInput {
+		return nil, invalidParam("actions", fmt.Sprintf("one press can run at most %d pane actions", tmlActionsPerInput))
+	}
 	if len(p.Events) > tmlEventsPerInput {
 		return nil, invalidParam("events", fmt.Sprintf("one tml-input carries at most %d events", tmlEventsPerInput))
 	}
@@ -591,6 +653,10 @@ func (d *Daemon) verbTMLInput(cs *connState, params json.RawMessage) (any, *verb
 		}
 		d.publishTMLEvent(s, tml.Sanitize(e.Name), value, "")
 	}
+	var results []map[string]any
+	for _, a := range p.Actions {
+		results = append(results, d.runTMLPaneAction(s, a))
+	}
 	if p.Close {
 		var value any
 		has := len(bytes.TrimSpace(p.Value)) > 0
@@ -611,7 +677,11 @@ func (d *Daemon) verbTMLInput(cs *connState, params json.RawMessage) (any, *verb
 	d.tml.mu.Lock()
 	v := s.version
 	d.tml.mu.Unlock()
-	return map[string]any{"type": "tml_input", "surface": p.Surface, "version": v}, nil
+	res := map[string]any{"type": "tml_input", "surface": p.Surface, "version": v}
+	if len(results) > 0 {
+		res["actions"] = results
+	}
+	return res, nil
 }
 
 func noSurface(id string) *verbError {
@@ -826,6 +896,14 @@ func (d *Daemon) verbTMLPatch(cs *connState, params json.RawMessage) (any, *verb
 	if verr != nil {
 		return nil, verr
 	}
+	if verr := d.tmlOwnerCheck(cs, s, "tml-patch"); verr != nil {
+		return nil, verr
+	}
+	if !s.patches.allow(time.Now()) {
+		return nil, hintedVerbError(ErrVerbRateLimited, fmt.Sprintf("the surface takes at most %d patches a second", tmlPatchesPerSecond), &VerbHint{
+			Detail: "Send fewer, larger patches: one patch can hold many operations. Nothing was changed.",
+		})
+	}
 	ops := bytes.TrimSpace(p.Ops)
 	if len(ops) == 0 || ops[0] != '[' {
 		return nil, invalidParam("ops", "ops is a JSON Patch: an array of operations such as {\"op\":\"replace\",\"path\":\"/count\",\"value\":3}")
@@ -883,6 +961,14 @@ func (d *Daemon) verbTMLReplace(cs *connState, params json.RawMessage) (any, *ve
 	}
 	if verr != nil {
 		return nil, verr
+	}
+	if verr := d.tmlOwnerCheck(cs, s, "tml-replace"); verr != nil {
+		return nil, verr
+	}
+	if !s.patches.allow(time.Now()) {
+		return nil, hintedVerbError(ErrVerbRateLimited, fmt.Sprintf("the surface takes at most %d changes a second", tmlPatchesPerSecond), &VerbHint{
+			Detail: "A replace counts as a patch. Nothing was changed.",
+		})
 	}
 	src, verr := tmlDocSource(p.Doc)
 	if verr != nil {
@@ -1000,8 +1086,12 @@ func (d *Daemon) verbTMLValidate(cs *connState, params json.RawMessage) (any, *v
 	return map[string]any{"type": "tml_valid", "warnings": problems}, nil
 }
 
-// tmlEventsPerInput bounds the emits one tml-input carries.
-const tmlEventsPerInput = 16
+// tmlEventsPerInput bounds the emits one tml-input carries, and
+// tmlActionsPerInput its pane actions: one key or click runs a few.
+const (
+	tmlEventsPerInput  = 16
+	tmlActionsPerInput = 4
+)
 
 // tmlReach refuses a caller that may not reach a surface's session: a pane
 // outside the session and its fan group, a pane without the read grant for
@@ -1022,6 +1112,13 @@ func (d *Daemon) tmlReach(cs *connState, s *tmlSurface, verb string, write bool)
 	if pa == nil || pa.grants.Has(GrantAdmin) {
 		return nil
 	}
+	// The pane that opened a surface reaches it, with write alone.
+	d.tml.mu.Lock()
+	owner := s.caller
+	d.tml.mu.Unlock()
+	if pa.window != "" && pa.window == owner {
+		return nil
+	}
 	if !d.sessionInScope(pa.session, target) {
 		return grantForbidden(verb, pa, "the surface is in session "+echoName(target)+", which is not the pane's own session or in its fan group")
 	}
@@ -1029,4 +1126,105 @@ func (d *Daemon) tmlReach(cs *connState, s *tmlSurface, verb string, write bool)
 		return grantForbidden(verb, pa, verb+" needs the read grant")
 	}
 	return nil
+}
+
+// tmlPatchesPerSecond bounds the patches and replaces of one surface.
+const tmlPatchesPerSecond = 100
+
+// tmlBucket is a token bucket of tmlPatchesPerSecond tokens a second, full
+// when it starts. The zero value is ready. It is guarded by its own lock.
+type tmlBucket struct {
+	mu     sync.Mutex
+	tokens float64
+	last   time.Time
+}
+
+// allow takes a token at now, and reports whether there was one.
+func (b *tmlBucket) allow(now time.Time) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.last.IsZero() {
+		b.tokens = tmlPatchesPerSecond
+	} else if d := now.Sub(b.last).Seconds(); d > 0 {
+		b.tokens = min(tmlPatchesPerSecond, b.tokens+d*tmlPatchesPerSecond)
+	}
+	b.last = now
+	if b.tokens < 1 {
+		return false
+	}
+	b.tokens--
+	return true
+}
+
+// tmlOwnerCheck refuses a caller that may not change s: a pane that did not
+// open it. A caller in no pane, the person's own commands and hooks, may
+// change any surface.
+func (d *Daemon) tmlOwnerCheck(cs *connState, s *tmlSurface, verb string) *verbError {
+	caller := d.tmlCallerKey(cs)
+	if caller == "" || caller == s.caller {
+		return nil
+	}
+	d.tml.mu.Lock()
+	owner := s.owner
+	d.tml.mu.Unlock()
+	return hintedVerbError(ErrVerbForbidden, verb+" changes a surface only for the pane that opened it, and "+owner+" opened this one", &VerbHint{
+		Detail: "A pane changes only its own surfaces. Open one of your own with tml-open. Nothing was changed.",
+	})
+}
+
+// tmlPaneVerbs maps the verbs of a pane() action to the verbs they run.
+var tmlPaneVerbs = map[string]string{
+	"focus":      "focus-window",
+	"new-window": "new-window",
+	"send-text":  "send-text",
+}
+
+// tmlNewWindowParams are the new-window parameters a surface may pass.
+var tmlNewWindowParams = []string{"session", "name", "workspace", "cwd", "focus", "command"}
+
+// tmlPaneAction is one pane() action the person ran on a surface.
+type tmlPaneAction struct {
+	Verb   string         `json:"verb"`
+	Params map[string]any `json:"params"`
+}
+
+// runTMLPaneAction runs a pane() action with the grants of the surface's
+// owner, never the person's: a connection placed in the opening pane, or the
+// person's own when no pane opened it. The verb's own checks apply, so a
+// send-text into a pane that holds more than the owner is refused as it is
+// for the owner's own call.
+func (d *Daemon) runTMLPaneAction(s *tmlSurface, a tmlPaneAction) map[string]any {
+	verb, ok := tmlPaneVerbs[a.Verb]
+	if !ok {
+		return map[string]any{"verb": a.Verb, "ok": false, "error": "a pane action is focus, new-window or send-text"}
+	}
+	params := map[string]any{}
+	for k, v := range a.Params {
+		// A new window from a surface takes only these: no host, no
+		// environment, no wait, no grants and no kind. The person saw the
+		// command in the question before the action came here.
+		if verb == "new-window" && !slices.Contains(tmlNewWindowParams, k) {
+			continue
+		}
+		params[k] = v
+	}
+	d.tml.mu.Lock()
+	owner, sessionID := s.caller, s.sessionID
+	d.tml.mu.Unlock()
+	if owner != "" && d.sessionHoldingWindow(owner) == nil {
+		return map[string]any{"verb": a.Verb, "ok": false, "error": "the surface was not opened by a pane of this machine, so it runs no pane action here"}
+	}
+	if _, named := params["session"]; !named {
+		if sess := d.manager.GetSessionByID(sessionID); sess != nil {
+			params["session"] = sess.Name()
+		}
+	}
+	as := &connState{clientID: "tml:" + s.id, done: make(chan struct{})}
+	if owner != "" {
+		as.paneBound.Store(&owner)
+	}
+	if _, verr := d.callVerb(as, verb, params); verr != nil {
+		return map[string]any{"verb": a.Verb, "ok": false, "error": verr.Message, "code": verr.Code}
+	}
+	return map[string]any{"verb": a.Verb, "ok": true}
 }
