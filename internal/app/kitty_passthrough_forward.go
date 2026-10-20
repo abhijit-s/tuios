@@ -14,7 +14,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Gaurav-Gosain/tuios/internal/vt"
+	"tuios.dev/vt"
 )
 
 // zlibCompress returns the zlib-compressed form of data, or nil on error. Used
@@ -308,6 +308,22 @@ func (kp *KittyPassthrough) forwardTransmit(cmd *vt.KittyCommand, rawData []byte
 		if kp.absorbDirectFrame(cmd, rawData, windowID, hostID) {
 			return nil
 		}
+		// Kept for a screenshot when it is whole in this one command. The
+		// last chunk of a chunked upload carries only its own part.
+		switch {
+		case cmd.More:
+			if kp.rawChunks == nil {
+				kp.rawChunks = make(map[string]bool)
+			}
+			kp.rawChunks[windowID] = true
+			if hostID != 0 {
+				kp.forgetKept(windowID, hostID)
+			}
+		case kp.rawChunks[windowID]:
+			delete(kp.rawChunks, windowID)
+		default:
+			kp.keepImage(windowID, hostID, keptFromCommand(cmd, cmd.Data))
+		}
 		// Pass through raw (already has framing)
 		kp.pendingOutput = append(kp.pendingOutput, rawData...)
 		return nil
@@ -417,20 +433,18 @@ func (kp *KittyPassthrough) forwardTransmit(cmd *vt.KittyCommand, rawData []byte
 		}
 	}
 
-	// Calculate image cell dimensions
-	imgRows := pending.Rows
-	imgCols := pending.Columns
-	if imgRows == 0 || imgCols == 0 {
-		caps := kp.hostCaps()
-		if caps.CellWidth > 0 && caps.CellHeight > 0 {
-			if imgRows == 0 && pending.Height > 0 {
-				imgRows = (pending.Height + caps.CellHeight - 1) / caps.CellHeight
-			}
-			if imgCols == 0 && pending.Width > 0 {
-				imgCols = (pending.Width + caps.CellWidth - 1) / caps.CellWidth
-			}
-		}
-	}
+	// pending carries what the first chunk said about the box and the pixel size;
+	// a continuation chunk has only data.
+	imgRows, imgCols := kp.calculateImageCells(&vt.KittyCommand{
+		Columns:      pending.Columns,
+		Rows:         pending.Rows,
+		Width:        pending.Width,
+		Height:       pending.Height,
+		SourceX:      pending.SourceX,
+		SourceY:      pending.SourceY,
+		SourceWidth:  pending.SourceWidth,
+		SourceHeight: pending.SourceHeight,
+	})
 
 	displayCols := imgCols
 	displayRows := imgRows
@@ -451,6 +465,10 @@ func (kp *KittyPassthrough) forwardTransmit(cmd *vt.KittyCommand, rawData []byte
 	// compare against; see emitBitmap.
 	update := kp.emitBitmap(windowID, hostID, pending.Format, pending.Compression,
 		pending.Width, pending.Height, pending.Data, pending.ImageID != 0)
+	kp.keepImage(windowID, hostID, &keptImage{
+		guestID: pending.ImageID, format: pending.Format, compression: pending.Compression,
+		width: pending.Width, height: pending.Height, data: pending.Data,
+	})
 	if update == bitmapFull {
 		if kp.pendingGraphicsFull() {
 			// Drop the bitmap rather than queue it behind a host that is
@@ -671,6 +689,10 @@ func (kp *KittyPassthrough) forwardFileTransmit(cmd *vt.KittyCommand, windowID s
 		releaseKittyMedium(cmd, filePath)
 		return
 	}
+
+	// Kept for a screenshot before the host is sent the name: for t=t and
+	// t=s the host deletes the object once it has read it.
+	kp.keepFileMedium(cmd, windowID, hostID, filePath, !reusingID || cmd.ImageID == 0)
 
 	// PERFORMANCE: Forward the file path directly to the host terminal.
 	// The host (Ghostty/Kitty) reads the file itself, so there is no need to
@@ -1141,6 +1163,9 @@ func (kp *KittyPassthrough) forwardFileTransmitInline(
 			kp.imageIDMap[windowID][cmd.ImageID] = hostID
 		}
 	}
+	// Kept for a screenshot. The bytes are read already, so this holds on to
+	// them and copies nothing.
+	kp.keepImage(windowID, hostID, keptFromCommand(cmd, rawPixels))
 
 	// Cell dimensions. Match forwardFileTransmit semantics.
 	imgRows, imgCols := kp.calculateImageCells(cmd)
@@ -1458,7 +1483,7 @@ func buildVideoReplace(hostID uint32, st *remoteVideoState) []byte {
 // Nothing is drawn by this. The host draws the image where the guest's
 // U+10EEEE cells land, and those cells reach it through the ordinary text path
 // with their foreground rewritten to name the same id (see
-// internal/vt/kitty_placeholder.go). Because the position is carried by text,
+// vt/kitty_placeholder.go). Because the position is carried by text,
 // tuios does not track, reposition or clip this image at all: scrolling the
 // pane scrolls the cells, and the host redraws whatever is still on screen.
 //
@@ -1484,6 +1509,7 @@ func (kp *KittyPassthrough) declareVirtualPlacement(windowID string, hostID, pla
 		kp.virtualImages[windowID] = make(map[uint32]bool)
 	}
 	kp.virtualImages[windowID][hostID] = true
+	kp.keepVirtualBox(windowID, hostID, placementID, cols, rows, z)
 
 	kittyPassthroughLog("declareVirtualPlacement: hostID=%d cols=%d rows=%d winID=%s",
 		hostID, cols, rows, windowID[:min(8, len(windowID))])
@@ -1729,7 +1755,7 @@ func (kp *KittyPassthrough) forwardDelete(cmd *vt.KittyCommand, windowID string)
 			kittyPassthroughLog("forwardDelete: deleted guestID=%d (hostID=%d)", cmd.ImageID, hostID)
 		}
 
-	case vt.KittyDeleteByIDAndPlacement:
+	case vt.KittyDeleteByIDFree:
 		// d=I frees the data as well. The id mapping stays, as above.
 		// With p= it takes down that one placement, and frees the data
 		// once no placement of the image is left.
@@ -1751,6 +1777,7 @@ func (kp *KittyPassthrough) forwardDelete(cmd *vt.KittyCommand, windowID string)
 				// The image is gone. While other placements remain, the
 				// next a=p of the image still needs its size.
 				kp.forgetImagePixels(windowID, cmd.ImageID)
+				kp.forgetKept(windowID, hostID)
 			}
 			kp.forgetFrameHashes(windowID)
 			kittyPassthroughLog("forwardDelete: deleted guestID=%d (hostID=%d) with placement", cmd.ImageID, hostID)
@@ -1769,9 +1796,9 @@ func (kp *KittyPassthrough) forwardDelete(cmd *vt.KittyCommand, windowID string)
 		// down, which covers those, and keeps the images and their ids, so
 		// the guest can place them again and the window's close still
 		// frees them.
-		if cmd.Delete != vt.KittyDeleteOnScreen &&
+		if cmd.Delete != vt.KittyDeleteAtCell &&
 			cmd.Delete != vt.KittyDeleteAtCursor &&
-			cmd.Delete != vt.KittyDeleteAtCursorCell {
+			cmd.Delete != vt.KittyDeleteAtCursorFree {
 			kittyPassthroughLog("forwardDelete: delete type=%c (%d) takes every placement down", cmd.Delete, cmd.Delete)
 		}
 		kp.deleteAllWindowPlacements(windowID)
@@ -1786,6 +1813,7 @@ func (kp *KittyPassthrough) freeWindowImages(windowID string) {
 		kp.releaseHostID(windowID, hostID)
 	}
 	kp.imageIDMap[windowID] = nil
+	kp.forgetKept(windowID, 0)
 	kp.forgetImagePixels(windowID, 0)
 	kp.forgetFrameHashes(windowID)
 	kp.deleteRemoteVideoImages(windowID)

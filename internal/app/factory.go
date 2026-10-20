@@ -70,6 +70,10 @@ type OSOptions struct {
 	// StartInTerminalMode starts the client in terminal mode on the focused
 	// pane, whatever [startup] says and whether the session is new or not.
 	StartInTerminalMode bool
+	// AfterRestart says this client was started by a daemon restart from
+	// the app, so the first frame says the session is back. See
+	// daemon_restart.go.
+	AfterRestart bool
 
 	// NumWorkspaces sets the number of workspaces (default: 9).
 	NumWorkspaces int
@@ -163,6 +167,10 @@ type OSOptions struct {
 // fields are properly initialized.
 func NewOS(opts OSOptions) *OS {
 	opts.applyClientKind()
+	// option_glyphs = "auto" needs the Mac's keyboard layout. Read it in the
+	// background now, so the answer is in before the first key and no key
+	// waits for it. Nothing happens off macOS.
+	config.StartMacLayoutDetection()
 
 	numWorkspaces := opts.NumWorkspaces
 	if numWorkspaces <= 0 {
@@ -222,6 +230,7 @@ func NewOS(opts OSOptions) *OS {
 		LearnMode:         opts.LearnMode,
 		ShowKeys:          opts.ShowKeys,
 		forceTerminalMode: opts.StartInTerminalMode,
+		afterRestart:      opts.AfterRestart,
 		RecentKeys:        []KeyEvent{},
 		KeyHistoryMaxSize: 5,
 
@@ -322,6 +331,7 @@ func NewOS(opts OSOptions) *OS {
 		// Hold the loaded config so the in-app settings page can persist live
 		// changes back to disk.
 		os.UserConfig = cfg
+		os.ListKeys = listKeymap(cfg)
 		// Collected here and reported from Init, once there is a TUI to report
 		// them in.
 		os.ConfigWarnings = config.ConfigWarnings(cfg)

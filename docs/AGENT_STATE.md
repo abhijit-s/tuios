@@ -76,8 +76,9 @@ matches the build.
    grants = ["read", "write", "fan"]
    ```
 
-5. Optional: give your agents the tools. Either the skill, which an agent reads
-   with `tuios --skill`, or MCP:
+5. Optional: give your agents the tools. Step 1 already installed the skill
+   for Claude Code, Codex, opencode and Pi: a short `SKILL.md` that tells the
+   agent to run `tuios --skill`. For MCP instead:
 
    ```bash
    tuios integration install claude-code --mcp
@@ -155,7 +156,7 @@ Those scripts send herdr's protocol to `HERDR_SOCKET_PATH`.
 | Understand the states and who decides them | [States](#states), [Sources and precedence](#sources-and-precedence) |
 | Let any program or script report its state | [PROGRAM_STATUS.md](PROGRAM_STATUS.md) |
 | Make a harness report, or see why a pane is or is not an agent | [Harness integrations](#harness-integrations), [Recognising a harness](#recognising-a-harness), [Screen rules](#screen-rules) |
-| Use the Inbox and answer prompts | [The Inbox](#the-inbox), [Answering a prompt without attaching](#answering-a-prompt-without-attaching), [Approvals from the Inbox](#approvals-from-the-inbox), [KEYBINDINGS.md](KEYBINDINGS.md#the-inbox) |
+| Use the agents view and answer prompts | [The Inbox](#the-inbox), [Answering a prompt without attaching](#answering-a-prompt-without-attaching), [Approvals from the Inbox](#approvals-from-the-inbox), [KEYBINDINGS.md](KEYBINDINGS.md#the-agents-view) |
 | Let agents ask you something | [Questions an agent asks you](#questions-an-agent-asks-you) |
 | Let agents talk to each other | [Agents talking to agents](#agents-talking-to-agents) |
 | Run a fleet of agents | [Fleets](#fleets), [Selectors](#selectors), [Headless agents over a protocol](#headless-agents-over-a-protocol) |
@@ -446,18 +447,26 @@ session id and metadata from herdr's script still apply. An agent that
 reports to herdr by itself, such as Crush, is not a herdr script and is never
 dropped.
 
-A report speaks only for the caller's own pane. The daemon places the
-connecting process the way it places every caller (see
-[How a process is placed](#how-a-process-is-placed)). It answers `forbidden` to
-a `pane_id` that is not that pane, and to a process in no pane. The `pane_id`
-can be herdr's form or the window id. Pane grants do not limit these reports,
-because a pane may always report for itself.
+The daemon places the connecting process the way it places every caller
+(see [How a process is placed](#how-a-process-is-placed)). A process in a pane
+reports only for its own pane. The daemon answers `forbidden` to a `pane_id`
+that is not that pane. Pane grants do not limit these reports, because a pane
+may always report for itself.
+
+A process outside every pane can report for any pane, as in herdr. This is
+you in a terminal outside tuios, or a command of a herdr plugin. The daemon
+checks the report as it checks `tuios set-agent-state -w`. Under the default
+mode `open` the report goes through. Under `strict` your own processes
+outside tuios still pass. A plugin's command is started by the daemon, so it
+holds no session, and the daemon answers `forbidden`. A report from another
+machine is refused. `notification.show` names no pane, so it needs a caller
+in a pane. The `pane_id` can be herdr's form or the window id.
 
 #### herdr's command line
 
 Tools built for herdr call herdr's CLI through `$HERDR_BIN_PATH`. In a tuios
 pane that variable names a link called `herdr` that points to tuios. tuios
-started under the name `herdr` reads herdr's command line, as herdr 0.9.3
+started under the name `herdr` reads herdr's command line, as herdr 0.9.5
 reads it. It sends each command to `HERDR_SOCKET_PATH` and prints what herdr
 prints:
 
@@ -469,7 +478,7 @@ prints:
 
 `pane send-text`, `pane send-keys`, `pane run` and the report commands print
 nothing when they succeed. `pane read` and `agent read` print the text read.
-`herdr --version` prints `herdr 0.9.3+tuios`. `herdr status server` says
+`herdr --version` prints `herdr 0.9.5+tuios`. `herdr status server` says
 `status: running` when the socket answers, and `status: not running` when
 it does not. `--json` gives the same in herdr's JSON. `endpoint_compatible`
 is always false, because tuios does not serve herdr's client protocol.
@@ -566,10 +575,10 @@ export HERDR_SOCKET_PATH="$XDG_RUNTIME_DIR/tuios/tuios.sock.herdr"
 
 In a tuios pane, `HERDR_SOCKET_PATH` is set already.
 
-tuios follows the API of herdr **0.9.3** (protocol 22). A `ping` answers
-`{"type":"pong","version":"0.9.3+tuios","protocol":22,"server":"tuios"}`.
+tuios follows the API of herdr **0.9.5** (protocol 22). A `ping` answers
+`{"type":"pong","version":"0.9.5+tuios","protocol":22,"server":"tuios"}`.
 `session.snapshot` gives the same version. The `+tuios` part is semver build
-metadata, so a version check reads it as 0.9.3. A tool that must know it talks
+metadata, so a version check reads it as 0.9.5. A tool that must know it talks
 to tuios reads `server`.
 
 #### How tuios maps onto herdr
@@ -673,7 +682,7 @@ A refused call answers error `forbidden`, and nothing changes.
 | `pane.swap` | `set-layout` grant, then the attached client | by direction or by `source_pane_id` and `target_pane_id`. The source keeps the focus. A swap that cannot happen answers `reason` `no_neighbor`, `same_pane`, `not_found` or `cross_tab`. Without an attached client it fails with `no_client` |
 | `pane.zoom` | `focus-window`, `run-command ToggleZoom` | `mode` `toggle`, `on` or `off`. The pane is focused first. `reason` is `single_pane`, `already_zoomed` or `already_unzoomed` when nothing changes |
 | `pane.resize` | `set-layout` grant, then the attached client | moves one border of the pane by `amount`, a share of the tab (0.05 when not given, 0.5 at most, one cell at least). `right` and `down` move a border right or down, `left` and `up` move it left or up. The border is the one on that side of the pane, or the other one when the pane is at the edge of the tab there. `changed` is false and `reason` is `unchanged` when nothing moves, as in a floating or scrolling layout. Without an attached client it fails with `no_client` |
-| `pane.move` | `move-window` | to a tab of the pane's own workspace, or to a new tab there. tuios places the pane in the tab's layout itself, so `target_pane_id`, `split` and `ratio` are not followed. The pane keeps its id. A tab of another workspace, and `new_workspace`, fail with `unsupported`, because a tuios window stays in its session. `reason` is `same_tab` or `zoomed_tab` when nothing moves |
+| `pane.move` | `move-window` | to a tab of any workspace, or to a new tab there. A tab of another workspace moves the pane to that tuios session with its program running (`to_session`), and its pane id changes with the workspace. tuios places the pane in the tab's layout itself, so `target_pane_id`, `split` and `ratio` are not followed. `new_workspace` fails with `unsupported`, and so does a popup, a scratch pane or a pane on another machine sent to another workspace. `reason` is `same_tab` or `zoomed_tab` when nothing moves |
 | `agent.list`, `agent.get` | `list-windows` | a target is a pane id, a terminal id, or one agent's label or name |
 | `agent.wait` | `wait-for agent-state` | |
 | `agent.start` | `start-agent` grant, then `send-text` and `send-keys` | needs `fan` on the session (what `start-agent` needs) and `write` for the typing. Types the agent's command at the shell prompt of a pane, and names the pane after the agent. See below |
@@ -723,7 +732,13 @@ with `wait`) takes a `timeout_ms` of 24 hours at most. A longer one fails with
 process may hold 64 connections on the socket at once, and 8 event streams.
 Past that the answer is `rate_limited`.
 
-`env` in a create fails with `unsupported`. A missing parameter answers
+`env` in `workspace.create`, `tab.create` and `pane.split` is set in the
+new pane's process. A variable that starts with `TUIOS_`, and `TMUX` or
+`TMUX_PANE`, fail with `invalid_params`. A `pane.split` with `env` or `cwd`
+opens a new pane on the workspace of the target pane, as a split with no
+attached client does. A tiling client puts it beside the focused pane.
+
+A missing parameter answers
 `invalid_request` with serde's words, for example ``missing field `pane_id` ``.
 An id that finds nothing answers `workspace_not_found`, `tab_not_found` or
 `pane_not_found`.
@@ -744,7 +759,7 @@ These methods answer error `unsupported`. Each row says why.
 
 #### Where tuios differs from herdr
 
-herdr 0.9.3 writes the text of `pane.send_text` to the pane as it is. tuios
+herdr 0.9.5 writes the text of `pane.send_text` to the pane as it is. tuios
 sends it as a paste: control characters are removed, and the text goes in
 bracketed paste delimiters when the program in the pane has bracketed paste
 on. Collie sends a reply as `pane.send_text` and then `pane.send_keys` Enter.
@@ -841,7 +856,7 @@ because tuios does not serve that protocol.
 #### herdr plugins
 
 tuios runs herdr plugins: a folder with a `herdr-plugin.toml` manifest, in
-herdr 0.9.3's format. You do not change the plugin.
+herdr 0.9.5's format. You do not change the plugin.
 
 **Where tuios finds plugins.** tuios looks in four places, in this order:
 
@@ -889,10 +904,28 @@ started by its caller holds.
 | --- | --- |
 | `[[build]]` | Only when you run `tuios plugins build ID`. tuios shows each command before it runs it. |
 | `[[startup]]` | Once, when the daemon starts, and when you enable the plugin while the daemon runs. Disable the plugin or stop the daemon to stop it. |
-| `[[actions]]` | From the command palette, `tuios plugins run ID ACTION`, `herdr plugin action invoke` or `plugin.action.invoke`. |
+| `[[actions]]` | From the command palette, a [command key](KEYBINDINGS.md#command-keys) of type `plugin_action`, `tuios plugins run ID ACTION`, `herdr plugin action invoke` or `plugin.action.invoke`. |
 | `[[events]]` | When the herdr event stream sends the event that the entry names. See [Events](#events). |
 | `[[panes]]` | From the command palette, `tuios plugins open ID PANE`, `herdr plugin pane open` or `plugin.pane.open`. |
 | `[[link_handlers]]` | Not yet. `tuios plugins info` lists them. |
+
+To bind an action to a key, add a command key of type `plugin_action`. The
+`command` is the action id. When an enabled and a disabled plugin have an
+action with the same id, the bare id runs the enabled plugin's action. Write
+it as `PLUGIN_ID.ACTION_ID` when two enabled plugins have the same id. When no
+plugin has the action, tuios starts and shows a config problem. This is herdr's `[[keys.command]]` entry
+under a different table name. tuios does not read herdr's config file, so copy
+the entry into `config.toml`:
+
+```toml
+[[keybindings.command]]
+key = "prefix+alt+l"
+type = "plugin_action"
+command = "example.layout.apply"
+description = "Apply layout"
+```
+
+A manifest that starts with a UTF-8 byte order mark loads.
 
 A command is an argv array. No shell reads it. A program with a `/` in its
 name is found from the plugin folder, as in herdr. A program without one is
@@ -954,7 +987,7 @@ tuios reads all 113 manifests of the 115 most starred herdr plugins. These
 parts of a plugin do not run yet:
 
 - `[[link_handlers]]`.
-- `herdr plugin install` and `uninstall`: link a cloned folder with
+- `herdr plugin install`, `update` and `uninstall`: link a cloned folder with
   `tuios plugins link DIR`.
 - A client of herdr's terminal protocol (`terminal.attach`, `herdr agent
   attach`), such as the phone and web clients.
@@ -993,7 +1026,7 @@ When a client reads too slowly and events are lost, the stream sends error
 The mapping follows herdr's `src/api/schema` and `src/app/api` at the version
 above. `herdrTargetVersion` in `internal/session/herdr_api.go` names it. To
 move to a new herdr release, compare its `src/api/schema` with the one at
-`v0.9.3`, and update the methods, fields and events that changed. Then update
+`v0.9.5`, and update the methods, fields and events that changed. Then update
 the version and the Collie fixture in
 `internal/session/testdata/herdr/collie_requests.json`.
 `TestHerdrConformanceCollie` replays that fixture against a daemon.
@@ -2225,6 +2258,176 @@ when an item opens and closes. In short, an item closes by itself when what
 opened it stops being true: the agent leaves `needs_input` or `errored`, the
 mail is read, or a client focuses the pane that finished.
 
+### The agents view
+
+`ctrl+b i` opens the agents view: one full-screen view of every agent tuios
+knows of, in this session, the other sessions and linked machines, and of
+everything that waits for you. It replaces the Inbox panel. The Inbox is now
+its Needs you group, so the queue and the agents are one list.
+
+```
+Agents  ● 1 needs you   ◐ 6 working   ✓ 3 to review   ○ 2 idle      + New agent
+
+Needs you  1 ───────────────────────────    api-auth   claude · opus-4.5   ● needs you
+▌ ●  api-auth      claude  api    4m        api   +214 −37   ctx 62%
+     Allow Bash  go test ./internal/auth/   ─────────────────────────────────────────
+Ready for review  3 ─────────────────────   ▌ ● Allow Bash?   api-auth waits 4m
+  ✓  docs-cli      codex   docs   2m        ▌   $ go test ./internal/auth/...
+Working  6 ──────────────────────────────   ▌   a  Allow once   r  Reject
+  ◐  bench-idle    claude  cache  6m
+     Bash  go test -bench Idle    ctx 31%
+```
+
+The list has five groups, in this order: Needs you (approvals, questions,
+plans, mail for you, errors and resume rows), Ready for review (a finished
+turn you have not looked at), Working, Idle, and Earlier (at rest for more
+than an hour). Inside a group the oldest wait comes first. A snoozed item
+shows under Snoozed when `S` shows them. A row moves to a new group only once
+the agent has been in the new state for 0.4 seconds, so a hook that flips
+working, needs you, working in a moment does not move it twice. A finished
+turn the agent has already moved on from goes with the agent's state, not
+under Ready for review.
+
+Each row is two lines on a wide screen. The first has the state mark, the
+name, the harness, the session (or the machine, for an agent on another one),
+the size of the diff when the agent reports it as the `diff` meta key,
+and how long it has been in its state. The second says the one thing worth
+reading: what a Needs you row asks, in the attention colour ("Allow Bash" and
+the command); what a working agent does now and how full its context is; the
+branch and pull request of one ready for review. Subagents hang under their
+agent, one line each. The rows come from the rail's agents section, so the two
+always agree. When the link to a machine is down, its rows are dim, say
+`link down`, and show the last state tuios knew.
+
+The focus area beside the list shows the selected agent: its name, harness,
+model and state, its branch, session, diff, context and cost, then its thread,
+and at the bottom the card of what it asks. A held approval's card shows the
+command whole, where it runs, and the buttons that answer it: `a` allows once,
+`A` always, `r` rejects and `R` rejects with a reason. `1`, `2` and `3` still
+work. A key does nothing until the card has been on screen for a moment, a
+risky allow needs a second press, and a plan is approved only once its last
+line was on screen. A command too long for the card is never answered there:
+the card says `Too long to show here. Press enter to answer in the pane.`, and
+the keys refuse.
+
+A click on a row selects it and leaves the view open. A double-click, or
+`enter`, goes to the agent's pane and closes the view. `n` and the
+`+ New agent` button open the New agent sheet: the task, the agent, the
+model, a new worktree or this folder, the machine and the attempts. `enter`
+starts the agent through `fan` (a new worktree) or `start-agent` (this
+folder), and the task is typed once the agent is ready. `f` shows only the items, the old
+flat Inbox with Needs you and Ready for review; `f` again shows one kind of
+item at a time, and after the last kind every agent again. `s` steps the order inside the
+groups: needs you first and then the longest wait, name, most recent change,
+session. `/` searches: a `key:value` term is a selector, and other words match
+the name, the session and the agent's last message. The search narrows the
+Needs you items too: an item stays when its agent matches, or when its own
+words do. A selector tuios cannot read shows its error in the search box.
+
+The layout follows the screen. From 120 columns the list is 48 columns wide
+(56 from 170) and its rows have two lines. From 80 columns the list is 38
+columns and its rows are one line. Under 80 columns the list fills the screen,
+and `enter`, `right` or a click opens the focus in its place; `left` or `esc`
+goes back. With one or two agents the list folds into a strip of names over
+the focus. When the list is taller than the screen, rows are one line and a
+group longer than 8 rows shows its first 8 and `+N more`, which a click or
+`right` opens. Needs you never folds.
+
+At 170 columns and wider a side column sits beside the focus:
+
+- **Live**: the agent's pane, its last rows that hold text, in a frame. It
+  is the pane's own cells, read again after the pane prints, at most every
+  third time as the picture-in-picture view is, and only while the box is
+  on screen. A pane of this session on another workspace is fetched once the
+  cursor rests on it, and kept streamed while it is shown. A pane of another
+  session or machine, or one that closed, says so, and `ctrl+]` opens it.
+- **Last turn**: each file the last turn changed, with its added and removed
+  lines and a bar of their share.
+- **Checkpoints**: the turn checkpoints of the agent's work tree, newest
+  first, with the time and what the turn was. They are read while they are on
+  screen, when you select the agent and when its state changes. One is taken
+  at the end of a turn that changes a file, and none while
+  `[agents.checkpoints]` is off, which the section says.
+  `tuios checkpoint restore N` restores one.
+
+On a narrower screen the same pieces are focus tabs after Thread and
+Changes: Checkpoints, and Live, which shows the live pane at the focus's
+size. The card of a held approval or a question stays under every tab, so a key
+never answers a card you cannot see.
+
+The reply area sits at the foot of the focus: who the reply is for, when it
+is typed (at once, or when a working agent rests), and a Send button. A click
+on it, `r`, `i` or `tab` opens the editor. An image you paste or drop in shows
+as a chip with its name and size. A click on the chip opens the image view:
+the picture at the largest size the screen holds, its name, size in pixels
+and bytes, and who it is for. `o` opens it in the desktop's viewer, `c` saves
+a copy to the screenshot folder and copies its path, `s` saves a copy, `left`
+and `right` step through the draft's images, `+` and `-` zoom, and `esc` or a
+click outside the picture closes the view. The picture is drawn with kitty
+graphics where the terminal has them, and with block glyphs where it does
+not.
+
+The thread shows what the agent said and did. For Claude Code it is the
+conversation, read from its transcript and drawn as cards:
+
+- Your prompts sit in a panel with an accent bar, labelled with the time and
+  the turn. The agent's answers sit under a label with its harness and the
+  time.
+- Reads and searches fold to one line, and a run of them merges: `Read 3 ·
+  Search 1` and the files.
+- An edit opens on its diff, drawn as the review draws it: line numbers, the
+  code highlighted, and the part of a changed line that changed lit. A card
+  shows its first 8 lines. `e` shows every line of every card, and a click on
+  a card's header folds it.
+- A command that failed shows the end of its output and a `failed` mark.
+- A todo list is a plan: done rows struck through, the running row bold, and
+  a rule that fills as rows are done. Older lists fold to their count.
+
+The newest card is at the bottom. The wheel over the thread, or `J` and `K`,
+scrolls it. `[` and `]` switch between the Thread and Changes tabs: Changes
+shows every edit of the last turn whole. tuios follows the transcript of the
+selected agent only, and the thread grows as the agent works. For other
+agents it is the recap of their turns, their last message, and the last mail
+between them and other agents.
+
+#### Many agents at once
+
+`x` marks the selected agent, and `*` marks every agent shown, or clears
+the marks when all of them are marked. A marked row shows a mark beside the
+cursor bar, and the title says how many are marked. A bulk key acts only on
+the marked agents the list shows: one in a folded group, or one the search
+hides, is left out. Closing the view clears the marks. With marks:
+
+- `r` opens one reply editor, and `enter` queues the same message to each
+  marked agent, at most 32. An agent that waits on a prompt, or runs on
+  another machine, is left out, and the dock says which. `esc` and `ctrl+]`
+  keep the draft, and the next `r` with marks opens it again.
+- `3` rejects every approval the marked agents wait on.
+- `1` lists each approval it would allow, whole, and `enter` allows them once
+  the list has been on screen for a moment. A risky approval, a plan, and one
+  the terminal cannot show whole are never in the list: the list says
+  `2 need a second look. Allow them one by one.` An approval that changed
+  after the list showed it is not allowed. The list holds only the approvals
+  the screen has room to show whole. It says how many more wait, and `enter`
+  leaves them out. Press `1` again to see them. `esc`, any other key, a click
+  and closing the view close the list. `2`, always, is never given to many
+  agents at once.
+- `d` dismisses what the marked agents have in Needs you, and `z` snoozes it for the
+  length you pick next. An item that cannot be snoozed, such as a held
+  approval, is left out.
+
+A key that `send-keys` typed does none of these.
+
+`ctrl+]` shows the agent's own screen: the view closes, the agent's pane
+gets the focus and is zoomed, and the dock says `Press ctrl+b i to go back to
+the agents.` The view opens again with the same agent selected, at the same
+scroll, and with every draft kept. The key works with
+the reply editor open too, and keeps its draft.
+
+Nothing polls. The list changes when an agent's state changes, and the times
+move on once a minute while the view is on screen. With the view closed,
+nothing runs. The client keeps the threads of the last 3 agents shown.
+
 A row follows the pane's latest report. A pane that stays on `needs_input` and
 reports again with a new kind or message moves between Questions and Approvals
 and shows the new message, so a harness hook that says `approval` after the
@@ -2249,38 +2452,44 @@ Keys, after the prefix (`ctrl+b` by default):
 
 | Key | What it does |
 | --- | --- |
-| `i` | Open the Inbox. |
-| `o` | Go to the oldest item that needs you (approval, ask, question, mail, errored, resume), switching session and workspace. A question an agent asked you opens the Inbox on it instead, since that is where it is answered. The prefix stays armed, so `o` again goes to the next one, and past the last it starts over. Finished turns are left to the Inbox and to `O`. |
+| `i` | Open the agents view. |
+| `o` | Go to the oldest item that needs you (approval, ask, question, mail, errored, resume), switching session and workspace. A question an agent asked you opens the agents view on it instead, since that is where it is answered. The prefix stays armed, so `o` again goes to the next one, and past the last it starts over. Finished turns are left to the Inbox and to `O`. |
 | `O` | Go to the newest finished turn you have not seen. `O` again within 5 seconds goes to the next older one; a turn that finishes meanwhile starts the walk over at it. It waits until an agent has been seen: before that the key after the prefix reaches the pane as it always did. |
-| `M` | Open the Inbox on its mail. It used to open the mailbox; `m` in the Inbox does that now. |
+| `M` | Open the agents view on the mail for you. It used to open the mailbox; `m` in the agents view does that now. |
 
-Inside the Inbox:
+Inside the agents view:
 
 | Key | What it does |
 | --- | --- |
 | `j` / `k`, arrows | Move. Group headings are skipped. |
 | `g` / `G` | First and last item. |
 | `enter` | Go to the item's pane, switching session and workspace. On mail, open the thread. On a held approval, give the prompt back to the pane first, so the harness shows it there. |
-| `space` | On an approval or a question, read the prompt without leaving the Inbox, and answer it from there. See [Answering a prompt without attaching](#answering-a-prompt-without-attaching). Not on a held approval, which has no prompt on the screen: answer that one with `1`, `2` or `3`. |
-| `1` / `2` / `3` | Answer the held approval under the cursor: allow once, always allow, deny. The same order as the harness's own menu. Only the keys the prompt offers work, and only once the prompt has been on screen as it is for 0.4 seconds. The whole prompt, and what `2` adds, is shown under the list. On a risky approval, `1` and `2` need a second press of the same key within 3 seconds. On a plan they are approve and approve with accept edits, and work once the plan's last line has been shown; `3` keeps it planning. See [Approvals from the Inbox](#approvals-from-the-inbox), [Risk rules](#risk-rules) and [Plans](#plans). |
-| `n` | On a held approval or plan whose harness takes a reason: deny, or keep planning, with a reason you type on the `Reason:` line. `enter` sends it, `esc` drops it. See [Deny with a reason](#deny-with-a-reason). |
-| `J` / `K`, `ctrl+d` / `ctrl+u` | Scroll a plan shown under the list. |
-| `1` to `9` | On a question put with `ask-human`, pick that answer. The question and its numbered answers are shown under the list, and the keys work once it has been on screen as it is for 0.4 seconds. See [Questions an agent asks you](#questions-an-agent-asks-you). |
-| `r` | Reply to mail: the thread opens with its reply line. |
+| `space` | On an approval or a question, read the prompt without leaving the agents view, and answer it from there. See [Answering a prompt without attaching](#answering-a-prompt-without-attaching). Not on a held approval, which has no prompt on the screen: answer that one with `1`, `2` or `3`. |
+| `1` / `2` / `3` | Answer the held approval under the cursor: allow once, always allow, reject. The same order as the harness's own menu. Only the keys the prompt offers work, and only once the prompt has been on screen as it is for 0.4 seconds. The whole prompt, and what `2` adds, is shown under the list. On a risky approval, `1` and `2` need a second press of the same key within 3 seconds. On a plan they are approve and approve with accept edits, and work once the plan's last line has been shown; `3` keeps it planning. See [Approvals from the Inbox](#approvals-from-the-inbox), [Risk rules](#risk-rules) and [Plans](#plans). |
+| `a` / `A` / `r` | Answer the held approval under the cursor, as its card's buttons do: allow once, always allow, reject. The same rules as `1`, `2` and `3`. |
+| `R` | On a held approval or plan whose harness takes a reason: reject, or keep planning, with a reason you type on the `Reason:` line. `enter` sends it, `esc` drops it. See [Reject with a reason](#reject-with-a-reason). |
+| `n` | Open the New agent sheet. |
+| `J` / `K`, `ctrl+d` / `ctrl+u` | Scroll a plan on the card. The wheel over the card does the same. |
+| `1` to `9` | On a question put with `ask-human`, pick that answer. The question and its numbered answers are shown on its card, and the keys work once it has been on screen as it is for 0.4 seconds. See [Questions an agent asks you](#questions-an-agent-asks-you). |
+| `r`, `i`, `tab` | With no approval waiting: reply to the agent, or to mail, whose thread opens with its reply line. |
 | `y` | On a resume row: go to the pane and type the conversation's resume command there. |
 | `p` | On a row that says `held for NAME`: pass the mail another machine sent that agent on to it. See [Mail held from another machine](#mail-held-from-another-machine). |
 | `d` | Dismiss the item. The dock says `u` undoes it, and for 10 seconds it does. |
 | `z` | Snooze the item, then `1` 15 minutes, `2` an hour, `3` until 9:00 tomorrow, `4` until it changes. The footer shows the four while it waits for the digit; any other key cancels. On a snoozed item, wake it. See [Snoozing, undo and unread](#snoozing-undo-and-unread). |
 | `u` | Undo the last dismiss or snooze made in the last 10 seconds. Again, the one before. |
 | `S` | Show or hide the snoozed items, muted, under a Snoozed heading at the bottom. |
-| `f` | Show one kind, then the next, then all of them. |
+| `f` | Show only the items, then one kind of item at a time, then every agent again. |
+| `x` / `*` | Mark the agent, or every agent shown, for a bulk answer. See [Many agents at once](#many-agents-at-once). |
+| `ctrl+]` | Go to the agent's pane and zoom it. `ctrl+b i` comes back to the same agent. |
+| `l` / `h`, `right` / `left` | On a narrow screen, open the focus and go back to the list. |
+| `?` | Open help on its Agents section. |
 | `/` | Type a selector that narrows the list, such as `harness:codex needs:you` or `session:api-fan-*`: the syntax of [Selectors](#selectors). `enter` applies it and an empty line clears it; `esc` closes the line and keeps what was in force. While the line is open every key is text. The selector stays until you change it, and the title says it in words, `[select harness:codex]`, so a narrowed Inbox never reads as an empty one. It works with `f`. |
 | `m` | Open the mailbox, with every thread including the ones between agents. |
 | `esc` / `q` | Close. |
 
 These are the default keys. Every one but the digits can be rebound under
 `[keybindings.inbox]`, `[keybindings.inbox_peek]` and `[keybindings.mail]`
-(see [KEYBINDINGS.md](KEYBINDINGS.md#the-inbox)), and the footers name the key
+(see [KEYBINDINGS.md](KEYBINDINGS.md#the-agents-view)), and the footers name the key
 the config binds. The footer lists only the keys that act on the selected row,
 the one that answers it first.
 
@@ -3008,12 +3217,13 @@ the cursor on it the plan is shown whole under the list, scrolled with `J` and
 | `1` | Approve. Claude Code leaves plan mode and still asks before each edit. |
 | `2` | Approve and accept edits for this session. Offered only when Claude Code suggests exactly that mode change, and the line under the plan says so. `bypassPermissions` and `auto` are never offered. |
 | `3` | Keep planning. |
-| `n` | Keep planning, with a reason you type, which Claude reads. |
+| `R` | Keep planning, with a reason you type, which Claude reads. |
 
 `1` and `2` work only once the plan's last line has been on screen, and 0.4
-seconds after that. On a screen too short to hold the whole Inbox panel, whose
-bottom is then cut off, the last line does not count as shown: the detail says
-so, and Enter answers the plan in the pane. The answer names the digest of the plan that was shown
+seconds after that. The plan's card shows as many lines as the screen has room
+for, and `J` scrolls it. On a screen too short to hold the card whole, the last
+line does not count as shown, and Enter answers the plan in the pane. The
+letters `a`, `A` and `r` on the card do what `1`, `2` and `3` do. The answer names the digest of the plan that was shown
 (`plan_sha`), and the daemon refuses an approve for any other plan. Note the
 order: `1` is the safest approval, which differs from Claude Code's own menu on
 purpose. Turn plans off, and keep approvals, with `hold_plans = false` under
@@ -3032,9 +3242,10 @@ allow for such a tool only with `updatedInput` (checked against the hooks
 reference and the 2.1.281 build). `2` adds one permission update,
 `{"type": "setMode", "mode": "acceptEdits", "destination": "session"}`.
 
-### Deny with a reason
+### Reject with a reason
 
-`n` on a held approval or plan opens a `Reason:` line under it. `enter` denies
+`R` on a held approval or plan opens a `Reason:` line in its card. It was `n`,
+which now starts a new agent. `enter` denies
 with what you typed, which the hook hands to the model as the deny's message;
 an empty line sends the default ("The user denied this from the tuios Inbox.").
 It is offered where the harness passes a reason on: Claude Code, opencode and
@@ -3072,7 +3283,7 @@ built now:
   The risk rules are a speed bump, not a sandbox: an obfuscated command can
   avoid a pattern, and the harness's permission system stays the boundary.
   This one is built: see [Risk rules](#risk-rules), [Plans](#plans) and
-  [Deny with a reason](#deny-with-a-reason).
+  [Reject with a reason](#reject-with-a-reason).
 
 The activity ring behind `agent-activity` has landed: see
 [What the agent has been doing](#what-the-agent-has-been-doing).
@@ -3411,6 +3622,18 @@ subagents beside its own report (a `Stop` with `background_tasks`, the
 it. A daemon from before `subagent_update` refuses those, which changes
 nothing.
 
+For Claude Code and Codex, a `SessionStart` reported for a pane also prints
+two lines, which the harness adds to the agent's context:
+
+```text
+You run in tuios pane 3a42ab8f in session "work".
+Run `tuios --skill` to learn how to drive tuios.
+```
+
+The session name is quoted, with control and format characters escaped, and
+cut to 64 characters. Outside tuios, when the report fails, with `--window`,
+and when the pane is not a pane id, the hook prints nothing.
+
 | Claude Code event | Reports |
 | ----------------- | ------- |
 | `SessionStart` | `idle`, with the session id and transcript path, then a `session_start` activity with the `source` (`report-agent-activity`), which forgets the pane's subagents. `source: compact` reports nothing |
@@ -3602,6 +3825,35 @@ the one that owns the pane. These filters keep those events off the pane:
   is not a shell or `env`. A nested run is a process of its own, so it is still
   refused. A hook that cannot read its ancestors (Windows, or a sandbox with its
   own pid namespace) sends no pid and gets the plain rule.
+- Codex is different. Its manifest sets `shared_server = true`, because one
+  Codex app-server runs the hooks of every conversation. A Codex in another
+  terminal can use the app-server a pane's codex started. Its hooks then carry
+  the pane's `TUIOS_PANE_ID` and the same pid. So for Codex a `SessionStart`
+  sets the conversation that owns the pane. A report for another conversation
+  is refused with `foreign_session`, at rest and mid-turn. It makes no Inbox
+  item and no notification. The daemon logs the refusal at debug level.
+- Another conversation's `SessionStart` takes the pane over, because it looks
+  like `/new` or `/resume` in the pane. A `SessionStart` after a compaction
+  (source `compact`) is the same conversation and takes nothing over.
+- The pane's own conversation is never locked out. The daemon keeps the last
+  four conversations that owned the pane. The next report from one of them
+  takes the pane back, and the owner it displaces joins that list. A
+  conversation in another terminal that once sent a `SessionStart` can take
+  the pane back the same way. A conversation that never sent one is refused.
+- When codex exits and the pane is back at its shell, the daemon forgets both
+  conversations. The pane's `agent_session_id` stays, for a resume.
+- Until a `SessionStart` arrives, the pane takes every report. This is the
+  case after a daemon restart or when you install the hooks mid-conversation.
+- To point a Codex pane at its conversation, run `/new` in it, or run
+  `tuios set-agent-session --harness codex -w PANE <id>`. `set-agent-session`
+  is outside this guard on purpose. It clears the guard, and the next
+  `SessionStart` sets it again.
+- The legacy `notify` command sends its turn-end report without the
+  conversation id, so the guard never refuses it.
+- The guard reads `shared_server` from the manifest. A codex.toml in your
+  harness folder replaces the bundled one. If you wrote it before this
+  change, it has no `shared_server`, and the guard is off. Add
+  `shared_server = true` to it.
 
 ### Session identity
 
@@ -3770,7 +4022,28 @@ submit              = "cr"    # or "lf"; the key that submits
 bracketed_paste     = true    # false: never bracket, even with DECSET 2004 on
 focus_before_submit = false   # true: send a focus-in report (CSI I) first
 source              = "measured on ... / documented in ... / not measured"
+images              = "path_paste"  # or "path_text" or "none"
+images_source       = "not measured"
 ```
+
+`images` says how the harness takes an image you attach to a reply from the
+Inbox. The daemon writes the image to a file on the pane's machine when it
+types the reply, then:
+
+- `path_paste`: pastes the text before the image, then the file's path in a
+  paste of its own, then the text after it, and submits once. The harness
+  reads a pasted image path as an attached image, so the image sits where you
+  put it. A pane without bracketed paste gets the path in the text instead.
+- `path_text`, the default: puts the path in the text, for the agent to open
+  with its own tools.
+- `none`: refuses a reply with an image.
+
+Claude Code, Codex, OpenCode, Kilo and Crush say `path_paste`, and pi says
+`path_text`. `images_source` says which are measured: OpenCode 1.19.3 and
+Crush v0.98.1 attach a path pasted on its own, and pi 0.73.1 keeps it as text.
+Claude Code, Codex and Kilo are not measured yet. The e2e test
+`TestHarnessTakesAPastedImagePath` measures a harness installed on your
+machine, when `TUIOS_E2E_HARNESSES` names it. It submits nothing.
 
 A manifest without the block, and a pane no harness claimed, get the defaults:
 carriage return, and a bracketed paste when the pane asks for one. That is what
@@ -3857,8 +4130,10 @@ drops every queue, since the conversation a message was for ended with the
 process. A queue is also dropped when its pane closes, when the agent leaves
 the pane (state `none`), and when its session ends, and a message a pane
 queued is dropped when that pane closes. A pane holds at most
-`[agents.queue] max` messages (8 by default), each at most 16 KiB; one more is
-refused with `queue_full`.
+`[agents.queue] max` messages (8 by default), each at most 16 KiB of typed
+text; one more is refused with `queue_full`. A message in parts, which the
+Inbox reply sends when it holds a paste block, can carry up to 8 MiB of
+pasted text, and the queues hold at most 32 MiB a pane and 128 MiB in all.
 
 **The count.** Each pane's window state carries `agent_queued`, the length of
 its queue, and `get-agent-state` and `list-agents` report it as `queued`. It
@@ -3902,21 +4177,154 @@ whose calls arrive through its report channel, may neither queue nor drop.
 ### Replying to an agent
 
 `r` on a Finished or Errored item in the Inbox, or on a rail agent row, opens
-a line under the Inbox list:
+the reply editor under the Inbox list:
 
 ```
-  Reply to api (done 4m): make the backoff jitter configurable_
-  ↵ send when ready  esc cancel
+  Reply to api (done 4m)
+  › make the backoff jitter configurable. The failing run:
+    [Pasted text #1 · 42 lines]
+  ↵ send  ctrl+j new line  ctrl+z undo  esc close
 ```
+
+The editor keeps line breaks and grows to 8 rows, then scrolls. `ctrl+j`,
+`shift+enter`, `alt+enter`, or `\` then `enter` adds a new line. The arrows,
+`alt+left`/`alt+right` (or `ctrl+left`/`ctrl+right`) by word, `home`/`end`
+(or `ctrl+a`/`ctrl+e`), `ctrl+w` and `alt+backspace` to delete a word,
+`ctrl+u` and `ctrl+k` to delete to the line start or end, `ctrl+z` to undo
+and `alt+z` to redo all work as in a shell. `ctrl+c` clears the draft, and
+`ctrl+v` pastes from the clipboard: its text, or its image when it holds an
+image and no text.
+
+A paste of more than 800 characters or 3 lines shows as one block, such as
+`[Pasted text #1 · 42 lines]`. The cursor steps over a block in one move, and
+`backspace` deletes all of it. With the cursor right after a block, the block
+is drawn selected and the footer shows its keys: `ctrl+o` opens its text to
+read (the arrows and page keys scroll, `esc` goes back), `ctrl+e` puts its
+text into the draft to edit, and `backspace` removes it. Undo brings back a
+removed or expanded block.
+
+#### Naming a pane, an agent or a file
+
+Type `@` at the start of the reply or after a space, and a list opens under
+the editor: the agents and panes of every session on this machine, and the
+files in the folder of the pane the reply is for. What you type after the `@`
+narrows it. `tab` puts the selected entry in place of the `@` and what
+followed it, the arrows choose, and `esc` or a space closes the list.
+
+```
+› compare with @rev
+  agent work/review  working
+```
+
+An agent or a pane goes in as its address, such as `work/review`. A file goes
+in as its path from the pane's folder, such as `api/client.go`. A folder goes
+in with a slash and keeps the list open, so you can walk into it. Nothing is
+copied: the agent reads the file with its own tools. A pane whose folder
+tuios does not know, or whose shell runs on another machine, offers no files.
+A client in a browser or over the SSH server offers no files: they are on the
+machine that serves it, and you are not.
+
+#### Images
+
+An image attached to the reply shows as one block, such as
+`[Image #1 · 1280×720 png]`, at the cursor. Three things attach one:
+
+- `ctrl+v`, when the clipboard holds an image and no text. tuios reads it
+  with `wl-paste`, `xclip`, `osascript` or PowerShell, as the pane image paste
+  does.
+- An empty paste from your terminal. Some terminals send one when the
+  clipboard holds only an image.
+- A paste that is only the path of an image file on this machine. A terminal
+  pastes a file you drop on it this way.
+
+While the draft holds an image, a strip above it shows each image 3 rows
+high, at most 4, then `+N more`. tuios draws them with kitty graphics when
+your terminal has them, and with block glyphs otherwise. At 16 colours each
+image is a line of words instead: `Image #1 · 1280×720 png · 412 KB`.
+`ctrl+o` on a selected image shows it larger in place of the draft. There, `o`
+opens it in your desktop's image viewer, from a private copy that tuios
+removes when you close the view. `esc` goes back to the draft.
+
+A message takes 8 images of at most 8 MB each, and 8 MB in all. The same
+image twice is refused: `Image #1 is already in the message.` `backspace`
+removes the selected image, and undo brings it back. The bytes stay in the
+client's memory until the reply is sent. A client that runs on another
+machine (`tuios ssh`, the browser) cannot read your clipboard image, and
+`ctrl+v` pastes the text.
+
+When the reply is typed, the daemon writes each image to a file in the paste
+folder on the pane's machine. The harness's `[input] images` says where the
+path goes (see [Typing a prompt](#typing-a-prompt)). For Claude Code, Codex,
+OpenCode and Crush the path goes in a paste of its own, where the image was,
+so the agent attaches it as an image. An agent whose manifest says
+`images = "none"` refuses the reply: `This agent cannot take images. Remove
+the image to send.`
+
+#### Large pastes
+
+When the reply is typed, the daemon on the pane's machine decides how each
+block reaches the agent. A message of 12 KB or less goes in one paste, with
+each block's text in its place. A larger one puts each block in a file and
+types a label that names the file in its place:
+
+```
+make the backoff jitter configurable. The failing run:
+[Pasted text #1: /run/user/1000/tuios/paste/tuios-paste-reply-20261016-101500-3fa2c1.txt, 2,048 lines]
+```
+
+The agent reads the file with its own tools. The file is yours alone, in the
+paste folder beside the daemon's socket. It is written when the reply is
+typed, so a reply that waits in the queue never points at a file that is
+gone. It is kept for 24 hours and removed when the daemon stops.
+
+The typed words, without the blocks, must fit in 16 KB, and the whole message
+in 8 MB. A larger one stays open and says why: `The message is larger than
+16 KB. Make it shorter to send.` for a draft with no block, and `The message
+is larger than 8 MB. Remove a paste to send.` for one with blocks. A daemon
+from before this release takes a message with blocks only when the whole
+message fits in 16 KB. A larger one keeps the draft and says to restart the
+daemon with `tuios kill-server`.
+
+Before it sends, the editor removes invisible characters (Unicode tags, bidi
+controls, zero-width spaces). When it removed any, it does not send and says
+`Removed 3 invisible characters. Read the message and press enter to send.`
+Text pasted from a web page can hide instructions in them.
+
+`esc` closes the editor and keeps the draft: `r` on the same pane opens it
+again.
+
+`up` on the draft's first row brings back what you sent to this agent
+before, newest first, and `down` on the last row goes the other way, back to
+the draft you had. `ctrl+r` searches what you sent: type to narrow the list,
+the arrows choose, and `enter` loads the message. A draft that `ctrl+c`
+cleared is kept there too. The history is kept by the daemon, in memory only,
+under the agent's harness and folder: a pane that opens again on the same
+folder keeps it, and it ends with the daemon. Only your attached client reads
+it. A message keeps at most 256 KB of pastes and images. A larger block is
+not kept, and the editor says so when the message comes back.
+
+`ctrl+g` opens the draft in `$VISUAL` or `$EDITOR`, with each block's text in
+its place, and what you save comes back as the draft. An image is in the file
+as its label, such as `[Image #1 · 640×480 png]`. Keep the label, and the
+image stays in its place. Remove it, and the image goes. A file larger than a
+draft holds is refused, and the draft stays as it was. The file is yours
+alone, in a folder made for it, and both are removed when the editor
+closes. A reply the daemon refuses keeps its draft too. If you started a new
+draft for the same pane while that reply was out, the reply that was not sent
+goes back at the top of it. Drafts stay in the client's memory and end with
+it.
 
 `enter` queues it with `queue-prompt` as you: if the agent is at rest it is
 typed within a second or so, and otherwise the row says `1 queued` and it is
 typed the moment the agent comes to rest. From the rail the Inbox opens with
-the line and closes again when you send or cancel. On a pane waiting on a
+the editor and closes again when you send or close it. On a pane waiting on a
 prompt, or with an `ask-human` question open (the rail draws both as waiting
 on you), `r` says so and opens nothing: `api is waiting on a prompt. Answer it
-first (space to peek).` A pane on another machine is replied to from a client
-attached there.
+first (space to peek).` A reply to an agent on a linked machine goes to this
+machine's daemon, which passes it over the link. That machine queues it as its
+link's, writes any paste or image file there, and types it when the agent
+comes to rest. Its `[hosts]` policy for this machine must allow `write`, and
+`files` for a paste block or an image.
 
 `x` on a rail row with messages queued drops the newest one still waiting
 (`cancel-queued`), and the dock says `Dropped 1 queued message to api. u

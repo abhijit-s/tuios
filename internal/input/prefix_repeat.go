@@ -5,59 +5,20 @@ import (
 	"github.com/Gaurav-Gosain/tuios/internal/app"
 )
 
-// repeatablePrefixActions are the prefix commands that stay armed, so the same
-// key pressed again continues rather than being typed into a pane.
-//
-// They are the ones with a direction or a size: walking panes, moving one,
-// resizing one, cycling a width, stepping through workspaces. What they have
-// in common is that one press is rarely the whole intention. tmux marks the
-// same kind of binding with -r, and all seventeen of its repeatable defaults
-// are of this shape.
-//
-// Nothing destructive is here, and nothing that opens a panel. A second press
-// of those is either a mistake or a dismissal, and neither should be made
-// easier to do by accident.
-var repeatablePrefixActions = map[string]bool{
-	"terminal_focus_left":   true,
-	"terminal_focus_right":  true,
-	"terminal_focus_up":     true,
-	"terminal_focus_down":   true,
-	"focus_left":            true,
-	"focus_right":           true,
-	"focus_up":              true,
-	"focus_down":            true,
-	"next_window":           true,
-	"prev_window":           true,
-	"terminal_next_window":  true,
-	"terminal_prev_window":  true,
-	"next_workspace":        true,
-	"prev_workspace":        true,
-	"resize_left":           true,
-	"resize_right":          true,
-	"resize_up":             true,
-	"resize_down":           true,
-	"scrolling_focus_left":  true,
-	"scrolling_focus_right": true,
-	"scrolling_move_left":   true,
-	"scrolling_move_right":  true,
-	"scrolling_cycle_width": true,
-	// Each press goes to the next item waiting for the person, so a run of
-	// presses walks the Inbox without opening it.
-	"prefix_next_attention": true,
-	// The same for the newest finished turn nobody has seen, walking back.
-	// Until that work lands the action reports it did nothing, and neither
-	// the prefix press nor a repeat arms the window (see runPrefixWork).
-	"prefix_next_finished": true,
-}
-
 // armIfRepeatable keeps the prefix live when the command just run is one worth
 // pressing again.
 func armIfRepeatable(o *app.OS, action string) {
-	if repeatablePrefixActions[action] {
+	if prefixRepeats(o, action) {
 		o.ArmPrefixRepeat()
 	} else {
 		o.ClearPrefixRepeat()
 	}
+}
+
+// prefixRepeats reports whether action stays armed after the prefix: one of
+// keybindings.repeat, or of config.DefaultPrefixRepeat when that is unset.
+func prefixRepeats(o *app.OS, action string) bool {
+	return o.KeybindRegistry != nil && o.KeybindRegistry.PrefixRepeats(action)
 }
 
 // tryPrefixRepeat runs a repeatable prefix command without a second prefix
@@ -78,7 +39,7 @@ func tryPrefixRepeat(msg tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd, bool) {
 		return o, nil, false
 	}
 	action := lookupAction(o, msg, o.KeybindRegistry.GetPrefixAction)
-	if !repeatablePrefixActions[action] {
+	if !prefixRepeats(o, action) {
 		o.ClearPrefixRepeat()
 		return o, nil, false
 	}

@@ -1,0 +1,10 @@
+[
+  {
+    "at": "",
+    "line": 1,
+    "col": 80,
+    "code": "syntax",
+    "message": "Expected a JSON value here, found ']'.",
+    "severity": "error"
+  }
+]

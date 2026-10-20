@@ -1,7 +1,6 @@
 package harness
 
 import (
-	"io/fs"
 	"maps"
 	"strings"
 	"testing"
@@ -113,6 +112,10 @@ var screenSeeds = []string{
 	"╭──────────────╮\n│ > half a box",
 	"esc to interrupt",
 	"Allow this command? (y/n)",
+	// Kimi Code CLI's approval panel and Gemini CLI's confirmation, as their
+	// sources draw them (TestScreenAnswersFromSource).
+	"agent is requesting approval to run command:\n→ [1] Approve once\n  [2] Approve for this session\n  [3] Reject\n  ▲/▼ select  1/2/3/4 choose  ↵ confirm",
+	"│ Allow execution of: 'go'?            │\n│ ● Allow once                          │\n│   No, suggest changes (esc)           │",
 	"\xff\xfe\n\xed\xa0\x80",
 	strings.Repeat("é", 3000),
 	strings.Repeat("line\n", 300),
@@ -210,16 +213,12 @@ func FuzzManifestRules(f *testing.F) {
 // check over an arbitrary tail. A manifest is hand-edited by users, so what
 // parses has to be safe to run.
 func FuzzManifest(f *testing.F) {
-	entries, err := fs.ReadDir(bundled, "manifests")
+	files, err := bundledFiles()
 	if err != nil {
 		f.Fatal(err)
 	}
-	for _, e := range entries {
-		data, err := fs.ReadFile(bundled, "manifests/"+e.Name())
-		if err != nil {
-			f.Fatal(err)
-		}
-		f.Add(data, "esc to interrupt\nDo you want to proceed?")
+	for _, file := range files {
+		f.Add(file.data, "esc to interrupt\nDo you want to proceed?")
 	}
 	f.Add([]byte("schema_version = 1\nid = \"x\"\n[detect]\ncomm = [\"xagent\"]\n"+
 		"[screen]\nenabled = true\n"+

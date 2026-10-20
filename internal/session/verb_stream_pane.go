@@ -24,7 +24,7 @@ import (
 // From the daemon:
 //
 //	'S' snapshot: u64 seq, u16 cols, u16 rows, then bytes that paint the pane
-//	    on a fresh emulator of cols by rows (snapshotVT).
+//	    on a fresh emulator of cols by rows (snapshot.Replay).
 //	'O' output:   u64 seq, then the bytes the pane wrote. seq is the stream
 //	    position after the frame's last byte.
 //	'R' resize:   u64 seq, u16 cols, u16 rows: the pane changed size at seq.
@@ -118,6 +118,11 @@ type paneStream struct {
 	// reported its terminal. See pane_lease.go and pane_viewers.go.
 	fit    bool
 	viewer bool
+	// viewerReport is the report the stream made, and viewerSess the
+	// session it is recorded in. A pane moved to another session takes its
+	// viewer with it (followHome). Guarded by leaseMu once the stream runs.
+	viewerReport ViewerReport
+	viewerSess   *Session
 	// leaseMu guards leased and closed. The client's frames are read on a
 	// goroutine of their own, so a lease frame can arrive while the stream
 	// is closing, and closed keeps it from setting a lease nobody releases.
@@ -227,6 +232,7 @@ func (d *Daemon) verbStreamPane(cs *connState, params json.RawMessage) (any, *ve
 
 	if p.Viewer != nil {
 		ps.viewer = true
+		ps.viewerReport, ps.viewerSess = *p.Viewer, sess
 		sess.addViewer(ps.subID, *p.Viewer)
 	}
 
@@ -334,8 +340,8 @@ func (ps *paneStream) close() {
 		if ps.leased {
 			_ = ps.pty.SetLease(ps.subID, 0, 0)
 		}
-		if ps.viewer {
-			ps.sess.removeViewer(ps.subID)
+		if ps.viewer && ps.viewerSess != nil {
+			ps.viewerSess.removeViewer(ps.subID)
 		}
 		ps.leased, ps.closed = false, true
 		ps.leaseMu.Unlock()
@@ -461,46 +467,40 @@ func (ps *paneStream) stream(gone <-chan struct{}) error {
 			}
 			// A lease the client stopped renewing ends. See paneLeaseTTL.
 			ps.expireLease()
+			// A queue the backlog grew and that is empty now lets its
+			// array go (subscriber_queue.go).
+			ps.sub.out.trim()
 			// A pane whose program exited stays open until a client closes
 			// its window. With nothing more coming from it, the stream ends.
-			if ps.pty.IsExited() && len(ps.sub.ch) == 0 {
+			if ps.pty.IsExited() && ps.sub.out.len() == 0 {
 				if quiet++; quiet >= 2 {
 					return ps.exitReason()
 				}
 			}
-		case c, ok := <-ps.sub.ch:
-			if !ok {
-				if err := flush(); err != nil {
-					return err
-				}
-				return ps.exitReason()
-			}
-			quiet = 0
-			if err := take(c); err != nil {
-				return err
-			}
-		drain:
+		case <-ps.sub.out.wake:
+			// The token says a chunk may be waiting. Take every chunk queued,
+			// so the next push leaves a new token (subscriber_queue.go).
 			for {
-				select {
-				case more, ok := <-ps.sub.ch:
-					if !ok {
-						if err := flush(); err != nil {
-							return err
-						}
-						return ps.exitReason()
-					}
-					if err := take(more); err != nil {
+				c, ok, closed := ps.sub.out.pop()
+				if closed {
+					if err := flush(); err != nil {
 						return err
 					}
-				default:
-					break drain
+					return ps.exitReason()
+				}
+				if !ok {
+					break
+				}
+				quiet = 0
+				if err := take(c); err != nil {
+					return err
 				}
 			}
 			if err := flush(); err != nil {
 				return err
 			}
 		}
-		if ps.sub.gapped.Load() && len(ps.sub.ch) == 0 {
+		if ps.sub.gapped.Load() && ps.sub.out.len() == 0 {
 			if err := ps.recoverGap(); err != nil {
 				return err
 			}
@@ -513,7 +513,7 @@ func (ps *paneStream) stream(gone <-chan struct{}) error {
 func (ps *paneStream) recheck() *verbError {
 	ps.admitMu.Lock()
 	defer ps.admitMu.Unlock()
-	params, _ := json.Marshal(map[string]string{"session": ps.sess.Name(), "window": ps.window})
+	params, _ := json.Marshal(map[string]string{"session": ps.home().Name(), "window": ps.window})
 	_, _, verr := ps.d.admitVerb(ps.cs, "stream-pane", params)
 	return verr
 }
@@ -540,7 +540,7 @@ func (ps *paneStream) recoverGap() error {
 func (ps *paneStream) writeSnap() error {
 	st := ps.snap
 	defer ps.dropSnap()
-	body := snapshotVT(st)
+	body := SnapshotVT(st)
 	payload := make([]byte, 12, 12+len(body))
 	binary.BigEndian.PutUint64(payload[0:8], uint64(st.Seq))
 	binary.BigEndian.PutUint16(payload[8:10], uint16(st.Width))
@@ -665,11 +665,12 @@ func (ps *paneStream) queueInput(data []byte) *verbError {
 func (ps *paneStream) admitInput() *verbError {
 	ps.admitMu.Lock()
 	defer ps.admitMu.Unlock()
-	params, _ := json.Marshal(map[string]string{"session": ps.sess.Name(), "window": ps.window})
+	home := ps.home()
+	params, _ := json.Marshal(map[string]string{"session": home.Name(), "window": ps.window})
 	if _, _, verr := ps.d.admitVerb(ps.cs, "send-text", params); verr != nil {
 		return verr
 	}
-	return ps.d.recheckTyping(ps.cs, "send-text", ps.sess, ps.window)
+	return ps.d.recheckTyping(ps.cs, "send-text", home, ps.window)
 }
 
 // writeInput types the queued I frames into the pane, one after another,
@@ -716,7 +717,7 @@ func (ps *paneStream) lease(payload []byte) *verbError {
 func (ps *paneStream) admitLease(cols, rows int) *verbError {
 	ps.admitMu.Lock()
 	defer ps.admitMu.Unlock()
-	params, _ := json.Marshal(map[string]any{"session": ps.sess.Name(), "window": ps.window, "width": cols, "height": rows})
+	params, _ := json.Marshal(map[string]any{"session": ps.home().Name(), "window": ps.window, "width": cols, "height": rows})
 	_, _, verr := ps.d.admitVerb(ps.cs, "resize", params)
 	return verr
 }
@@ -730,10 +731,35 @@ func (ps *paneStream) setLease(cols, rows int) error {
 	}
 	ps.leased = cols > 0
 	ps.leaseAt = time.Now().UnixNano()
+	home := ps.followHomeLocked()
 	if ps.fit {
-		ps.pty.setNoClients(ps.sess.tuiClients.Load() == 0)
+		ps.pty.setNoClients(home.tuiClients.Load() == 0)
 	}
 	return ps.pty.SetViewerLease(ps.subID, cols, rows, ps.fit)
+}
+
+// home is the session the pane belongs to now. A pane moved to another
+// session keeps its streams, and from then on that session's clients and
+// viewers decide its size, not the ones of the session the stream opened in.
+func (ps *paneStream) home() *Session {
+	if s := ps.pty.owner(); s != nil {
+		return s
+	}
+	return ps.sess
+}
+
+// followHomeLocked moves the stream's viewer report to the session the pane
+// belongs to now, and returns that session. leaseMu is held.
+func (ps *paneStream) followHomeLocked() *Session {
+	home := ps.home()
+	if ps.viewer && ps.viewerSess != home {
+		if ps.viewerSess != nil {
+			ps.viewerSess.removeViewer(ps.subID)
+		}
+		home.addViewer(ps.subID, ps.viewerReport)
+		ps.viewerSess = home
+	}
+	return home
 }
 
 // expireLease releases the lease when the client has not renewed it for
@@ -782,7 +808,7 @@ func (p *PTY) subscribeAt(clientID string, fromSeq int64, fromSnapshot bool) (*p
 	p.subscribeLocked(clientID, fromSeq, fromSnapshot)
 	sub := p.subscribers[clientID]
 	if sub.missed {
-		close(sub.ch)
+		sub.out.close()
 		delete(p.subscribers, clientID)
 		p.subscriberCount.Store(int32(len(p.subscribers)))
 		return nil, false

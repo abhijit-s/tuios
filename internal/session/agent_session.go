@@ -49,6 +49,10 @@ var errAgentSessionUnchanged = errors.New("agent session is unchanged")
 // When the detector sees the agent leave the pane it forgets the pid, so a
 // harness restarted in the same pane is not refused as a nested run of the one
 // that exited.
+//
+// The shared-server guard of sessionGuard is left out on purpose. This verb is
+// the recovery path for a Codex pane whose guard holds the wrong conversation,
+// and a person running it has to win: it clears the guard instead.
 func (s *Session) applyAgentSession(target string, r AgentSessionReport) (string, bool, string, error) {
 	var stored string
 	var reason string
@@ -79,6 +83,9 @@ func (s *Session) applyAgentSession(target string, r AgentSessionReport) (string
 		w.AgentSessionHarness = r.Harness
 		stored = r.SessionID
 		s.setAgentHarnessPID(w.ID, r.HarnessPID)
+		// A person pointing the pane at a conversation clears the Codex
+		// guard, so the next SessionStart arms it afresh.
+		delete(s.agentSharedGuards, w.ID)
 		return nil
 	})
 	var refused errAgentReportRefused

@@ -12,9 +12,9 @@ import (
 	"github.com/Gaurav-Gosain/tuios/internal/overlay"
 	"github.com/Gaurav-Gosain/tuios/internal/terminal"
 	"github.com/Gaurav-Gosain/tuios/internal/theme"
-	"github.com/Gaurav-Gosain/tuios/internal/vt"
 	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/charmbracelet/x/ansi"
+	"tuios.dev/vt"
 )
 
 // The picture-in-picture view: a small live copy of one pane, drawn in a
@@ -217,11 +217,12 @@ func (m *OS) pipRegion() image.Rectangle {
 // edge. It is empty when no cursor is drawn, which is the case in window mode
 // and under an open panel.
 func (m *OS) pipKeepClear() image.Rectangle {
-	return m.pipKeepClearAt(m.getRealCursor())
+	cur, _ := m.viewCursor()
+	return m.pipKeepClearAt(cur)
 }
 
-// pipKeepClearAt is pipKeepClear for the cursor c, as getRealCursor returned
-// it.
+// pipKeepClearAt is pipKeepClear for the cursor c, as viewCursor returned it.
+// A cursor parked hidden counts: it is where the guest is taking typing.
 func (m *OS) pipKeepClearAt(c *tea.Cursor) image.Rectangle {
 	if c == nil {
 		return image.Rectangle{}

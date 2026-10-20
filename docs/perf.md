@@ -650,7 +650,7 @@ Counts, allocations and wire bytes do not move with load and are exact.
 ### Where the time went
 
 **The flood is the emulator's.** A pane printing 16 MiB as fast as it can into
-one client spends 84% of the process in `internal/vt` parsing those bytes on
+one client spends 84% of the process in `vt` parsing those bytes on
 the daemon side, 3.3% in `readOutput` (ring append, broadcast, event publish)
 and 1.6% in `streamPTYOutput` (batch and socket write). The wire is not where a
 flood is slow, and nothing in this package was changed for it.
@@ -671,7 +671,7 @@ with a thousand rows of history behind it cost 123 ms.
 
 ### What moved
 
-**The snapshot's cells travel packed** (`snapshot_pack.go`). A style table
+**The snapshot's cells travel packed** (`vt/snapshot/pack.go`). A style table
 once, cells in one style run together, two bytes per plain letter, blank row
 tails left off. Negotiated per request with `GetTerminalStatePayload.Packed`,
 so no protocol bump: a daemon that predates the field answers with cells and a
@@ -717,7 +717,7 @@ gets this part too, because it does not depend on the packed form.
 `*uv.Cell` for every cell, and both emulators copy what they are handed. One
 cell now serves a whole snapshot.
 
-Those two, with the pooled rows in `TerminalStateOf`, are what the daemon side
+Those two, with the pooled rows in `snapshot.Capture`, are what the daemon side
 gained. Building and encoding one snapshot in the cell form is what an older
 client is still answered with, and its allocations are:
 
@@ -886,7 +886,7 @@ BenchmarkIdleTick-8   0 render/tick   0 work/tick   296 B/op   5 allocs/op
 
 ## 2026-09 vt parse and scroll pass
 
-Profiled `internal/vt` over the SGR-heavy repaint (`BenchmarkBackendDoomFire*`),
+Profiled `vt` over the SGR-heavy repaint (`BenchmarkBackendDoomFire*`),
 the short-line and long-line scroll floods (`BenchmarkEmulatorShortLineScroll`,
 `BenchmarkEmulatorScrollThroughput`) and the log replays
 (`BenchmarkEmulatorWriteHeavyOutput`), then took each hotspot as its own commit
@@ -1417,7 +1417,7 @@ Keystroke to render signal on a quiet local pane running `cat` (60 keys a run,
 significant (p=0.23, p=0.57). The coalescer adds at most one goroutine handoff.
 
 **A snapshot is applied straight from its packed form** (`session.go`,
-`snapshot_pack.go`, `tuiclient.go`). The client asked for packed cells, unpacked
+`vt/snapshot/pack.go`, `tuiclient.go`). The client asked for packed cells, unpacked
 them into `[][]CellState`, and `ApplyTerminalState` then turned each `CellState`
 back into an emulator cell and resolved its style once per cell. The client now
 keeps the reply packed and only checks on receipt that every row decodes, so a
@@ -1482,7 +1482,7 @@ are the check that no change here holds a keystroke.
 
 ## 2026-09 second profiling pass: vt
 
-A second profile of `internal/vt`, this time over replays of real PTY captures
+A second profile of `vt`, this time over replays of real PTY captures
 rather than synthetic floods, plus the scrollback's memory and the SGR diff in
 the pure Go renderer. Each change below is its own commit.
 
@@ -1711,7 +1711,7 @@ so timings carry the spread benchstat prints; allocation counts are exact.
 
 ### What changed
 
-**Plain capture reads the scrollback ring as text** (`internal/vt/scrollback_text.go`,
+**Plain capture reads the scrollback ring as text** (`vt/scrollback_text.go`,
 `session.go`). `capture-pane` with scrollback, `wait-for window-output` and
 `ask-agent` all took the plain text of a pane through
 `ScrollbackLine(i).String()` for every line of history. That decodes each
@@ -2162,8 +2162,8 @@ a binary is over its budget.
 
 | target | size at 62ec9c0c (Go 1.26.6) | before the size cuts (e632e021) | size at the last raise (Go 1.26.9) | budget |
 |---|---|---|---|---|
-| linux/amd64 | 25,182,370 | 26,681,504 | 35,672,226 | 35,560,000 |
-| darwin/arm64 | 23,834,594 | 25,265,154 | 33,564,050 | 33,500,000 |
+| linux/amd64 | 25,182,370 | 26,681,504 | 36,171,938 | 36,275,000 |
+| darwin/arm64 | 23,834,594 | 25,265,154 | 34,046,050 | 34,150,000 |
 
 The first budgets were about 3% above the size they were set at and below the
 size before the size cuts, so undoing those cuts failed the job. Each raise
@@ -2442,7 +2442,7 @@ prune commands. That brought the build to 33,034,402 and 31,077,826 bytes
 
 The budgets went to 33,172,000 (linux/amd64) and 31,198,000 (darwin/arm64)
 for images drawn as block glyphs on a host without graphics: the glyph
-encoder (`internal/mosaic`), its glyph tables, the 16-colour floor, the
+encoder (`shot/mosaic`), its glyph tables, the 16-colour floor, the
 drawing pass and the `image_symbols` option. It links no new package. On Go
 1.26.6 the build measured 33,136,802 and 31,162,594 bytes, 69,632 and 51,248
 over origin/main at ebeee191. On linux/amd64, 64 KiB of that is a section
@@ -2577,6 +2577,497 @@ with its own sessions. Main at 4c2de743 measured 35,451,042 and 33,380,818
 bytes (Go 1.26.9), 8,958 bytes under the linux/amd64 budget. With #680 on top
 the build measured 35,463,330 and 33,397,362, 3,330 bytes over that budget.
 The new budgets leave 96,670 and 102,638 bytes of room above that build.
+
+The budgets went to 35,940,000 (linux/amd64) and 33,880,000 (darwin/arm64)
+for `tuios gui-bridge` (#658), the process the desktop GUI runs to drive a
+session: the bridge itself (internal/guibridge), the layout edits by pane id,
+stacks, the gui keybinding scope and window kinds. Main at cfc254fb measured
+35,557,538 and 33,499,410 bytes (Go 1.26.9). With #658 on top the build
+measured 35,836,066 and 33,775,234, 278,528 and 275,824 bytes more. No
+dependency was added. Of the symbols, internal/guibridge is 87 KB and
+internal/app 36 KB, spread over the bridge's handlers with no large table to
+cut. The new budgets leave 103,934 and 104,766 bytes of room.
+
+The budgets went to 36,110,000 (linux/amd64) and 34,000,000 (darwin/arm64)
+for `file-preview` (#659), the verb behind the GUI's Quick Look, and the
+bridge's verbs on a host. With #658 under it the build measured 35,836,066
+and 33,775,234 bytes (Go 1.26.9), and with #659 36,008,098 and 33,894,034,
+172,032 and 118,800 bytes more. The image scaler from golang.org/x/image/draw
+(already in go.mod) is 94,208 and 66,640 of it: ApproxBiLinear links a
+specialised loop for each pair of image types. A small scaler of our own over
+image.RGBA would take most of that back. The new budgets leave 101,902 and
+105,966 bytes of room.
+
+The budgets went to 36,275,000 (linux/amd64) and 34,150,000 (darwin/arm64)
+for search-panes, command-history, list-ports and started_by (#666). The two
+pull requests under it fit the budgets #659 set: the bridge's output path
+(#661) added 8,192 and 16,544 bytes, and review-stage (#662) 69,632 and
+67,264. With #662 the build measured 36,085,922 and 33,977,842 bytes (Go
+1.26.9), and with #666 36,171,938 and 34,046,050, 86,016 and 68,208 bytes
+more. That is after the three new sorts went through internal/sortx, which
+took 36,864 and 33,552 bytes off. No dependency was added. The new budgets
+leave 103,062 and 103,950 bytes of room.
+
+The budgets went to 36,395,000 (linux/amd64) and 34,265,000 (darwin/arm64)
+for the session rails (#626), which dock a daemon session's panes in a
+sidebar rail. Main at 6287dadc measured 36,212,898 and 34,096,418 bytes (Go
+1.26.9), and with #626 36,294,818 and 34,164,034, 81,920 and 67,616 bytes
+more. The rail viewer is a second daemon client with its own wiring, state
+queue and retry backoff, plus the rail settings. No dependency was added. The
+new budgets leave 100,182 and 100,966 bytes of room.
+
+The budgets went to 36,515,000 (linux/amd64) and 34,385,000 (darwin/arm64)
+for the Omarchy theme (#734 and the pull requests on it). Main at 4ea588d8
+measured 36,303,010 and 34,164,114 bytes (Go 1.26.9), 91,990 and 100,886
+bytes under the budgets. The omarchy theme id, the swatch library (the
+colors.toml resolver, the Omarchy source and the watcher), the list-themes
+report, the live follow and the move of the terminal scheme parsers into
+swatch/termconfig bring it to 36,413,602 and 34,282,098, 110,592 and 117,984
+bytes more. No third-party dependency was added: fsnotify and go-toml were
+already in the build, and tuios.dev/swatch is a module in this repository.
+The new budgets leave 101,398 and 102,902 bytes of room.
+
+The budgets went to 36,585,000 (linux/amd64) and 34,415,000 (darwin/arm64)
+for the v0.10.0 batch. Main at ce82a422 measured 36,491,426 and 34,350,018
+bytes (Go 1.26.9), 23,574 and 34,982 bytes under the budgets. The batch
+brings it to 36,552,866 and 34,384,546, 61,440 and 34,528 bytes more. By pull
+request, linux/amd64 then darwin/arm64:
+
+| pull request | linux/amd64 | darwin/arm64 |
+|---|---|---|
+| #749 new-worktree and fan pass the caller's terminal | 0 | 0 |
+| #752 stable centered dock components | 0 | 0 |
+| #715 `[dock.tabs]` workspace tab styles | 20,480 | 240 |
+| #717 `dim_foreground` | 0 | 16,560 |
+| #718 tmux-style actions with no default key | 36,864 | 17,040 |
+| #754 goreleaser-action 7.3.0 | 0 | 0 |
+| #755 charmtone and charmtone-light themes | 4,096 | 688 |
+
+No dependency was added. The new budgets leave 32,134 and 30,454 bytes of
+room.
+
+The budgets went to 36,620,000 (linux/amd64) and 34,465,000 (darwin/arm64)
+for the theme transition (#757), which shows a change of theme as a circle
+that grows from the middle of the screen, or as a fade. Main at 81bd3d46
+measured 36,573,346 and 34,401,442 bytes (Go 1.26.9), 11,654 and 13,558 bytes
+under the budgets. The transition brings it to 36,589,730 and 34,434,962,
+16,384 and 33,520 bytes more: the pass over the composed frame, the blend
+table and the two options. No dependency was added. The new budgets leave
+30,270 and 30,038 bytes of room.
+
+The budgets went to 36,685,000 (linux/amd64) and 34,535,000 (darwin/arm64)
+for the batch of #760 to #767. Main at b676cc47 measured 36,593,826 and
+34,434,978 bytes (Go 1.26.9), 26,174 and 30,022 bytes under the budgets. The
+batch brings it to 36,655,266 and 34,502,466, 61,440 and 67,488 bytes more. By
+pull request, linux/amd64 then darwin/arm64:
+
+| pull request | linux/amd64 | darwin/arm64 |
+|---|---|---|
+| #760 a heading per space in the rail | 8,192 | 16,592 |
+| #761 `ls` groups by space | 4,096 | 32 |
+| #762 the client releases its emulator buffers | 4,096 | 128 |
+| #764 new-window `--keep-open` and `--wait` | 20,480 | 17,088 |
+| #765 the skill stub with the hooks | 16,384 | 16,928 |
+| #766 capture-pane `--unwrap` and `--trim` | 8,192 | 16,720 |
+| #767 the session start hint | 0 | 0 |
+
+No dependency was added. The new budgets leave 29,734 and 32,534 bytes of
+room.
+
+The budgets went to 36,720,000 (linux/amd64) and 34,565,000 (darwin/arm64)
+for the batch of #781, #782, #787 and #790. Main at 0a376af9 measured
+36,679,842 and 34,519,682 bytes (Go 1.26.9), 5,158 and 15,318 bytes under the
+budgets. The batch brings it to 36,688,034 and 34,536,434, 8,192 and 16,752
+bytes more. By pull request, linux/amd64 then darwin/arm64:
+
+| pull request | linux/amd64 | darwin/arm64 |
+|---|---|---|
+| #781 the frame ticker stays idle for a dock frame | 8,192 | 112 |
+| #782 the frame ticker stops when the client is idle | 0 | 0 |
+| #787 the maintenance tick runs only when a job is due | 0 | 16,640 |
+| #790 the clock without seconds by default | 0 | 0 |
+
+No dependency was added. The new budgets leave 31,966 and 28,566 bytes of
+room.
+
+The budgets went to 36,820,000 (linux/amd64) and 34,665,000 (darwin/arm64)
+for the batch of #772, #780, #789, #791, #788, #792, #773, #796 and #795.
+Main at f125f62d measured 36,704,418 and 34,536,674 bytes (Go 1.26.9), 15,582
+and 28,326 bytes under the budgets. The batch brings it to 36,790,434 and
+34,637,650, 86,016 and 100,976 bytes more. By pull request, linux/amd64 then
+darwin/arm64, with the regenerated skill archive counted in the pull request
+it follows:
+
+| pull request | linux/amd64 | darwin/arm64 |
+|---|---|---|
+| #772 CharmTone from charm.land/tone | 0 | 0 |
+| #780 one parser for every colour key | 24,576 | 17,232 |
+| #789 a theme inherits from a base | 16,384 | 16,848 |
+| #791 theme and glyph files reload on change | 16,384 | 33,264 |
+| #788 a theme preview only for the client that asked | 8,192 | 96 |
+| #792 theme picker keys for shade, shuffle, copy and delete | 12,288 | 16,640 |
+| #773 the prefix repeats the real resize and scroll actions | 0 | 208 |
+| #796 a list of the actions that repeat after the leader | 0 | 16,512 |
+| #795 last_workspace, break_pane, last_session and send_prefix | 8,192 | 176 |
+
+#772 replaces one CharmTone module with another and adds no bytes. The new
+budgets leave 29,566 and 27,350 bytes of room.
+
+The budgets went to 36,900,000 (linux/amd64) and 34,740,000 (darwin/arm64)
+for the batch of #800, #801, #806, #802 and #805. Main after the batch of #772
+to #795 measured 36,790,434 and 34,637,650 bytes (Go 1.26.9), 29,566 and
+27,350 bytes under the budgets. The batch brings it to 36,868,258 and
+34,707,810, 77,824 and 70,160 bytes more. By pull request, linux/amd64 then
+darwin/arm64:
+
+| pull request | linux/amd64 | darwin/arm64 |
+|---|---|---|
+| #800 keybind presets, with the tmux preset | 53,248 | 50,176 |
+| #801 the screen and zellij presets, and leader_twice | 16,384 | 16,688 |
+| #806 the preset keys a user binding takes | 8,192 | 16,512 |
+| #802 the keybind preset picker and a welcome offer | 36,864 | 17,216 |
+| #805 the which-key menus as tables | -36,864 | -30,432 |
+
+#805 gives back most of what #802 adds. No dependency was added. The new
+budgets leave 31,742 and 32,190 bytes of room.
+
+The budgets went to 37,517,000 (linux/amd64) and 35,280,000 (darwin/arm64)
+for the reply composer and the Inbox cockpit, #769 to #835. Main after #840
+measured 36,884,642 and 34,708,434 bytes (Go 1.26.9), 15,358 and 31,566 bytes
+under the budgets. The stack brings it to 37,486,754 and 35,249,474, 602,112
+and 541,040 bytes more. By pull request, linux/amd64 then darwin/arm64, with
+the regenerated skill archive counted in the pull request it follows:
+
+| pull request | linux/amd64 | darwin/arm64 |
+|---|---|---|
+| #769 a multiline editor for agent replies | 0 | 0 |
+| #770 write the reply with the composer | 77,824 | 67,280 |
+| #771 open, expand and remove a paste block | 16,384 | 16,608 |
+| #812 queue a reply with parts | 40,960 | 50,768 |
+| #814 attach a clipboard image to a reply | 36,864 | 33,728 |
+| #817 preview attached images | 81,920 | 68,320 |
+| #819 the agents view | 61,440 | 67,616 |
+| #822 the agent thread | 86,016 | 68,032 |
+| #823 view an agent's pane and come back | 8,192 | 16 |
+| #825 act on many agents | 53,248 | 50,016 |
+| #826 name a pane, an agent or a file with @ | 36,864 | 50,976 |
+| #828 the Inbox's one-line editors use the composer | 12,288 | 0 |
+| #830 write mail with the composer | 8,192 | 16,544 |
+| #832 history of what you sent, and $EDITOR | 73,728 | 51,088 |
+| #833 measure image paste per harness | 0 | 0 |
+| #835 reply to an agent on a host | 8,192 | 48 |
+
+#769 adds a package that nothing links until #770. #833 adds only an e2e
+test. No dependency was added. The new budgets leave 30,246 and 30,526 bytes
+of room.
+
+The budgets went to 37,755,000 (linux/amd64) and 35,515,000 (darwin/arm64)
+for the theme and chrome styling stack, #811 to #837. Main after #839
+measured 37,490,850 and 35,266,018 bytes (Go 1.26.9), 26,150 and 13,982 bytes
+under the budgets. The stack brings it to 37,724,322 and 35,484,754, 233,472
+and 218,736 bytes more. By pull request, linux/amd64 then darwin/arm64, with
+the regenerated skill archive counted in the pull request it follows:
+
+| pull request | linux/amd64 | darwin/arm64 |
+|---|---|---|
+| #811 show the prefix on the mode pill | 0 | 96 |
+| #813 export and share a theme | 28,672 | 16,688 |
+| #815 roles for border states, rule, status, dots and grounds | 24,576 | 16,736 |
+| #816 match the host terminal's colours with theme none | 8,192 | 112 |
+| #818 a light and dark theme pair | 4,096 | 16,592 |
+| #820 colour the focused border by state | 0 | 0 |
+| #821 a gradient on the focused border | 20,480 | 16,832 |
+| #824 title style and place | 8,192 | 192 |
+| #827 edit a theme in a side sheet | 77,824 | 100,384 |
+| #829 the quick tab, contrast fix and role flash in the theme editor | 16,384 | 16,816 |
+| #831 a style for the rail's current row | 8,192 | 144 |
+| #834 a style for the rail's section headers, and section icons | 12,288 | 16,800 |
+| #836 roomy spacing between the rail's sections | 4,096 | 80 |
+| #837 bell, activity and attention marks on workspace tabs | 20,480 | 17,264 |
+
+The theme editor in #827 is most of the growth. No dependency was added. The
+new budgets leave 30,678 and 30,246 bytes of room.
+
+The budgets went to 37,865,000 (linux/amd64) and 35,617,000 (darwin/arm64)
+for tuios look, #859 and #860. Main after #858 measured 37,748,898 and
+35,502,274 bytes (Go 1.26.9), 6,102 and 12,726 bytes under the budgets. The
+two bring it to 37,834,914 and 35,586,226, 86,016 and 83,952 bytes more. By
+pull request, linux/amd64 then darwin/arm64:
+
+| pull request | linux/amd64 | darwin/arm64 |
+|---|---|---|
+| #859 apply a shared look with tuios look | 86,016 | 83,952 |
+| #860 load a look's theme in the browser with themeJSON | 0 | 0 |
+
+#860 changes only the browser build. No dependency was added. The new
+budgets leave 30,086 and 30,774 bytes of room.
+
+The budgets went to 37,956,000 (linux/amd64) and 35,686,000 (darwin/arm64)
+when screenshots learned to draw a pane's kitty and sixel images (#678). Main
+measured 37,834,914 and 35,586,226 bytes (Go 1.26.9), 30,086 and 30,774 bytes
+under the budgets. The feature brings it to 37,925,026 and 35,655,298, 90,112
+and 69,072 bytes more: the image layer in tuios.dev/shot with its scaler and
+its SVG and HTML output, the payloads the kitty passthrough keeps, and the
+code that finds a pane's images and decodes them under a pixel bound. It
+uses no package tuios did not link already. The SVG and HTML output copies
+the part of an image it shows instead of asking for SubImage through an
+interface, which would link that method of every image type. The new budgets
+leave 30,974 and 30,702 bytes of room.
+
+The budgets went to 37,988,000 (linux/amd64) and 35,719,000 (darwin/arm64)
+when a look learned the layout keys, the dock lists, the dock tabs and the
+rail sections. Main measured 37,925,026 and 35,655,298 bytes (Go 1.26.9).
+The change adds 32,768 and 33,440 bytes: the checks of the keys the registry
+does not carry, and the item checks of the dock lists and the rail sections.
+No dependency was added. The new budgets leave 30,206 and 30,262 bytes of
+room.
+
+Writing the config file header from two constants cut 32,768 bytes from
+linux/amd64 and 33,024 from darwin/arm64. configFileHeader made 104
+`strings.Builder.WriteString` calls, and each inlined call compiled to about
+200 bytes of code. The output is the same bytes. Main at f49021ed measured
+37,965,986 and 35,705,442 bytes (Go 1.26.9), and the change measured
+37,933,218 and 35,672,418.
+
+The budgets went down to 37,955,000 (linux/amd64) and 35,686,000
+(darwin/arm64) after the cut. Each keeps about the room it had before it,
+21,782 and 13,582 bytes.
+
+Packing the bundled harness manifests cut 65,536 bytes from
+linux/amd64 and 66,368 from darwin/arm64. internal/harness/manifests/*.toml (99,108 bytes)
+go into the binary as one gzipped tar of 23,739 bytes. Load unpacks it each
+time it runs and keeps nothing, and TestBundledArchiveMatchesFiles holds the
+archive to the files. Main at 586469de measured 37,933,218 and 35,672,418
+bytes (Go 1.26.9), and the change measured 37,867,682 and 35,606,050.
+A benchmark of `Load()` with no user folder went from 1.21 ms to 1.61 ms.
+Load runs once per daemon start, and allocates 60 KB more on the way.
+
+The budgets went down to 37,890,000 (linux/amd64) and 35,620,000
+(darwin/arm64) after the cut. Each keeps the room it had before it,
+22,318 and 13,950 bytes.
+
+Keeping cold helpers out of line cut 237,568 bytes from
+linux/amd64 and 214,512 from darwin/arm64. The compiler inlined small constructors and
+wrappers at hundreds of call sites each: invalidParam 369 times,
+ShowNotification 513, VerbClient.Close and Call about 120 each, herdrcli's
+usage 274. `//go:noinline` on 21 of them, each on an error, notification,
+log, CLI or context menu path, leaves one copy. Main at 96a0b240 measured 37,867,682 and 35,606,050
+bytes (Go 1.26.9), and the change measured 37,630,114 and 35,391,538. Before a new `//go:noinline`, check that the
+function is off every render, keystroke and broadcast path.
+
+The budgets went down to 37,652,000 (linux/amd64) and 35,405,000
+(darwin/arm64) after the cut. Each keeps the room it had before it,
+21,886 and 13,462 bytes.
+
+The budgets went to 37,664,000 (linux/amd64) and 35,426,000 (darwin/arm64)
+for the shared-harness session guard (#852). It keeps another Codex
+conversation on the same app-server off a pane: a manifest flag, the guard's
+recent owners per pane, and its checks in set-agent-state and
+report-agent-activity. Main at d6e6ffc8 measured 37,642,402 and 35,391,858
+bytes (Go 1.26.9). The change adds 16,384 and 16,848 bytes. On linux/amd64 it
+measured 8,192 at e77a6641; the rest is alignment against #879. No dependency
+was added. The new budgets leave 5,214 and 17,294 bytes of room.
+
+The agents cockpit, wave 1 of ~/dev/tuios-notes/cockpit/DESIGN.md, raises the
+budgets once per pull request. Each pull request measures main or the branch
+under it, and sets the budget about 4 KB over its own size. By pull request,
+linux/amd64 then darwin/arm64:
+
+| pull request | linux/amd64 | darwin/arm64 | budgets |
+|---|---|---|---|
+| the agents cockpit: grouped fleet and rich rows | 53,248 | 50,992 | 37,721,000 and 35,464,000 |
+| thread cards from transcripts | 77,824 | 67,840 | 37,798,000 and 35,532,000 |
+| the reply area and the image view | 32,768 | 33,248 | 37,831,000 and 35,565,000 |
+| the side column: live pane, last turn, checkpoints | 40,960 | 33,968 | 37,872,000 and 35,599,000 |
+
+The fleet pull request measured 37,662,882 and 35,408,882 bytes before it and
+37,716,130 and 35,459,874 after (Go 1.26.9). It deletes the Inbox panel's list,
+the agents view and the thread panel it replaces. linux/amd64 grows by whole 4 KB pages, so darwin/arm64 is the measure of a change. The thread cards measured
+37,793,954 and 35,527,714 bytes. The card append is kept out of line with
+`//go:noinline`: inlined at each card it cost 8 KB more on both targets, and
+the thread is drawn once per change, never per frame. The reply area and
+the image view measured 37,826,722 and 35,560,962; they delete the reply
+editor's old frame, which the area replaces. The side column measured
+37,867,682 and 35,594,930. Its live pane is read again only after the pane
+prints, at most every third pass as the picture-in-picture view is, and
+only while the box is on screen; nothing in it runs on a timer. Parking the
+hidden host cursor at the caret for input methods (#649) measured 37,879,970
+and 35,595,330: 400 bytes on darwin/arm64, and three more pages on
+linux/amd64, so only the linux/amd64 budget moved. It scans each frame for
+the cursor visibility sequences, copies a parked frame only when it takes
+one out, and runs no timer. The agent thread for Codex, Gemini CLI and Qwen
+Code (#900) measured 38,023,330 and 35,730,642: about 143 KB and 135 KB for
+three transcript decoders, the hookless search that gives a file to the
+agent that started it, and the client's fallback to the recap. Before the
+cuts it measured 168 KB and 154 KB over main: one JSON walker replaced the
+struct type per record, and the small helpers stay out of line. Nothing in it
+runs unless a person reads a thread or an agent pane has no join yet. The
+Copilot CLI and Amp threads (#901) measured 38,052,002 and 35,763,698: about
+29 KB and 33 KB for two more decoders on the same walker and the join by a
+session id. The opencode thread measured 38,097,058 and 35,780,722: about
+45 KB and 17 KB for the reader of opencode's service, its export fallback,
+the check that the service's port is this user's, and the join to the
+session the plugin reports. It asks the service only
+when a person reads the thread. The Cursor Agent thread measured 38,105,250
+and 35,797,650: about 8 KB of decoder on the shared JSON walker, and one
+more 16 KB page on darwin/arm64. Markdown in the thread measured 38,199,458
+and 35,864,450: about 94 KB and 67 KB for internal/markdown, a reader of the
+part of Markdown agents write, and the layout that draws it as cards. Code
+blocks use the lexers internal/diffview already holds. goldmark with its GFM
+extensions measured about 480 KB before any renderer, and glamour, which links
+every chroma lexer, about 8.8 MB.
+
+The budgets went to 38,265,100 (linux/amd64) and 35,919,100 (darwin/arm64)
+for `tuios restart-server`: the command, its plan of what a restart stops in
+internal/restartplan (shared with the app), the detached worker that does the
+stop and the start, the restart lock and log, the choice of the newest tuios
+installed, and the `agent_resumable` mark in list-windows. Main at e6a67800
+measured 38,203,554 and 35,864,450 bytes (Go 1.26.9, a clean clone, as CI
+builds it). The change measured 38,260,898 and 35,914,898, so it adds 57,344
+and 50,448 bytes. No dependency was added. The new budgets leave 4,202 and
+4,202 bytes of room.
+
+The budgets went to 38,318,350 (linux/amd64) and 35,986,050 (darwin/arm64)
+for the restart from the app: the restart dialog with its plan and steps, the
+version notice that opens it, the palette, settings and rail menu entries, the
+check of the agreed plan, and the client that starts again on the new build.
+The branch before it measured 38,260,898 and 35,914,898 bytes (Go 1.26.9, a
+clean clone, as CI builds it). The change measured 38,314,146 and 35,981,858,
+so it adds 53,248 and 66,960 bytes. A build in a git worktree carries no VCS
+stamp and measures one page less on each target. A first version added 77,824
+and 67,744. The cut: the plan's words and its JSON types are in
+internal/restartplan, which the CLI and the dialog share instead of each
+building the text; the dialog's answers use the close dialog's row; ansi's
+word wrap gave way to the wrapPlain the app has; and the carried flags are read
+from the commands instead of a second flag set. No dependency was added. The
+dialog costs nothing while it is closed: one comparison after each message.
+The new budgets leave 4,204 and 4,192 bytes of room.
+
+The budgets went to 38,342,920 (linux/amd64) and 36,003,400 (darwin/arm64)
+for the reattach after a daemon restart: the daemon's goodbye with its reason
+(MsgGoodbye, kill-server --restart), and a local client that waits for a new
+daemon after "restart" or a silent drop, dials it with a 2 second handshake,
+and attaches to the session the new daemon restored. The branch before it
+measured 38,314,146 and 35,981,858 bytes (Go 1.26.9, a clean clone, as CI
+builds it). The change measured 38,338,722 and 35,999,202, so it adds 24,576
+and 17,344 bytes. No dependency was added. An attached client runs no timer
+for it: the dials start only when the connection is lost. The goodbye is one
+message per client at shutdown. The new budgets leave 4,198 and 4,198 bytes
+of room.
+
+The budgets went to 38,506,760 (linux/amd64) and 36,137,790 (darwin/arm64)
+for the cockpit's spawn sheet: the sheet's fields and lists, its layout and
+drawing, the machine ranking, the preset, and the start through fan and
+start-agent. The branch before it measured 38,338,722 and 35,999,202 bytes
+(Go 1.26.9, a clean clone, as CI builds it). The change measured 38,502,562
+and 36,133,586, so it adds 163,840 and 134,384 bytes. It reads the manifests
+and git only when the sheet opens. The new budgets leave 4,198 and 4,204
+bytes of room.
+
+The budgets went to 38,514,952 (linux/amd64) and 36,154,622 (darwin/arm64)
+for the opencode thread on macOS and Windows: the check that the far end of
+the connection to opencode's service is this user's, read from the socket
+table of each system (the sysctl net.inet.tcp.pcblist_n on macOS), the
+parsers of those tables, and the reuse of an export while opencode's
+database is unchanged. Main at 6c5a295b measured 38,502,562 and 36,133,586
+bytes (Go 1.26.9, as CI builds it). The change measured 38,510,754 and
+36,150,418, so it adds 8,192 and 16,832 bytes. No dependency was added. The
+check runs only when a person reads an opencode thread. The new budgets
+leave 4,198 and 4,204 bytes of room.
+
+The ceiling is now 45 MB. Mermaid diagrams are built in: tuios.dev/sketch, a
+Go port of pele, draws them as SVG, as kitty pictures and as box-drawing text,
+and the diagram types it ports take most of the room above 40 MB. They stay
+built in until tuios has native plugins. Then the heavy optional parts, the
+diagram types among them, move out of the binary, and the ceiling comes down
+again.
+
+The budgets went to 39,522,568 (linux/amd64) and 37,028,734 (darwin/arm64) for
+`tuios mermaid` and tuios.dev/sketch: the Go port of pele with flowcharts,
+sketch/raster and two Arimo subsets. The build before it measured 38,510,754
+and 36,150,418 bytes (Go 1.26.9, a clean clone, as CI builds it). The change
+measured 39,518,370 and 37,024,530, so it adds 1,007,616 and 874,112 bytes. No
+third-party dependency was added. The new budgets leave 4,198 and 4,204 bytes
+of room.
+
+The budgets went to 39,854,344 (linux/amd64) and 37,316,414 (darwin/arm64) for
+sequence diagrams in tuios.dev/sketch and for sketch/text, which draws
+diagrams as box-drawing text where the terminal shows no pictures. The build
+before it measured 39,518,370 and 37,024,530 bytes (Go 1.26.9, a clean clone,
+as CI builds it). The change measured 39,850,146 and 37,312,210, so it adds
+331,776 and 287,680 bytes. No third-party dependency was added. The new
+budgets leave 4,198 and 4,204 bytes of room.
+
+The budgets went to 40,063,240 (linux/amd64) and 37,502,126 (darwin/arm64) for
+state diagrams in tuios.dev/sketch: the state lexer, parser, graph and
+renderer. The lexer keeps its small helpers out of line, which took it from
+100 KB to 26 KB of code. The build before it measured 39,854,242 and
+37,312,242 bytes (Go 1.26.9, a clean clone, as CI builds it). The change
+measured 40,059,042 and 37,497,922, so it adds 204,800 and 185,680 bytes. No
+third-party dependency was added. The new budgets leave 4,198 and 4,204 bytes
+of room.
+
+The budgets went to 40,259,848 (linux/amd64) and 37,689,054 (darwin/arm64) for
+class diagrams in tuios.dev/sketch: the class lexer, parser, graph and
+renderer. The lexer is a struct with methods, so its helpers stay out of line
+and its code is 10 KB. The build before it measured 40,059,042 and 37,497,922
+bytes (Go 1.26.9, a clean clone, as CI builds it). The change measured
+40,255,650 and 37,684,850, so it adds 196,608 and 186,928 bytes. No third-
+party dependency was added. The new budgets leave 4,198 and 4,204 bytes of
+room.
+
+The budgets went to 40,411,400 (linux/amd64) and 37,824,654 (darwin/arm64) for
+ER diagrams in tuios.dev/sketch: the ER lexer, parser, graph and renderer.
+Their code is 85 KB, and the renderer's draw function is 31 KB of it. The
+build before it measured 40,255,650 and 37,684,850 bytes (Go 1.26.9, a clean
+clone, as CI builds it). The change measured 40,407,202 and 37,820,450, so it
+adds 151,552 and 135,600 bytes. No third-party dependency was added. The new
+budgets leave 4,198 and 4,204 bytes of room.
+
+The budgets went to 40,485,128 (linux/amd64) and 37,875,678 (darwin/arm64) for
+pie charts in tuios.dev/sketch: the pie parser and renderer, the shared
+Langium-style tokenizer and V8's sine and cosine. Their code is 52 KB, and the
+renderer's draw function is 10 KB of it. The build before it measured
+40,407,202 and 37,820,450 bytes (Go 1.26.9, a clean clone, as CI builds it).
+The change measured 40,480,930 and 37,871,474, so it adds 73,728 and 51,024
+bytes. No third-party dependency was added. The new budgets leave 4,198 and
+4,204 bytes of room.
+
+The budgets went to 40,534,280 (linux/amd64) and 37,925,918 (darwin/arm64) for
+mindmaps in tuios.dev/sketch: the outline lexer and parser that mindmaps share
+with kanban boards, and the mindmap renderer. Their code is 33 KB. The lexer's
+helpers stay out of line, which keeps the lexer at 3 KB instead of 15 KB. The
+build before it measured 40,480,930 and 37,871,474 bytes (Go 1.26.9, a clean
+clone, as CI builds it). The change measured 40,530,082 and 37,921,714, so it
+adds 49,152 and 50,240 bytes. No third-party dependency was added. The new
+budgets leave 4,198 and 4,204 bytes of room.
+
+The budgets went to 40,743,176 (linux/amd64) and 38,127,278 (darwin/arm64) for
+gantt charts in tuios.dev/sketch: the gantt lexer, parser and scheduler, the
+dayjs and d3 date formats, the time axis, and the JavaScript Date and
+Date.parse they rest on. Their code is 106 KB, and the renderer is 30 KB of
+it. The build before it measured 40,530,082 and 37,921,714 bytes (Go 1.26.9, a
+clean clone, as CI builds it). The change measured 40,738,978 and 38,123,074,
+so it adds 208,896 and 201,360 bytes. No third-party dependency was added. The
+new budgets leave 4,198 and 4,204 bytes of room.
+
+The budgets went to 40,755,464 (linux/amd64) and 38,127,310 (darwin/arm64) for
+the fixes from the review of sketch and tuios mermaid: safe terminal output
+for diagram text and errors, bounded file reads and text canvases, the raster
+work budget in float64 with y clipping, and the theme font check. The build
+before it measured 40,738,978 and 38,123,074 bytes (Go 1.26.9, a clean clone,
+as CI builds it). The change measured 40,751,266 and 38,123,106, so it adds
+12,288 and 32 bytes. No third-party dependency was added. The new budgets
+leave 4,198 and 4,204 bytes of room.
+
+The budgets went to 40,964,360 (linux/amd64) and 38,314,750 (darwin/arm64) for
+the named diagram themes, the frames that move a diagram from one layout to
+the next, the readable-text pass in sketch/raster, and tuios mermaid --watch
+and --demo with their kitty frame encoder. The build before it measured
+40,751,266 and 38,123,106 bytes (Go 1.26.9, a clean clone, as CI builds it).
+The change measured 40,960,162 and 38,310,546, so it adds 208,896 and 187,440
+bytes. No third-party dependency was added. The new budgets leave 4,198 and
+4,204 bytes of room.
 
 To raise a budget, do it on purpose in its own commit: run
 `scripts/binary-size.sh` on the Go version in go.mod, set the new budget a
@@ -2996,6 +3487,33 @@ Every frame and every edit reaches the host on both sides.
 `TestKittyStreamCostsLittle` asserts the CPU and the edit latency under
 `TUIOS_E2E_PERF`.
 
+## 2026-10 the GUI bridge's CPU
+
+`tuios gui-bridge` runs a model of the session that draws nothing, so all of
+its work is overhead the desktop GUI pays for. Three costs were cut. The
+palette key printed the whole user config with `fmt.Sprint` on every message
+(fixed in the bridge PR). The model's own emulator encoded each line that
+scrolled off into a history nothing reads. Each output chunk was copied twice
+before it reached the pipe.
+
+### Numbers
+
+CPU ticks of the bridge process (100 a second), from /proc, GOMAXPROCS=4,
+nice 19 on cores 0-7 of a machine in use. Idle is 10 s on two idle shells.
+Flood is one pane running `seq -f 'flood line %g' 1 1500000` at 127x39, to
+the last line at the renderer.
+
+| Build | idle, ticks per 10 s | flood, ticks |
+|---|---|---|
+| the palette key printed from the config | 78 to 94 | 68 to 102 (review run) |
+| the palette fix only (bridge PR) | 5 to 7 | 138 to 219 |
+| with the history dropped and the chunk not copied | 4 to 6 | 117 to 120 |
+
+The review run measured the flood on another machine, 68 to 102 ticks before
+all three fixes and 37 to 51 after. The rows here are the same flood on this
+machine, three runs each. `TestGUIBridgeIdleCostsLittle` holds the idle row
+to 30 ticks.
+
 ## 2026-10 saving the cursor on the libghostty backend
 
 A reattach now carries the cursor DECSC saved. libghostty keeps it where no
@@ -3009,7 +3527,7 @@ line. `BenchmarkBackendApt` is that stream: a scroll region above the last row,
 
 ### Numbers
 
-`go test -tags ghostty ./internal/vt/ -bench 'BackendApt$' -benchtime 3s
+`go test -tags ghostty ./vt/ -bench 'BackendApt$' -benchtime 3s
 -count 2`, run twice, GOMAXPROCS=4, nice 19 on cores 0-7 of a machine in use:
 
 | Build | ms per 2000 lines |
@@ -3025,3 +3543,543 @@ the flush before the save and the cursor reads, about 0.8 µs a save.
 `BenchmarkBackendScroll`, which saves nothing, measured 44 to 64 ms on main
 and 47 to 50 ms here in the same runs, which is within the noise of this
 machine.
+
+## 2026-10 the message burn tick
+
+An idle client with a message on the dock wrote one `─` cell every 100 to
+200 ms. That write is the burn: the rule under the message loses one lit cell
+at a time, so each write is a real change. The cost was in the wakeups around
+it. While a message was up, the maintenance tick ran at the frame rate (60, or
+up to 240 on `max_fps = "auto"`), and every frame the burn drew woke Bubble
+Tea's frame ticker to the frame rate for 500 ms. A rule 30 cells wide on a 6 s
+message moves 5 times a second, so the client woke 60 or more times a second to
+draw 5 frames.
+
+### What changed
+
+- `notifTickWait`: when a message is the only thing that moves, the tick
+  sleeps until the rule next loses a cell or a message runs out
+  (`notifNextMove`). It never sleeps less than one frame or more than the idle
+  tick. A message the last frame did not draw keeps the frame rate.
+- A frame the tick composes for the message block alone flushes through
+  `kickFlush` and leaves the frame ticker at `IdleFPS` (`quietFrame`).
+
+### Numbers
+
+Throwaway daemon, client in a detached tmux at 120x36, truecolor, one idle
+shell, `/proc/<pid>/stat` and the threads' context switches. The wire bytes
+are the same before and after.
+
+| Window | | client CPU | client ctxsw/s |
+|--------|---|-----------|----------------|
+| 60 s message, 30 s sample (1 write per 1.7 s) | before | 0.77% | 478 |
+| | after | 0.27% | 129 |
+| default 6 s message, first 5 s (3 runs) | before | 1.4 to 1.6% | 574 to 606 |
+| | after | 0.8 to 1.2% | 244 to 262 |
+| no message, 60 s (0 bytes) | before | 0.13 to 0.15% | 118 to 122 |
+| | after | 0.12 to 0.15% | 119 to 121 |
+
+`TestNotificationTickSleepsUntilTheBurnMoves` holds the budget: a 6 s message
+on a 30-cell rule takes 60 ticks for 30 frames, and every cell is drawn. With
+the frame-rate wait back it takes 360 ticks and fails.
+
+### Measured and deliberately not changed
+
+With no message, an idle client still woke about 20 times a second: the
+maintenance tick and Bubble Tea's frame ticker both ran at `IdleFPS`. Neither
+wrote a byte. The frame ticker now stops at idle and the maintenance tick runs
+only when a job is due. See "the frame ticker stops at idle" and "the
+maintenance tick runs only when a job is due" below.
+
+## 2026-10 the daemon at idle
+
+A daemon whose panes sit at a prompt did 7 to 9 context switches a second
+with no client, and 22 to 27 with one client attached. Every one came from a
+timer. Each background loop polled on a ticker of its own, whatever the panes
+were doing:
+
+| Loop | Interval | Wakeups a second |
+|---|---|---|
+| Resurrection saver, per session | 2 s | 0.5 per session |
+| Agent monitor | 2 s | 0.5 |
+| Stall monitor | 7.5 s at the default timeout | 0.13 |
+| Cleanup loop | 30 s | 0.03 |
+| Session listing, asked by a client with the rail open | 3 s | 0.33 per client |
+
+The Go runtime turns each timer wakeup into 10 to 40 context switches: the
+netpoller thread wakes, a goroutine runs, and sysmon spins in 20 µs sleeps
+before it parks again.
+
+Each loop now sleeps on a latch (`internal/session/wake_latch.go`). The side
+that notices a change raises the latch, which costs one atomic load while it
+is already up. Only the raise wakes the loop. A loop with work keeps its own
+cadence. A loop without work stops its timer.
+
+### Measurement conditions
+
+A throwaway daemon with scratch XDG folders under
+`nice -n 19 taskset -c 0-7 GOMAXPROCS=4`, one session with two `/bin/bash`
+panes, the client in a detached tmux at 120x36 when attached. Context
+switches are the sum of every thread's voluntary and involuntary switches
+from `/proc`, over 30 s. Runs of different builds were interleaved, three
+runs each. `runtime/trace` grouped the goroutine wakeups by the stack each
+goroutine was blocked in.
+
+### What changed
+
+- The resurrection saver sleeps until a session changes. A structural
+  change raises `stateDirty` and reaches disk within 2 s, as before. Output in
+  a pane, or a use of the session, raises `saveStale` and reaches disk within
+  30 s of the last save. That keeps a shell's directory and a pane's history
+  current. A session that prints nothing writes nothing and arms no timer.
+- The agent monitor sleeps while no pane does anything. A program can only
+  start or stop in a pane that takes input, prints, or was just made, and
+  each raises the detect latch. After `agentDetectQuietBound` (10 s) with the
+  latch down, in which every quiet pane is read once more, the monitor stops
+  its timer. It keeps looking while an agent it owns is out of the
+  foreground, because the misses that clear it take consecutive looks.
+- The stall monitor sleeps until the earliest working pane could stall. With
+  no pane working it arms no timer. A change to a session's state raises the
+  stall latch, and the monitor works out its deadline again. A pane the
+  screen tier keeps working is looked at again every interval, as before.
+- The cleanup loop sleeps until something is left to clean. What it releases
+  is left by output, input and resizes, and what it expires is a routed
+  request. Each raises the cleanup latch. It runs at most twice after the
+  last activity.
+
+### Numbers
+
+Client attached, 5 s after the panes opened, 30 s window:
+
+| Build | daemon ctxsw/s |
+|---|---|
+| main | 25.3, 26.4, 26.4 |
+| saver sleeps | 20.7, 19.3, 21.5 |
+| agent monitor sleeps | 15.3, 14.5, 13.3 |
+| stall monitor sleeps | 10.7, 17.5, 12.4 |
+| cleanup loop sleeps | 14.4, 13.3, 12.9 |
+
+The cleanup loop woke once in 30 s, so its row is inside the noise.
+
+40 s after the panes opened, past the quiet bound and the first stale save,
+30 s window:
+
+| Build | no client | client attached |
+|---|---|---|
+| main | 8.1, 9.0, 7.6 | 26.9, 24.8, 21.8 |
+| all four loops sleep | 1.0, 2.0, 1.0 | 11.0, 7.7, 15.5 |
+
+With a client attached, what is left is the client's listing poll: one
+request every 3 s while the rail is open. The trace shows no other timer.
+
+### The session listing push
+
+The client drew other sessions on its rail from a listing it asked for every
+3 s with the rail open, and every 30 s with it hidden. Now the daemon tells a
+client when the listing changed (`MsgSessionsChanged`, offered as
+`ListingPush` in the welcome and asked for in the hello), and the client asks
+then. Everything the listing shows changes through an event the daemon sees:
+output, input, a state change, a title, a pane's folder or branch, a client
+arriving or leaving, a session made or ended, a request or a verb. Each
+raises the listing latch. The notifier builds the listing, hashes it, and
+pushes only when the hash moved. It looks at most once every 3 s, the
+cadence of the old poll, and arms no timer while nothing happens. A daemon
+that does not offer the push is polled as before.
+
+40 s after the panes opened, client attached, 30 s window, three interleaved
+runs:
+
+| Build | daemon ctxsw/s | client ctxsw/s |
+|---|---|---|
+| four loops sleep | 16.0, 7.4, 10.0 | 131.2, 126.2, 130.8 |
+| and the listing push | 1.4, 1.0, 1.8 | 127.0, 110.3, 109.2 |
+
+The client's own count is its maintenance tick and Bubble Tea's frame
+ticker, 10 a second each. They are the subject of the client idle plan.
+
+`TestListingPushReplacesThePoll` attaches a client that reads the push,
+checks that an idle daemon looks at the listing 0 times and pushes nothing,
+then renames a window in another session and checks the push arrives and the
+listing shows the name. With the latch unable to wake the notifier, the
+push never arrives and the test fails. `TestDaemonIdleArmsNoTimers` counts the
+notifier too.
+
+These runs start 5 s after the panes open, so the agent monitor is still in
+its 10 s quiet bound for the first seconds of the window.
+
+`TestDaemonIdleArmsNoTimers` is the daemon's idle budget. It starts a real
+daemon with one shell pane, waits for its loops to settle, and counts each
+loop's timer fires over an idle window: the budget is 0. Then it types into
+the pane and checks that the agent monitor wakes. It also sets the pane
+working and checks that the stall monitor demotes it with one or two fires,
+and that input wakes the cleanup loop. With the monitor's sleep
+removed the loops never settle and the test fails.
+
+`TestAnIdleSessionDoesNotWakeTheSaver` holds the saver's budget: no write and at most
+the first look over four intervals of an idle session, then a structural
+change still reaches disk. With the 2 s poll back the saver wakes 4 times
+and the test fails.
+
+## 2026-10 the daemon's subscriber queue
+
+The daemon made each stream's output queue whole on subscribe: a channel of
+4096 chunks, 56 bytes a slot, about 229 KB for each pane and each attached
+client before the pane printed anything. At 50 idle panes and one client
+that was 12 MB of the daemon's heap. The earlier ledger entry on
+`outputChan` kept it because a smaller channel dropped output. Since then a
+full queue gaps the stream and rebuilds it from the ring, so the slot count is
+a limit and not a reservation.
+
+### What changed
+
+- `ptyQueue` (`internal/session/subscriber_queue.go`) replaces the channel. It
+  is a ring behind a mutex that starts empty, doubles from 16 slots with the
+  backlog, and stops at the same 4096. A stream that would take one more is
+  gapped and rebuilt from the ring, as before. The order, the byte bound
+  (`maxSubscriberQueue`), the catch-up, `route` and `enqueue` are the same.
+- The stream writer takes chunks until the queue is empty and only then waits
+  on a one-slot wake channel. A push that makes the queue non-empty leaves a
+  token there.
+- A queue that grew past 16 slots gives its array back after it has stayed
+  empty for one second (`queueTrimAfter`). The attach stream trims on a timer
+  it arms only for such a queue. `stream-pane` trims on its one-second tick.
+
+### Numbers
+
+Throwaway daemon with `--pprof`, 50 idle bash panes, one client in a detached
+tmux at 120x36, 12 s to settle. Three runs each, main and branch interleaved.
+Live heap is the `inuse_space` total of the heap profile.
+
+| | main | branch |
+|---|---|---|
+| daemon HeapInuse | 43.1, 47.4, 50.0 MiB | 28.5, 29.4, 29.8 MiB |
+| daemon RSS | 97.4, 97.8, 101.6 MiB | 79.2, 79.5, 83.4 MiB |
+| live heap (profile) | 29.0, 29.9, 33.2 MiB | 15.0, 15.0, 15.2 MiB |
+| `subscribeLocked` in the live heap | 4.9 to 13.0 MiB | below the sampling floor |
+| saved per pane, from the medians | | HeapInuse 0.36 MiB, RSS 0.37 MiB |
+
+HeapInuse and RSS fall by more than the 229 KB the channel held, because the
+GC lets the heap grow to twice the live heap before it collects.
+
+`go test -bench 'BenchmarkPTY(OutputChunk|Broadcast)$' -benchmem`, six runs of
+each test binary interleaved, GOMAXPROCS=4, nice 19 on cores 0-7 of a machine
+in use, benchstat:
+
+| | main | branch | |
+|---|---|---|---|
+| OutputChunk, 0 subscribers | 860 ns | 864 ns | ~ (p=0.24) |
+| OutputChunk, 1 subscriber | 908 ns | 908 ns | ~ (p=1.0) |
+| OutputChunk, 4 subscribers | 947 ns | 940 ns | ~ (p=1.0) |
+| Broadcast, 1 subscriber | 402 ns | 383 ns | -4.8% (p=0.002) |
+| Broadcast, 4 subscribers | 594 ns | 537 ns | ~ (p=0.065) |
+| Broadcast, 16 subscribers | 1.42 µs | 1.20 µs | -15.3% (p=0.002) |
+
+Allocations stay at one per op. Broadcast to 16 subscribers shows 81.5 B/op
+against 80: the first fill grows each queue to 1024 slots once. The
+benchmarks drain each queue with `pop` until it is empty. A drain that asked
+`len` before each `pop` took the lock twice a chunk and measured the harness,
+not the producer.
+
+`TestIdleSubscriptionMemoryBudget` holds an idle subscription to a sixteenth
+of the old channel. It measures 1804 bytes here and 230109 bytes on main,
+where it fails. `TestFloodedQueueGivesBackItsPeak` fills a queue to the limit
+through wrapped doublings and checks the order, the refused chunk, and the
+trim.
+
+### Measured and deliberately not changed
+
+- **Letting the array go at every drain.** That was the first version. A
+  stream that drained between bursts grew its queue from 16 slots again at
+  every burst. Broadcast was 4.7% to 27% slower and took 1984 B/op with 16
+  subscribers. Those runs also used the two-lock drain, so part of the cost
+  was the harness. The one-second trim keeps the steady flood at the
+  old cost.
+
+## 2026-10 allocations on the output path
+
+The kernel hands the daemon's read loop one line at a time when lines are
+short: `yes` arrives in reads of about 160 bytes, `seq` in about 1 KiB. Only
+`cat` of long lines fills the 16 KiB buffer. Three steps paid for every read
+allocated: the nesting probe scan joined the last read's tail to the new one,
+the graphics scan grew a segment slice, and the screen tracker grew a slice
+byte by byte for every escape sequence, so coloured output allocated once per
+colour. On a `yes` flood that was most of the daemon's garbage. The client
+read each output frame through a 4 KiB buffer that doubled up to the frame
+size.
+
+### What changed
+
+- The probe scan keeps the last read's tail only from its last ESC. The
+  prefix and nonce a probe is recognised by hold one ESC, at the start, so a
+  probe cut by a read starts there. The join is copied into an array on the
+  PTY.
+- The graphics scan hands its segments out in one slice that it reuses. No
+  caller keeps them past `broadcast`.
+- The screen tracker gathers a sequence in an array on the stack.
+- `readFramePayload` starts at twice the bytes a buffered reader already
+  holds. A sender that announces more than it sends still costs at most twice
+  what it sent.
+
+### Numbers
+
+`BenchmarkPTYOutputScan` and `BenchmarkReadFramePayload`, six interleaved
+runs, benchstat:
+
+| Benchmark | before | after |
+|---|---|---|
+| scan, 128 B chunk | 159 ns, 3 allocs | 51 ns, 0 allocs |
+| scan, 1 KiB chunk | 186 ns, 3 allocs | 78 ns, 0 allocs |
+| scan, 16 KiB chunk | 640 ns, 3 allocs | 561 ns, 0 allocs |
+| scan, 1 KiB coloured | 2.72 µs, 77 allocs | 1.47 µs, 0 allocs |
+| read frame, 16 KiB | 5.3 µs, 28 KiB, 3 allocs | 2.7 µs, 16 KiB, 1 alloc |
+| read frame, 64 KiB | 21.3 µs, 124 KiB, 5 allocs | 12.0 µs, 64 KiB, 1 alloc |
+| `PTYOutputChunk`, 4 subscribers | 1,043 ns, 1 alloc | 935 ns, 0 allocs |
+
+Real binary, one pane, client attached, three interleaved runs. Allocation
+and GC counts are from `/debug/pprof/heap` before and after the flood:
+
+| Flood | daemon alloc | daemon GCs | client alloc | client GCs |
+|---|---|---|---|---|
+| `yes`, 100 MB, before | 754 to 950 MB | 140 to 173 | 353 to 362 MB | 79 to 82 |
+| after | 175 to 180 MB | 35 to 37 | 193 to 194 MB | 43 to 46 |
+| `seq 1e7`, before | 161 to 198 MB | 32 to 37 | 207 to 216 MB | 40 |
+| after | 94 to 96 MB | 19 to 20 | 105 to 106 MB | 20 to 22 |
+| `cat` 200 MB, before | 233 to 236 MB | 32 | 523 to 528 MB | 76 to 80 |
+| after | 217 to 229 MB | 30 to 32 | 263 to 273 MB | 38 to 48 |
+
+CPU per MB and the time to finish moved inside the noise of a shared machine.
+
+`TestOutputScanAllocatesNothing` holds the budget: a chunk with colours and a
+cut OSC allocates nothing. On the tree before it allocates 5 times.
+`TestNestProbeSplitAcrossReads` now cuts a probe at every byte.
+`TestFrameBodyGrowsWithWhatArrives` checks the bound through a buffered
+reader.
+
+## 2026-10 quiet frames for dock components
+
+With `show_clock = true` the dock draws one frame a second. Each of those
+frames woke Bubble Tea's frame ticker from `IdleFPS` to the frame rate for
+`idleTickerAfter` (500 ms), so one frame of the clock cost about 30 frame
+ticks that wrote nothing.
+
+### What changed
+
+- A frame composed for a `dockComponentMsg` alone (the clock, a meter, a
+  custom component) sets `quietFrame`, the rule #763 added for the message
+  burn. It goes out through `kickFlush` and does not call `noteFrame`, so the
+  frame ticker stays at `IdleFPS`.
+- `TUIOS_STATS_FILE` now also counts `tickerWakes` and `tickerSleeps`, and
+  SIGUSR1 writes the counters on Unix, so a test can read them at both ends
+  of an idle window.
+
+### Numbers
+
+Throwaway daemon, client in a detached tmux at 120x36, one idle shell, an
+empty folder, 50 s per run (`~/.cache/agent-tmp/idlewake/idle.sh`). Wakeups
+are counted over 40 s of each run by a scratch build that counts every
+message and every fire of Bubble Tea's frame ticker. The wire bytes are the
+same before and after.
+
+| Setup | | client CPU | client ctxsw/s | frame ticker fires/s | other wakeups/s |
+|---|---|---|---|---|---|
+| clock on, 3 runs | before | 0.40 to 0.56% | 270 to 277 | 40.4 to 41.4 | 10 tick, 1 clock, 1 flush, 0.33 listing |
+| | after | 0.38 to 0.50% | 142 to 145 | 11.0 | same |
+| clock off, 2 runs and 1 run | before | 0.20 to 0.22% | 124 to 130 | 10.0 | 10 tick, 0.33 listing |
+| | after | 0.20% | 135 | 10.0 | same |
+
+The CPU is read in clock ticks of 10 ms, so a 50 s run resolves 0.02%. The
+CPU change with the clock on is inside the run-to-run noise. The context
+switches halve.
+
+`TestIdleCostStaysLow` now has a clock-on window. It holds the frame ticker
+wakes to 1 in 10 s, the maintenance ticks to 110, the full scans to 1 and the
+client's voluntary context switches to 2500. With `quietFrame` not set for
+the dock, the clock-on window woke the ticker 10 times and failed.
+
+## 2026-10 the frame ticker stops at idle
+
+Bubble Tea writes frames from a ticker that runs for the life of the program.
+tuios dropped it to `IdleFPS` 500 ms after the last frame, so an idle client
+still woke ten times a second for a ticker that found nothing to write.
+
+### What changed
+
+- `idleFrameTicker` stops the ticker. The `fps` field keeps the frame rate,
+  so a renderer that restarts after a suspend or an exec runs at the frame
+  rate, and `rendererRestarted` counts the client as awake again.
+- `noteFrame` restarts a stopped ticker with `Reset`, as it woke a slow one.
+- `kickFlush` sends one value on the stopped ticker's channel, and the
+  renderer still receives it. `TestKickFlushWritesTheFrame` now checks that a
+  stopped ticker writes nothing on its own and that one kick writes the frame.
+- While the ticker is stopped, Update asks for a flush after every message
+  but a maintenance tick that slept (`flushWhileIdle`). Bubble Tea writes a
+  clipboard set, a colour query or a raw write only from the ticker, and a
+  message that composes no frame would otherwise leave it queued.
+- Since Go 1.23, `Ticker.Stop` empties the channel, which would drop a kick
+  sent just before the stop. One tick is sent after the stop.
+
+### Numbers
+
+Same harness as the section above, 3 runs each, 50 s, counts over 40 s.
+
+| Setup | | client CPU | client ctxsw/s | frame ticker fires/s |
+|---|---|---|---|---|
+| clock off | before | 0.20 to 0.22% | 124 to 135 | 10.0 |
+| | after | 0.12 to 0.14% | 84 to 87 | 0.33 |
+| clock on | before | 0.38 to 0.50% | 142 to 145 | 11.0 |
+| | after | 0.28 to 0.32% | 94 to 101 | 1.32 |
+
+The ticker fires that are left are kicks: one per listing poll (the flush
+after a message), and one per clock frame. The maintenance tick still runs
+at `IdleFPS`.
+
+`TestIdleCostStaysLow`, standalone, voluntary context switches over 10 s:
+816 to 895 with the clock off and 928 to 989 with it on. With the ticker
+dropped to `IdleFPS` instead (the build before), 1049 to 1160 and 1298 to
+1362.
+
+First pane output after 20 s idle, 20 runs: a pane program sleeps, takes the
+time and writes a marker in the same process, and the latency is the time
+until the marker reaches the terminal (tmux `pipe-pane`). 1.4 to 7.4 ms,
+median 1.6 ms. The planning build that stopped the ticker the same way
+measured 1.4 to 1.5 ms over 10 runs of this probe.
+
+The plan's first probe took the time in one Python process and wrote the
+marker from the shell after Python exited. One of its 7 runs took 184 ms. That
+run was the only one in which the daemon used real CPU: 0.26 s over 25 s,
+against 0.00 to 0.01 s in every other run. The delay was outside the client's
+wake path, and 30 runs here did not repeat it.
+
+## 2026-10 the maintenance tick runs only when a job is due
+
+The maintenance tick ran for the life of the client. At idle its gate
+(`tickNeedsWork`) found nothing to do, ten times a second, and each of those
+ticks woke four goroutines.
+
+### What changed
+
+- `nextWake` says when the next job is due, and Update arms one tick for that
+  moment after every message (`tickWakeCmd`). With nothing due, no tick is
+  armed. A tick armed later than a new due time is replaced, and the old one is
+  dropped by its generation when it fires.
+- The due times: the frame rate while something moves (as before), the next
+  cell of a burning message and the end of a pointer hold on it, held agent
+  and program alerts, the zen reveal and a gesture hold running out, the frame
+  ticker's idle switch, the git section's 2 s re-read and the files section's
+  retry.
+- Work the idle gate finds by looking (an exited process, unflushed output, a
+  drifted title, a moved listing, a stranded gesture) is looked at again every
+  100 ms while it lasts, which is the old idle rate. Each of those is set on the
+  Update goroutine or followed by a message, so asking after every message
+  sees it.
+- A sticky message keeps no tick running. It used to keep the idle tick.
+- `IdleTickCmd`, `TickCmd` and `notifTickCmd` are gone.
+
+### Numbers
+
+Same harness, 3 runs each, 50 s, counts over 40 s.
+
+| Setup | | client CPU | client ctxsw/s | timer wakeups/s |
+|---|---|---|---|---|
+| clock off | before | 0.12 to 0.14% | 84 to 87 | 10 tick, 0.33 listing |
+| | after | 0.04 to 0.06% | 8.0 to 9.1 | 0.33 listing |
+| clock on | before | 0.28 to 0.32% | 94 to 101 | 10 tick, 1 clock, 0.33 listing |
+| | after | 0.16 to 0.18% | 17.7 to 19.2 | 1 clock, 0.33 listing |
+
+From the start of this work (main before #781, one idle client): clock off,
+0.20 to 0.22% CPU and 124 to 135 context switches a second down to 0.04 to
+0.06% and 8 to 9. Clock on, 0.40 to 0.56% and 270 to 277 down to 0.16 to
+0.18% and 18 to 19. The wire bytes are the same in every run. The listing
+poll is the one timer left with the rail open. Each poll is one message, one
+flush and one frame ticker kick.
+
+`TestIdleCostStaysLow`, standalone, over 10 s: 0 ticks, and 59 voluntary
+context switches with the clock off and 152 with it on. Before, 100 ticks, and
+816 to 895 and 928 to 989.
+
+First pane output after 20 s idle, same probe as the section above: 1.4 to
+1.8 ms over 20 runs, against 1.4 to 1.6 ms over 10 runs on main.
+
+A scratch build ran the old idle gate every 100 ms next to the deadline tick
+and logged work the gate found that no armed tick covered, three looks in a
+row. Over the whole e2e suite it found no
+job the deadlines missed: each hit was a sticky error message, which needs no
+tick, or pane output already on its way in its own `PTYDataMsg`.
+
+`benchstat`, main against this branch, 6 interleaved runs. `BenchmarkIdleTick`
+and its two variants: 5 allocations (296 B) to 1 (24 B) a tick, because the
+idle tick arms no timer. Time 689 to 714 ns, within the noise (p=0.065). The
+gate's pass over the windows now also runs after every message, which is the
+cost of the time. `BenchmarkNotificationTick`: 38 to 30 allocations, the same
+time. `BenchmarkClientFrame` and `BenchmarkKeystrokeFrame` at 1 to 20 panes:
+no change.
+
+### Equal frames and the buffer release
+
+Two follow-ups. A frame equal to the last one no longer wakes the frame
+ticker: it has nothing to write. And #762's release of the panes' spare
+emulator buffers, which ran from every maintenance tick, now runs once after
+a frame changed (`emulatorReleasePending`), at its 30 s interval, through a
+deadline in `nextWake`. An idle client releases once and then sleeps.
+
+With the rail's git section on, whose reading every 2 s composes a frame
+equal to the last, same harness, 2 runs each:
+
+| | client CPU | client ctxsw/s | frame ticker fires/s |
+|---|---|---|---|
+| before | 0.14 to 0.18% | 113 to 115 | 17.1 |
+| after | 0.08 to 0.10% | 21.7 to 25.4 | 0.8 |
+
+`TestIdleCostStaysLow/git_section` holds it: 260 to 300 context switches in
+10 s, and 1186 with an equal frame waking the ticker.
+## 2026-10 the clock draws minutes by default
+
+`DefaultClockFormat` is `15:04`. The dock engine arms the clock's timer for the
+next change of what it draws, so the default clock wakes the client once a
+minute. A layout with seconds still draws them, and still costs one frame a
+second.
+
+Same harness, `show_clock = true` and no format, 130 s runs, counts over 120 s.
+
+| Default layout | | client CPU | client ctxsw/s | clock frames | timer wakeups/s |
+|---|---|---|---|---|---|
+| `15:04:05` (1 run) | before | 0.16% | 18.3 | 120 | 1 clock, 0.33 listing |
+| `15:04` (3 runs) | after | 0.02% | 6.7 to 7.5 | 2 | 0.02 clock, 0.33 listing |
+
+### After a suspend
+
+A Go timer counts time the machine is awake. The minute clock's timer is armed
+for up to 59 s, and a suspend in that wait left the clock showing the time of
+the suspend for the rest of it after the wake. The dock engine now sleeps at
+most `dockWallCheck` (15 s) before it reads the wall clock again, and a focus
+report from the terminal makes it read it at once. The extra wakes read the
+time and sleep again: no message and no frame.
+
+Same harness, default clock, 130 s runs, 2 runs each: 6.6 to 7.6 context
+switches a second with the check against 6.1 to 6.7 without, 0.02 to 0.03% CPU
+either way, and still 2 clock frames in 120 s.
+
+## 2026-10 workspace tab marks over a daemon
+
+A client attached to a daemon streams only the panes it shows. The dock's
+`bell_marker` and `activity_marker` need the bell and output of panes it does
+not show. The daemon sends `MsgPaneMark` for them, offered as `PaneMarks` in
+the welcome and asked for in the hello (`internal/session/pane_marks.go`).
+
+Each pane keeps one atomic bit per mark. The first output or bell after a
+subscription change sets it and sends one message to each client that does
+not stream the pane. Every later chunk costs one compare and one atomic load,
+and sends nothing until a client subscribes to the pane or drops it. No
+timer is armed.
+
+`BenchmarkPaneMarkRaised` (new): the per-chunk cost once the bit is set,
+2.1 ns, 0 allocs. A first run passed the event type as a constant, which the
+compiler folded, and read 1.1 ns.
+
+`BenchmarkE2EFlood`, 10 runs of 8 x 16 MiB each side, benchstat:
+287.6 ms before, 294.2 ms after, p=0.123, no significant change. Allocations
+6.52k and 6.48k, p=0.645.
+
+`BenchmarkE2EBackgroundFlood` (new): a pane the client does not stream
+prints 16 MiB per iteration. The client gets 1 mark, for the pane's prompt,
+then 0 marks and 0 socket reads per flood. It fails on a second mark.

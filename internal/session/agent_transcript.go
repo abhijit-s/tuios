@@ -1,6 +1,7 @@
 package session
 
 import (
+	"bytes"
 	"errors"
 	"os"
 	"path/filepath"
@@ -9,7 +10,9 @@ import (
 	"time"
 
 	"github.com/Gaurav-Gosain/tuios/internal/harness"
+	"github.com/Gaurav-Gosain/tuios/internal/procinfo"
 	"github.com/Gaurav-Gosain/tuios/internal/transcript"
+	"github.com/Gaurav-Gosain/tuios/internal/transcriptview"
 )
 
 // transcriptDebounce coalesces the several appends one turn produces into one
@@ -44,7 +47,23 @@ type transcriptWatch interface {
 type transcriptJoin struct {
 	windowID string
 	harness  string
-	reader   *transcript.Reader
+	// session is the session the join reads in a store that holds many
+	// (harness.Transcript.BySession), "" for a file of one session.
+	session string
+	// format is the reader the harness's manifest names. Only Claude Code's
+	// (harness.ReaderJSONL) gives a turn state. Every other format is joined
+	// for the person to read, and its growth raises the transcript event.
+	format string
+	// doc says the harness rewrites the file whole, so its growth is told by
+	// its size and time (docSize, docMod) rather than by an offset.
+	doc     bool
+	docSize int64
+	docMod  time.Time
+	// docEventAt is when the last event of a document was raised, and
+	// docTimer the event waiting for docEventGap to pass.
+	docEventAt time.Time
+	docTimer   *time.Timer
+	reader     *transcript.Reader
 	// exact records that this join came from the harness telling us its own
 	// transcript path, rather than from searching. A searched join is given up
 	// the moment an exact one arrives for the same window.
@@ -76,6 +95,9 @@ type agentTranscriptState struct {
 	joins map[string]*transcriptJoin
 	// nextTry throttles the hookless search per window.
 	nextTry map[string]time.Time
+	// viewTry is the backoff of the search for the view-only formats
+	// (transcript_search.go).
+	viewTry map[string]*viewSearch
 	watcher transcriptWatch
 }
 
@@ -94,6 +116,15 @@ func (s *Session) SetTranscriptWatcher(w transcriptWatch) {
 // exact one, because the harness naming its own file is not a thing a directory
 // search can improve on.
 func (s *Session) JoinAgentTranscript(windowID, harnessID, path string, exact bool) error {
+	return s.JoinAgentTranscriptAs(windowID, harnessID, harness.ReaderJSONL, path, exact)
+}
+
+// JoinAgentTranscriptAs is JoinAgentTranscript for a transcript in the named
+// format, the reader of the harness's manifest.
+func (s *Session) JoinAgentTranscriptAs(windowID, harnessID, format, path string, exact bool) error {
+	if format == "" {
+		format = harness.ReaderJSONL
+	}
 	if windowID == "" || path == "" {
 		return errors.New("transcript join needs a window and a path")
 	}
@@ -118,7 +149,10 @@ func (s *Session) JoinAgentTranscript(windowID, harnessID, path string, exact bo
 		}
 		s.releaseJoinLocked(prev)
 	}
-	j := &transcriptJoin{windowID: windowID, harness: harnessID, reader: transcript.NewReader(abs), exact: exact}
+	j := &transcriptJoin{
+		windowID: windowID, harness: harnessID, format: format, reader: transcript.NewReader(abs), exact: exact,
+		doc: transcriptview.IsDocument(format, abs),
+	}
 	if s.transcripts.joins == nil {
 		s.transcripts.joins = make(map[string]*transcriptJoin)
 	}
@@ -135,6 +169,34 @@ func (s *Session) JoinAgentTranscript(windowID, harnessID, path string, exact bo
 	}
 	s.readAgentTranscript(windowID)
 	return nil
+}
+
+// JoinAgentSession binds a window to one session of a harness's store (the
+// file at path, such as opencode's service.json) and raises the transcript
+// event. A report that names another session of the same store moves the
+// join to it. The store is not watched: it does not grow as a file, and the
+// harness's own reports, which come as the session changes, raise the event.
+func (s *Session) JoinAgentSession(windowID, harnessID, format, path, session string) {
+	if windowID == "" || path == "" || session == "" {
+		return
+	}
+	s.transcripts.mu.Lock()
+	j, ok := s.transcripts.joins[windowID]
+	if ok && (j.reader.Path() != path || j.session == "") {
+		delete(s.transcripts.joins, windowID)
+		s.releaseJoinLocked(j)
+		ok = false
+	}
+	if !ok {
+		j = &transcriptJoin{windowID: windowID, harness: harnessID, format: format, reader: transcript.NewReader(path), exact: true, doc: true}
+		if s.transcripts.joins == nil {
+			s.transcripts.joins = make(map[string]*transcriptJoin)
+		}
+		s.transcripts.joins[windowID] = j
+	}
+	j.session = session
+	s.transcripts.mu.Unlock()
+	s.docEvent(windowID, j)
 }
 
 // DropAgentTranscript ends a window's join and gives back the claim it held, so
@@ -159,6 +221,10 @@ func (s *Session) releaseJoinLocked(j *transcriptJoin) {
 	if j.debounce != nil {
 		j.debounce.Stop()
 		j.debounce = nil
+	}
+	if j.docTimer != nil {
+		j.docTimer.Stop()
+		j.docTimer = nil
 	}
 	if j.watched && s.transcripts.watcher != nil {
 		s.transcripts.watcher.Unwatch(j.reader.Path(), s.transcriptWatchKey(j.windowID))
@@ -205,6 +271,13 @@ func (s *Session) readAgentTranscript(windowID string) bool {
 		return false
 	}
 
+	if j.session != "" {
+		// A store's session: the harness's reports raise its event.
+		return false
+	}
+	if j.format != harness.ReaderJSONL {
+		return s.readViewTranscript(windowID, j)
+	}
 	obs, fresh, err := j.reader.Read()
 	if err != nil {
 		// A path that is not a regular file now (a FIFO put in its place)
@@ -240,6 +313,114 @@ func (s *Session) readAgentTranscript(windowID string) bool {
 		return false
 	}
 	return s.applyTranscriptTurn(windowID, harnessID, obs.Turn)
+}
+
+// readViewTranscript reads a join whose format gives no turn state: it
+// notes growth for the transcript event, and nothing else. It decodes
+// nothing. A JSONL format grows by appends, and the end of its last whole
+// line (viewTailOffset) is the cursor of the event, as for Claude Code. A
+// document is rewritten whole, so its size and time say it changed, its
+// event carries no cursor, and it raises at most one event a second
+// (docEventGap).
+func (s *Session) readViewTranscript(windowID string, j *transcriptJoin) bool {
+	path := j.reader.Path()
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() {
+		if err == nil || os.IsNotExist(err) {
+			s.transcripts.mu.Lock()
+			j.missing++
+			drop := j.missing >= transcriptMissingLimit
+			s.transcripts.mu.Unlock()
+			if drop {
+				s.DropAgentTranscript(windowID)
+			}
+		}
+		return false
+	}
+	s.transcripts.mu.Lock()
+	j.missing = 0
+	changed := info.Size() != j.docSize || !info.ModTime().Equal(j.docMod)
+	j.docSize, j.docMod = info.Size(), info.ModTime()
+	s.transcripts.mu.Unlock()
+	if !changed {
+		return false
+	}
+	if !j.doc {
+		off, err := viewTailOffset(path)
+		if err == nil {
+			s.announceTranscript(windowID, j, off)
+		}
+		return false
+	}
+	s.docEvent(windowID, j)
+	return false
+}
+
+// docEventGap is the least time between two transcript events of a
+// document. A harness that rewrites a thread as it streams writes it many
+// times a second, and each event sends the reader to read it.
+const docEventGap = time.Second
+
+// docEvent raises a document's transcript event now, or once the gap since
+// the last one has passed.
+func (s *Session) docEvent(windowID string, j *transcriptJoin) {
+	s.transcripts.mu.Lock()
+	wait := docEventGap - time.Since(j.docEventAt)
+	if wait > 0 {
+		if j.docTimer == nil {
+			j.docTimer = time.AfterFunc(wait, func() {
+				s.transcripts.mu.Lock()
+				cur, ok := s.transcripts.joins[windowID]
+				if ok && cur == j {
+					j.docTimer = nil
+					j.docEventAt = time.Now()
+				}
+				s.transcripts.mu.Unlock()
+				if ok && cur == j {
+					s.emit(SessionEvent{Type: EventTranscript, Window: windowID})
+				}
+			})
+		}
+		s.transcripts.mu.Unlock()
+		return
+	}
+	j.docEventAt = time.Now()
+	s.transcripts.mu.Unlock()
+	s.emit(SessionEvent{Type: EventTranscript, Window: windowID})
+}
+
+// viewTailMax bounds how far back viewTailOffset looks for a newline. A last
+// line longer than this is not finished as far as the event is concerned.
+const viewTailMax = 16 << 20
+
+// viewTailOffset is the offset after the last newline of the file at path:
+// the end of its last whole line. It reads back from the end, a chunk at a
+// time, and reads none of the lines before the last.
+func viewTailOffset(path string) (int64, error) {
+	f, err := transcript.OpenRegular(path)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = f.Close() }()
+	info, err := f.Stat()
+	if err != nil {
+		return 0, err
+	}
+	buf := make([]byte, 64<<10)
+	defer clear(buf)
+	end := info.Size()
+	for stop := max(0, end-viewTailMax); end > stop; {
+		start := max(stop, end-int64(len(buf)))
+		n, err := f.ReadAt(buf[:end-start], start)
+		if err != nil && n < int(end-start) {
+			return 0, err
+		}
+		if i := bytes.LastIndexByte(buf[:n], '\n'); i >= 0 {
+			return start + int64(i) + 1, nil
+		}
+		end = start
+	}
+	return 0, nil
 }
 
 // applyTranscriptTurn publishes a turn as an agent state.
@@ -322,7 +503,7 @@ func (s *Session) hasTranscriptJoin(windowID string) bool {
 // with a transcript and no join yet. The search is throttled per window and only
 // ever runs for a window that is missing one, so a fully joined session does no
 // work here at all.
-func (s *Session) maintainAgentTranscripts(reg *harness.Registry, cwdOf func(ptyID string) (string, string)) {
+func (s *Session) maintainAgentTranscripts(reg *harness.Registry, cwdOf func(ptyID string) agentIdentity) {
 	if reg == nil {
 		return
 	}
@@ -356,6 +537,11 @@ func (s *Session) maintainAgentTranscripts(reg *harness.Registry, cwdOf func(pty
 			delete(s.transcripts.nextTry, id)
 		}
 	}
+	for id := range s.transcripts.viewTry {
+		if _, ok := live[id]; !ok {
+			delete(s.transcripts.viewTry, id)
+		}
+	}
 	s.transcripts.mu.Unlock()
 	for _, id := range stale {
 		s.DropAgentTranscript(id)
@@ -366,15 +552,17 @@ func (s *Session) maintainAgentTranscripts(reg *harness.Registry, cwdOf func(pty
 			continue
 		}
 		tr := reg.TranscriptFor(p.harnessID)
-		if tr == nil {
+		if tr == nil || tr.Reader != harness.ReaderJSONL {
+			// The view-only formats are searched across sessions, by
+			// Daemon.searchViewTranscripts.
 			continue
 		}
 		if !s.joinSearchDue(p.windowID) {
 			continue
 		}
-		cwd, version := cwdOf(p.ptyID)
-		if path, ok := searchTranscript(tr, cwd, version); ok {
-			_ = s.JoinAgentTranscript(p.windowID, p.harnessID, path, false)
+		id := cwdOf(p.ptyID)
+		if path, ok := searchTranscript(tr, id); ok {
+			_ = s.JoinAgentTranscriptAs(p.windowID, p.harnessID, tr.Reader, path, false)
 		}
 	}
 }
@@ -394,20 +582,30 @@ func (s *Session) joinSearchDue(windowID string) bool {
 	return true
 }
 
+// agentIdentity is what a searched transcript is checked against: the
+// agent's working directory, its build, and when its process started.
+type agentIdentity struct {
+	cwd, version string
+	// started is zero when the start time cannot be read.
+	started time.Time
+}
+
 // searchTranscript is the hookless join: find the file in the harness's
 // directory that belongs to this pane, and refuse when it cannot be sure.
 //
 // Refusing is the important half. A wrong join attributes one agent's state to
 // another pane, which is a confident lie, where no join is merely no state and
-// the pane behaves as if this source did not exist. So two files
+// the pane behaves as if this source did not exist. So two Claude Code files
 // that both verify means neither is used, and no amount of tie-breaking on
 // modification time is applied: whichever was written most recently is not
 // evidence of which pane is looking at it.
 //
 // This fails for two agents in one directory on one version. The hook is the
 // answer to that, and this is what runs until someone installs it.
-func searchTranscript(tr *harness.Transcript, cwd, version string) (string, bool) {
-	return searchTranscriptIn(tr.ExpandDir(cwd), tr, cwd, version)
+//
+// The other formats are searched for by Daemon.searchViewTranscripts.
+func searchTranscript(tr *harness.Transcript, id agentIdentity) (string, bool) {
+	return searchTranscriptIn(tr.ExpandDir(id.cwd), tr, id.cwd, id.version)
 }
 
 // searchTranscriptIn is searchTranscript with the directory already resolved, so
@@ -452,15 +650,17 @@ func searchTranscriptIn(dir string, tr *harness.Transcript, cwd, version string)
 // (".../share/claude/versions/2.1.222"), and the same string is a field on every
 // record in the file. It is a discriminator that costs a readlink and rules out
 // every transcript written by a different build.
-func paneAgentIdentity(info foregroundInfo) (cwd, version string) {
+func paneAgentIdentity(info foregroundInfo) agentIdentity {
+	var id agentIdentity
 	if info.pid <= 0 {
-		return "", ""
+		return id
 	}
 	if target, err := os.Readlink("/proc/" + strconv.Itoa(info.pid) + "/cwd"); err == nil {
-		cwd = target
+		id.cwd = target
 	}
 	if info.exe != "" {
-		version = filepath.Base(info.exe)
+		id.version = filepath.Base(info.exe)
 	}
-	return cwd, version
+	id.started, _ = procinfo.StartedAt(info.pid)
+	return id
 }

@@ -59,6 +59,8 @@ func (m *OS) appendLog(entry LogMessage) {
 // LogInfo logs an informational message. INFO logs are skipped entirely unless
 // verbose logging is enabled, so the format string and args are never evaluated
 // into the ring buffer in the common (non-debug) case.
+//
+//go:noinline
 func (m *OS) LogInfo(format string, args ...any) {
 	if !verboseLog {
 		return
@@ -145,6 +147,8 @@ func (m *OS) LogWarn(format string, args ...any) {
 }
 
 // LogError logs an error message.
+//
+//go:noinline
 func (m *OS) LogError(format string, args ...any) {
 	m.Log("ERROR", format, args...)
 }
@@ -195,6 +199,8 @@ func notificationLifetime(notifType string, requested time.Duration, s *config.S
 //
 // Severity comes from notifType, and duration is a floor rather than the whole
 // answer (see notificationLifetime).
+//
+//go:noinline
 func (m *OS) ShowNotification(message, notifType string, duration time.Duration) {
 	m.showNotification(message, notifType, "", duration, nil)
 }
@@ -357,8 +363,41 @@ func (m *OS) DismissNotifications() bool {
 	if len(m.Notifications) == 0 {
 		return false
 	}
+	for _, n := range m.Notifications {
+		if isRestartNotice(n.Target) {
+			m.restartLater = true
+		}
+	}
 	m.Notifications = nil
 	return true
+}
+
+// ClearNotification takes the live messages that read exactly message off the
+// dock and reports whether there were any.
+//
+// A notice that names a state, such as "ZOOM", has to leave when the state
+// does. ShowNotification with an empty message cannot do that: an empty
+// message draws nothing and removes nothing, so the notice stayed up for its
+// whole lifetime after the state had ended. Only matching entries go, so a
+// message that arrived in the meantime keeps its place.
+//
+// Only tuios's own notices match. A pane writes the text of its notifications
+// (OSC 9, tuios notify), so a pane that sent "ZOOM" carries a Target and keeps
+// its message when the user unzooms.
+func (m *OS) ClearNotification(message string) bool {
+	if len(m.Notifications) == 0 {
+		return false
+	}
+	kept := m.Notifications[:0]
+	for _, n := range m.Notifications {
+		if n.Target != nil || n.Message != message {
+			kept = append(kept, n)
+		}
+	}
+	removed := len(kept) != len(m.Notifications)
+	clear(m.Notifications[len(kept):])
+	m.Notifications = kept
+	return removed
 }
 
 // dismissVisibleNotification pops the message the block is currently drawing,
@@ -368,6 +407,10 @@ func (m *OS) DismissNotifications() bool {
 func (m *OS) dismissVisibleNotification() bool {
 	if len(m.Notifications) == 0 {
 		return false
+	}
+	// Dismissing the version notice is the "later" answer, for this run.
+	if isRestartNotice(m.Notifications[len(m.Notifications)-1].Target) {
+		m.restartLater = true
 	}
 	m.Notifications = m.Notifications[:len(m.Notifications)-1]
 	return true

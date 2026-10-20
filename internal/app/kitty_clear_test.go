@@ -5,11 +5,10 @@ import (
 	"encoding/base64"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
-	"github.com/Gaurav-Gosain/tuios/internal/vt"
+	"tuios.dev/vt"
 )
 
 // TestKittyClearOnED2 reproduces the youterm multi-thumbnail scrolling bug.
@@ -55,18 +54,12 @@ func TestKittyClearOnED2(t *testing.T) {
 		)
 	})
 
-	tmpFile, err := os.CreateTemp("", "youterm-thumb-test-")
+	tmpFile, err := os.CreateTemp(kittyTestTempDir(t), "youterm-thumb-test-")
 	if err != nil {
 		t.Fatal(err)
 	}
 	_, _ = tmpFile.Write(bytes.Repeat([]byte{0x00}, 100))
 	tmpFile.Close()
-	defer os.Remove(tmpFile.Name())
-	// The package's TestMain (see main_test.go) redirects HOME under TMPDIR,
-	// which makes kittyTempDirs ignore TMPDIR itself (it would otherwise treat
-	// the whole home directory as temporary). Naming this file's own directory
-	// keeps it recognized as temporary regardless.
-	useKittyTempDirs(t, filepath.Dir(tmpFile.Name()))
 	encodedPath := base64.StdEncoding.EncodeToString([]byte(tmpFile.Name()))
 
 	frame := func() []byte {
@@ -146,16 +139,12 @@ func TestKittyNoStaleAccumulation(t *testing.T) {
 
 	_, _ = emu.Write([]byte("\x1b[?1049h"))
 
-	tmpFile, err := os.CreateTemp("", "youterm-thumb-accum-test-")
+	tmpFile, err := os.CreateTemp(kittyTestTempDir(t), "youterm-thumb-accum-test-")
 	if err != nil {
 		t.Fatal(err)
 	}
 	_, _ = tmpFile.Write(bytes.Repeat([]byte{0x00}, 100))
 	tmpFile.Close()
-	defer os.Remove(tmpFile.Name())
-	// See the matching comment in TestKittyClearOnED2: TestMain puts HOME
-	// under TMPDIR, so kittyTempDirs ignores TMPDIR unless told otherwise.
-	useKittyTempDirs(t, filepath.Dir(tmpFile.Name()))
 	encodedPath := base64.StdEncoding.EncodeToString([]byte(tmpFile.Name()))
 
 	frame := func() []byte {

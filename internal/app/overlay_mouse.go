@@ -67,6 +67,16 @@ func (m *OS) OverlayMouseClick(x, y int, right bool) (bool, tea.Cmd) {
 	// Clicking a panel brings it to the front.
 	m.raiseOverlay(h.Kind)
 
+	// The cockpit fills the screen and is not dragged: a click selects, a
+	// second one goes. See cockpit.go.
+	if h.Kind == "inbox" {
+		if right {
+			return true, nil
+		}
+		cmd, _ := m.CockpitClick(x, y)
+		return true, cmd
+	}
+
 	lx, ly := x-h.OriginX, y-h.OriginY
 
 	// Right-click anywhere on the panel grabs it for dragging.
@@ -146,6 +156,10 @@ func (m *OS) OverlayMouseMotion(x, y int) bool {
 	if !ok {
 		return false
 	}
+	if h.Kind == "inbox" {
+		m.CockpitHover(x, y)
+		return true
+	}
 	lx, ly := x-h.OriginX, y-h.OriginY
 	if h.Kind == "accent" {
 		// Only a held button paints in the picker. Bare hover must not, or the
@@ -180,6 +194,8 @@ func (m *OS) overlayRowHover(kind string, idx int) {
 		if idx != m.ThemePickerSelected {
 			m.ThemePickerMove(idx - m.ThemePickerSelected)
 		}
+	case "themeeditor":
+		m.themeEditor.cursor[m.themeEditor.tab] = idx
 	case "glyphpicker":
 		if idx != m.GlyphPickerSelected {
 			m.GlyphPickerMove(idx - m.GlyphPickerSelected)
@@ -221,6 +237,10 @@ func (m *OS) overlayRowHover(kind string, idx int) {
 		m.QuitMenuSelected = idx
 	case "sessionclose":
 		m.SessionCloseSelected = idx
+	case overlayKindRestart:
+		if m.restart.phase == restartConfirm {
+			m.restart.selected = idx
+		}
 	case overlayKindLogs:
 		m.LogSelected = idx
 	case "filedialog":
@@ -281,7 +301,7 @@ func (m *OS) OverlayMouseWheel(x, y int, up bool) bool {
 	case "agentmail":
 		m.AgentMailMove(wheelDelta(up))
 	case "inbox":
-		m.InboxMove(wheelDelta(up))
+		m.CockpitWheel(x, up)
 	case "workspace":
 		n := len(FilterWorkspaceItems(m.WorkspaceSwitcherItems, m.WorkspaceSwitcherQuery))
 		m.WorkspaceSwitcherMove(wheelDelta(up), n)
@@ -300,6 +320,8 @@ func (m *OS) OverlayMouseWheel(x, y int, up bool) bool {
 		m.AggregateViewMove(wheelDelta(up))
 	case "sessionclose":
 		m.SessionCloseMove(wheelDelta(up))
+	case overlayKindRestart:
+		m.DaemonRestartMove(wheelDelta(up))
 	case "filedialog":
 		m.FileConfirmMove(wheelDelta(up))
 	case "accent":
@@ -346,6 +368,8 @@ func (m *OS) setOverlayTab(kind string, i int) {
 		m.SettingsScroll = 0
 	case "keybinds":
 		m.KeybindSetTab(i)
+	case "themeeditor":
+		m.ThemeEditorTab(i - m.themeEditor.tab)
 	}
 }
 
@@ -360,6 +384,8 @@ func (m *OS) stepOverlayTab(kind string, delta int) {
 		m.setOverlayTab(kind, m.SettingsCategory+delta)
 	case "keybinds":
 		m.setOverlayTab(kind, m.KeybindTab+delta)
+	case "themeeditor":
+		m.ThemeEditorTab(delta)
 	}
 }
 
@@ -415,6 +441,9 @@ func (m *OS) overlayRowClick(kind string, row overlayRowHit, lx, ly int) tea.Cmd
 	case "themepicker":
 		m.ThemePickerSelected = row.Idx
 		return m.ThemePickerApplySelection()
+	case "themeeditor":
+		m.themeEditor.cursor[m.themeEditor.tab] = row.Idx
+		m.ThemeEditorPick()
 	case "glyphpicker":
 		m.GlyphPickerSelected = row.Idx
 		return m.GlyphPickerApplySelection()
@@ -434,11 +463,23 @@ func (m *OS) overlayRowClick(kind string, row overlayRowHit, lx, ly int) tea.Cmd
 		// switch" was reportable at all.
 		m.SessionSwitcherSelected = row.Idx
 		m.sessionSwitcherActivate(row.Idx)
+		// A session on another machine opens off the Update goroutine.
+		return m.TakeSidebarCmd()
 	case "agentmail":
 		// A click opens, exactly like enter on the selected row.
 		m.AgentMailSelect(row.Idx)
 		return m.AgentMailOpenSelected()
 	case "inbox":
+		if m.Inbox.agents.on {
+			// A click with the bulk allow's sheet up closes the sheet,
+			// as any key but enter does, and goes nowhere.
+			if m.Inbox.agents.sheet != nil {
+				m.Inbox.agents.sheet = nil
+				return nil
+			}
+			m.InboxSelect(row.Idx)
+			return m.InboxAgentsGo()
+		}
 		// A click goes, exactly like enter on the selected row. A click on a
 		// group heading selects nothing and so does nothing.
 		if rows := m.inboxRows(); row.Idx < 0 || row.Idx >= len(rows) || rows[row.Idx].item == nil {
@@ -485,6 +526,8 @@ func (m *OS) overlayRowClick(kind string, row overlayRowHit, lx, ly int) tea.Cmd
 	case "sessionclose":
 		m.SessionCloseSelected = row.Idx
 		return m.SessionCloseActivate(row.Idx)
+	case overlayKindRestart:
+		return m.DaemonRestartActivate(row.Idx)
 	case "filedialog":
 		m.filePrompt.Selected = row.Idx
 		return m.FileConfirmActivate(row.Idx)
@@ -617,6 +660,12 @@ func (m *OS) closeOverlay(kind string) {
 		// Click-away cancels, like esc. Dismissing is the safe answer, so it is
 		// the one an ambiguous gesture gets.
 		m.CloseSessionClose()
+	case overlayKindRestart:
+		// The same rule. A failure that left no daemon is the exception:
+		// CloseDaemonRestart quits then, and an ambiguous gesture must not.
+		if !(m.restart.phase == restartFailed && m.restart.lost) {
+			_ = m.CloseDaemonRestart()
+		}
 	case "filedialog":
 		// Same rule, and it matters more here: the ambiguous gesture must never
 		// be the one that removes a file.

@@ -1,8 +1,10 @@
 package tuie2e
 
 import (
+	"encoding/json"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -43,19 +45,7 @@ func attachOnBuild(t *testing.T, base string, env []string, farSession string) *
 	toggleSidebarViaPalette(t, term)
 	railShows(t, term, farSession)
 	time.Sleep(insertGuard)
-	s := term.Screen()
-	_, rows := s.Size()
-	row := -1
-	for r := range rows {
-		if c := strings.Index(s.Line(r), farSession); c >= 0 && c < sidebarBand {
-			row = r
-			break
-		}
-	}
-	if row < 0 {
-		t.Fatalf("no remote session row for %s:\n%s", farSession, term.Snapshot())
-	}
-	mouseClick(t, term, 3, row, tuitest.MouseLeft, 0)
+	clickRailSession(t, term, farSession)
 	// The rail marks the far session as the one this client is on. It used to
 	// name this machine "@ local" in a group of its own; the section is laid
 	// out by machine now and the mark moves in place. See sidebar_hosts.go.
@@ -64,6 +54,48 @@ func attachOnBuild(t *testing.T, base string, env []string, farSession string) *
 	// so a caller types straight into the far session's shell.
 	time.Sleep(insertGuard)
 	return term
+}
+
+// clickRailSession clicks the rail row that names session.
+func clickRailSession(t *testing.T, term *tuitest.Terminal, session string) {
+	t.Helper()
+	s := term.Screen()
+	_, rows := s.Size()
+	row := -1
+	for r := range rows {
+		if c := strings.Index(s.Line(r), session); c >= 0 && c < sidebarBand {
+			row = r
+			break
+		}
+	}
+	if row < 0 {
+		t.Fatalf("no remote session row for %s:\n%s", session, term.Snapshot())
+	}
+	mouseClick(t, term, 3, row, tuitest.MouseLeft, 0)
+}
+
+// freezeTheLink stops the far side of every open link without ending it. The
+// pipe stays open and carries nothing, which is what a link looks like after
+// a laptop wakes from sleep: no end of it has been told, and the fake ssh has
+// no keepalives to find out. Only the link's own heartbeat can.
+func freezeTheLink(t *testing.T) {
+	t.Helper()
+	out, err := exec.Command("pgrep", "-f", tuiosBin+" stdio-proxy").Output()
+	pids := strings.Fields(string(out))
+	if err != nil || len(pids) == 0 {
+		t.Fatalf("find the link's proxy: %v", err)
+	}
+	for _, pid := range pids {
+		if out, err := exec.Command("kill", "-STOP", pid).CombinedOutput(); err != nil {
+			t.Fatalf("stop the link's proxy %s: %v\n%s", pid, err, out)
+		}
+	}
+	t.Cleanup(func() {
+		for _, pid := range pids {
+			_ = exec.Command("kill", "-CONT", pid).Run()
+			_ = exec.Command("kill", "-KILL", pid).Run()
+		}
+	})
 }
 
 // breakTheLink kills the far side of every open link, which is what an ssh
@@ -331,4 +363,236 @@ func TestTheDaemonSaysWhyALinkDropped(t *testing.T) {
 		t.Errorf("ASSERTION: the listing does not say what happened to the link:\n%s", last)
 	}
 	t.Logf("tuios hosts after a drop:\n%s", last)
+}
+
+// TestASilentLinkIsFoundAndTheRailStillOpensItsSessions is #720.
+//
+// After a laptop wakes, the link to a host is an ssh whose TCP connection is
+// gone and nobody has noticed. The rail still says the host is up. A click on
+// one of its sessions used to freeze the screen while the attach waited on the
+// dead pipe, and then fail. A host that was not up dropped the click without a
+// word.
+//
+// First a click on the frozen link is replaced by a click on a session here,
+// and the late dial of the first must not pull the person away. Then a
+// click on a session on a link that is frozen and looks up. The
+// click asks the daemon to retry the host, which pings the link, finds it
+// silent, ends it and dials it again. The session opens on the new link. The
+// second half leaves an attached session idle on a frozen link and nobody
+// asks: the heartbeat must find it alone, well inside ssh's own forty-five
+// seconds, which the fake ssh does not even have.
+//
+// How it could pass wrongly: the heartbeat alone ends a frozen link too, so
+// the click could open the session without the retry it sends. The heartbeat
+// pings only after fifteen quiet seconds and then needs two missed pings, at
+// least twenty-one seconds after the freeze, so the click is given eighteen.
+// The link's control calls also end a link that stops answering, but only
+// after three failed calls, and the rail is closed in the second half so no
+// listing is polled. The times are logged and the frames saved under
+// artifactDir.
+func TestASilentLinkIsFoundAndTheRailStillOpensItsSessions(t *testing.T) {
+	base := t.TempDir()
+	remote := remoteMachine(t)
+	// Two hosts reach the same far daemon. The second, spare, can be made
+	// unreachable on its own: its dials fail while the file spare-down
+	// exists.
+	spareDown := filepath.Join(base, "spare-down")
+	ssh := writeSpareSSH(t, base, writeFakeSSHTo(t, base, remote), spareDown)
+	writeOneHostConfig(t, base, tuiosBin)
+	appendSpareHost(t, base, tuiosBin)
+	env := []string{"TUIOS_SSH=" + ssh}
+
+	for _, name := range []string{"far-quiet", "far-other"} {
+		if out, err := tuiosCLI(t, remote, "new", name, "--detach"); err != nil {
+			t.Fatalf("create the far session %s: %v\n%s", name, err, out)
+		}
+	}
+	// A second session here, for the click that replaces one on the host.
+	if out, err := tuiosCLIEnv(t, base, env, "new", "elsewhere", "--detach", "--cwd", t.TempDir()); err != nil {
+		t.Fatalf("create the second local session: %v\n%s", err, out)
+	}
+	term := startIn(t, base, startOpts{args: []string{"new", "home"}, env: env})
+	waitBoot(t, term)
+	toggleSidebarViaPalette(t, term)
+	railShows(t, term, "far-quiet")
+	time.Sleep(insertGuard)
+	art := artifactDir(t)
+	save := func(name string) {
+		if err := os.WriteFile(filepath.Join(art, name), []byte(term.Snapshot()), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// A click the person replaces is dropped. They click a session of the
+	// frozen host, then a session here. The dial for the first click lands
+	// when the link is back, and it must not pull them off the second.
+	railShows(t, term, "elsewhere")
+	time.Sleep(insertGuard)
+	freezeTheLink(t)
+	clickRailSession(t, term, "far-quiet")
+	if err := term.WaitForText("Connecting to build", uiTimeout); err != nil {
+		t.Fatalf("ASSERTION: a click on a session of a frozen host shows nothing: %v\n%s", err, term.Snapshot())
+	}
+	clickRailSession(t, term, "elsewhere")
+	waitRailCurrent(t, term, "elsewhere")
+	if err := term.WaitFor(func(s tuitest.Screen) bool { return railCurrentIs(s, "far-quiet") }, 15*time.Second); err == nil {
+		t.Fatalf("ASSERTION: the click the person replaced pulled them off the session they chose after it\n%s", term.Snapshot())
+	}
+	if !railCurrentIs(term.Screen(), "elsewhere") {
+		t.Fatalf("ASSERTION: the client left the session the person chose\n%s", term.Snapshot())
+	}
+	save("replaced-click.txt")
+
+	freezeTheLink(t)
+	start := time.Now()
+	clickRailSession(t, term, "far-quiet")
+	if err := term.WaitFor(func(s tuitest.Screen) bool {
+		text := s.Text()
+		return strings.Contains(text, "Connecting to build") || strings.Contains(text, "Reconnecting to build")
+	}, uiTimeout); err != nil {
+		t.Fatalf("ASSERTION: a click on a session of a frozen host shows nothing: %v\n%s", err, term.Snapshot())
+	}
+	save("click-waits.txt")
+	if err := term.WaitFor(func(s tuitest.Screen) bool { return railCurrentIs(s, "far-quiet") }, 18*time.Second); err != nil {
+		t.Fatalf("ASSERTION: the session on a frozen host never opened after a click: %v\n%s", err, term.Snapshot())
+	}
+	t.Logf("a click on a frozen link opened the session after %v", time.Since(start).Round(100*time.Millisecond))
+	save("click-opened.txt")
+	time.Sleep(insertGuard)
+	runInShell(t, term, "echo AFTER-CL\"\"ICK-7", "AFTER-CLICK-7", shellTimeout)
+
+	toggleSidebarViaPalette(t, term)
+	freezeTheLink(t)
+	start = time.Now()
+	if err := term.WaitForText("Reconnecting to build", 40*time.Second); err != nil {
+		t.Fatalf("ASSERTION: nothing found an idle frozen link in 40 seconds: %v\n%s", err, term.Snapshot())
+	}
+	t.Logf("the heartbeat found an idle frozen link after %v", time.Since(start).Round(100*time.Millisecond))
+	save("idle-found.txt")
+	if err := term.WaitForText("The link to build is back", 30*time.Second); err != nil {
+		t.Fatalf("ASSERTION: the link did not come back after the heartbeat ended it: %v\n%s", err, term.Snapshot())
+	}
+	t.Logf("the link was back after %v", time.Since(start).Round(100*time.Millisecond))
+	save("idle-back.txt")
+	runInShell(t, term, "echo AFTER-ID\"\"LE-8", "AFTER-IDLE-8", shellTimeout)
+	if out, _ := tuiosCLI(t, base, "hosts"); !strings.Contains(out, "stopped answering") {
+		t.Errorf("ASSERTION: the listing does not say the host stopped answering:\n%s", out)
+	}
+	alive(t, term, "after two frozen links")
+
+	// The attached host's link drops while a click waits for another
+	// host. The client used to read the put-off reconnect as a failed one
+	// and quit. It must keep the panes until the click decides: here the
+	// click waits for spare, which is down, then lands when spare is back.
+	toggleSidebarViaPalette(t, term)
+	railShows(t, term, "spare")
+	time.Sleep(insertGuard)
+	drops := hostDrops(t, base, "build")
+	if err := os.WriteFile(spareDown, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	freezeTheLink(t)
+	start = time.Now()
+	clickRailSessionUnder(t, term, "spare", "far-other")
+	deadline := time.Now().Add(45 * time.Second)
+	for hostDrops(t, base, "build") == drops {
+		if time.Now().After(deadline) {
+			t.Fatalf("the link to build never dropped under the waiting click\n%s", term.Snapshot())
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	t.Logf("the attached link dropped %v after the freeze, with the click waiting", time.Since(start).Round(100*time.Millisecond))
+	time.Sleep(3 * time.Second)
+	alive(t, term, "after the attached link dropped while a click waited")
+	save("drop-under-click.txt")
+	if err := os.Remove(spareDown); err != nil {
+		t.Fatal(err)
+	}
+	if err := term.WaitFor(func(s tuitest.Screen) bool {
+		r := railRowUnder(s, "spare", "far-other")
+		return r >= 0 && strings.HasPrefix(s.Line(r), "▎")
+	}, 45*time.Second); err != nil {
+		t.Fatalf("ASSERTION: the click never landed once spare was back: %v\n%s", err, term.Snapshot())
+	}
+	save("click-landed-after-drop.txt")
+	time.Sleep(insertGuard)
+	runInShell(t, term, "echo AFTER-SP\"\"ARE-9", "AFTER-SPARE-9", shellTimeout)
+	alive(t, term, "after the click landed")
+}
+
+// writeSpareSSH wraps the ssh stand-in so a dial to spare's address fails
+// as ssh does for a machine it cannot reach, while the file down exists.
+func writeSpareSSH(t *testing.T, dir, inner, down string) string {
+	t.Helper()
+	path := filepath.Join(dir, "fake-ssh-spare")
+	body := "#!/bin/sh\nfor a in \"$@\"; do\n  case \"$a\" in *@sparebox) [ -e '" + down + "' ] && {\n" +
+		"    echo 'ssh: connect to host sparebox port 22: No route to host' >&2; exit 255; } ;;\n  esac\ndone\n" +
+		"exec '" + inner + "' \"$@\"\n"
+	if err := os.WriteFile(path, []byte(body), 0o700); err != nil {
+		t.Fatalf("write the ssh stand-in: %v", err)
+	}
+	return path
+}
+
+// appendSpareHost adds the host spare to the config writeOneHostConfig
+// wrote. Its stand-in reaches the same far daemon as build.
+func appendSpareHost(t *testing.T, base, tuiosPath string) {
+	t.Helper()
+	path := filepath.Join(base, "XDG_CONFIG_HOME", "tuios", "config.toml")
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatalf("open config: %v", err)
+	}
+	defer f.Close()
+	if _, err := f.WriteString("\n[hosts.spare]\naddr = \"someone@sparebox\"\ncommand = \"" + tuiosPath + "\"\nconnect_timeout = 5\n"); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+}
+
+// hostDrops is how many times the daemon at base saw its link to host drop.
+func hostDrops(t *testing.T, base, host string) int {
+	t.Helper()
+	out, _ := tuiosCLI(t, base, "call", "list-hosts")
+	var res struct {
+		Hosts []struct {
+			Host  string `json:"host"`
+			Drops int    `json:"drops"`
+		} `json:"hosts"`
+	}
+	_ = json.Unmarshal([]byte(out), &res)
+	for _, h := range res.Hosts {
+		if h.Host == host {
+			return h.Drops
+		}
+	}
+	return 0
+}
+
+// railRowUnder is the screen row of session in the rail group of host, which
+// another group may also list, or -1.
+func railRowUnder(s tuitest.Screen, host, session string) int {
+	_, rows := s.Size()
+	in := false
+	for r := range rows {
+		line := s.Line(r)
+		if c := strings.Index(line, "▾ "); c >= 0 && c < sidebarBand {
+			in = strings.HasPrefix(strings.TrimSpace(line[c+len("▾ "):]), host+" ")
+			continue
+		}
+		if c := strings.Index(line, session); in && c >= 0 && c < sidebarBand {
+			return r
+		}
+	}
+	return -1
+}
+
+// clickRailSessionUnder clicks the row named session in the rail group of
+// host.
+func clickRailSessionUnder(t *testing.T, term *tuitest.Terminal, host, session string) {
+	t.Helper()
+	r := railRowUnder(term.Screen(), host, session)
+	if r < 0 {
+		t.Fatalf("no row %s under %s:\n%s", session, host, term.Snapshot())
+	}
+	mouseClick(t, term, 3, r, tuitest.MouseLeft, 0)
 }

@@ -133,3 +133,53 @@ func toRGBA8(c color.Color) color.RGBA {
 	r, g, b, _ := c.RGBA()
 	return color.RGBA{R: uint8(r >> 8), G: uint8(g >> 8), B: uint8(b >> 8), A: 0xFF}
 }
+
+// FixLightness moves c's OKLab lightness, and only its lightness, until c
+// clears floor against bg. Hue and chroma stay, so a fixed red is a lighter or
+// darker red, not a pink. Both directions are tried and the smaller move that
+// clears wins. Contrast is measured on the colours the depth shows, so at 256
+// colours the palette entries clear the floor. A colour that already clears
+// comes back as it is. When no lightness clears it, a saturated colour that
+// cannot get light or dark enough, chroma goes too, as little as clears.
+func FixLightness(c, bg color.Color, floor float64) color.Color {
+	ground := Shown(bg)
+	ratio := func(x color.Color) float64 { return ContrastRatio(Shown(x), ground) }
+	if ratio(c) >= floor {
+		return c
+	}
+	start := toLab(c)
+	var best color.Color
+	bestMove, bestRatio := math.Inf(1), 0.0
+	for _, step := range []float64{0.005, -0.005} {
+		l := start
+		for {
+			l.l = math.Max(0, math.Min(1, l.l+step))
+			out := l.rgba()
+			r, move := ratio(out), math.Abs(l.l-start.l)
+			if r >= floor {
+				if move < bestMove {
+					best, bestMove, bestRatio = out, move, r
+				}
+				break
+			}
+			if l.l == 0 || l.l == 1 {
+				if math.IsInf(bestMove, 1) && r > bestRatio {
+					best, bestRatio = out, r
+				}
+				break
+			}
+		}
+	}
+	if !math.IsInf(bestMove, 1) {
+		return best
+	}
+	for k := 1; k <= 20; k++ {
+		for _, end := range []float64{1, 0} {
+			l := lab{end, start.a * float64(20-k) / 20, start.b * float64(20-k) / 20}
+			if out := l.rgba(); ratio(out) >= floor {
+				return out
+			}
+		}
+	}
+	return best
+}

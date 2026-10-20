@@ -51,14 +51,18 @@ func (m *OS) ApplyReloadedConfig(cfg *config.UserConfig) tea.Cmd {
 	}
 	// Runs on the Bubble Tea goroutine, so applying it to this session's
 	// settings is single-threaded and reaches nobody else's session.
-	themeBefore := theme.CurrentThemeID()
+	if m.ReloadFilter != nil {
+		cfg = m.ReloadFilter(cfg)
+	}
+	themeBefore := theme.Generation()
 	config.ApplyAppearanceConfig(cfg, &m.Settings)
+	m.ListKeys = listKeymap(cfg)
 	// ApplyAppearanceConfig switches the theme package, which recolours the
 	// chrome, but each pane's emulator holds its own copy of the palette. The
 	// theme picker pushes the new one into every pane (applyTheme); this path
 	// did not, so a theme saved in any config file recoloured the borders and
 	// left every pane, and all output after the save, in the old colours.
-	if theme.CurrentThemeID() != themeBefore {
+	if theme.Generation() != themeBefore {
 		m.UpdateAllWindowThemes()
 	}
 	// A reload is the one time the display's rate is looked for again, after
@@ -911,10 +915,27 @@ func GetCommandPaletteItems(s *config.Settings) []CommandPaletteItem {
 			},
 		},
 		{
+			Name:     "Keybind preset",
+			Bind:     "open_keybind_presets",
+			Category: "Session",
+			Action: func(m *OS) (*OS, tea.Cmd) {
+				m.OpenKeybindPresets()
+				return m, nil
+			},
+		},
+		{
 			Name:     "Theme picker",
 			Category: "Session",
 			Action: func(m *OS) (*OS, tea.Cmd) {
 				m.OpenThemePicker()
+				return m, nil
+			},
+		},
+		{
+			Name:     "Edit theme",
+			Category: "Session",
+			Action: func(m *OS) (*OS, tea.Cmd) {
+				m.OpenThemeEditor(theme.CurrentThemeID(), false, "")
 				return m, nil
 			},
 		},
@@ -952,25 +973,22 @@ func GetCommandPaletteItems(s *config.Settings) []CommandPaletteItem {
 			},
 		},
 		{
+			// The way to move the daemon to the build an update installed.
+			// Left out on a client that cannot restart its daemon.
+			Name:     paletteRestartDaemonName,
+			Shortcut: "stops programs",
+			Bind:     "restart_daemon",
+			Category: "Session",
+			Action: func(m *OS) (*OS, tea.Cmd) {
+				m.OpenDaemonRestart()
+				return m, nil
+			},
+		},
+		{
 			Name:     "Reload config",
 			Category: "Session",
 			Action: func(m *OS) (*OS, tea.Cmd) {
-				configPath, err := config.GetConfigPath()
-				if err != nil {
-					m.ShowNotification("Config path error: "+err.Error(), "error", 0)
-					return m, nil
-				}
-				newCfg, err := config.ReloadConfig(configPath)
-				if err != nil {
-					// The running config stands. Saying so is the point: a
-					// reload that quietly did nothing reads as a reload that
-					// worked.
-					m.ShowNotification("Config not reloaded: "+err.Error(), "error", 0)
-					return m, nil
-				}
-				cmd := m.ApplyReloadedConfig(newCfg)
-				m.ShowNotification("Config reloaded", "success", 0)
-				return m, cmd
+				return m, m.ReloadConfigFromDisk()
 			},
 		},
 		{
@@ -1029,7 +1047,7 @@ func GetCommandPaletteItems(s *config.Settings) []CommandPaletteItem {
 		},
 		{
 			// The Inbox: everything waiting for the person, in every session.
-			Name:     "Agents: Inbox, what is waiting for you",
+			Name:     "Agents: what needs you",
 			Shortcut: "prefix+i",
 			Bind:     "prefix_inbox",
 			Category: paletteCategoryAgents,
@@ -1071,7 +1089,7 @@ func GetCommandPaletteItems(s *config.Settings) []CommandPaletteItem {
 		{
 			// prefix+M had no palette row; "open mailbox" above opens a
 			// different view, every thread rather than mail for you.
-			Name:     "Agents: Inbox, mail for you",
+			Name:     "Agents: mail for you",
 			Shortcut: "prefix+M",
 			Bind:     "prefix_mail",
 			Category: paletteCategoryAgents,

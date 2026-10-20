@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"strings"
 
-	"github.com/Gaurav-Gosain/tuios/internal/config"
 	"github.com/Gaurav-Gosain/tuios/internal/theme"
 )
 
@@ -27,7 +26,7 @@ import (
 const maxThemeList = 100
 
 // verbListThemes reports the registered themes, and describes one when asked.
-func (d *Daemon) verbListThemes(_ *connState, params json.RawMessage) (any, *verbError) {
+func (d *Daemon) verbListThemes(cs *connState, params json.RawMessage) (any, *verbError) {
 	var p struct {
 		Session string `json:"session"`
 		Theme   string `json:"theme"`
@@ -65,15 +64,24 @@ func (d *Daemon) verbListThemes(_ *connState, params json.RawMessage) (any, *ver
 	// its own tint is not the attached client's.
 	if sess := d.findTargetSession(p.Session); sess != nil {
 		out["session"] = sess.Name()
-		if v, ok := sess.GetOption("appearance.theme"); ok {
+		if v, source, ok := d.optionsFor(cs, sess).lookup("appearance.theme"); ok {
 			out["active"] = v
-			out["active_source"] = "session"
-		} else if opt, ok := config.LookupOption("appearance.theme"); ok {
-			out["active"] = opt.Default
-			out["active_source"] = "default"
+			out["active_source"] = source
 		}
 	} else if p.Session != "" {
 		return nil, mustResolve(d, p.Session)
+	}
+
+	// Omarchy, when it is installed or asked for. With no theme set, tuios
+	// follows it, and the person needs to be able to see that.
+	active, _ := out["active"].(string)
+	if st := theme.ReadOmarchyStatus(); st.Installed || active == theme.OmarchyID {
+		out["omarchy"] = map[string]any{
+			"installed": st.Installed,
+			"dir":       st.Dir,
+			"theme":     st.Theme,
+			"followed":  st.Installed && (active == "" || active == theme.OmarchyID),
+		}
 	}
 
 	// A caller that named a theme asked about that theme. Answering with a

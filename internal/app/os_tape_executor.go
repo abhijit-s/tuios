@@ -17,8 +17,8 @@ import (
 	"github.com/Gaurav-Gosain/tuios/internal/tape"
 	"github.com/Gaurav-Gosain/tuios/internal/terminal"
 	"github.com/Gaurav-Gosain/tuios/internal/theme"
-	"github.com/Gaurav-Gosain/tuios/internal/vt"
 	uv "github.com/charmbracelet/ultraviolet"
+	"tuios.dev/vt"
 )
 
 // scriptDoneLinger is how long the "DONE" completion indicator stays on screen
@@ -1023,12 +1023,12 @@ func (m *OS) SetTheme(themeName string) error {
 	// Update terminal colors for all windows
 	for _, w := range m.Windows {
 		if w != nil && w.Terminal != nil {
-			if theme.IsEnabled() {
+			if fg, _, cur, pal, ok := theme.EmulatorColors(); ok {
 				w.Terminal.SetThemeColors(
-					theme.TerminalFg(),
+					fg,
 					nil, // Always use transparent background
-					theme.TerminalCursor(),
-					theme.GetANSIPalette(),
+					cur,
+					pal,
 				)
 			} else {
 				// Disable theme colors
@@ -1610,4 +1610,14 @@ func (m *OS) capturePane(windowTarget, flags string) (string, error) {
 	// A pane on a host that draws kitty placeholders keeps them in its
 	// grid; a capture is text and gets blanks in their place.
 	return vt.StripKittyPlaceholders(content), nil
+}
+
+// LeaderKeyPress is the leader key as the key press it is, for send_prefix,
+// which hands it to the pane the way a second press of the leader does.
+func (m *OS) LeaderKeyPress() tea.KeyPressMsg {
+	leader := m.Settings.LeaderKey
+	if leader == "" {
+		leader = config.DefaultLeaderKey
+	}
+	return m.parseKeyToMessage(leader)
 }

@@ -51,6 +51,10 @@ type motionState struct {
 	ticking  bool
 	gen      uint64
 	interval time.Duration
+	// due is when the frame on its way, or the last one delivered, was due.
+	// The next is due one interval after it, not one interval after the
+	// frame was handled. See nextMotionWait.
+	due time.Time
 
 	// scrim, fade and shimmer are the shades each pass carries cells with.
 	// Separate, because each carries toward a different colour or by a
@@ -73,6 +77,7 @@ type motionFrameMsg struct{ gen uint64 }
 // which is the case on every message of an idle session.
 func (m *OS) motionCmd() tea.Cmd {
 	m.trackModalOverlays()
+	m.noticeThemeChange()
 	want := m.motionInterval()
 	if want == 0 {
 		return nil
@@ -84,7 +89,30 @@ func (m *OS) motionCmd() tea.Cmd {
 	mo.gen++
 	mo.ticking, mo.interval = true, want
 	gen := mo.gen
-	return tea.Tick(want, func(time.Time) tea.Msg { return motionFrameMsg{gen: gen} })
+	return tea.Tick(mo.nextMotionWait(time.Now(), want), func(time.Time) tea.Msg { return motionFrameMsg{gen: gen} })
+}
+
+// nextMotionWait is how long the next motion frame waits, and it moves due
+// on to that frame.
+//
+// The frames keep to a grid of one interval. A timer armed for a whole
+// interval after each frame was handled ran slow by however long the handling
+// took: the theme circle at full screen went out every 17.1 ms, not every
+// 16.7, and against a 60 Hz display one frame in about forty had no new frame
+// to show, which a recording shows as a held frame. A frame handled late now
+// waits less, so the late part is not added to every frame after it. A clock
+// that lapsed, or fell a whole interval behind, starts a new grid from now.
+func (mo *motionState) nextMotionWait(now time.Time, want time.Duration) time.Duration {
+	next := mo.due.Add(want)
+	wait := next.Sub(now)
+	if !mo.due.IsZero() && wait <= want && wait > -want/4 {
+		// On the grid, or just past due: then the frame goes now and the
+		// grid stays.
+		mo.due = next
+		return max(wait, 0)
+	}
+	mo.due = now.Add(want)
+	return want
 }
 
 // motionInterval is how soon the next motion frame is needed: a fade's frame
@@ -93,6 +121,9 @@ func (m *OS) motionCmd() tea.Cmd {
 func (m *OS) motionInterval() time.Duration {
 	if m.motion.fading > 0 {
 		return config.OverlayFadeFrame
+	}
+	if m.themeFx.running() {
+		return m.themeTransitionFrame()
 	}
 	// A copy sweep, at the fade's rate: it crosses the block in under half a
 	// second, and at the maintenance tick's idle rate that was four frames.
@@ -122,6 +153,9 @@ func (m *OS) handleMotionFrame(msg motionFrameMsg) {
 	// does not stay on the screen.
 	flash := m.markCopyFlashPane()
 	need := m.motion.fading > 0 || m.shimmerActive() || flash
+	// A transition still asks for a frame on the tick it ends, so the last
+	// one drawn is the new theme on the whole screen.
+	need = m.expireThemeTransition(time.Now()) || need
 	if m.motion.fading > 0 {
 		m.retireFades(time.Now())
 	}

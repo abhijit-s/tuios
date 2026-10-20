@@ -236,7 +236,7 @@ func sampleName(term *tuitest.Terminal, row, col, n int, d time.Duration) (map[s
 //     still in flight: the check waits for the idle glyph and then a settle
 //     before it starts counting bytes.
 //
-// Frames are saved under artifactDir, including PNGs from internal/shot.
+// Frames are saved under artifactDir, including PNGs from tuios.dev/shot.
 func TestWorkingAgentRowShimmers(t *testing.T) {
 	for _, d := range []chromeDepth{chromeDepths[0], chromeDepths[2]} {
 		for _, level := range []string{"full", "none"} {
@@ -364,7 +364,7 @@ func TestFullMotionWithoutAgentsStaysIdle(t *testing.T) {
 	if !strings.Contains(stats, " motion=") {
 		t.Fatalf("the stats file has no motion count: %q", stats)
 	}
-	if !strings.HasSuffix(stats, " motion=0") {
+	if parseTickStats(stats)["motion"] != 0 {
 		t.Fatalf("the motion clock ran with nothing moving: %q", stats)
 	}
 }

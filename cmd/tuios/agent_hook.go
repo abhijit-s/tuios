@@ -123,6 +123,11 @@ A report that ends a turn (done or errored) also sends what the pane's status
 line feed (tuios agent-statusline) held back, with set-agent-meta for the same
 pane, so the turn's last context and cost reach the rail.
 
+For claude-code and codex, a SessionStart prints two lines that these
+harnesses add to the agent's context: the pane and the session the agent runs
+in, and "Run tuios --skill to learn how to drive tuios". Outside tuios, and
+with --window, it prints nothing.
+
 It always exits 0, prints nothing a harness would read as an answer (Gemini
 CLI gets an empty JSON object), and gives up after 500ms when the daemon is
 slow or gone. Use --explain to see on stderr what it decided and why.
@@ -248,6 +253,11 @@ func runAgentHook(o agentHookOptions, args []string, hio agentHookIO) {
 	case <-time.After(timeout):
 		out = agentHookOutcome{Decision: integration.Decision{Harness: harness}, Error: "gave up after " + timeout.String()}
 	}
+	if startHint(out) {
+		if hint := integration.SessionStartHint(shortWindowID(out.Window), out.Session); hint != "" {
+			_, _ = io.WriteString(hio.stdout, hint)
+		}
+	}
 	if holdable(out) {
 		out.Hold = holdForAnswer(out, hio)
 	}
@@ -255,6 +265,17 @@ func runAgentHook(o agentHookOptions, args []string, hio agentHookIO) {
 		line, _ := json.Marshal(out)
 		fmt.Fprintln(hio.stderr, string(line))
 	}
+}
+
+// startHint reports whether a hook run tells the agent where it runs: a
+// SessionStart for a harness that reads the hook's output as context, reported
+// for a pane the hook found. Outside tuios, or when the report failed, it
+// prints nothing. A pane named with --window is a run by hand or by a script,
+// and the name it was given is not the pane's id, so that prints nothing too.
+func startHint(out agentHookOutcome) bool {
+	return out.Event == "SessionStart" && integration.StartsWithContext(out.Harness) &&
+		out.Error == "" && out.Report != nil && out.Window != "" && out.Session != "" &&
+		out.PaneBy != "flag"
 }
 
 // holdable reports whether a hook run may wait for an answer from the Inbox:
@@ -611,7 +632,7 @@ type hookReportResult struct {
 // the ones every daemon takes. activity is the hook event for the pane's
 // activity ring; a daemon from before it drops it, and the report goes
 // without it.
-var hookFields = []string{"kind", "agent_session_id", "transcript_path", "if_state", "harness_pid", "activity", "agent_cwd"}
+var hookFields = []string{"kind", "agent_session_id", "transcript_path", "if_state", "harness_pid", "activity", "agent_cwd", "session_start"}
 
 // setAgentStateParams asks the daemon which params its set-agent-state takes.
 //
@@ -701,6 +722,9 @@ func reportHook(client verbCaller, sess, window, harness string, harnessPID int,
 	}
 	if r.Activity != nil {
 		extra["activity"] = r.Activity
+	}
+	if r.SessionStart && r.SessionID != "" {
+		extra["session_start"] = true
 	}
 	var dropped []string
 	if len(extra) > 0 {

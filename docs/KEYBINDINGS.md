@@ -20,18 +20,79 @@ sets the action. See
 
 To inspect your own effective bindings, use the binary rather than any document: `tuios keybinds list`, `tuios keybinds doctor` for conflicts, `tuios keybinds explain <key>` for everything one key does, or the in-app keybind manager on `Ctrl+B k`.
 
+## Keys of another multiplexer
+
+`keybindings.preset` gives the keys of tmux, GNU screen or zellij after the
+leader:
+
+```toml
+[keybindings]
+preset = "tmux"
+```
+
+Or press `U` in window mode, or pick "Keybind preset" in the command palette.
+The picker shows each preset with three of its keys, and the keys the program
+in your pane would lose to it. Press Enter to use the preset. Or run
+`tuios keybinds preset tmux`. `tuios keybinds preset` shows the preset in use,
+and `tuios keybinds preset list` shows them all.
+
+The welcome screen offers a preset when it finds a `~/.tmux.conf` (or
+`~/.config/tmux/tmux.conf`), a `~/.screenrc` or a `~/.config/zellij` folder.
+When your tmux.conf sets another prefix, such as `set -g prefix C-a`, the offer
+uses that leader. The offer changes nothing until you press `U` and Enter.
+
+| Preset | Leader | What it does |
+|---|---|---|
+| `tuios` | `ctrl+b` | The tuios keys. This is the default |
+| `tmux` | `ctrl+b` | tmux 3.8's keys after the leader |
+| `screen` | `ctrl+a` | GNU screen's keys after the leader, also on the control variant (`ctrl+a ctrl+n`). `ctrl+a ctrl+a` goes to the last workspace. `ctrl+a a` sends `ctrl+a` to the pane |
+| `zellij` | `ctrl+g` | zellij's unlock-first keys. After `ctrl+g`, `p` opens pane mode (the window menu), `t` tab mode (the workspace menu), `s` copy mode and `o` the session switcher. The next key runs one action. In pane mode `r` splits right, `d` splits down, `f` zooms, `h` `j` `k` `l` move focus and `c` renames. In tab mode `n` opens a workspace, `x` closes it, and `h` and `l` go to the previous and next |
+
+- A tmux window is a workspace here. A tmux pane is a window here. So `c`,
+  `n`, `p`, `l`, `0` to `9`, `,` and `&` act on workspaces.
+- A preset changes the leader, the keys after the leader and the
+  terminal-mode keys. Window mode, the sidebar, copy mode and the agents view keep
+  the tuios keys.
+- A tuios feature whose key the preset uses moves to the tuios menu. Press the
+  leader, then `ctrl+t`, then the key it had. For example, `ctrl+b ctrl+t m`
+  opens the minimize menu.
+- Your own bindings win. An action you bind keeps your keys. A key you bind
+  keeps your action, and the preset's action for that key loses it.
+  `tuios keybinds doctor` lists each preset key that your bindings take.
+- A binding that has the tuios default key of an action the preset changes
+  gives way to the preset. A config.toml from an older tuios holds every
+  default, so the preset still applies. In such a file,
+  `leader_key = "ctrl+b"` gives way too: under screen and zellij, the leader
+  is the preset's. In a file without those default keys, `ctrl+b` stays.
+- Only the arrow keys and the resize keys repeat after the leader, as tmux
+  `bind -r` does. A letter you type right after `ctrl+b p` goes to the shell.
+- `tuios keybinds preset tmux` removes `keybindings.leader_key`, so the
+  leader is the preset's.
+- `keybindings.leader_twice` is what the leader pressed two times does:
+  `send` sends it to the pane (the default) and `last_workspace` goes back to
+  the last workspace. The screen preset sets `last_workspace`. `ctrl+c` still
+  cancels the leader under every preset.
+- A `prefix_mode` binding on the leader key wins over `leader_twice`. With
+  `leader_key = "ctrl+j"` and `terminal_focus_down = ["ctrl+j"]`, the leader
+  pressed two times focuses the pane below.
+
+`tuios keybinds cheatsheet tmux` shows the keys in three groups: the keys that
+work as in tmux, the tuios keys that moved, and what tmux has that tuios does
+not. `tuios keybinds preset show tmux` prints the preset file.
+
 ## The full list
 
 `tuios keybinds list` shows every action and the keys that run it, as your
 `config.toml` sets them. It has one table for each scope: global, window mode,
-terminal mode, the sidebar and its files and agent rows, the Inbox, its prompt,
+terminal mode, the sidebar and its files and agent rows, the agents view, its prompt,
 the mailbox, the Copies panel, copy mode, the prefix and each prefix menu, and tape playback. A key in a
 prefix menu shows with its chord, such as `ctrl+b L 5`. The command keys have a
 table of their own.
 
 After the scopes, the list shows the fixed keys. tuios reads these keys itself,
 and you cannot rebind them: copy mode, hints mode, the message view, the ways
-out of the spotlight, the list keys and the mouse. The help overlay
+out of the spotlight, the list filter keys and the fixed mouse gestures. The middle
+button is an exception: terminal mode binds it like a key. The help overlay
 (`Ctrl+B ?`) shows the same rows. The last table shows the actions that have no
 default key. Bind one in `config.toml`, or run it from the command palette.
 
@@ -117,6 +178,12 @@ A key in `config.toml` can spell a modifier in more than one way. tuios reads ea
 | `control+` | `ctrl+` | all platforms |
 
 The order of the modifiers does not matter, so `shift+ctrl+x` is `ctrl+shift+x`. This applies to `leader_key`, to every binding table, and to `tuios keybinds explain`, `free` and `unbind`. `tuios keybinds explain opt+f12` shows `opt+f12 (tuios reads it as alt+f12)`. `tuios keybinds doctor` lists each key that tuios cannot read.
+
+In `[keybindings.terminal_mode]`, `middle` names a press of the middle mouse
+button. It accepts `ctrl`, `alt` and `shift`, such as `ctrl+middle`. Other
+tables do not accept it. A program that uses the mouse, such as vim with
+`mouse=a`, lazygit or tmux, gets a plain middle press. A binding with a
+modifier runs over such a program too. Other mouse gestures are fixed.
 
 You can use one `config.toml` on macOS and on Linux. On Linux, `opt+1` is `alt+1`. `tuios keybinds doctor` lists these keys for information.
 
@@ -256,7 +323,7 @@ TUIOS itself.
 ## Lists and panels
 
 Every list in the TUI moves the same way: the command palette, the launcher,
-the settings page, the Inbox, the mailbox, the keybind manager, the theme,
+the settings page, the agents view, the mailbox, the keybind manager, the theme,
 glyph and effect pickers, the session, workspace, layout and machine pickers,
 the window picker, the quit and context menus, the dock and rail editors and
 the tape manager.
@@ -267,8 +334,34 @@ the tape manager.
 | `home`, `end` | The first or last row |
 | `pgup`, `pgdown` | A page up or down, stopping at the ends |
 | `k`, `j`, `g`, `G` | Up, down, first and last, in a list with no filter to type into |
-| `ctrl+u` | Clear a typed filter |
-| wheel | Scroll the list under the pointer, stopping at the ends |
+| `ctrl+u` | Clear a typed filter (fixed) |
+| wheel | Scroll the list under the pointer, stopping at the ends (fixed) |
+
+The movement keys are the `[keybindings.lists]` section. Each action takes the
+keys that do it:
+
+| Action | Default keys |
+|---|---|
+| `list_up` | `up`, `ctrl+p`, `k` |
+| `list_down` | `down`, `ctrl+n`, `j` |
+| `list_page_up` | `pgup` |
+| `list_page_down` | `pgdown` |
+| `list_first` | `home`, `g` |
+| `list_last` | `end`, `G` |
+
+A key that is a single printable character is a letter key. Only a list with no
+filter to type into reads it, because a list with a filter keeps its letters
+for the filter. To move on `ctrl+j` and `ctrl+k` as well as the arrows:
+
+```toml
+[keybindings.lists]
+list_down = ["down", "ctrl+j"]
+list_up   = ["up", "ctrl+k"]
+```
+
+An action you name replaces its default keys, so the example above gives
+`ctrl+n`, `ctrl+p`, `j` and `k` back to the pane or the filter. An action you
+leave out keeps its defaults, and `list_page_down = []` unbinds it.
 
 Set `appearance.wrap_lists = false` to stop at the ends instead of wrapping.
 The close-session and file confirmations never wrap, so up from Cancel cannot
@@ -364,6 +457,12 @@ pointer does not move. `appearance.link_click` sets which click opens a
 link. See [CONFIGURATION.md](CONFIGURATION.md#opening-links) for the
 settings, the opener and a table of terminals.
 
+A pane can address another pane with a `tuios://window/<id>` link, where
+`<id>` is the pane's short id from the sidebar or `list-windows`. A plain
+`Ctrl+click` there jumps to that pane, and a
+`tuios://window/<id>/close` link asks first: the confirmation names the
+pane and only a second click closes it.
+
 ## Moving a pane with the mouse
 
 Drag a tiled pane by its title bar, or `Ctrl+click` anywhere in it and drag. In BSP tiling, dropping it on the middle of another pane swaps the two, and dropping it near an edge of another pane splits that pane and puts the dragged pane in the half toward that edge. While the button is down, the place the pane will land is highlighted. See [LAYOUT_MODES.md](LAYOUT_MODES.md#moving-a-pane-with-the-mouse).
@@ -415,11 +514,15 @@ the path of that file into the pane. The pane can run on this machine or on a
 host. Claude Code, Codex and other agents read an image from a path in the
 prompt. The action is `paste_image`, and the command palette has it too.
 
-The paste key also pastes an image. The paste key is `Ctrl+Shift+V`, `Super+V`
-or `paste_clipboard`. When the clipboard holds an image and no text, the paste
-key pastes the image. When the clipboard holds text, the paste key pastes the
-text. Some terminals send an empty paste when the clipboard holds only an
-image. tuios then pastes the image.
+The paste binding also pastes an image. `terminal_paste_host` in
+`[keybindings.terminal_mode]` is bound to `Ctrl+Shift+V`, `Super+V`,
+`Shift+Super+V` and the middle mouse button by default. The middle button
+pastes from the clipboard, not from the primary selection. A program that uses
+the mouse gets the middle button instead. `paste_clipboard` runs
+the same operation outside terminal mode. When the clipboard holds an image
+and no text, the paste binding pastes the image. When the clipboard holds text,
+it pastes the text. Some terminals send an empty paste when the clipboard holds
+only an image. tuios then pastes the image.
 
 A browser can put a link or text beside a copied image. The paste key then
 pastes the text. `Ctrl+B V` always pastes the image.
@@ -517,6 +620,11 @@ height = "80%"
     the command exits.
   - `shell`: the command runs with no window. You do not see its output. When
     the command fails, the dock shows a message.
+  - `plugin_action`: the command is the id of a herdr plugin action, for
+    example `example.layout.apply`. The daemon runs the action. The plugin
+    must be enabled. When no plugin has the action, tuios shows a config
+    problem. This works only in a daemon session on this machine. See
+    [herdr plugins](AGENT_STATE.md#herdr-plugins).
 - `command` runs with `sh -c`, so you can write pipes and quotes. It starts in
   the folder of the focused pane.
 - `description` is the name in the command palette and in
@@ -698,10 +806,61 @@ opened. The action has no default key. The command palette has the entry
 close_workspace = ["alt+x"]
 ```
 
-The action asks first. The dialog shows how many panes close and how many
-agents are in them. `Cancel` is the default row. Scratch panes stay open.
+The action asks first. The dialog names the workspace and shows how many panes
+close and how many agents are in them. `Cancel` is the default row. Scratch
+panes stay open.
+
+Right-click a workspace tab in the dock to close that workspace, whether or not
+it is the one on screen. The tab's menu has the rows `Switch to`, `Rename` and
+`Close`. `Close` is the same `close_workspace` action as the key and the palette
+entry, with the same dialog, but it acts on the tab's workspace instead of the
+current one. It is dimmed when the workspace has no pane to close. Closing a
+workspace that is not on screen leaves the view where it is.
+
 `tuios close-workspace` does the same from a shell. See
 [CLI_REFERENCE.md](CLI_REFERENCE.md#tuios-close-workspace).
+
+## Restart the daemon
+
+The `restart_daemon` action stops the daemon and starts it again with the
+newest tuios installed. Use it after an update. The action has no default key.
+The command palette has the entry "Restart the daemon". These open it too:
+
+- The notice that says the daemon and this window run different versions,
+  for example "The daemon runs 0.10.0. ctrl+b j restarts it." Click it, or
+  press the key it names. Press `esc` to put it off until the next start.
+- The row "Restart the daemon" at the top of the Daemon tab in the settings.
+- The rail's menu for this machine.
+
+A dialog shows the daemon's version now and after the restart, and this
+window's version when it moves too. It lists the programs that stop, by pane
+and session, and what comes back, with the agents that can resume. The text
+is the text `tuios restart-server` prints. Press `r` to restart, or `esc` to cancel. A click on a row
+does the same. The dialog then shows each step: stop the daemon, start the new
+one, attach again. tuios then starts again on the new build, in the same
+session, and says "The daemon restarted on 0.10.2. Your session is back."
+
+Other clients attached to the daemon wait up to 15 seconds for the new one.
+They then attach to their session again by themselves and say "The daemon
+restarted. tuios reattached." While they wait, the dock says "Waiting for the
+daemon. Keys are not sent." With the dock hidden, the middle of the screen
+says it. Keys typed then are not sent to the panes.
+
+When a step fails, the dialog says what happened and what to do next. When
+a program started or stopped after you agreed, the restart does not run, and
+the dialog asks you to read the new list. When your session did not come
+back, tuios does not attach to it: the dialog says so and points to
+`tuios resurrect`. When
+the daemon did not start, the row is "Quit tuios", and tuios prints the same
+words when it quits. To bind the action:
+
+```toml
+[keybindings.prefix_mode]
+restart_daemon = ["alt+r"]
+```
+
+`tuios restart-server` does the same from a shell. See
+[CLI_REFERENCE.md](CLI_REFERENCE.md#tuios-restart-server).
 
 ## Cycle through workspaces
 
@@ -716,6 +875,37 @@ nothing. The actions have no default key. The command palette has the entries
 [keybindings.workspaces]
 next_workspace = ["alt+y"]
 prev_workspace = ["alt+u"]
+```
+
+## Actions for a tmux-style keymap
+
+These actions have no default key. Bind them in any
+section where you want them.
+
+| Action | What it does |
+| --- | --- |
+| `mark_pane` | Marks the focused pane, or clears the mark when it is the marked one. The marked pane shows `[marked]` in its title bar. |
+| `join_marked_left`, `join_marked_right`, `join_marked_up`, `join_marked_down` | Moves the marked pane next to the focused one, on that side, from this workspace or another. Needs BSP tiling. |
+| `resize_pane_left_5`, `resize_pane_right_5`, `resize_pane_up_5`, `resize_pane_down_5` | Moves the focused pane's edge by 5 cells. The `_20` actions move it by 20. Under the leader, the key repeats without a second leader press, as tmux `bind -r` does. |
+| `new_workspace` | Goes to the first workspace with no pane, the one the dock's `+` button opens, and opens a pane there. |
+| `last_workspace` | Goes back to the workspace you were on before this one, as tmux `last-window` does. Press it again to go back and forth. |
+| `break_pane` | Moves the focused pane to the first workspace with no pane and goes with it, as tmux `break-pane` does. |
+| `last_session` | Goes back to the session you were on before this one, as tmux `switch-client -l` does. |
+| `send_prefix` | Sends the leader key to the program in the focused pane, as pressing the leader two times in terminal mode does. Use it for screen's `C-a a`, or for a tmux in the pane. |
+| `move_workspace_left`, `move_workspace_right` | Swaps this workspace with the one before or after it, and follows it. |
+| `send_to_workspace_1` to `send_to_workspace_9` | Sends the focused pane to that workspace. |
+| `cycle_layout` | Cycles BSP, master-stack and scrolling. |
+| `reload_config` | Reads `config.toml` again, as the "Reload config" palette row does. |
+| `toggle_mouse` | Stops asking the terminal for mouse reports, so the terminal selects text itself. Run it again to turn the mouse back on. The setting lasts until you quit. |
+
+For tmux's synchronize-panes, bind `toggle_multifocus_all`. It puts every pane
+on the workspace in the multifocus set, so typing goes to all of them. See
+[LAYOUT_MODES.md](LAYOUT_MODES.md#multifocus).
+
+```toml
+[keybindings.window_prefix]
+mark_pane = ["m"]
+join_marked_right = ["J"]
 ```
 
 ## Split into the same ssh
@@ -984,7 +1174,7 @@ as they are. A paste into a pane on this machine is not changed.
 
 ## Screenshots over a panel
 
-`Ctrl+B C` opens capture mode over any panel or overlay too: the Inbox, the
+`Ctrl+B C` opens capture mode over any panel or overlay too: the agents view, the
 review, the palette, settings, a menu or a dialog. The panel stays open and is
 part of the capture. The panes are under it, so capture mode does not offer
 one: `enter`, `f` or a click takes the whole screen, and a drag takes a region
@@ -1023,29 +1213,94 @@ where it was; a second `esc` closes it. The command palette reaches the same
 rows by name (`settings: pane background`), and `tuios list-options --search`
 runs the same search from a shell.
 
-## The Inbox
+## The agents view
 
-Everything waiting for you in every session is one list, the Inbox. See
-[AGENT_STATE.md](AGENT_STATE.md#the-inbox) for what goes in it.
+Everything waiting for you, and every agent tuios knows of, is one full-screen
+view on `ctrl+b i`. It was the Inbox panel. The agents are grouped by what
+each needs from you: Needs you, Ready for review, Working, Idle, Earlier. What
+the Inbox held is the Needs you group. See
+[AGENT_STATE.md](AGENT_STATE.md#the-agents-view) for what goes in it.
 
 | Keys | What it does |
 |---|---|
-| `ctrl+b i` | Open the Inbox |
+| `ctrl+b i` | Open the agents view |
 | `ctrl+b o` | Go to the oldest item that needs you; `o` again, inside the repeat window, goes to the next |
-| `ctrl+b M` | Open the Inbox on its mail (`m` there opens the whole mailbox) |
+| `ctrl+b M` | Open the agents view on the mail for you (`m` there opens the whole mailbox) |
 
-Inside it: `j` and `k` move, `enter` goes to the pane, `space` reads an
-approval's or a question's prompt so you can answer it there, `r` replies to
-mail, or to the agent of a finished or errored item, `y` resumes a conversation a restart left, `p` passes held mail on, `d`
-dismisses, `f` steps through the kinds, `/` types a selector that narrows the
-list (such as `harness:codex needs:you`; `enter` applies it, an empty line
-clears it), `m` opens the mailbox, `esc` closes. `ctrl+b o` is `o` because
-`ctrl+b a` is the launcher's.
+Inside it:
 
-The footer offers the keys that act on the row under the cursor, the one that
-answers it first: `space answer` on an approval or a question, `r reply` on
-mail and on a finished or errored item, `y resume` on a resume row. It offers `m mailbox` on a mail row, though
-`m` works on every row.
+| Keys | What it does |
+|---|---|
+| `j` `k`, arrows | Move between agents. The focus area shows the selected one |
+| `enter` | Go to the agent's pane and close the view. On mail, open the thread |
+| `a` `A` `r` `R` | On a held approval: allow once, always allow, reject, reject and say why. `1` `2` `3` still work |
+| `r`, `i`, `tab` | With no approval waiting: write a reply to the agent, or to the mail |
+| `space` | Read an approval's or a question's prompt and answer it here |
+| `n` | Open the New agent sheet. See below |
+| `f` | Show only what needs you, then each kind of item, then every agent |
+| `s` | Step the order inside each group |
+| `/` | Search. A `key:value` term is a selector, such as `harness:codex` |
+| `d` `z` `u` `S` | Dismiss, snooze, undo, show the snoozed items |
+| `y` `p` `m` | Resume, pass held mail on, open the mailbox |
+| `x` `*` | Mark an agent, or every agent shown, for a bulk answer. A marked row shows a mark, and the header counts the marks |
+| `1` `3` with marks | Allow every marked approval once, after a sheet that lists them, or reject them |
+| `[` `]` | Switch the focus tabs: Thread, Changes, and under 170 columns Checkpoints and Live |
+| `J` `K` | Scroll the thread, or a long plan waiting for a yes |
+| `e` | Show every line of every card in the thread |
+| `v` | Review the agent's changes |
+| `ctrl+]` | Go to the agent's pane and zoom it. `ctrl+b i` comes back to the same agent |
+| `l` `h`, `right` `left` | On a narrow screen, open the focus and go back to the list |
+| `?` | All keys |
+| `esc` `q` | Close. On a narrow screen, go back from the focus to the list first |
+
+A bulk key acts only on the marked agents the list shows. An agent in a
+folded group, or one a search hides, is left out, and closing the view clears
+the marks. An approval whose command does not fit on the card is not answered
+here: the card says so, and `enter` answers it in the pane.
+
+The New agent sheet starts an agent with a task. Write the task, then pick
+the agent, the model, where it works and the machine. `tab` and `shift+tab`
+move between the fields. `left` and `right` change the agent, where it works,
+the attempts and the button. `space` or `down` on the agent opens the list of
+every agent. `up` and `down` on the machines pick one. `v` on the attempts
+gives each attempt a different agent. `ctrl+j` adds a new line to the task.
+`enter` starts. `esc` closes the sheet and keeps what you wrote for the next
+`n`.
+
+| Field | What it does |
+|---|---|
+| Task | The first prompt. It is typed when the agent is ready |
+| Agent | The agents that run now come first, then the installed ones |
+| Model | Passed to the agent as `--model`. Empty uses the agent's default |
+| Where it works | A new worktree on its own branch, or this folder |
+| Branch, Base | The new branch, named after the task until you change it, and where it starts |
+| Machine | This machine and the linked hosts, the most free cores first |
+| Attempts | 1 to 8. Each attempt gets its own worktree and branch |
+
+A new worktree goes through the same path as `tuios fan`, and this folder
+through `tuios start-agent`. Uncommitted files stay in this folder. On a
+linked host the agent works in a new worktree of the host's checkout, which
+the host finds by the repository's origin.
+
+In the image view, which a click on an image chip in the reply opens: `o`
+opens the image in the desktop's viewer, `c` saves a copy and copies its
+path, `s` saves a copy, `left` and `right` step through the images, `+` and
+`-` zoom, and `esc` or a click outside the picture closes it.
+
+The mouse works too. A click on a row selects it, and a double-click goes to
+its pane. A click on a group heading folds the group. The buttons on an
+approval card answer it. `+ New agent` opens the New agent sheet, and the search box opens
+the search. The wheel scrolls the list, and over the focus it scrolls the
+card. A search narrows the items with the agents. A selector the search line
+cannot read shows its error in the search box.
+
+The layout follows the width of the screen. At 120 columns and wider the list
+has two lines per agent beside the focus. From 80 columns the rows are one
+line. Under 80 columns the list fills the screen, and `enter`, `right` or a
+click opens the focus in its place. With one or two agents the list folds into
+a strip of names over the focus. When the list is taller than the screen, its
+rows are one line and a long group shows its first 8 rows; `right` or a click
+on `+N more` shows the rest.
 
 In the mailbox: `j` and `k` move, `enter` opens a thread, `n` writes a new
 message, `esc` closes. `n` opens a list of the agents in this session. Choose
@@ -1053,8 +1308,13 @@ one with `enter`, type the message, and press `enter` to send it. In an open
 thread, `r` replies, `o` goes to the pane that last wrote, and `esc` goes back
 to the list.
 
+The message editor works as the reply does: `ctrl+j` adds a line, a
+long paste shows as one block, and `ctrl+v` attaches the clipboard's image. A
+message that does not fit in 8 KB, or that holds an image, goes with each
+block and image as a file the message attaches.
+
 In the prompt `space` opens: a digit chooses that option, `a` approves, `A`
-approves and does not ask again, `d` denies, `tab` types an answer, `r` reads
+approves and does not ask again, `d` rejects, `tab` types an answer, `r` reads
 the prompt again, `enter` goes to the pane, `esc` goes back to the list. A
 prompt with numbered options offers its digits in the footer and not `a`, `A`
 and `d`, which still work. See
@@ -1064,7 +1324,11 @@ These keys are in three sections of their own, rebindable like any other:
 `[keybindings.inbox]` (the list: `inbox_down`, `inbox_up`, `inbox_page_down`,
 `inbox_page_up`, `inbox_first`, `inbox_last`, `inbox_go`, `inbox_peek`,
 `inbox_dismiss`, `inbox_reply`, `inbox_resume`, `inbox_pass_on`,
-`inbox_filter`, `inbox_select`, `inbox_mailbox`, `inbox_close`),
+`inbox_filter`, `inbox_select`, `inbox_mailbox`, `inbox_close`,
+`inbox_write`, `inbox_sort`, `inbox_view_pane`, `inbox_new_agent`,
+`inbox_allow`, `inbox_allow_always`, `inbox_open`, `inbox_back`,
+`inbox_help`, `inbox_mark`, `inbox_mark_all`, `inbox_tab_prev`,
+`inbox_tab_next`, `inbox_expand`),
 `[keybindings.inbox_peek]` (the prompt: `peek_approve`, `peek_approve_always`,
 `peek_deny`, `peek_type`, `peek_read_again`, `peek_go`, `peek_back`) and
 `[keybindings.mail]` (the mailbox: `mail_down`, `mail_up`, `mail_page_down`,
@@ -1073,39 +1337,51 @@ These keys are in three sections of their own, rebindable like any other:
 The footers name whatever key the config binds. The digits `1` to `9` are not
 bindings: they pick an answer by the number the prompt shows. The selector
 line and the reply, message and answer lines take text, so every key there is
-typed.
+typed. The selector line, the reason for a reject and the answer to a prompt are
+edited as the reply is: the arrows and the word keys move the cursor, `ctrl+z`
+undoes, and a paste keeps to one line.
 
 ```toml
 [keybindings.inbox]
 inbox_dismiss = ["x"]
 ```
 
+The keys new with the agents view yield to your own: when your
+`[keybindings.inbox]` already gives `n`, `R`, `a`, `x` or another new key to an
+action, that action keeps it, and the new action has no key. `tuios keybinds
+doctor` lists each one. `inbox_agents`, the old `tab` that switched the Inbox
+to the agents view, is gone: `inbox_write` has `tab` now, and doctor lists a
+config that still binds `inbox_agents`. A config that kept the old default
+`inbox_deny_reason = ["n"]` moves it to `R`, so `n` starts a new agent, and
+doctor says so. When your binding takes one of an action's new keys, only
+that key yields: `inbox_open` keeps `right` when `l` is yours.
+
 The help overlay (`ctrl+b ?`) has an Agents section with all of these, the
 prefix chords, the rail's agent keys and the palette's `@` filter, read from
 your config. In the command palette the agent actions are named "Agents: ...",
-so typing `agent` lists them: the Inbox, the Inbox on its mail, the oldest
+so typing `agent` lists them: what needs you, the mail for you, the oldest
 waiting item, and the mailbox.
 
-On an approval the Inbox is holding (`[agents.approvals]`, see
+On an approval tuios holds (`[agents.approvals]`, see
 [AGENT_STATE.md](AGENT_STATE.md#approvals-from-the-inbox)), `1` allows it
-once, `2` always allows it and `3` denies it; `enter` gives the prompt back to
-the pane. The keys act on the item under the cursor, whose whole prompt, and
-the rules `2` adds, are shown under the list, and only once it has been on
+once, `2` always allows it and `3` rejects it; `enter` gives the prompt back to
+the pane. The keys act on the row under the cursor, whose whole prompt, and
+the rules `2` adds, are shown on its card, and only once it has been on
 screen as it is for 0.4 seconds. `space` does not open a held approval: the
-hook keeps its prompt off the pane until the Inbox answers, so there is
-nothing on the screen to read.
+hook keeps its prompt off the pane until you answer, so there is nothing on
+the screen to read.
 
 ### Review, triage and replies
 
 These keys are bound for the agent review, triage, reply and approval work.
-The triage keys work: `ctrl+b O`, `z`, `u` and `S` in the Inbox, and `u` and
+The triage keys work: `ctrl+b O`, `z`, `u` and `S` in the agents view, and `u` and
 `z` on a rail agent row (see
 [Snoozing, undo and unread](AGENT_STATE.md#snoozing-undo-and-unread)), and so
-do the approval keys: `n`, `J`, `K`, `ctrl+d` and `ctrl+u` in the Inbox (see
-[Deny with a reason](AGENT_STATE.md#deny-with-a-reason)), and the reply keys:
-`r` in the Inbox on a finished or errored item, and `r` and `x` on a rail
+do the approval keys: `R`, `J`, `K`, `ctrl+d` and `ctrl+u` in the agents view (see
+[Reject with a reason](AGENT_STATE.md#reject-with-a-reason)), and the reply keys:
+`r` in the agents view on a finished or errored item, and `r` and `x` on a rail
 agent row (see [Replying to an agent](AGENT_STATE.md#replying-to-an-agent)),
-and the review keys: `ctrl+b v`, and `v` in the Inbox and on a rail agent row
+and the review keys: `ctrl+b v`, and `v` in the agents view and on a rail agent row
 (see [The review overlay](#the-review-overlay) below). `ctrl+b v` works
 whether or not an agent has been seen, since calling it is an explicit act;
 on a pane with no git repository under it, the dock says so and nothing
@@ -1114,7 +1390,7 @@ after `ctrl+b` in terminal mode, the key is typed into the focused pane, so a
 person who runs no agents keeps typing `O` into the pane. The prefix menu and
 the help overlay list them only once an agent has been seen, like the rest of
 the Agents section. Attached to a daemon without `mark-attention` (an older
-one, found by asking its `list-verbs` once per attach), the Inbox's `z`, `u`
+one, found by asking its `list-verbs` once per attach), the agents view's `z`, `u`
 and `S` and the rail's `z` are not offered and do what an unbound key does,
 and the rail's `u` clears only this client's seen marks. Attached to a daemon
 without `review-diff`, found the same way, `ctrl+b v` and the two `v` keys are
@@ -1126,17 +1402,18 @@ not offered and do what an unbound key does: after `ctrl+b` in terminal mode,
 | `ctrl+b v` | anywhere | Review the focused pane's changes |
 | `ctrl+b O` | anywhere | Go to the newest finished turn nobody has seen; `O` again, inside the repeat window, goes to the next older one, and a turn that finishes meanwhile starts over |
 | `ctrl+b A` | anywhere | Open the Agents tab of the settings page, where you install, update and uninstall each harness's integration |
-| `v` | Inbox | Review the changes in the item's pane |
-| `z`, then `1` to `4` | Inbox | Snooze the item: 15 minutes, 1 hour, until 9:00 tomorrow, or until it changes; any other key cancels. On a snoozed item, wake it |
-| `u` | Inbox | Undo the last dismiss or snooze, within 10 seconds |
-| `S` | Inbox | Show or hide snoozed items |
-| `n` | Inbox | Deny a held approval, or keep a plan planning, with a reason you type (`3` stays the plain deny) |
-| `J`, `K`, `ctrl+d`, `ctrl+u` | Inbox | Scroll the detail under the list, such as a long plan |
+| `v` | agents view | Review the changes in the item's pane |
+| `z`, then `1` to `4` | agents view | Snooze the item: 15 minutes, 1 hour, until 9:00 tomorrow, or until it changes; any other key cancels. On a snoozed item, wake it |
+| `u` | agents view | Undo the last dismiss or snooze, within 10 seconds |
+| `S` | agents view | Show or hide snoozed items |
+| `R` | agents view | Reject a held approval, or keep a plan planning, with a reason you type (`r` and `3` stay the plain reject) |
+| `n` | agents view | Start a new agent |
+| `J`, `K`, `ctrl+d`, `ctrl+u` | agents view | Scroll the card, such as a long plan |
 | `u` | rail agent row | Mark the pane's finished turn unread, for every client (not the pane in front of you) |
-| `z` | rail agent row | Snooze the pane's Inbox item: the Inbox opens on it with the four lengths |
+| `z` | rail agent row | Snooze what needs you in the pane: the agents view opens on it with the four lengths |
 | `enter` | rail `+N at rest` line | Show the agent rows folded as at rest, until the rail lets go of the keyboard (after a click with the rail not focused, until a click outside the rail or a pane is focused) |
-| `r` | Inbox, on a finished or errored item | Reply to the agent: a line under the list, queued with `enter` and typed when the agent is at rest |
-| `r` | rail agent row | Reply to the agent, the same line in the Inbox; refused while the pane waits on a prompt |
+| `r` | agents view, on a finished or errored item | Reply to the agent: the editor under the thread, queued with `enter` and typed when the agent is at rest |
+| `r` | rail agent row | Reply to the agent, the same line in the agents view; refused while the pane waits on a prompt |
 | `v` | rail agent row | Review the pane's changes |
 | `x` | rail agent row with messages queued | Drop the newest queued message still waiting; `u` on the row within 10 seconds queues it again. On a row with nothing queued, `x` opens the rail's menu as before. From `send-keys` or a tape, neither `x` nor the undo touches the queue, since both act as the person |
 
@@ -1148,7 +1425,7 @@ On a plan, `1` approves, `2` approves and accepts edits for the session, and
 `3` keeps it planning; `1` and `2` work once the plan's last line has been
 shown. The digits are not bindings.
 
-The Inbox's keys are `inbox_review`, `inbox_snooze`, `inbox_undo`,
+The agents view's keys are `inbox_review`, `inbox_snooze`, `inbox_undo`,
 `inbox_show_snoozed`, `inbox_deny_reason`, `inbox_detail_down` and
 `inbox_detail_up` in `[keybindings.inbox]`, and the prefix chords are
 `prefix_review`, `prefix_next_finished` and `prefix_agents_settings` in
@@ -1163,15 +1440,22 @@ on an agent row and keep renaming and opening the menu on every other row.
 row. It works on the agent row and on the subagent heading, and only when
 `appearance.sidebar.subagent_collapse` is `expanded` or `collapsed`.
 
-In the reply line every printable key is typed, and a paste is typed as one
-line; `enter` queues it, `backspace` deletes, `esc` closes it and sends
-nothing. Attached to a daemon without `queue-prompt` (an older one), the
+The reply editor takes every key: `enter` queues the reply, `ctrl+j`,
+`shift+enter` or `\` then `enter` adds a new line, and `esc` closes it and
+keeps the draft. A paste keeps its line breaks, and a long one shows as one
+block. `ctrl+v` attaches the clipboard's image when it holds one and no text. `@`
+opens a list of agents, panes and files to name: `tab` puts one in. `up` on
+the first row brings back an earlier message to the same agent, `ctrl+r`
+searches them, and `ctrl+g` opens the draft in `$EDITOR`.
+`ctrl+o` on a selected image shows it larger, and `o` there opens it in the
+desktop's image viewer. The editing keys are in docs/AGENT_STATE.md, "Replying to an agent".
+They are not bindings yet. Attached to a daemon without `queue-prompt` (an older one), the
 first reply says to restart it, and after that `r` does what it did before:
-it says `r` replies to mail in the Inbox, and renames on the rail.
+it says `r` replies to mail in the agents view, and renames on the rail.
 
 ### The review overlay
 
-`ctrl+b v` (or `v` in the Inbox or on a rail agent row) opens the diff of
+`ctrl+b v` (or `v` in the agents view or on a rail agent row) opens the diff of
 the pane's changes over the whole screen, once the daemon has read it: the
 file list on the left, the file under it on the right, and your notes under
 the lines they are on. The code is coloured by its file type in the
@@ -1228,7 +1512,7 @@ confirmation refuse it. See
 Bindings work with layouts for non-Latin scripts, such as Cyrillic, Greek,
 Hebrew or Arabic. When no binding matches the character a key types, tuios uses
 the key at the same position on a US layout. With a Ukrainian layout, the key
-that types `ш` is the US `i` key, so `ctrl+b` then that key opens the Inbox. A
+that types `ш` is the US `i` key, so `ctrl+b` then that key opens the agents view. A
 binding on the typed character wins, so you can still bind `ш` yourself. Text
 that you type into a pane, a rename or a search stays the character that you
 typed.
@@ -1322,7 +1606,7 @@ protocol gives it. A key the protocol has no number for goes in its legacy
 form. Caps Lock, Num Lock and a modifier key pressed alone reach that program
 only when it asks for every key.
 
-### Shift+Up and Shift+Down
+### Shift+Up, Shift+Down, Shift+PageUp and Shift+PageDown
 
 `shift+up` and `shift+down` scroll the pane into its history. They do this
 only when all of these are true:
@@ -1330,32 +1614,59 @@ only when all of these are true:
 - The program is on the main screen.
 - The program did not turn on a mouse mode.
 
-In other panes, tuios sends the keys to the program. Programs that use the
-full screen, such as nvim, less and htop, get them. When the pane is in copy
-mode, the keys scroll. This is the same rule as the mouse wheel, and the same
-rule as kitty.
+`shift+pgup` and `shift+pgdown` follow the same rules, but scroll one visible
+pane page at a time. In other panes, tuios sends the keys to the program.
+Programs that use the full screen, such as nvim, less and htop, get them. When
+the pane is in copy mode, the keys scroll. This is the same rule as the mouse
+wheel, and the same rule as kitty.
 
-To change the keys, set `terminal_scroll_up` and `terminal_scroll_down` in
+To change the keys, set `terminal_scroll_up`, `terminal_scroll_down`,
+`terminal_scroll_page_up` and `terminal_scroll_page_down` in
 `[keybindings.terminal_mode]`.
 
 ## macOS
 
-Option is a compose key on macOS unless the terminal is told otherwise, so an
-Option chord usually arrives as a character rather than as Alt. tuios reads
-the characters that a US layout composes back into the chord that types them.
-When Option+8 types `•`, tuios runs the `opt+8` binding and switches to
-workspace 8.
+Option is a compose key on macOS unless the terminal is told otherwise. An
+Option chord then arrives as a character, not as Alt. Terminal.app and iTerm2
+work like this until you change their settings.
 
-If you use Option to type characters such as `#`, `•` or `{`, set this. tuios
-then sends the character to the pane:
+The same character can come from two keys. On a US keyboard, Option+3 types
+`£`. On a UK keyboard, Shift+3 types `£`. tuios reads the keyboard layout of
+the Mac when it starts:
+
+- On a US or ABC layout, tuios runs the `opt+` binding for the character.
+  Option+3 types `£` and switches to workspace 3.
+- On any other layout, the character goes to the pane. tuios also does this
+  when it cannot read the layout.
+
+If you change the layout while tuios runs, tuios reads it again when such a
+character arrives and the last read is more than 30 seconds old. The new
+layout applies from the next key. A tuios that serves SSH or web clients from
+a Mac uses the layout of that Mac.
+
+`keyboard_layout` overrides the layout that tuios reads. With
+`keyboard_layout = "us"`, tuios runs the binding. With
+`keyboard_layout = "other"`, the character goes to the pane.
+
+To use the `opt+` bindings on every layout, set your terminal to send Option
+as Alt. See [The fix](#the-fix).
+
+Some terminals, such as Ghostty and kitty, send the character and also report
+Alt. tuios then runs the `opt+` binding on every layout. For example,
+Option+8 types `•` and switches to workspace 8.
+
+To set the behaviour yourself, use `option_glyphs`:
 
 ```toml
 [keybindings]
-option_glyphs = "type"   # the default is "bind"
+option_glyphs = "auto"   # auto, alt, bind, type
 ```
 
-With `keyboard_layout = "other"`, tuios does not use the US characters, and
-the characters go to the pane.
+- `auto` uses the layout of the Mac, as above. This is the default.
+- `alt` runs the binding only when the terminal reports Alt.
+- `bind` always runs the binding. Use it only on a US keyboard.
+- `type` always sends the character to the pane. Use it if you type
+  characters such as `#`, `•` or `{` with Option.
 
 Two kinds of chord cannot be read:
 
@@ -1393,8 +1704,9 @@ keybind = alt+left=unbind
 keybind = alt+right=unbind
 ```
 
-tuios says all of this on screen the first time it sees a chord that did not
-arrive as it was meant to.
+tuios shows this on screen one time, when an Option chord arrives as a
+character and not as Alt. On a layout other than US or ABC it does not show
+it, because the character can be text.
 
 ### One Option key for typing
 
@@ -1436,6 +1748,31 @@ The prefix stays armed for half a second after a command worth repeating, so
 tmux's `repeat-time`, and `appearance.prefix_repeat_time` changes it. Zero
 turns it off.
 
-Workspace switching on `opt+1` to `opt+9` works with no configuration, because
-those Option chords compose to characters tuios can read back. That table is
-built for a US layout.
+These actions repeat when you bind them under the leader: the focus moves,
+`next_window`, `prev_window`, `next_workspace`, `prev_workspace`, the
+`resize_pane_*` steps, the `resize_master_*` and `resize_height_*` steps, and
+the `scroll_*` moves and width cycle. `ctrl+b o` and `ctrl+b O` repeat too.
+Other actions run once.
+
+`keybindings.repeat` sets your own list, as tmux `bind -r` does. The list
+replaces the default list. An empty list turns repeat off:
+
+```toml
+[keybindings]
+# n and p switch workspaces once, so the next n or p you type reaches the shell
+repeat = ["terminal_focus_left", "terminal_focus_right", "terminal_focus_up",
+          "terminal_focus_down"]
+
+[keybindings.prefix_mode]
+next_workspace = ["n"]
+prev_workspace = ["p"]
+```
+
+An action in the list repeats only when a key runs it after the leader. tuios
+warns about an entry with no such key, and about a misspelt action.
+
+Workspace switching on `opt+1` to `opt+9` works with no configuration on a
+US or ABC keyboard layout. It also works in a terminal that reports Alt with
+the character, such as Ghostty and kitty. On other layouts in Terminal.app
+and iTerm2, Option+1 types its character and does not switch. Set the
+terminal to send Option as Alt.

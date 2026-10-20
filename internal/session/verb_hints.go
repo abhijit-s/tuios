@@ -117,6 +117,9 @@ var errorCodeCatalog = []struct {
 	{ErrVerbNoRemote, "ship-push or ship-pr found no remote to push to, or not the one named. Nothing was pushed. Add a remote, or name one with remote."},
 	{ErrVerbGhUnavailable, "ship-pr or ship-status needs the gh CLI, and it is not installed or not logged in. Nothing was pushed or opened. Install gh and run gh auth login."},
 	{ErrVerbNoCheckpoint, "The pane has no checkpoint by that number, or none at all. Nothing was read or changed. The hint lists the checkpoints it has. list-checkpoints lists them too."},
+	{ErrVerbHunkChanged, "review-stage did not find the file or the hunk in the diff now. Nothing was changed. Read the diff again with review-diff and the same index and context."},
+	{ErrVerbIndexChanged, "review-stage did not undo the call: the index changed after it. Nothing was changed. Read the diff again with review-diff."},
+	{ErrVerbWholeFileOnly, "review-stage stages a rename, a binary file or a very large file only whole. Nothing was changed. Leave hunk and lines out."},
 	{ErrVerbNoNotes, "send-review found no unsent review notes for the pane, so nothing was sent. Add one with review-note first."},
 	{ErrVerbNoBuffer, "No paste buffer has the name given, or there are no paste buffers when none was named. Nothing was read, pasted or deleted. list-buffers shows the names."},
 	{ErrVerbQueueFull, "The pane's delivery queue holds as many messages as [agents.queue] max allows. Nothing was queued. Wait for the agent to take one, or drop one with cancel-queued."},
@@ -132,6 +135,8 @@ var errorCodeCatalog = []struct {
 	{ErrVerbDiskFull, "The disk had no room for the write. What was written stays in the part file. Free space, then resume the transfer."},
 	{ErrVerbSourceChanged, "A file changed on its machine while it was copied: its size or time is not what the copy started from. Nothing was put in place for it. Copy it again when it is not being written."},
 	{ErrVerbNoTransfer, "No transfer has that id. Finished transfers leave the list after 30 minutes. transfer-list shows the ids."},
+	{ErrVerbSameSession, "move-window was given to_session, and the window is already in that session. Nothing moved. Name another session, or leave out to_session and give workspace."},
+	{ErrVerbPaneNotMovable, "move-window cannot move the window to another session: it is a popup, a scratch pane, or a pane that runs on another machine. Nothing moved."},
 	{ErrVerbInternal, "Unexpected server-side failure."},
 }
 
@@ -182,6 +187,8 @@ func (h *VerbHint) empty() bool {
 
 // hintedVerbError builds a *verbError carrying a hint. A hint with no populated
 // field is dropped so the envelope stays clean.
+//
+//go:noinline
 func hintedVerbError(code, message string, hint *VerbHint) *verbError {
 	e := newVerbError(code, message)
 	if !hint.empty() {
@@ -192,6 +199,8 @@ func hintedVerbError(code, message string, hint *VerbHint) *verbError {
 
 // invalidParam builds an invalid_params error naming the offending parameter and
 // the values it accepts (accepted may be nil when the set is open).
+//
+//go:noinline
 func invalidParam(param, message string, accepted ...string) *verbError {
 	return hintedVerbError(ErrVerbInvalidParams, message, &VerbHint{
 		Param:    param,
@@ -337,8 +346,8 @@ func editDistance(a, b string) int {
 
 // knownVerbNames returns every registered verb name in sorted order.
 func knownVerbNames() []string {
-	names := make([]string, 0, len(verbRegistry))
-	for name := range verbRegistry {
+	names := make([]string, 0, len(verbRegistry()))
+	for name := range verbRegistry() {
 		names = append(names, name)
 	}
 	sort.Strings(names)

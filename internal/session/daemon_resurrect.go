@@ -127,7 +127,7 @@ func (d *Daemon) restoreSessionOffers(state *SessionState) (*Session, []resumeOf
 	// The saved id comes back, so a client that knew the session by its id
 	// (a phone bridge, a script) still finds it. State from before ids were
 	// saved has none and gets a new one.
-	sess, err := d.manager.CreateSession(state.Name, &SessionConfig{restoreID: state.SessionID}, width, height)
+	sess, err := d.manager.CreateSession(state.Name, &SessionConfig{restoreID: state.SessionID, Space: state.Space}, width, height)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -247,7 +247,13 @@ func (d *Daemon) restoreSessionOffers(state *SessionState) (*Session, []resumeOf
 		// daemon writes. It is not taken from the restored shell's folder,
 		// which the pane chose.
 		sess.noteStartDir(w.ID, w.StartDir)
-		pty, err := sess.restorePTYWithGrants(w.ID, ptyWidth, ptyHeight, w.Cwd, savedGrants(w.Grants), history[w.ID], w.Workspace, onExit)
+		var pty *PTY
+		var err error
+		if w.Kind != "" && w.Kind != "terminal" {
+			pty, err = sess.restorePlaceholderPTY(w.ID, ptyWidth, ptyHeight, w.Cwd, w.Kind, w.URI, w.Workspace, onExit)
+		} else {
+			pty, err = sess.restorePTYWithGrants(w.ID, ptyWidth, ptyHeight, w.Cwd, savedGrants(w.Grants), history[w.ID], w.Workspace, onExit)
+		}
 		if err != nil {
 			LogError("Dropping restored window %s, its shell could not be respawned: %v", shortID(w.ID), err)
 			continue
@@ -282,9 +288,13 @@ func (d *Daemon) restoreSessionOffers(state *SessionState) (*Session, []resumeOf
 	var offers []resumeOffer
 	ids := make(map[string]WindowState, len(kept))
 	grants := make(map[string][]string)
+	startedBy := make(map[string]*PaneRef)
 	for _, w := range kept {
 		if w.Grants != nil {
 			grants[w.ID] = w.Grants
+		}
+		if w.StartedBy != nil {
+			startedBy[w.ID] = w.StartedBy
 		}
 		if w.AgentSessionID == "" {
 			continue
@@ -296,9 +306,13 @@ func (d *Daemon) restoreSessionOffers(state *SessionState) (*Session, []resumeOf
 	}
 
 	scratchPanes := map[string]scratchPane{}
+	views := map[string][2]string{}
 	for _, w := range kept {
 		if w.Scratch {
 			scratchPanes[w.ID] = scratchPane{name: w.ScratchName, workspace: w.Workspace}
+		}
+		if w.Kind != "" || w.URI != "" {
+			views[w.ID] = [2]string{w.Kind, w.URI}
 		}
 	}
 
@@ -316,6 +330,11 @@ func (d *Daemon) restoreSessionOffers(state *SessionState) (*Session, []resumeOf
 	// only the marks canonical state already has, and a new session has none.
 	if len(scratchPanes) > 0 {
 		sess.markRestoredScratch(scratchPanes)
+	}
+	// A window a renderer draws natively comes back as that kind of window,
+	// for the same reason.
+	if len(views) > 0 {
+		sess.markRestoredViews(views)
 	}
 
 	// The worktree record goes back on for the same reason: it is
@@ -351,6 +370,17 @@ func (d *Daemon) restoreSessionOffers(state *SessionState) (*Session, []resumeOf
 			for i := range st.Windows {
 				if g, ok := grants[st.Windows[i].ID]; ok {
 					st.Windows[i].Grants = grantNamesPtr(savedGrants(g))
+				}
+			}
+			return nil
+		})
+	}
+	// Which pane started each pane goes back on for the same reason.
+	if len(startedBy) > 0 {
+		_ = sess.mutateState(func(st *SessionState) error {
+			for i := range st.Windows {
+				if ref, ok := startedBy[st.Windows[i].ID]; ok {
+					st.Windows[i].StartedBy = ref
 				}
 			}
 			return nil

@@ -202,6 +202,10 @@ func (d *ActionDispatcher) registerHandlers() {
 	d.Register("enter_window_mode", handleEnterWindowMode)
 	d.Register("toggle_help", handleToggleHelp)
 	d.Register("open_settings", handleOpenSettings)
+	d.Register("open_keybind_presets", func(_ tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
+		o.OpenKeybindPresets()
+		return o, nil
+	})
 	d.Register("quit", handleQuit)
 
 	// Enter the sidebar rail's keyboard scope (window mode "s"). The exit and the
@@ -241,6 +245,12 @@ func (d *ActionDispatcher) registerHandlers() {
 	d.Register("kill_session", handleKillSession)
 	d.Register("kill_session_next", handleKillSessionNext)
 	d.Register("kill_session_quit", handleKillSessionQuit)
+	// The palette row, the rail's menu for this machine, or a key the
+	// person bound. See app/daemon_restart.go.
+	d.Register("restart_daemon", func(_ tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
+		o.OpenDaemonRestart()
+		return o, nil
+	})
 
 	// The worktree dialog's two entry points. A session row's menu names a
 	// session and a repository header's menu names a repository, so they are
@@ -367,6 +377,10 @@ func GetDispatcher() *ActionDispatcher {
 // ============================================================================
 
 func handleNewWindow(_ tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
+	if o.SidebarSessionFocused() {
+		o.NewSidebarSessionWindow()
+		return o, nil
+	}
 	if o.FollowSSHOnNewWindow() {
 		o.NewWindowSSH()
 		return o, nil
@@ -378,6 +392,10 @@ func handleNewWindow(_ tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
 // handleNewWindowSSH opens a window that runs the focused pane's ssh, or an
 // ordinary one when that pane runs none.
 func handleNewWindowSSH(_ tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
+	if o.SidebarSessionFocused() {
+		o.NewSidebarSessionWindow()
+		return o, nil
+	}
 	o.NewWindowSSH()
 	return o, nil
 }
@@ -752,7 +770,7 @@ func handleToggleZoom(_ tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
 	if fw != nil && fw.Zoomed {
 		o.ShowNotification("ZOOM", "info", o.Settings.NotificationDuration)
 	} else {
-		o.ShowNotification("", "info", 0) // clear
+		o.ClearNotification("ZOOM")
 	}
 	return o, nil
 }
@@ -766,6 +784,10 @@ func handleSmartSplit(_ tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
 }
 
 func handleSplitHorizontal(_ tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
+	if o.SidebarSessionFocused() {
+		o.NewSidebarSessionWindow() // rail panes always stack top to bottom
+		return o, nil
+	}
 	if o.FollowSSHOnNewWindow() {
 		return handleSplitSSHHorizontal(tea.KeyPressMsg{}, o)
 	}
@@ -777,6 +799,10 @@ func handleSplitHorizontal(_ tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
 }
 
 func handleSplitVertical(_ tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
+	if o.SidebarSessionFocused() {
+		o.NewSidebarSessionWindow() // no horizontal subdivision of a narrow rail
+		return o, nil
+	}
 	if o.FollowSSHOnNewWindow() {
 		return handleSplitSSHVertical(tea.KeyPressMsg{}, o)
 	}

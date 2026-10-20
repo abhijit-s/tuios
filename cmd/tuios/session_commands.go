@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
@@ -307,6 +308,57 @@ func clientLogf(format string, args ...any) {
 	}
 }
 
+// runNewSessionInSpace is tuios new --space. The session is made by the
+// new-session verb, which takes the space and files the session under it as
+// it is created, so there is no moment it exists in no space. A daemon that
+// does not know the space parameter refuses it, rather than making a session
+// in no space.
+//
+// The windows match tuios new without --space: a detached session gets its
+// first window from the daemon, and an attached one is made empty and the
+// client opens its first window as startup.open_default_window says.
+//
+// An attached one checks the terminal before the verb call, as plain tuios new
+// does, so a caller that cannot host the client leaves no session behind.
+func runNewSessionInSpace(sessionName, space string, detach bool) error {
+	if !detach {
+		if err := checkTerminal(); err != nil {
+			return err
+		}
+	}
+	if err := ensureDaemon(); err != nil {
+		return err
+	}
+	client, err := dialVerb()
+	if err != nil {
+		return err
+	}
+	params := map[string]any{"space": space, "window": detach}
+	if sessionName != "" {
+		params["name"] = sessionName
+	}
+	if newSessionDir != "" {
+		params["cwd"] = newSessionDir
+	}
+	raw, err := client.Call("new-session", params)
+	_ = client.Close()
+	if err != nil {
+		return explainVerbError("new-session", err)
+	}
+	var res struct {
+		Session string `json:"session"`
+	}
+	if err := json.Unmarshal(raw, &res); err != nil || res.Session == "" {
+		return fmt.Errorf("failed to parse the new session's name: %v: %s", err, raw)
+	}
+
+	if detach {
+		fmt.Printf("Created detached session '%s' in space '%s'. Attach with 'tuios attach %s'.\n", res.Session, space, res.Session)
+		return nil
+	}
+	return runDaemonSession(res.Session, false)
+}
+
 func runDaemonSession(sessionName string, createNew bool) error {
 	return runDaemonSessionOn("", sessionName, createNew)
 }
@@ -363,6 +415,9 @@ func runDaemonSessionOn(host, sessionName string, createNew bool) error {
 	// The display this process runs in, for a daemon started without one.
 	// See internal/session/display_follow.go.
 	client.Display = session.ClientDisplayFromEnv()
+	// The person's terminal, for the panes of a session this attach makes.
+	// The detached and verb paths send it too.
+	client.UseCallerTerm()
 	if host == "" && createNew {
 		// Only tuios new sets it. A session the attach finds is not moved.
 		client.StartDir = newSessionDir
@@ -400,7 +455,7 @@ func runDaemonSessionOn(host, sessionName string, createNew bool) error {
 	// An older daemon reads no -d and attaches beside the other clients.
 	// Said before the TUI takes the screen, so the person knows why.
 	if client.DetachOthers && !client.DaemonDetachesOthers() {
-		fmt.Fprintln(os.Stderr, "Warning: the daemon is older than this tuios and ignores -d. The other clients stay attached. Run 'tuios kill-server' and attach again to use -d.")
+		fmt.Fprintln(os.Stderr, "Warning: the daemon is older than this tuios and ignores -d. The other clients stay attached. Run 'tuios restart-server' and attach again to use -d.")
 	}
 
 	clientLogf("[CLIENT] Attaching to session '%s' (createNew=%v)", sessionName, createNew)
@@ -458,6 +513,7 @@ func runDaemonSessionOn(host, sessionName string, createNew bool) error {
 		SessionName:     client.SessionName(),
 		// Only a local attach asks for it, and only with --terminal-mode.
 		StartInTerminalMode: host == "" && attachTerminalMode,
+		AfterRestart:        host == "" && attachAfterRestart,
 		AttachedHost:        host,
 		// One writer for the terminal: frames, kitty and sixel sequences all
 		// serialize on it. Left nil, the passthroughs open their own /dev/tty
@@ -503,8 +559,11 @@ func runDaemonSessionOn(host, sessionName string, createNew bool) error {
 	// The client the app ended on, which is not this one after a switch to a
 	// session on a host: that switch opens a new client.
 	exitClient := client
+	var restartExec *app.RestartExec
+	var restartFail *app.RestartFailure
 	if finalOS, ok := finalModel.(*app.OS); ok {
 		reason = finalOS.ExitReason
+		restartExec, restartFail = finalOS.RestartExec, finalOS.RestartFailure
 		if finalOS.DaemonClient != nil {
 			exitClient = finalOS.DaemonClient
 		}
@@ -532,6 +591,15 @@ func runDaemonSessionOn(host, sessionName string, createNew bool) error {
 
 	if err != nil {
 		return fmt.Errorf("program error: %w", err)
+	}
+
+	// A restart from the app: the new daemon answers, and the client comes
+	// back on it. See restart_reattach.go.
+	if reason == app.ExitRestarted && restartExec != nil {
+		return reattachAfterRestart(restartExec)
+	}
+	if reason == app.ExitRestartFailed && restartFail != nil {
+		return appRestartFailure(restartFail)
 	}
 
 	// The daemon took this client off the session after the attach: its
@@ -704,7 +772,7 @@ func runListSessions(jsonOutput bool) error {
 		return nil
 	}
 
-	rows := make([][]string, 0, len(sessions))
+	rowsBySpace := map[string][][]string{}
 	anyRestored := false
 	for _, s := range sessions {
 		status := "detached"
@@ -724,7 +792,7 @@ func runListSessions(jsonOutput bool) error {
 		if s.DisplayName != "" && s.DisplayName != s.Name {
 			name = fmt.Sprintf("%s (%s)", s.Name, s.DisplayName)
 		}
-		rows = append(rows, []string{
+		rowsBySpace[s.Space] = append(rowsBySpace[s.Space], []string{
 			name,
 			fmt.Sprintf("%d", s.WindowCount),
 			status,
@@ -733,7 +801,7 @@ func runListSessions(jsonOutput bool) error {
 		})
 	}
 
-	fmt.Println(renderSessionTable(rows))
+	fmt.Println(renderSpaceGroups(rowsBySpace))
 	fmt.Printf("\n%s\n", plural.Count(len(sessions), "session"))
 	if anyRestored {
 		fmt.Printf("%s: %s.\n", session.RestoredTag, session.RestoredNote)
@@ -762,6 +830,7 @@ func listSavedSessions(diag session.DaemonDiagnosis, jsonOutput bool) error {
 					Name:        info.Name,
 					WindowCount: info.WindowCount,
 					LastActive:  savedUnix(info.SavedAt),
+					Space:       info.Space,
 				},
 				Saved:  true,
 				Server: serverscope.Name(),
@@ -774,9 +843,9 @@ func listSavedSessions(diag session.DaemonDiagnosis, jsonOutput bool) error {
 	}
 
 	if len(infos) > 0 {
-		rows := make([][]string, 0, len(infos))
+		rowsBySpace := map[string][][]string{}
 		for _, info := range infos {
-			rows = append(rows, []string{
+			rowsBySpace[info.Space] = append(rowsBySpace[info.Space], []string{
 				info.Name,
 				fmt.Sprintf("%d", info.WindowCount),
 				session.SavedTag,
@@ -784,7 +853,7 @@ func listSavedSessions(diag session.DaemonDiagnosis, jsonOutput bool) error {
 				formatTimeAgo(savedUnix(info.SavedAt)),
 			})
 		}
-		fmt.Println(renderSessionTable(rows))
+		fmt.Println(renderSpaceGroups(rowsBySpace))
 		fmt.Printf("\n%s\n", plural.Count(len(infos), "session"))
 		fmt.Printf("%s: %s.\n\n", session.SavedTag, session.SavedNote)
 	}
@@ -810,6 +879,30 @@ func printJSON(v any) error {
 	}
 	fmt.Println(string(data))
 	return nil
+}
+
+// renderSpaceGroups draws a session listing as one table per space, ordered by
+// space name, each under the space's name, and the sessions in no space last
+// with no heading. With no session in any space it is the one table. The live
+// listing, the saved one and each host of ls --all-hosts all draw through it.
+func renderSpaceGroups(rowsBySpace map[string][][]string) string {
+	spaces := make([]string, 0, len(rowsBySpace))
+	for space := range rowsBySpace {
+		if space != "" {
+			spaces = append(spaces, space)
+		}
+	}
+	slices.Sort(spaces)
+
+	heading := lipgloss.NewStyle().Bold(true)
+	groups := make([]string, 0, len(rowsBySpace))
+	for _, space := range spaces {
+		groups = append(groups, heading.Render(space)+"\n"+renderSessionTable(rowsBySpace[space]))
+	}
+	if loose, ok := rowsBySpace[""]; ok {
+		groups = append(groups, renderSessionTable(loose))
+	}
+	return strings.Join(groups, "\n\n")
 }
 
 // renderSessionTable draws the session listing. Both listings use it so a
@@ -1092,6 +1185,11 @@ func runDaemon(foreground, disableAutoRestore bool) error {
 	}
 
 	if !foreground {
+		// start-server returns once the daemon is up, so a --pprof given to it
+		// is only any use to the daemon.
+		if pprofAddr != "" {
+			return startDaemonBackground("--pprof", pprofAddr)
+		}
 		return startDaemonBackground()
 	}
 
@@ -1125,8 +1223,15 @@ func runDaemon(foreground, disableAutoRestore bool) error {
 	return daemon.Run()
 }
 
-func runKillDaemon() error {
+func runKillDaemon(restart bool) error {
 	diag := session.DiagnoseDaemon()
+	// The clients reattach after a restart and quit after a stop. The daemon
+	// reads the mark on its way out. See internal/session/daemon_goodbye.go.
+	if restart && diag.State == session.DaemonRunning {
+		if err := session.MarkRestart(); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: the clients will not wait for the new daemon: %v\n", err)
+		}
+	}
 	printServerLine(diag.SocketPath)
 
 	switch diag.State {

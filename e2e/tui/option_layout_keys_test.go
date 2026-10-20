@@ -49,7 +49,7 @@ const (
 
 	// optionNote is the start of the one-time note about Option not being
 	// sent as Alt.
-	optionNote = "Option is composing"
+	optionNote = "Your Option key types characters"
 
 	// escPlus8, escPlus3, escPlus1 and escPlusHash are the left Option key as
 	// Meta (WezTerm) or Esc+ (iTerm2): ESC, then the character the key types
@@ -83,10 +83,21 @@ const (
 // pane on workspace 1, in window mode. config is written first when not empty.
 func macSession(t *testing.T, base, session, config string) *tuitest.Terminal {
 	t.Helper()
+	return macSessionOn(t, base, session, config, "")
+}
+
+// macSessionOn is macSession on a Mac whose keyboard input source is source,
+// as /usr/bin/defaults prints it. Empty is a Mac whose layout cannot be read.
+func macSessionOn(t *testing.T, base, session, config, source string) *tuitest.Terminal {
+	t.Helper()
 	if config != "" {
 		writeConfig(t, base, config)
 	}
-	term := startIn(t, base, startOpts{cols: 120, rows: 40, args: []string{"new", session}, env: []string{"TUIOS_E2E_PLATFORM=darwin"}})
+	env := []string{"TUIOS_E2E_PLATFORM=darwin"}
+	if source != "" {
+		env = append(env, "TUIOS_E2E_MAC_INPUT_SOURCE="+source)
+	}
+	term := startIn(t, base, startOpts{cols: 120, rows: 40, args: []string{"new", session}, env: env})
 	waitBoot(t, term)
 	newWindow(t, term)
 	waitWindowCount(t, term, 1, "one pane")
@@ -174,43 +185,81 @@ func TestComposedOptionCharacterReachesThePane(t *testing.T) {
 	waitWorkspace(t, base, session, 8)
 }
 
-// TestNormalOptionCharacterSwitchesWorkspaceByDefault is the shipped default.
-// Terminal.app and iTerm2 ship with Option on "Normal", so Option and 3 sends
-// the composed "£" and nothing else. With no config, that is opt+3 and
-// switches to workspace 3, as it did before #566. The character must not
-// reach the shell.
+// TestBareOptionCharacterFollowsTheMacLayout is Terminal.app and iTerm2 as
+// they ship, with Option on "Normal", on the default option_glyphs = "auto".
+// A bare "£" is Option and 3 on a US Mac and Shift and 3 on a UK one.
 //
-// Negative control: in expandInto, skip the OptionGlyphKey claim. The "£" is
-// then typed into the shell, and this fails at the workspace wait.
-func TestNormalOptionCharacterSwitchesWorkspaceByDefault(t *testing.T) {
-	base := t.TempDir()
-	const session = "e2e-opt-normal"
-	term := macSession(t, base, session, "")
-	enterTerminalMode(t, term)
-	runInShell(t, term, "echo ready-$((2+3))", "ready-5", shellTimeout)
+// On a US layout it is opt+3: it switches to workspace 3, the one-time note
+// says how to send Option as Alt, and the character does not reach the
+// shell. On a British layout it is text (issue #746): it reaches the shell,
+// and the session stays on workspace 1.
+//
+// Negative controls:
+//   - In expandInto, skip the BareOptionGlyphKey claim. The US "£" is then
+//     typed into the shell, and this fails at the workspace wait.
+//   - In lookupKey, answer from the bare tier whatever the Mac layout is. The
+//     British "£" then switches to workspace 3, and this fails at the shell's
+//     marker.
+func TestBareOptionCharacterFollowsTheMacLayout(t *testing.T) {
+	t.Run("US", func(t *testing.T) {
+		base := t.TempDir()
+		const session = "e2e-opt-normal-us"
+		term := macSessionOn(t, base, session, "", "com.apple.keylayout.US")
+		enterTerminalMode(t, term)
+		runInShell(t, term, "echo ready-$((2+3))", "ready-5", shellTimeout)
 
-	press(t, term, "Option and 3 (composed)", normalOptionPound)
-	waitWorkspace(t, base, session, 3)
-	// The one-time note says Option is not sent as Alt. This is the positive
-	// half of the test that says it stays quiet.
-	if err := term.WaitForText(optionNote, uiTimeout); err != nil {
-		t.Fatalf("the note about Option did not show: %v\n%s", err, term.Snapshot())
-	}
-	saveFrame(t, term, "option-normal-pound-bound")
+		press(t, term, "Option and 3 (composed)", normalOptionPound)
+		waitWorkspace(t, base, session, 3)
+		// The one-time note says Option is not sent as Alt. This is the
+		// positive half of the test that says it stays quiet.
+		if err := term.WaitForText(optionNote, uiTimeout); err != nil {
+			t.Fatalf("the note about Option did not show: %v\n%s", err, term.Snapshot())
+		}
+		saveFrame(t, term, "option-normal-pound-us")
 
-	// Back on workspace 1 the shell's prompt line holds no "£". A "£" the
-	// shell got is echoed there, since the prompt waits for the rest of a line.
-	press(t, term, "Option and 1 (ESC 1)", escPlus1)
-	waitWorkspace(t, base, session, 1)
-	if err := term.WaitForText("ready-5", uiTimeout); err != nil {
-		t.Fatalf("workspace 1 is not drawn again: %v\n%s", err, term.Snapshot())
-	}
-	if err := term.WaitStable(uiTimeout); err != nil {
-		t.Fatalf("the frame never settled: %v\n%s", err, term.Snapshot())
-	}
-	if text := term.Screen().Text(); strings.Contains(text, "£") {
-		t.Fatalf("the composed character was typed into the pane:\n%s", term.Snapshot())
-	}
+		// Back on workspace 1 the shell's prompt line holds no "£". A "£"
+		// the shell got is echoed there, since the prompt waits for the rest
+		// of a line.
+		press(t, term, "Option and 1 (ESC 1)", escPlus1)
+		waitWorkspace(t, base, session, 1)
+		if err := term.WaitForText("ready-5", uiTimeout); err != nil {
+			t.Fatalf("workspace 1 is not drawn again: %v\n%s", err, term.Snapshot())
+		}
+		if err := term.WaitStable(uiTimeout); err != nil {
+			t.Fatalf("the frame never settled: %v\n%s", err, term.Snapshot())
+		}
+		if text := term.Screen().Text(); strings.Contains(text, "£") {
+			t.Fatalf("the composed character was typed into the pane:\n%s", term.Snapshot())
+		}
+	})
+
+	t.Run("British", func(t *testing.T) {
+		base := t.TempDir()
+		const session = "e2e-opt-normal-uk"
+		term := macSessionOn(t, base, session, "", "com.apple.keylayout.British")
+		enterTerminalMode(t, term)
+		if err := term.SendKeys(`echo "x$((1+1))`); err != nil {
+			t.Fatalf("type the command: %v", err)
+		}
+		press(t, term, "Shift and 3 on a UK keyboard", normalOptionPound)
+		if err := term.SendKeys(`y"`, tuitest.Enter); err != nil {
+			t.Fatalf("finish the command: %v", err)
+		}
+		if err := term.WaitForText("x2£y", shellTimeout); err != nil {
+			t.Fatalf("the typed £ did not reach the shell: %v\n%s", err, term.Snapshot())
+		}
+		if ws := currentWorkspace(t, base, session); ws != 1 {
+			t.Fatalf("the typed £ switched to workspace %d\n%s", ws, term.Snapshot())
+		}
+		if strings.Contains(term.Screen().Text(), optionNote) {
+			t.Fatalf("the note about Option shows for a typed £:\n%s", term.Snapshot())
+		}
+		saveFrame(t, term, "option-bare-pound-uk")
+
+		// The positive half: Option sent as Alt still switches.
+		press(t, term, "Option and 3 (ESC 3)", escPlus3)
+		waitWorkspace(t, base, session, 3)
+	})
 }
 
 // TestEscPlusOptionChordsOnAUSLayout is iTerm2 with Esc+ on a US layout. ESC 3
@@ -331,8 +380,9 @@ func TestAzertyKittyReportsPickTheRightWorkspace(t *testing.T) {
 	waitPaneOn(t, term, base, session, 7, "alt+& with no layout report")
 }
 
-// TestOptionLeaderFiresOnTheComposedCharacter is the leader half of the
-// default. With leader_key = "opt+1" on a terminal where Option composes,
+// TestOptionLeaderFiresOnTheComposedCharacter is the leader half of
+// option_glyphs = "bind". With leader_key = "opt+1" on a terminal where Option
+// composes,
 // Option and 1 arrives as "¡", and that has to start the leader the way it
 // runs an opt+ binding. The opt-out is in
 // TestComposedOptionCharacterReachesThePane, where the same "¡" reaches the
@@ -343,7 +393,7 @@ func TestAzertyKittyReportsPickTheRightWorkspace(t *testing.T) {
 func TestOptionLeaderFiresOnTheComposedCharacter(t *testing.T) {
 	base := t.TempDir()
 	const session = "e2e-opt-leader"
-	term := macSession(t, base, session, "[keybindings]\nleader_key = \"opt+1\"\n")
+	term := macSession(t, base, session, "[keybindings]\nleader_key = \"opt+1\"\noption_glyphs = \"bind\"\n")
 	enterTerminalMode(t, term)
 	runInShell(t, term, "echo ready-$((1+5))", "ready-6", shellTimeout)
 
@@ -399,8 +449,9 @@ func TestKittyComposedCharacterFollowsOptionGlyphs(t *testing.T) {
 // no modifier. ç is also what Option and c composes on a US layout, so the
 // US table read the key as opt+c. Under the Kitty protocol the report carries
 // the base-layout key 9, which says the key was typed without Option, and
-// the character must not run opt+c. The positive half: the same ç with no
-// layout report, as Terminal.app sends it for Option and c, runs opt+c.
+// the character must not run opt+c, even with option_glyphs = "bind". The
+// positive half: the same ç with no layout report, as Terminal.app sends it
+// for Option and c, runs opt+c under "bind".
 //
 // Negative control: in composedChords, ignore the base-layout key. The first
 // ç then moves the pane to workspace 4, and this fails at the first
@@ -408,7 +459,8 @@ func TestKittyComposedCharacterFollowsOptionGlyphs(t *testing.T) {
 func TestAzertyCedillaIsNotOptionC(t *testing.T) {
 	base := t.TempDir()
 	const session = "e2e-opt-cedilla"
-	term := macSession(t, base, session, "[keybindings.workspaces]\nmove_and_follow_4 = [\"opt+c\"]\n")
+	term := macSession(t, base, session,
+		"[keybindings]\noption_glyphs = \"bind\"\n\n[keybindings.workspaces]\nmove_and_follow_4 = [\"opt+c\"]\n")
 
 	// CSI 231 :: 57 u: ç, base-layout key 9, no modifier.
 	press(t, term, "the AZERTY 9 key (kitty, ç, base 9)", "\x1b[231::57u")

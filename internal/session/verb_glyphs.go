@@ -24,7 +24,7 @@ import (
 // rather than what the set asked for.
 
 // verbListGlyphs reports the glyph sets, and describes one when asked.
-func (d *Daemon) verbListGlyphs(_ *connState, params json.RawMessage) (any, *verbError) {
+func (d *Daemon) verbListGlyphs(cs *connState, params json.RawMessage) (any, *verbError) {
 	var p struct {
 		Session string `json:"session"`
 		Glyphs  string `json:"glyphs"`
@@ -54,14 +54,14 @@ func (d *Daemon) verbListGlyphs(_ *connState, params json.RawMessage) (any, *ver
 		out["problems"] = problems
 	}
 
-	if sess := d.findTargetSession(p.Session); sess != nil {
+	// One read of config.toml serves the whole request.
+	sess := d.findTargetSession(p.Session)
+	opts := d.optionsFor(cs, sess)
+	if sess != nil {
 		out["session"] = sess.Name()
-		if v, ok := sess.GetOption("appearance.glyphs"); ok {
+		if v, source, ok := opts.lookup("appearance.glyphs"); ok {
 			out["active"] = v
-			out["active_source"] = "session"
-		} else if opt, ok := config.LookupOption("appearance.glyphs"); ok {
-			out["active"] = opt.Default
-			out["active_source"] = "default"
+			out["active_source"] = source
 		}
 	} else if p.Session != "" {
 		return nil, mustResolve(d, p.Session)
@@ -81,31 +81,16 @@ func (d *Daemon) verbListGlyphs(_ *connState, params json.RawMessage) (any, *ver
 				"; write <id>.json there to add it.",
 		})
 	}
+	// What the session would draw, not the daemon's own config globals: the
+	// daemon does not draw, so it never applies an appearance config, and
+	// reading its BorderStyle reported the empty string for every session.
 	out["set"] = describeGlyphSet(p.Glyphs, glyphRenderSettings{
-		borderStyle:    d.effectiveOption(p.Session, "appearance.border_style"),
-		scrollbarStyle: d.effectiveOption(p.Session, "appearance.scrollbar.style"),
-		scrollbarThumb: d.effectiveOption(p.Session, "appearance.scrollbar.thumb"),
-		scrollbarTrack: d.effectiveOption(p.Session, "appearance.scrollbar.track"),
+		borderStyle:    opts.get("appearance.border_style"),
+		scrollbarStyle: opts.get("appearance.scrollbar.style"),
+		scrollbarThumb: opts.get("appearance.scrollbar.thumb"),
+		scrollbarTrack: opts.get("appearance.scrollbar.track"),
 	})
 	return out, nil
-}
-
-// effectiveOption is what a session would draw for an option: what it was told,
-// falling back to what the option does untold.
-//
-// The daemon's own config globals are not that. The daemon does not draw, so it
-// never applies an appearance config, and reading its BorderStyle reported the
-// empty string for every session including the ones that had set one.
-func (d *Daemon) effectiveOption(sessionName, path string) string {
-	if sess := d.findTargetSession(sessionName); sess != nil {
-		if v, ok := sess.GetOption(path); ok {
-			return v
-		}
-	}
-	if opt, ok := config.LookupOption(path); ok {
-		return opt.Default
-	}
-	return ""
 }
 
 // glyphRenderSettings is what a session's other options say about the glyphs

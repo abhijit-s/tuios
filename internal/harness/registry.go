@@ -1,17 +1,73 @@
 package harness
 
 import (
-	"embed"
-	"io/fs"
+	"archive/tar"
+	"bytes"
+	"compress/gzip"
+	_ "embed"
+	"errors"
+	"fmt"
+	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"slices"
 	"sort"
 	"strings"
 )
 
-//go:embed manifests/*.toml
-var bundled embed.FS
+//go:generate go run gen.go
+
+// bundledArchive is manifests/*.toml packed by gen.go, each file under its
+// base name. The gzipped tar is about a quarter of the files' size. Run `go
+// generate ./internal/harness` after editing a bundled manifest.
+// TestBundledArchiveMatchesFiles fails while the archive is stale.
+//
+//go:embed manifests.tar.gz
+var bundledArchive []byte
+
+// bundledFile is one manifest from the archive, named "manifests/<file>".
+type bundledFile struct {
+	name string
+	data []byte
+}
+
+// maxBundledBytes bounds what bundledFiles unpacks, in all and per entry. The
+// manifests are about 100 KB.
+const maxBundledBytes = 4 << 20
+
+// bundledFiles unpacks the archive in name order. It unpacks on each call and
+// keeps nothing, because Load runs once per daemon start and a kept copy would
+// sit in memory for the life of the process.
+func bundledFiles() ([]bundledFile, error) {
+	zr, err := gzip.NewReader(bytes.NewReader(bundledArchive))
+	if err != nil {
+		return nil, fmt.Errorf("bundled manifests: %w", err)
+	}
+	// The archive is built into the binary, so these limits guard against a
+	// bad gen.go or a corrupt commit, not an attacker: the whole stream stops
+	// at maxBundledBytes, and a header cannot ask for more than that.
+	tr := tar.NewReader(io.LimitReader(zr, maxBundledBytes))
+	var out []bundledFile
+	for {
+		h, err := tr.Next()
+		if errors.Is(err, io.EOF) {
+			return out, nil
+		}
+		if err != nil {
+			return out, fmt.Errorf("bundled manifests: %w", err)
+		}
+		if h.Typeflag != tar.TypeReg || h.Size < 0 || h.Size > maxBundledBytes ||
+			h.Name != path.Base(h.Name) || strings.ContainsAny(h.Name, `/\`) || !strings.HasSuffix(h.Name, ".toml") {
+			return out, fmt.Errorf("bundled manifests: unexpected entry %q", h.Name)
+		}
+		data := make([]byte, h.Size)
+		if _, err := io.ReadFull(tr, data); err != nil {
+			return out, fmt.Errorf("bundled manifests: %s: %w", h.Name, err)
+		}
+		out = append(out, bundledFile{name: "manifests/" + h.Name, data: data})
+	}
+}
 
 // Registry is the loaded set of harness manifests, ordered so a lookup is
 // deterministic.
@@ -45,17 +101,14 @@ func Load(dirs ...string) (*Registry, []LoadError) {
 	byID := map[string]*Manifest{}
 	var errs []LoadError
 
-	entries, _ := fs.ReadDir(bundled, "manifests")
-	for _, e := range entries {
-		name := "manifests/" + e.Name()
-		data, err := fs.ReadFile(bundled, name)
+	files, err := bundledFiles()
+	if err != nil {
+		errs = append(errs, LoadError{Source: "manifests.tar.gz", Err: err})
+	}
+	for _, f := range files {
+		m, err := parseManifest(f.name, f.data)
 		if err != nil {
-			errs = append(errs, LoadError{Source: name, Err: err})
-			continue
-		}
-		m, err := parseManifest(name, data)
-		if err != nil {
-			errs = append(errs, LoadError{Source: name, Err: err})
+			errs = append(errs, LoadError{Source: f.name, Err: err})
 			continue
 		}
 		m.source = "bundled"
@@ -139,6 +192,17 @@ func (r *Registry) Lookup(id string) *Manifest {
 		}
 	}
 	return nil
+}
+
+// SharedServer reports whether the harness with id runs every conversation's
+// hooks from one shared server process. See Manifest.SharedServer.
+// A nil registry knows no harness.
+func (r *Registry) SharedServer(id string) bool {
+	if r == nil {
+		return false
+	}
+	m := r.Lookup(id)
+	return m != nil && m.SharedServer
 }
 
 // CanProveIdle reports whether the harness has an enabled screen or title rule

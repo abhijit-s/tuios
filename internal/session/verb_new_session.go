@@ -33,6 +33,9 @@ func (d *Daemon) verbNewSession(cs *connState, params json.RawMessage) (any, *ve
 		WindowName string   `json:"window_name"`
 		Cwd        string   `json:"cwd"`
 		Command    []string `json:"command"`
+		Space      string   `json:"space"`
+		// Env is set in the first window's process.
+		Env map[string]string `json:"env"`
 	}
 	if verr := decodeParams(params, &p); verr != nil {
 		return nil, verr
@@ -41,6 +44,10 @@ func (d *Daemon) verbNewSession(cs *connState, params json.RawMessage) (any, *ve
 	name := strings.TrimSpace(p.Name)
 	if err := ValidateSessionName(name); err != nil {
 		return nil, invalidParam("name", err.Error())
+	}
+	space, verr := spaceName(p.Space)
+	if verr != nil {
+		return nil, verr
 	}
 	if p.Width < 0 || p.Height < 0 {
 		return nil, invalidParam("width", "width and height are cell counts and cannot be negative")
@@ -63,6 +70,13 @@ func (d *Daemon) verbNewSession(cs *connState, params json.RawMessage) (any, *ve
 	// up. new-window refuses the same two mistakes for the same reason.
 	if verr := checkWindowCwd(p.Cwd); verr != nil {
 		return nil, verr
+	}
+	env, _, verr := callerEnv(cs, p.Env)
+	if verr != nil {
+		return nil, verr
+	}
+	if len(env) > 0 && !makeWindow {
+		return nil, invalidParam("env", "env is set in the first window's process, and window is false. Leave env out, or create the window")
 	}
 	if makeWindow {
 		if len(p.Command) > 0 && p.Command[0] == "" {
@@ -87,17 +101,8 @@ func (d *Daemon) verbNewSession(cs *connState, params json.RawMessage) (any, *ve
 	if _, _, verr := d.childWindowBound(cs, "new-session", p.Cwd); verr != nil {
 		return nil, verr
 	}
-	// The caller's terminal from its hello, as an attach or tuios new gets
-	// it. With none, the session gets the daemon's fallback.
-	cfg := &SessionConfig{}
-	if cs != nil {
-		cs.mu.Lock()
-		if cs.hello != nil {
-			cfg.Term = cs.hello.Term
-			cfg.ColorTerm = cs.hello.ColorTerm
-		}
-		cs.mu.Unlock()
-	}
+	cfg := callerSessionConfig(cs)
+	cfg.Space = space
 	sess, err := d.manager.CreateSession(name, cfg, width, height)
 	if err != nil {
 		// The name check above is racy by nature, so the manager's own refusal
@@ -127,6 +132,9 @@ func (d *Daemon) verbNewSession(cs *connState, params json.RawMessage) (any, *ve
 		"height":     height,
 		"windows":    0,
 	}
+	if space != "" {
+		out["space"] = space
+	}
 	if !makeWindow {
 		return out, nil
 	}
@@ -139,6 +147,7 @@ func (d *Daemon) verbNewSession(cs *connState, params json.RawMessage) (any, *ve
 		Cwd:       p.Cwd,
 		Focus:     true,
 		Command:   p.Command,
+		Env:       env,
 		Workspace: 0,
 	}, onExit)
 	if bverr != nil {
@@ -178,4 +187,20 @@ func checkWindowCwd(cwd string) *verbError {
 		return invalidParam("cwd", echoName(cwd)+" is not a directory")
 	}
 	return nil
+}
+
+// callerSessionConfig is the config for a session a verb makes: the caller's
+// terminal from its hello, as an attach or tuios new gets it. With none, the
+// session gets the daemon's fallback.
+func callerSessionConfig(cs *connState) *SessionConfig {
+	cfg := &SessionConfig{}
+	if cs != nil {
+		cs.mu.Lock()
+		if cs.hello != nil {
+			cfg.Term = cs.hello.Term
+			cfg.ColorTerm = cs.hello.ColorTerm
+		}
+		cs.mu.Unlock()
+	}
+	return cfg
 }

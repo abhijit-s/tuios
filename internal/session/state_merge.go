@@ -55,9 +55,15 @@ func retainDaemonExclusive(incoming, canonical *SessionState) {
 	// for the same reason: a bool cannot say "not sent", and no client should
 	// be able to turn an ordinary session into a global one by syncing.
 	incoming.Global = canonical.Global
+	// The space is written only by set-session-space and new-session, so
+	// canonical wins the same way: no client sync can file a session under a
+	// space or take it out.
+	incoming.Space = canonical.Space
 	// The worktree record is written by detection and by the worktree verbs,
 	// both daemon-side, so canonical wins the same way Restored does.
 	incoming.Worktree = canonical.Worktree
+	// The window moves are recorded by a move between sessions, daemon-side.
+	incoming.WindowMoves = canonical.WindowMoves
 	if incoming.WorkspaceNames == nil {
 		incoming.WorkspaceNames = canonical.WorkspaceNames
 	}
@@ -241,6 +247,10 @@ func retainDaemonExclusive(incoming, canonical *SessionState) {
 	// The field is daemon-owned like every other one in this block, and it was
 	// added without being put here.
 	hosts := make(map[string]string, len(canonical.Windows))
+	// What draws a window and what it shows are set when it is made and only
+	// the daemon sets them, so canonical wins the way the host does.
+	type viewMark struct{ kind, uri string }
+	views := make(map[string]viewMark)
 	// The turn count is daemon-owned and only ever goes up. A client echoes the
 	// value it was last sent, which can be behind, and an older client sends
 	// none, so canonical wins whenever it is ahead.
@@ -253,6 +263,9 @@ func retainDaemonExclusive(incoming, canonical *SessionState) {
 	// A pane's OSC 7501 records are the daemon's alone, like the agent meta:
 	// only the pane's emulator writes them.
 	programStatus := make(map[string][]ProgramStatusRecord)
+	// Which pane started a pane is the daemon's record of a call, so
+	// canonical wins unconditionally, like the grants.
+	startedBy := make(map[string]*PaneRef)
 	// A window's start folder is fixed by the daemon when it makes the
 	// window, and a grant is held to it, so canonical wins unconditionally:
 	// a push can neither set one nor move it, even where canonical has none.
@@ -261,6 +274,9 @@ func retainDaemonExclusive(incoming, canonical *SessionState) {
 		w := &canonical.Windows[i]
 		if w.StartDir != "" {
 			startDirs[w.ID] = w.StartDir
+		}
+		if w.StartedBy != nil {
+			startedBy[w.ID] = w.StartedBy
 		}
 		if w.Grants != nil {
 			paneGrants[w.ID] = w.Grants
@@ -279,6 +295,9 @@ func retainDaemonExclusive(incoming, canonical *SessionState) {
 		}
 		if w.Scratch {
 			scratches[w.ID] = scratchMark{w.ScratchName, w.Workspace}
+		}
+		if w.Kind != "" || w.URI != "" {
+			views[w.ID] = viewMark{w.Kind, w.URI}
 		}
 		workspaces[w.ID] = w.Workspace
 		if w.Host != "" {
@@ -338,6 +357,8 @@ func retainDaemonExclusive(incoming, canonical *SessionState) {
 		if c := completions[w.ID]; c > w.CompletionSeq {
 			w.CompletionSeq = c
 		}
+		v := views[w.ID]
+		w.Kind, w.URI = v.kind, v.uri
 		// Only the daemon marks the scratch popup, so a push can neither set
 		// the mark on another pane nor clear it.
 		p, ok := popups[w.ID]
@@ -381,6 +402,7 @@ func retainDaemonExclusive(incoming, canonical *SessionState) {
 		w.AgentSubagentList = subagentLists[w.ID]
 		w.ProgramStatus = programStatus[w.ID]
 		w.Grants = paneGrants[w.ID]
+		w.StartedBy = startedBy[w.ID]
 	}
 }
 
@@ -416,7 +438,16 @@ func reconcileStale(incoming, canonical *SessionState, hasLivePTY func(ptyID str
 		}
 		win.CustomName = cw.CustomName
 		win.Workspace = cw.Workspace
-		win.Minimized = cw.Minimized
+		// A stack member's minimized flag says which member is open, and it
+		// goes with the tree op the same client sent for the edit, which the
+		// daemon took (tree ops are never stale). The stack key and order
+		// come from the push as well. Taking canonical's flag here split the
+		// two: a stack edit pushed just after another change came back with
+		// the member it collapsed open and with no tile, and every client's
+		// tiler gave it a new tile beside the stack.
+		if win.Stack == "" && cw.Stack == "" {
+			win.Minimized = cw.Minimized
+		}
 		seen[win.ID] = true
 		kept = append(kept, win)
 	}

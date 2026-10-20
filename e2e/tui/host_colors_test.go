@@ -1,6 +1,7 @@
 package tuie2e
 
 import (
+	"encoding/json"
 	"fmt"
 	"image/color"
 	"os"
@@ -16,8 +17,9 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/Gaurav-Gosain/tuios/internal/overlay"
-	"github.com/Gaurav-Gosain/tuios/internal/shot"
+	"github.com/Gaurav-Gosain/tuios/internal/theme"
 	"github.com/Gaurav-Gosain/tuitest"
+	"tuios.dev/shot"
 )
 
 // The host terminal's own colours, told to the programs in the panes and used
@@ -136,7 +138,7 @@ func renderScreenPNG(t *testing.T, s tuitest.Screen, p *shot.Palette, path strin
 			g.Cells[y][x] = shot.MakeCell(c.Content, c.Width, style, uv.Link{}, p)
 		}
 	}
-	data, err := shot.RenderPNG(g, nil, nil)
+	data, err := shot.RenderPNG(g, nil)
 	if err != nil {
 		t.Fatalf("render %s: %v", path, err)
 	}
@@ -552,4 +554,468 @@ func TestHostColorsSilentTerminal(t *testing.T) {
 	if !strings.Contains(string(logged), "unanswered 11;?") {
 		t.Errorf("tuios never asked the silent host for its background:\n%s", logged)
 	}
+}
+
+// TestThemedDaemonPaneReportsTheTheme attaches to a daemon session with a
+// theme set and the pane background off, behind the light stand-in host. A
+// pane program asking OSC 11, OSC 10 and OSC 4 for slot 1 is told the
+// theme's colours: the panes are drawn in the theme, so that is what they are
+// on. The daemon's emulators answer these questions, and the daemon never
+// loads a theme, so the client has to push the theme's colours.
+//
+// How this could pass wrongly: the answer could be the host's colours, or the
+// emulator's own black and white. The host here is light and the theme is
+// dark, so all three differ.
+//
+// Negative control: on a build where a themed client pushes nothing, every
+// answer is the emulator's own (rgb:0000/0000/0000 for OSC 11), and the test
+// fails.
+func TestThemedDaemonPaneReportsTheTheme(t *testing.T) {
+	base := t.TempDir()
+	killDaemon(t, base)
+	host := buildHostTerm(t)
+	artifacts := artifactDir(t)
+
+	const themeID = "dracula"
+	pal, fg, bg, _, ok := theme.Colors(themeID)
+	if !ok {
+		t.Fatalf("theme %s is not built in", themeID)
+	}
+	xrgb := func(c color.Color) string {
+		r, g, b, _ := c.RGBA()
+		return fmt.Sprintf("rgb:%04x/%04x/%04x", (r>>8)*0x101, (g>>8)*0x101, (b>>8)*0x101)
+	}
+
+	useShippedLooks(base)
+	writeConfig(t, base, "[appearance]\ntheme = \""+themeID+"\"\n")
+	if out, err := tuiosCLI(t, base, "new", "e2e-themed", "--detach"); err != nil {
+		t.Fatalf("create the session: %v\n%s", err, out)
+	}
+	term := startIn(t, base, startOpts{
+		args:         []string{"attach", "e2e-themed"},
+		shippedLooks: true,
+		env:          []string{"COLORTERM=truecolor"},
+		wrap:         []string{host, "run", "-bg", "#fdf6e3", "-fg", "#2a2a2a", "-ansi", hostANSISpec(), "--"},
+	})
+	if err := term.WaitFor(func(s tuitest.Screen) bool { return countWindows(s) == 1 }, bootTimeout); err != nil {
+		t.Fatalf("client never attached: %v\n%s", err, term.Snapshot())
+	}
+
+	want := map[string]string{"11": xrgb(bg), "10": xrgb(fg), "4;1": xrgb(pal[1])}
+	got := askPane(t, base, "e2e-themed", host, want)
+	for spec, w := range want {
+		if got[spec] != w {
+			t.Errorf("themed daemon session: a pane's OSC %s query was answered %q, want the theme's %q", spec, got[spec], w)
+		}
+	}
+	saveArtifact(t, term, artifacts, "themed-daemon-pane")
+
+	// A second client on another theme attaches. The person last gave input
+	// at the first one, so the second client's pushes leave the panes'
+	// colours alone: two clients on two themes must not take turns, which
+	// would send a pane with mode 2031 on a notice for every push.
+	if err := term.SendKeys(tuitest.Esc); err != nil {
+		t.Fatalf("give the first client input: %v", err)
+	}
+	time.Sleep(500 * time.Millisecond)
+	second := startIn(t, base, startOpts{
+		args:         []string{"attach", "--theme", "catppuccin_latte", "e2e-themed"},
+		shippedLooks: true,
+		env:          []string{"COLORTERM=truecolor"},
+		wrap:         []string{host, "run", "-bg", "#fdf6e3", "-fg", "#2a2a2a", "-ansi", hostANSISpec(), "--"},
+	})
+	if err := second.WaitFor(func(s tuitest.Screen) bool { return countWindows(s) == 1 }, bootTimeout); err != nil {
+		t.Fatalf("the second client never attached: %v\n%s", err, second.Snapshot())
+	}
+	time.Sleep(time.Second)
+	if got := askPane(t, base, "e2e-themed", host, map[string]string{"11": xrgb(bg)}); got["11"] != xrgb(bg) {
+		t.Errorf("after a second client on Latte attached, a pane's OSC 11 was answered %q, want the first client's Dracula %q", got["11"], xrgb(bg))
+	}
+	// The positive half: once the person gives input at the second client
+	// and its theme changes, its colours are the panes'.
+	_, _, nordBg, _, ok := theme.Colors("nord")
+	if !ok {
+		t.Fatal("theme nord is not built in")
+	}
+	pickTheme(t, second, "nord")
+	if got := askPane(t, base, "e2e-themed", host, map[string]string{"11": xrgb(nordBg)}); got["11"] != xrgb(nordBg) {
+		t.Errorf("after the second client picked Nord, a pane's OSC 11 was answered %q, want Nord's %q", got["11"], xrgb(nordBg))
+	}
+	saveArtifact(t, second, artifacts, "second-client-nord")
+}
+
+// omarchySwitch applies an Omarchy theme under the test's HOME the way
+// omarchy-theme-set does: the new theme is staged in next-theme, the old
+// theme directory is removed, the staged one renamed into its place, and
+// theme.generation and theme.name are written last. The palette is the
+// shipped theme's colors.toml from swatch's fixtures.
+//
+// With TUIOS_E2E_OMARCHY_SRC naming an Omarchy checkout, the real
+// omarchy-theme-set does the switch instead, headless.
+func omarchySwitch(t *testing.T, base, id string) {
+	t.Helper()
+	home := xdgDir(base, "HOME")
+	if src := os.Getenv("TUIOS_E2E_OMARCHY_SRC"); src != "" {
+		run := filepath.Join(base, "omarchy-run")
+		mustMkdir(run)
+		cmd := exec.Command(filepath.Join(src, "bin", "omarchy-theme-set"), id)
+		cmd.Env = append(os.Environ(), "HOME="+home, "OMARCHY_PATH="+src,
+			"PATH="+filepath.Join(src, "bin")+":"+os.Getenv("PATH"),
+			"OMARCHY_THEME_HEADLESS=1", "OMARCHY_THEME_SKIP_BACKGROUND=1", "XDG_RUNTIME_DIR="+run)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("omarchy-theme-set %s: %v\n%s", id, err, out)
+		}
+		return
+	}
+	data, err := os.ReadFile(filepath.Join("..", "..", "swatch", "omarchy", "testdata", "themes", id, "colors.toml"))
+	if err != nil {
+		t.Fatalf("read the %s fixture: %v", id, err)
+	}
+	current := filepath.Join(home, ".local", "state", "omarchy", "current")
+	next := filepath.Join(current, "next-theme")
+	mustMkdir(next)
+	if err := os.WriteFile(filepath.Join(next, "colors.toml"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(filepath.Join(current, "theme")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(next, filepath.Join(current, "theme")); err != nil {
+		t.Fatal(err)
+	}
+	gen := fmt.Sprintf("%d-%d\n", os.Getpid(), time.Now().UnixNano())
+	for name, body := range map[string]string{"theme.generation": gen, "theme.name": id + "\n"} {
+		if err := os.WriteFile(filepath.Join(current, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// TestOmarchyThemeSwitchIsFollowed runs a daemon session on a machine with
+// Omarchy and no tuios theme set, so tuios follows the Omarchy theme. It
+// starts on Tokyo Night, then Omarchy switches to Gruvbox, another dark
+// theme, and then to Catppuccin Latte, while the client runs.
+//
+// After each switch, with no restart and no key pressed:
+//   - a program that turned on mode 2031 gets one CSI ? 997 n notice: dark
+//     for Gruvbox, although the background stayed dark, and light for Latte.
+//     For Gruvbox it gets exactly one, although the background, the text
+//     colour and the palette all changed;
+//   - a pane's OSC 11 is answered with the new background, and after Gruvbox
+//     OSC 4 slot 4 with Gruvbox's blue, through the daemon's emulator, so the
+//     colours went from the client to the daemon;
+//   - the pane frame is drawn in a new colour.
+//
+// Then the theme picker passes several dark themes on the way to Dracula.
+// The program gets no notice while the picker shows them, and one dark notice
+// for the pick.
+//
+// Each state is kept as a frame drawn on the theme's ground, which is what
+// the Omarchy terminal around tuios shows.
+//
+// How this could pass wrongly: the answer could be the first theme read
+// again, but the three themes differ in every colour checked; the notice
+// could come from somewhere else, but the program asks nothing, and before
+// the change to every palette change tuios sent nothing for a dark to dark
+// switch.
+//
+// Negative controls: with the watcher hub not started (startOmarchyFollow
+// returning nil), the pane keeps answering Tokyo Night's background and no
+// notice arrives. With the notice sent only on a dark and light flip, the
+// Gruvbox step gets no notice.
+func TestOmarchyThemeSwitchIsFollowed(t *testing.T) {
+	base := t.TempDir()
+	killDaemon(t, base)
+	host := buildHostTerm(t)
+	artifacts := artifactDir(t)
+
+	omarchySwitch(t, base, "tokyo-night")
+	if out, err := tuiosCLI(t, base, "new", "e2e-omarchy", "--detach"); err != nil {
+		t.Fatalf("create the session: %v\n%s", err, out)
+	}
+	term := startIn(t, base, startOpts{
+		args: []string{"attach", "e2e-omarchy"},
+		env:  []string{"COLORTERM=truecolor"},
+	})
+	if err := term.WaitFor(func(s tuitest.Screen) bool { return countWindows(s) == 1 }, bootTimeout); err != nil {
+		t.Fatalf("client never attached: %v\n%s", err, term.Snapshot())
+	}
+
+	const tokyoBg, latteBg = "rgb:1a1a/1b1b/2626", "rgb:efef/f1f1/f5f5"
+	if got := askPane(t, base, "e2e-omarchy", host, map[string]string{"11": tokyoBg}); got["11"] != tokyoBg {
+		t.Fatalf("on Tokyo Night a pane's OSC 11 was answered %q, want %q", got["11"], tokyoBg)
+	}
+	// frameInk is the colour of the pane frame's corner, and false when no
+	// frame is on screen.
+	frameInk := func(s tuitest.Screen) (tuitest.Color, bool) {
+		row, col, ok := textAt(s, "╭", 0)
+		if !ok {
+			return tuitest.Color{}, false
+		}
+		return s.Cell(col, row).Fg, true
+	}
+	before, ok := frameInk(term.Screen())
+	if !ok {
+		t.Fatalf("no pane frame on screen\n%s", term.Snapshot())
+	}
+	saveArtifact(t, term, artifacts, "tokyo-night")
+	renderScreenPNG(t, term.Screen(), hostGroundPalette("#a9b1d6", "#1a1b26"), filepath.Join(artifacts, "tokyo-night.png"))
+
+	// A program that asks to be told when the colours change, waiting.
+	waitPane := func(want string) string {
+		t.Helper()
+		var pane string
+		deadline := time.Now().Add(shellTimeout)
+		for time.Now().Before(deadline) {
+			pane, _ = tuiosCLI(t, base, "capture-pane", "-s", "e2e-omarchy")
+			if strings.Contains(pane, want) {
+				return pane
+			}
+			time.Sleep(200 * time.Millisecond)
+		}
+		return pane
+	}
+	listen := func() {
+		t.Helper()
+		if out, err := tuiosCLI(t, base, "send-keys", "-s", "e2e-omarchy", "-l", "clear; "+host+" scheme\r"); err != nil {
+			t.Fatalf("start the scheme listener: %v\n%s", err, out)
+		}
+		if pane := waitPane("HOSTTERM-SCHEME-WAITING"); !strings.Contains(pane, "HOSTTERM-SCHEME-WAITING") {
+			t.Fatalf("the scheme listener never started:\n%s", pane)
+		}
+	}
+	listen()
+
+	// Dark to dark: the background stays dark, and the program is still
+	// told, so it can ask for the new colours.
+	omarchySwitch(t, base, "gruvbox")
+	const gruvboxBg, gruvboxBlue = "rgb:2828/2828/2828", "rgb:7d7d/aeae/a3a3"
+	if pane := waitPane("HOSTTERM-SCHEME-NOTICES="); !strings.Contains(pane, "HOSTTERM-SCHEME=dark") {
+		t.Fatalf("after the switch to Gruvbox the program that turned on mode 2031 was not told dark:\n%s", pane)
+	} else if m := regexp.MustCompile(`HOSTTERM-SCHEME-NOTICES=(\d+)`).FindStringSubmatch(pane); m == nil || m[1] != "1" {
+		t.Errorf("the switch to Gruvbox did not send the program exactly one notice:\n%s", pane)
+	}
+	want := map[string]string{"11": gruvboxBg, "4;4": gruvboxBlue}
+	got := askPane(t, base, "e2e-omarchy", host, want)
+	for spec, w := range want {
+		if got[spec] != w {
+			t.Errorf("after the switch to Gruvbox a pane's OSC %s was answered %q, want Gruvbox's %q", spec, got[spec], w)
+		}
+	}
+	saveArtifact(t, term, artifacts, "gruvbox")
+	renderScreenPNG(t, term.Screen(), hostGroundPalette("#d4be98", "#282828"), filepath.Join(artifacts, "gruvbox.png"))
+	listen()
+
+	omarchySwitch(t, base, "catppuccin-latte")
+
+	if pane := waitPane("HOSTTERM-SCHEME-NOTICES="); !strings.Contains(pane, "HOSTTERM-SCHEME=light") {
+		t.Errorf("after the switch to Catppuccin Latte the program that turned on mode 2031 was not told light:\n%s", pane)
+	}
+	if got := askPane(t, base, "e2e-omarchy", host, map[string]string{"11": latteBg}); got["11"] != latteBg {
+		t.Errorf("after the switch a pane's OSC 11 was answered %q, want Latte's %q", got["11"], latteBg)
+	}
+	if err := term.WaitFor(func(s tuitest.Screen) bool {
+		ink, ok := frameInk(s)
+		return ok && ink != before
+	}, configWatchTimeout); err != nil {
+		t.Errorf("the pane frame kept its Tokyo Night colour %+v after the switch\n%s", before, term.SnapshotStyled())
+	}
+	saveArtifact(t, term, artifacts, "catppuccin-latte")
+	renderScreenPNG(t, term.Screen(), hostGroundPalette("#4c4f69", "#eff1f5"), filepath.Join(artifacts, "catppuccin-latte.png"))
+
+	// The theme picker shows each theme it passes, and a pane is not told
+	// about a theme that is only shown. Typing "dracula" passes dark themes,
+	// any of which would send a dark notice from Latte. Only the pick does.
+	listen()
+	name := filterThemePicker(t, term, "dracula")
+	time.Sleep(1500 * time.Millisecond)
+	if pane, _ := tuiosCLI(t, base, "capture-pane", "-s", "e2e-omarchy"); strings.Contains(pane, "HOSTTERM-SCHEME=") {
+		t.Errorf("moving through the theme picker sent the program a notice:\n%s", pane)
+	}
+	closeThemePicker(t, term, name, tuitest.Enter)
+	if pane := waitPane("HOSTTERM-SCHEME-NOTICES="); !strings.Contains(pane, "HOSTTERM-SCHEME=dark") {
+		t.Errorf("picking Dracula did not tell the program dark:\n%s", pane)
+	} else if m := regexp.MustCompile(`HOSTTERM-SCHEME-NOTICES=(\d+)`).FindStringSubmatch(pane); m == nil || m[1] != "1" {
+		t.Errorf("picking Dracula did not send the program exactly one notice:\n%s", pane)
+	}
+}
+
+// TestThemeNoneMatchesTheTerminal: with theme = "none", the dialogs are drawn
+// on a ramp built from the terminal's own background, so a terminal themed
+// elsewhere gets dialogs in its own greys. An empty theme keeps the constant
+// ramp, as it did before.
+//
+// How this could pass wrongly: the constant ramp is a dark violet grey, and
+// the host's ground here is a dark green no tuios ramp is near, so a green
+// dialog surface came from the host. The empty-theme run is the control in
+// the same test: the same host, the same dialog, and no green.
+func TestThemeNoneMatchesTheTerminal(t *testing.T) {
+	const hostBg, hostFg = "#0f2a14", "#d0e8d0"
+	green := func(c tuitest.Color) bool {
+		return c.Kind == tuitest.ColorRGB && int(c.G) > int(c.R)+8 && int(c.G) > int(c.B)+8
+	}
+	for _, tc := range []struct {
+		name, theme string
+		wantGreen   bool
+	}{
+		{"none", "none", true},
+		{"empty", "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			base := t.TempDir()
+			host := buildHostTerm(t)
+			writeConfig(t, base, "[appearance]\ntheme = \""+tc.theme+"\"\n")
+			term := startIn(t, base, startOpts{
+				cols: 120, rows: 40,
+				env:  []string{"COLORTERM=truecolor"},
+				wrap: []string{host, "run", "-bg", hostBg, "-fg", hostFg, "-ansi", hostANSISpec(), "--"},
+			})
+			waitBoot(t, term)
+			sendKeys(t, term, legacyCtrlP)
+			waitScreen(t, term, "the palette never opened", paletteTitle, "Run a program")
+			s := term.Screen()
+			row, col, ok := textAt(s, paletteTitle, 0)
+			if !ok {
+				t.Fatalf("no palette title on screen\n%s", term.Snapshot())
+			}
+			// The title sits in an accent chip. Two cells past its end is
+			// the dialog's surface.
+			surface := s.Cell(col+len(paletteTitle)+2, row).Bg
+			saveArtifact(t, term, artifactDir(t), "palette")
+			if green(surface) != tc.wantGreen {
+				t.Fatalf("theme %q on a %s terminal: the palette's ground is %+v, want green %v\n%s",
+					tc.theme, hostBg, surface, tc.wantGreen, term.SnapshotStyled())
+			}
+		})
+	}
+}
+
+// TestThemePairFollowsTheTerminal: with appearance.theme_light set, a light
+// terminal gets that theme and a dark one gets appearance.theme, and a switch
+// of the terminal's scheme switches the theme. A pick in the theme picker then
+// asks whether it is for the dark theme, the light one or both, and writes
+// only the key asked for.
+//
+// How this could pass wrongly: the two reds are read off the host terminal
+// for a probe printed after each switch, and each is checked against the red
+// tuios theme export reports for that theme, so a red from the wrong theme,
+// or the terminal's own, fails.
+func TestThemePairFollowsTheTerminal(t *testing.T) {
+	base := t.TempDir()
+	host := buildHostTerm(t)
+	writeConfig(t, base, "[appearance]\ntheme = \"nord\"\ntheme_light = \"catppuccin_latte\"\n")
+	redOf := func(id string) string {
+		t.Helper()
+		out, err := tuiosCLI(t, base, "theme", "export", id)
+		if err != nil {
+			t.Fatalf("export %s: %v\n%s", id, err, out)
+		}
+		var m map[string]any
+		if err := json.Unmarshal([]byte(out), &m); err != nil {
+			t.Fatalf("export %s is not JSON: %v\n%s", id, err, out)
+		}
+		red, _ := m["red"].(string)
+		return strings.ToLower(red)
+	}
+	lightRed, darkRed := redOf("catppuccin_latte"), redOf("nord")
+	if lightRed == "" || lightRed == darkRed {
+		t.Fatalf("the two themes' reds %q and %q cannot tell them apart", lightRed, darkRed)
+	}
+
+	term := startIn(t, base, startOpts{
+		cols: 120, rows: 40,
+		env: []string{"COLORTERM=truecolor"},
+		wrap: []string{host, "run", "-bg", "#fdf6e3", "-fg", "#2a2a2a",
+			"-alt-bg", "#1e1e2e", "-alt-fg", "#e0e0e0", "-ansi", hostANSISpec(), "--"},
+	})
+	waitBoot(t, term)
+	newWindow(t, term)
+	enterTerminalMode(t, term)
+
+	hexOf := func(c tuitest.Color) string {
+		if c.Kind != tuitest.ColorRGB {
+			return fmt.Sprintf("%+v", c)
+		}
+		return fmt.Sprintf("#%02x%02x%02x", c.R, c.G, c.B)
+	}
+	// waitRed prints the probe until its red is want, within the usual wait.
+	waitRed := func(when, want string) {
+		t.Helper()
+		deadline := time.Now().Add(uiTimeout)
+		for i := 0; ; i++ {
+			marker := fmt.Sprintf("INK%s%d", strings.ToUpper(when[:1]), i)
+			runInShell(t, term, probeCmd(marker[3:]), marker, shellTimeout)
+			got := hexOf(probeInk(t, term, marker))
+			if got == want {
+				return
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("%s: a pane's red reached the host as %s, want %s\n%s", when, got, want, term.Snapshot())
+			}
+			time.Sleep(200 * time.Millisecond)
+		}
+	}
+	waitRed("light", lightRed)
+	saveArtifact(t, term, artifactDir(t), "light")
+
+	if err := syscall.Kill(term.Pid(), syscall.SIGUSR1); err != nil {
+		t.Fatalf("signal hostterm: %v", err)
+	}
+	waitRed("dark", darkRed)
+	saveArtifact(t, term, artifactDir(t), "dark")
+
+	// A pick with the pair set asks before it writes.
+	windowManagementMode(t, term)
+	sendKeys(t, term, tuitest.Ctrl('p'))
+	waitScreen(t, term, "the palette never opened", paletteTitle)
+	sendKeys(t, term, "Theme picker")
+	waitScreen(t, term, "the palette never filtered", "Theme picker")
+	sendKeys(t, term, tuitest.Enter)
+	waitScreen(t, term, "the theme picker never opened", "themes")
+	sendKeys(t, term, "dracula")
+	waitScreen(t, term, "the picker never filtered", "dracula")
+	sendKeys(t, term, tuitest.Enter)
+	waitScreen(t, term, "the picker never asked which theme", "Use dracula as: d dark, l light, b both")
+	saveArtifact(t, term, artifactDir(t), "pair-question")
+	sendKeys(t, term, "l")
+	if err := term.WaitFor(func(s tuitest.Screen) bool { return !strings.Contains(s.Text(), "themes") }, uiTimeout); err != nil {
+		t.Fatalf("the picker did not close after l: %v\n%s", err, term.Snapshot())
+	}
+	deadline := time.Now().Add(uiTimeout)
+	for {
+		cfg, _ := os.ReadFile(configPathIn(base))
+		text := string(cfg)
+		if strings.Contains(text, `theme_light = "dracula"`) && strings.Contains(text, `theme = "nord"`) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("after l, config.toml does not hold theme_light = dracula and theme = nord:\n%s", text)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	// An explicit --theme wins over the pair on a light terminal. The config
+	// above now holds theme_light = dracula, so the flag names a third theme.
+	//
+	// Negative control, recorded in NEGATIVE_CONTROLS.md: dropping the
+	// FlagTheme check in followSchemeTheme fails this with dracula's red.
+	flagRed := redOf("gruvbox_dark")
+	if flagRed == "" || flagRed == redOf("dracula") {
+		t.Fatalf("the flag theme's red %q cannot be told from dracula's", flagRed)
+	}
+	term = startIn(t, base, startOpts{
+		cols: 120, rows: 40,
+		args: []string{"--theme", "gruvbox_dark"},
+		env:  []string{"COLORTERM=truecolor"},
+		wrap: []string{host, "run", "-bg", "#fdf6e3", "-fg", "#2a2a2a",
+			"-alt-bg", "#1e1e2e", "-alt-fg", "#e0e0e0", "-ansi", hostANSISpec(), "--"},
+	})
+	waitBoot(t, term)
+	newWindow(t, term)
+	enterTerminalMode(t, term)
+	waitRed("flag", flagRed)
+	// The pair must not take over once the host's colours have all landed.
+	time.Sleep(500 * time.Millisecond)
+	waitRed("flag-later", flagRed)
+	saveArtifact(t, term, artifactDir(t), "flag")
 }

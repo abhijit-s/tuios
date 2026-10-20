@@ -4,10 +4,12 @@ import (
 	"bufio"
 	"context"
 	"io"
+	"sync/atomic"
 	"time"
 
 	"github.com/Gaurav-Gosain/tuios/internal/harness"
-	"github.com/Gaurav-Gosain/tuios/internal/vt"
+	"tuios.dev/vt"
+	"tuios.dev/vt/snapshot"
 )
 
 // Seams the tests reach for. Production code calls the functions these wrap.
@@ -26,9 +28,11 @@ func (s *Session) applyAgentDetection(
 }
 
 // StartPeriodicSave is startPeriodicSaveWith writing through
-// SaveSessionForResurrection.
-func StartPeriodicSave(getState func() *SessionState, takeDirty func() bool) func() {
-	return startPeriodicSaveWith(getState, takeDirty, SaveSessionForResurrection)
+// SaveSessionForResurrection. It makes the channels of the latches it is given.
+func StartPeriodicSave(getState func() *SessionState, dirty, stale *wakeLatch, wakes *atomic.Int64) func() {
+	dirty.init()
+	stale.init()
+	return startPeriodicSaveWith(getState, dirty, stale, wakes, SaveSessionForResurrection)
 }
 
 // setResurrectionDirOverride redirects resurrection state, and returns the value
@@ -106,9 +110,9 @@ func submitPromptTimed(ctx context.Context, pane promptPane, text string, in har
 	return err
 }
 
-// historyStateOf is captureHistoryRows and state together, for a caller that
-// holds the emulator itself.
+// historyStateOf is snapshot.CaptureHistory and State together, for a caller
+// that holds the emulator itself.
 func historyStateOf(t vt.Terminal, lines int) *TerminalState {
-	r := captureHistoryRows(t, lines)
-	return r.state(r.history.Len())
+	r := snapshot.CaptureHistory(t, lines)
+	return r.State(r.Len())
 }

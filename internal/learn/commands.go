@@ -2,6 +2,7 @@ package learn
 
 import (
 	"maps"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -12,6 +13,7 @@ import (
 	"github.com/Gaurav-Gosain/tuios/internal/config"
 	"github.com/Gaurav-Gosain/tuios/internal/input"
 	"github.com/Gaurav-Gosain/tuios/internal/terminal"
+	"github.com/Gaurav-Gosain/tuios/internal/theme"
 	"github.com/Gaurav-Gosain/tuios/internal/ui"
 	"github.com/Gaurav-Gosain/tuios/internal/webshell"
 	"github.com/Gaurav-Gosain/tuios/pkg/applist"
@@ -21,7 +23,7 @@ import (
 // that keeps the two in step.
 var Commands = []string{
 	"action", "agent", "cascade", "celebrate", "closeWindow", "layout", "mode",
-	"newWindow", "notify", "reset", "tape", "theme", "tiling", "type", "workspace",
+	"newWindow", "notify", "reset", "set", "tape", "theme", "themeJSON", "tiling", "type", "workspace",
 }
 
 // RunCommand lets the page set the scene for a step or play a step for the
@@ -85,7 +87,53 @@ func (m *Model) RunCommand(name string, args ...string) tea.Cmd {
 	case "mode":
 		_ = o.SetMode(arg(0))
 	case "theme":
-		_ = o.SetTheme(arg(0))
+		m.setTheme(arg(0))
+	case "themeJSON":
+		// A theme a look carries, as the JSON of a theme file. It is checked
+		// as tuios look apply checks it, registered in this tab only as
+		// look-<id>, and selected. A theme that fails the check does nothing.
+		id := config.LookAssetPrefix + strings.TrimPrefix(arg(0), config.LookAssetPrefix)
+		if err := theme.RegisterLookTheme(id, []byte(arg(1))); err == nil {
+			m.setTheme(id)
+		}
+	case "set":
+		// Any option tuios set-config takes, by the same path, such as
+		// appearance.glyphs or appearance.background. It changes this tab's
+		// copy of the config and nothing on disk. A docs page uses it to
+		// start a demo in the look the page is about.
+		// Only an option that changes how the screen looks goes through. See
+		// pageSettable for the ones refused.
+		path, ok := pageSettable(arg(0))
+		switch {
+		case !ok:
+		case config.CheckLookItems(path, arg(1)) != nil:
+			// A list item a look leaves out, such as a custom dock cell.
+		case path == "appearance.theme":
+			// The theme command's path, which also recolours the panes.
+			m.setTheme(arg(1))
+		case path == "startup.tiled":
+			// A tab has no new session to start, so tiling changes now.
+			if on, err := strconv.ParseBool(arg(1)); err == nil && on != o.AutoTiling {
+				o.ToggleAutoTiling()
+			}
+		case path == "startup.layout":
+			// Only a scheme tuios look apply takes. The layout command
+			// cycles three times on a name it does not know, which ends
+			// where it started but flashes three notifications.
+			if slices.Contains(config.LayoutModes, arg(1)) {
+				m.RunCommand("layout", arg(1))
+			}
+		case config.IsLookFileKey(path):
+			// The dock's lists and its tabs table: the dock reads them from
+			// the config on each frame.
+			if err := config.SetLookValue(o.UserConfig, path, arg(1)); err == nil {
+				o.MarkAllDirty()
+			}
+		default:
+			if err := o.SetConfig(path, arg(1)); err == nil {
+				o.MarkAllDirty()
+			}
+		}
 	case "type":
 		// Types into the focused pane, for a step that plays itself.
 		if id := o.GetFocusedWindowID(); id != "" {
@@ -149,6 +197,7 @@ func (m *Model) reset() {
 	o.LayoutPrefixActive = false
 	o.DebugPrefixActive = false
 	o.TapePrefixActive = false
+	o.TuiosPrefixActive = false
 	_ = o.SwitchWorkspace(1)
 	if o.LayoutModeName() != config.LayoutModeBSP {
 		m.RunCommand("layout", config.LayoutModeBSP)
@@ -271,4 +320,50 @@ func Actions() map[string]string {
 	out := make(map[string]string, len(config.ActionDescriptions))
 	maps.Copy(out, config.ActionDescriptions)
 	return out
+}
+
+// pageSections are the config sections whose options only change how the
+// screen looks or how input moves through it.
+//
+// The rest name a host program, a file or folder, the daemon, or startup:
+// tape.autorun, screenshot.directory, launcher.gui_command,
+// notifications.agent.command, daemon.*. None of them work in a browser tab,
+// where os/exec and the file system fail, but a page has no reason to reach
+// them, and a section added later stays shut until it is listed here.
+var pageSections = map[string]bool{
+	"appearance": true, "dock": true, "sidebar": true, "scrollbar": true,
+	"selection": true, "screensaver": true, "spotlight": true, "pip": true,
+	"hints": true, "panes": true, "scratch": true, "workspaces": true,
+}
+
+// pageSettable reports the registry path the page's set command may change
+// for path, or false. It takes the spellings OS.SetConfig takes: the full
+// path, or the bare name of an appearance option. Every look key goes
+// through as well, so the gallery's Try it shows what tuios look apply sets.
+// An unknown path is refused, so it does nothing.
+func pageSettable(path string) (string, bool) {
+	if config.IsLookKey(path) {
+		return path, true
+	}
+	if path == "animations" {
+		path = "appearance.animations_enabled"
+	}
+	opt, ok := config.LookupOption(path)
+	if !ok && !strings.Contains(path, ".") {
+		path = "appearance." + path
+		opt, ok = config.LookupOption(path)
+	}
+	if !ok || !pageSections[opt.Section] || config.ReachesHost(path) {
+		return "", false
+	}
+	return path, true
+}
+
+// setTheme switches the theme and records it in the tab's config. A set call
+// re-applies that config, so without the record the next set would put back
+// the theme the config held.
+func (m *Model) setTheme(name string) {
+	if err := m.OS.SetTheme(name); err == nil && m.OS.UserConfig != nil {
+		_ = config.SetOptionValue(m.OS.UserConfig, "appearance.theme", name)
+	}
 }

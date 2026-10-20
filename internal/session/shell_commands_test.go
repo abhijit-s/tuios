@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Gaurav-Gosain/tuios/internal/vt"
+	"tuios.dev/vt"
 )
 
 // TestShellTrackFollowsMarks walks the state machine through the marks the
@@ -103,7 +103,7 @@ func TestShellTrackFollowsMarks(t *testing.T) {
 			now := time.Unix(100, 0)
 			for _, m := range tt.marks {
 				now = now.Add(time.Second)
-				for _, ev := range track.note(m, now) {
+				for _, ev := range track.note(m, now, markContext{}) {
 					got = append(got, ev.Type)
 				}
 			}
@@ -198,7 +198,7 @@ func TestShellTrackTellsPromptMarksOnly(t *testing.T) {
 				if s.expect {
 					track.expect()
 				}
-				for _, ev := range track.note(s.mark, time.Unix(100, 0)) {
+				for _, ev := range track.note(s.mark, time.Unix(100, 0), markContext{}) {
 					if ev.Type == EventPrompt {
 						prompts++
 					}
@@ -248,7 +248,7 @@ func TestLastCommandOutputReadsBetweenTheMarks(t *testing.T) {
 	write("\x1b]133;A\x07$ \x1b]133;B\x07echo one\r\n\x1b]133;C\x07one\r\n\x1b]133;D;0\x07")
 	write("\x1b]133;A\x07$ \x1b]133;B\x07seq 3\r\n\x1b]133;C\x071\r\n2\r\n3\r\n\x1b]133;D;0\x07")
 	write("\x1b]133;A\x07$ ")
-	out, truncated, ok := p.LastCommandOutput()
+	out, truncated, ok := p.LastCommandOutput(false)
 	if !ok {
 		t.Fatal("no finished command was found")
 	}

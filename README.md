@@ -14,7 +14,10 @@
   <a title="This tool is Tool of The Week on Terminal Trove, The $HOME of all things in the terminal" href="https://terminaltrove.com/"><img src="https://cdn.terminaltrove.com/media/badges/tool_of_the_week/png/terminal_trove_tool_of_the_week_green_on_dark_grey_bg.png" alt="Terminal Trove Tool of The Week" style="width: 250px;" /></a>
 </div>
 
-![TUIOS](./assets/demo.gif)
+<picture>
+  <source srcset="./assets/demo.avif" type="image/avif">
+  <img alt="TUIOS" src="./assets/demo.gif">
+</picture>
 
 TUIOS is a modern terminal multiplexer and window manager built with Go. It provides a vim-like modal interface with multiple terminal panes, workspaces, BSP tiling, kitty graphics protocol support, and a command palette, all running inside your existing terminal. A daemon keeps sessions alive, reaches sessions on your other machines, and lets the coding agents in your panes report their state and message each other.
 
@@ -24,7 +27,7 @@ Built on the Charm stack (Bubble Tea v2, Lipgloss v2), TUIOS features event-driv
 
 Full documentation is available at **[tuios.dev](https://tuios.dev)** (hosted) or in the [`docs/`](./docs/) folder. To try tuios without installing it, take the guided tour at **[tuios.dev/learn](https://tuios.dev/learn)**: the real app, compiled to WebAssembly, with a practice shell in every pane.
 
-What changed in v0.9.3 is in the [release notes](docs/release-notes/v0.9.3.md).
+What changed in v0.10.1 is in the [release notes](docs/release-notes/v0.10.1.md).
 
 ### Quick Links
 - **[Getting Started](https://tuios.dev/docs/getting-started)**: Install and first session
@@ -54,6 +57,7 @@ What changed in v0.9.3 is in the [release notes](docs/release-notes/v0.9.3.md).
 - [Architecture](#architecture)
 - [Performance](#performance)
 - [Development](#development)
+- [Contributors](#contributors)
 - [License](#license)
 <!--toc:end-->
 
@@ -81,7 +85,7 @@ yay -S tuios-bin
 
 **Nix:**
 ```bash
-nix run github:Gaurav-Gosain/tuios/v0.9.3#tuios   # a release
+nix run github:Gaurav-Gosain/tuios/v0.10.1#tuios   # a release
 nix run github:Gaurav-Gosain/tuios#tuios          # the latest main
 nix run nixpkgs#tuios                             # the nixpkgs package
 ```
@@ -118,6 +122,19 @@ and prints the right command rather than overwriting it.
 ## Features
 
 ![TUIOS](./assets/tuios.gif)
+
+<table>
+  <tr>
+    <td width="50%"><a href="https://tuios.dev/docs/layout-modes"><img src="https://tuios.dev/shots/overview-800.webp" width="400" alt="tuios with four tiled panes: a git diff, a Go file, test output and a build. The sidebar lists the session, its files and four agents with their states."></a><br><b>Panes and the rail.</b> Tiled panes, and every agent's state at a glance.</td>
+    <td width="50%"><a href="https://tuios.dev/docs/agent-inbox"><img src="https://tuios.dev/shots/inbox-800.webp" width="400" alt="The tuios Inbox listing an approval marked risky, a question and an errored agent, with the reason the approval is risky."></a><br><b>The Inbox.</b> Everything your agents wait on, in one list.</td>
+  </tr>
+  <tr>
+    <td width="50%"><a href="https://tuios.dev/docs/agent-inbox#reviewing-an-agents-changes"><img src="https://tuios.dev/shots/review-800.webp" width="400" alt="The tuios review view: a file list on the left and a highlighted diff on the right, with keys for notes, hunks and files."></a><br><b>Review.</b> Read an agent's changes and send notes back to it.</td>
+    <td width="50%"><a href="https://tuios.dev/docs/configuration"><img src="https://tuios.dev/shots/settings-800.webp" width="400" alt="The tuios settings page searched for theme. The Theme row carries a dot because it differs from the default."></a><br><b>Settings.</b> Every option on one page, applied at once.</td>
+  </tr>
+</table>
+
+Each picture is a capture that tuios made of itself. Click one to read its docs page.
 
 ### Core
 - **Multiple Terminal Panes**: Create, resize, drag, and organize terminal sessions
@@ -290,7 +307,7 @@ TUIOS follows the Model-View-Update pattern on Bubble Tea v2. For details, see [
 
 **Core Components:**
 - **Window Manager** ([`internal/app/os.go`](./internal/app/os.go)): Central state, workspaces, overlays
-- **Terminal Emulation** ([`internal/vt/`](./internal/vt/)): ANSI parser with scrollback, kitty/sixel graphics, kitty keyboard protocol, OSC 133
+- **Terminal Emulation** ([`vt/`](./vt/)): ANSI parser with scrollback, kitty/sixel graphics, kitty keyboard protocol, OSC 133
 - **Rendering** ([`internal/app/render.go`](./internal/app/render.go)): Layer composition, viewport culling, graphics batching
 - **Input** ([`internal/input/`](./internal/input/)): Modal routing, 100+ configurable keybindings, mouse handling
 - **Kitty Passthrough** ([`internal/app/kitty_passthrough.go`](./internal/app/kitty_passthrough.go)): Flicker-free image forwarding with ID reuse and sync output
@@ -345,6 +362,63 @@ govulncheck ./...          # Known vulnerabilities in what the build reaches
 <img alt="GitHub Commit Activity (Week)" src="https://img.shields.io/github/commit-activity/w/Gaurav-Gosain/tuios" style="padding:5px;margin:5px;" />
 </p>
 
+## Contributors
+
+Thank you to everyone who helps build tuios. To join them, read the [contributing guide](docs/CONTRIBUTING.md).
+
+<!-- contributors:start -->
+<p align="center">
+<a href="https://github.com/Gaurav-Gosain" title="Gaurav-Gosain"><img src="https://avatars.githubusercontent.com/u/55647468?s=128&amp;v=4" width="64" height="64" alt="Gaurav-Gosain" title="Gaurav-Gosain"></a>
+<a href="https://github.com/abhijit-s" title="abhijit-s"><img src="https://avatars.githubusercontent.com/u/20989130?s=128&amp;v=4" width="64" height="64" alt="abhijit-s" title="abhijit-s"></a>
+<a href="https://github.com/davidreuss" title="davidreuss"><img src="https://avatars.githubusercontent.com/u/6885?s=128&amp;v=4" width="64" height="64" alt="davidreuss" title="davidreuss"></a>
+<a href="https://github.com/cr2007" title="cr2007"><img src="https://avatars.githubusercontent.com/u/73425927?s=128&amp;v=4" width="64" height="64" alt="cr2007" title="cr2007"></a>
+<a href="https://github.com/SebaWag" title="SebaWag"><img src="https://avatars.githubusercontent.com/u/251644039?s=128&amp;v=4" width="64" height="64" alt="SebaWag" title="SebaWag"></a>
+<a href="https://github.com/Tim4c" title="Tim4c"><img src="https://avatars.githubusercontent.com/u/9990855?s=128&amp;v=4" width="64" height="64" alt="Tim4c" title="Tim4c"></a>
+<a href="https://github.com/drawde-nadroj" title="drawde-nadroj"><img src="https://avatars.githubusercontent.com/u/107078793?s=128&amp;v=4" width="64" height="64" alt="drawde-nadroj" title="drawde-nadroj"></a>
+<a href="https://github.com/kylesnowschwartz" title="kylesnowschwartz"><img src="https://avatars.githubusercontent.com/u/11069001?s=128&amp;v=4" width="64" height="64" alt="kylesnowschwartz" title="kylesnowschwartz"></a>
+<a href="https://github.com/SugarHashira" title="SugarHashira"><img src="https://avatars.githubusercontent.com/u/106308062?s=128&amp;v=4" width="64" height="64" alt="SugarHashira" title="SugarHashira"></a>
+<a href="https://github.com/vvicaretti" title="vvicaretti"><img src="https://avatars.githubusercontent.com/u/25300130?s=128&amp;v=4" width="64" height="64" alt="vvicaretti" title="vvicaretti"></a>
+<br>
+<a href="https://github.com/fonnesbeck" title="fonnesbeck"><img src="https://avatars.githubusercontent.com/u/81476?s=128&amp;v=4" width="64" height="64" alt="fonnesbeck" title="fonnesbeck"></a>
+<a href="https://github.com/masshirodev" title="masshirodev"><img src="https://avatars.githubusercontent.com/u/21976638?s=128&amp;v=4" width="64" height="64" alt="masshirodev" title="masshirodev"></a>
+<a href="https://github.com/NotAFlightRisk" title="NotAFlightRisk"><img src="https://avatars.githubusercontent.com/u/23277273?s=128&amp;v=4" width="64" height="64" alt="NotAFlightRisk" title="NotAFlightRisk"></a>
+<a href="https://github.com/LeeSamuel14" title="LeeSamuel14"><img src="https://avatars.githubusercontent.com/u/37692342?s=128&amp;v=4" width="64" height="64" alt="LeeSamuel14" title="LeeSamuel14"></a>
+<a href="https://github.com/noomz" title="noomz"><img src="https://avatars.githubusercontent.com/u/24957?s=128&amp;v=4" width="64" height="64" alt="noomz" title="noomz"></a>
+<a href="https://github.com/ShalokShalom" title="ShalokShalom"><img src="https://avatars.githubusercontent.com/u/6344099?s=128&amp;v=4" width="64" height="64" alt="ShalokShalom" title="ShalokShalom"></a>
+<a href="https://github.com/dreuss" title="dreuss"><img src="https://avatars.githubusercontent.com/u/472909?s=128&amp;v=4" width="64" height="64" alt="dreuss" title="dreuss"></a>
+<a href="https://github.com/Gsirawan" title="Gsirawan"><img src="https://avatars.githubusercontent.com/u/7770085?s=128&amp;v=4" width="64" height="64" alt="Gsirawan" title="Gsirawan"></a>
+<a href="https://github.com/JakeChop" title="JakeChop"><img src="https://avatars.githubusercontent.com/u/13514802?s=128&amp;v=4" width="64" height="64" alt="JakeChop" title="JakeChop"></a>
+<a href="https://github.com/nathan-poncet" title="nathan-poncet"><img src="https://avatars.githubusercontent.com/u/112613712?s=128&amp;v=4" width="64" height="64" alt="nathan-poncet" title="nathan-poncet"></a>
+<br>
+<a href="https://github.com/NSPC911" title="NSPC911"><img src="https://avatars.githubusercontent.com/u/87571998?s=128&amp;v=4" width="64" height="64" alt="NSPC911" title="NSPC911"></a>
+<a href="https://github.com/syz51" title="syz51"><img src="https://avatars.githubusercontent.com/u/54097388?s=128&amp;v=4" width="64" height="64" alt="syz51" title="syz51"></a>
+<a href="https://github.com/actes2" title="actes2"><img src="https://avatars.githubusercontent.com/u/101230792?s=128&amp;v=4" width="64" height="64" alt="actes2" title="actes2"></a>
+<a href="https://github.com/AdamMagued" title="AdamMagued"><img src="https://avatars.githubusercontent.com/u/197814922?s=128&amp;v=4" width="64" height="64" alt="AdamMagued" title="AdamMagued"></a>
+<a href="https://github.com/chenxin-yan" title="chenxin-yan"><img src="https://avatars.githubusercontent.com/u/71162231?s=128&amp;v=4" width="64" height="64" alt="chenxin-yan" title="chenxin-yan"></a>
+<a href="https://github.com/chexxor" title="chexxor"><img src="https://avatars.githubusercontent.com/u/843161?s=128&amp;v=4" width="64" height="64" alt="chexxor" title="chexxor"></a>
+<a href="https://github.com/ci4ic4" title="ci4ic4"><img src="https://avatars.githubusercontent.com/u/6495973?s=128&amp;v=4" width="64" height="64" alt="ci4ic4" title="ci4ic4"></a>
+<a href="https://github.com/Cjreek" title="Cjreek"><img src="https://avatars.githubusercontent.com/u/10603492?s=128&amp;v=4" width="64" height="64" alt="Cjreek" title="Cjreek"></a>
+<a href="https://github.com/dodorz" title="dodorz"><img src="https://avatars.githubusercontent.com/u/1287424?s=128&amp;v=4" width="64" height="64" alt="dodorz" title="dodorz"></a>
+<a href="https://github.com/ethanhawkes-gif" title="ethanhawkes-gif"><img src="https://avatars.githubusercontent.com/u/259455325?s=128&amp;v=4" width="64" height="64" alt="ethanhawkes-gif" title="ethanhawkes-gif"></a>
+<br>
+<a href="https://github.com/FaintFlower" title="FaintFlower"><img src="https://avatars.githubusercontent.com/u/310248465?s=128&amp;v=4" width="64" height="64" alt="FaintFlower" title="FaintFlower"></a>
+<a href="https://github.com/fdoving" title="fdoving"><img src="https://avatars.githubusercontent.com/u/26197922?s=128&amp;v=4" width="64" height="64" alt="fdoving" title="fdoving"></a>
+<a href="https://github.com/Guipegoraro" title="Guipegoraro"><img src="https://avatars.githubusercontent.com/u/97493836?s=128&amp;v=4" width="64" height="64" alt="Guipegoraro" title="Guipegoraro"></a>
+<a href="https://github.com/humaidq" title="humaidq"><img src="https://avatars.githubusercontent.com/u/10805493?s=128&amp;v=4" width="64" height="64" alt="humaidq" title="humaidq"></a>
+<a href="https://github.com/j4ng5y" title="j4ng5y"><img src="https://avatars.githubusercontent.com/u/44218998?s=128&amp;v=4" width="64" height="64" alt="j4ng5y" title="j4ng5y"></a>
+<a href="https://github.com/jacob-sabella" title="jacob-sabella"><img src="https://avatars.githubusercontent.com/u/179399841?s=128&amp;v=4" width="64" height="64" alt="jacob-sabella" title="jacob-sabella"></a>
+<a href="https://github.com/juancely" title="juancely"><img src="https://avatars.githubusercontent.com/u/13281333?s=128&amp;v=4" width="64" height="64" alt="juancely" title="juancely"></a>
+<a href="https://github.com/mathomp4" title="mathomp4"><img src="https://avatars.githubusercontent.com/u/2982494?s=128&amp;v=4" width="64" height="64" alt="mathomp4" title="mathomp4"></a>
+<a href="https://github.com/neomantra" title="neomantra"><img src="https://avatars.githubusercontent.com/u/26842?s=128&amp;v=4" width="64" height="64" alt="neomantra" title="neomantra"></a>
+<a href="https://github.com/ronisbr" title="ronisbr"><img src="https://avatars.githubusercontent.com/u/1068295?s=128&amp;v=4" width="64" height="64" alt="ronisbr" title="ronisbr"></a>
+<br>
+<a href="https://github.com/ryan4yin" title="ryan4yin"><img src="https://avatars.githubusercontent.com/u/22363274?s=128&amp;v=4" width="64" height="64" alt="ryan4yin" title="ryan4yin"></a>
+<a href="https://github.com/stevegt" title="stevegt"><img src="https://avatars.githubusercontent.com/u/591668?s=128&amp;v=4" width="64" height="64" alt="stevegt" title="stevegt"></a>
+<a href="https://github.com/ural89" title="ural89"><img src="https://avatars.githubusercontent.com/u/25570740?s=128&amp;v=4" width="64" height="64" alt="ural89" title="ural89"></a>
+<a href="https://github.com/zer0ken" title="zer0ken"><img src="https://avatars.githubusercontent.com/u/31297454?s=128&amp;v=4" width="64" height="64" alt="zer0ken" title="zer0ken"></a>
+</p>
+<!-- contributors:end -->
+
 ## License
 
 MIT License. See [LICENSE](LICENSE) for details.
@@ -352,5 +426,6 @@ MIT License. See [LICENSE](LICENSE) for details.
 ## Acknowledgments
 
 - The [Charm](https://charm.sh) team for Bubble Tea, Lipgloss, and the Go terminal ecosystem
+- [CharmTone](https://github.com/charmbracelet/tone) by Charmbracelet, Inc. (Apache License 2.0) for the colours of the `charmtone` themes
 - The vim, tmux, and i3 communities for interface design inspiration
 - [Ghostty](https://ghostty.org), [Kitty](https://sw.kovidgoyal.net/kitty/), and [WezTerm](https://wezfurlong.org/wezterm/) for excellent terminal emulators with graphics support

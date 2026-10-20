@@ -9,22 +9,32 @@ import (
 	"github.com/Gaurav-Gosain/tuios/internal/harness"
 )
 
-// handleInboxInput handles keyboard input while the Inbox is open. Every
-// action has a key: j and k move, space reads the prompt of an approval or a
-// question, enter goes to the item's pane (or opens its mail thread), 1, 2
-// and 3 answer an approval the Inbox is holding (allow once, always allow,
-// deny, the order of the harness's own menu), 1 to 9 pick the answer to a
-// question ask-human put to the person, d dismisses, r replies to mail,
-// y resumes a conversation a restart left, p passes on mail another machine
-// sent an agent here that the link policy held, f steps the kind filter, /
-// types a selector that narrows the list, m opens the whole mailbox, z
-// snoozes (then 1 to 4 for how long) or wakes a snoozed item, u undoes the
-// last dismiss or snooze, S shows the snoozed items, and esc or q closes.
+// handleInboxInput handles keyboard input while the agents view is open.
+// Every action is a binding in [keybindings.inbox], and these are the
+// defaults: j and k move, space reads the prompt of an approval or a
+// question, enter goes to the agent's pane (or opens its mail thread), a A r
+// R and 1 2 3 answer a held approval (allow once, always allow, reject; R
+// rejects and says why), 1 to 9 pick the answer to a question ask-human put
+// to the person, r or i replies to an agent or to mail, tab writes a reply,
+// n starts a new agent, d dismisses, y resumes a conversation a restart
+// left, p passes on held mail, f steps the filter, / searches, m opens the
+// whole mailbox, z snoozes (then 1 to 4 for how long) or wakes a snoozed
+// item, u undoes the last dismiss or snooze, S shows the snoozed items, x
+// marks an agent for a bulk answer, ? opens help, and esc or q closes. The
+// digits are the numbers the prompt shows, so they are not bindings.
 func handleInboxInput(msg tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
 	// A question that opened the Inbox by itself a moment ago: the key was
 	// most likely typed for the pane, so it does nothing here.
 	if o.InboxPopSettling() {
 		return o, nil
+	}
+	// The image view takes every key while it is up.
+	if o.CockpitImageOpen() {
+		return o, o.CockpitImageKey(msg.String())
+	}
+	// The spawn sheet takes every key while it is up.
+	if o.CockpitSpawnOpen() {
+		return o, o.CockpitSpawnKey(msg)
 	}
 	// A risky allow's first press waits for the same key again; any other
 	// key resets it.
@@ -46,13 +56,54 @@ func handleInboxInput(msg tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
 	if o.InboxSnoozePicking() {
 		return o, o.InboxSnoozeKey(msg.String())
 	}
+	// The bulk allow's sheet takes the next key: enter allows, anything
+	// else closes it.
+	if o.InboxAgentsSheetOpen() {
+		return o, o.InboxAgentsSheetKey(msg.String())
+	}
+	key := msg.String()
+	marks := o.InboxAgentsMarks() > 0
+	action := lookupAction(o, msg, overlayKeys(o).GetInboxAction)
+	switch action {
+	case config.ActionInboxMark:
+		o.NoteAction(action)
+		o.InboxAgentsToggleMark()
+		return o, nil
+	case config.ActionInboxMarkAll:
+		o.NoteAction(action)
+		o.InboxAgentsMarkAll()
+		return o, nil
+	}
 	// A digit answers by its number, which is the number the prompt shows, so
-	// it is not a binding.
-	if key := msg.String(); len(key) == 1 && key[0] >= '1' && key[0] <= '9' {
+	// it is not a binding. With marks, 1 opens the bulk allow's sheet and 3
+	// denies every marked approval.
+	if len(key) == 1 && key[0] >= '1' && key[0] <= '9' {
+		if marks {
+			switch key {
+			case "1":
+				o.InboxAgentsBulkAllow()
+			case "3":
+				return o, o.InboxAgentsBulkDeny()
+			}
+			return o, nil
+		}
+		o.CockpitSync()
 		return o, o.InboxNumber(int(key[0] - '0'))
 	}
-	action := lookupAction(o, msg, overlayKeys(o).GetInboxAction)
+	if marks && action == config.ActionInboxReply {
+		return o, o.InboxAgentsBulkReply()
+	}
+	// The cockpit's own actions: a A r on an approval, n, tab, the moves.
+	if cmd, handled := o.CockpitKey(action); handled {
+		o.NoteAction(action)
+		return o, cmd
+	}
 	if action == "" {
+		return o, nil
+	}
+	o.CockpitSync()
+	if marks && action == config.ActionInboxSnooze {
+		o.InboxAgentsBulkSnooze()
 		return o, nil
 	}
 	// The review, triage and approval keys say whether they did anything,
@@ -73,32 +124,22 @@ func handleInboxInput(msg tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
 		o.CloseInbox()
 	case config.ActionInboxPeek:
 		return o, o.InboxPeek()
-	case config.ActionInboxGo:
-		return o, o.InboxActivate()
 	case config.ActionInboxDismiss:
+		if marks {
+			return o, o.InboxAgentsBulkDismiss()
+		}
 		return o, o.InboxDismiss()
-	case config.ActionInboxReply:
-		return o, o.InboxReply()
 	case config.ActionInboxResume:
 		return o, o.InboxResume()
 	case config.ActionInboxPassOn:
 		return o, o.InboxRelease()
-	case config.ActionInboxFilter:
-		o.InboxCycleFilter()
 	case config.ActionInboxMailbox:
 		return o, o.InboxOpenMailbox()
-	case config.ActionInboxUp:
-		o.InboxMove(-1)
-	case config.ActionInboxDown:
-		o.InboxMove(1)
-	case config.ActionInboxPageUp:
-		o.InboxMove(-10)
-	case config.ActionInboxPageDown:
-		o.InboxMove(10)
-	case config.ActionInboxFirst:
-		o.InboxMove(-1 << 20)
-	case config.ActionInboxLast:
-		o.InboxMove(1 << 20)
+	case config.ActionInboxSort:
+		o.InboxAgentsCycleSort()
+		o.CockpitTouch()
+	case config.ActionInboxViewPane:
+		return o, o.InboxAgentsViewPane()
 	}
 	return o, nil
 }
@@ -120,60 +161,33 @@ func overlayKeys(o *app.OS) *config.KeybindRegistry {
 }
 
 // handleInboxReasonInput handles keyboard input while the reason line for a
-// deny is open: every printable key is text, enter denies with it, backspace
-// deletes, and esc closes the line and denies nothing.
+// deny is open. The line is a one-line composer: enter denies with it, esc
+// closes it and denies nothing, and every other key edits it.
 func handleInboxReasonInput(msg tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
-	switch key := msg.String(); key {
-	case "esc":
-		o.InboxReasonCancel()
-	case "enter":
-		return o, o.InboxReasonSend()
-	case "backspace":
-		o.InboxReasonBackspace()
-	case "space":
-		o.InboxReasonType(" ")
-	default:
-		o.InboxReasonType(msg.Text)
-	}
-	return o, nil
+	return o, o.InboxReasonKey(msg)
 }
 
 // handleInboxReplyInput handles keyboard input while the reply editor is
-// open: every printable key is text, enter queues the reply, backspace
-// deletes, and esc closes the editor and sends nothing.
+// open. The composer takes every key: enter queues the reply, ctrl+j makes a
+// new line, and esc closes the editor and keeps the draft. See
+// internal/composer for the rest.
 func handleInboxReplyInput(msg tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
-	switch key := msg.String(); key {
-	case "esc":
+	// In the agents view the key that views the pane works while the editor
+	// is open: the draft is kept, as esc keeps it. The composer binds no
+	// ctrl+] of its own.
+	if o.InboxAgentsOn() && lookupAction(o, msg, overlayKeys(o).GetInboxAction) == config.ActionInboxViewPane {
 		o.InboxReplyCancel()
-	case "enter":
-		return o, o.InboxReplySend()
-	case "backspace":
-		o.InboxReplyBackspace()
-	case "space":
-		o.InboxReplyType(" ")
-	default:
-		o.InboxReplyType(msg.Text)
+		return o, o.InboxAgentsViewPane()
 	}
-	return o, nil
+	return o, o.InboxReplyKey(msg)
 }
 
 // handleInboxSelectInput handles keyboard input while the selector line is
-// open: every printable key is text, enter applies the selector (an empty line
-// clears it), backspace deletes, and esc closes the line and keeps the
-// selector in force.
+// open. The line is a one-line composer: enter applies the selector (an empty
+// line clears it), esc closes the line and keeps the selector in force, and
+// every other key edits it.
 func handleInboxSelectInput(msg tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
-	switch key := msg.String(); key {
-	case "esc":
-		o.InboxSelectCancel()
-	case "enter":
-		o.InboxSelectApply()
-	case "backspace":
-		o.InboxSelectBackspace()
-	case "space":
-		o.InboxSelectType(" ")
-	default:
-		o.InboxSelectType(msg.Text)
-	}
+	o.InboxSelectKey(msg)
 	return o, nil
 }
 
@@ -185,21 +199,7 @@ func handleInboxSelectInput(msg tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
 func handleInboxPeekInput(msg tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
 	key := msg.String()
 	if o.InboxPeekComposing() {
-		switch key {
-		case "esc":
-			o.InboxPeekCancelText()
-		case "enter":
-			return o, o.InboxPeekSendText()
-		case "backspace":
-			o.InboxPeekBackspace()
-		default:
-			text := msg.Text
-			if key == "space" {
-				text = " "
-			}
-			o.InboxPeekType(text)
-		}
-		return o, nil
+		return o, o.InboxPeekTextKey(msg)
 	}
 	if len(key) == 1 && key[0] >= '1' && key[0] <= '9' {
 		return o, o.InboxAnswer(harness.ActionChoose, key)

@@ -74,7 +74,10 @@ func buildHerdrClient(t *testing.T) string {
 //     panes with their labels; pane.rename shows on the screen; an agent on
 //     needs_input reads as herdr's blocked; text and keys typed with
 //     pane.send_text and pane.send_keys reach the pane; tab.create makes a
-//     workspace with the label; the event stream reports a new pane.
+//     workspace with the label; the event stream reports a new pane; env
+//     on workspace.create, tab.create and pane.split is set in the new
+//     pane's shell; a pane.report_agent for a pane goes through, as herdr
+//     lets any client report.
 //   - From inside a pane, with herdr's environment only: pane.current is the
 //     caller's own pane, by the id in HERDR_PANE_ID; typing into a pane that
 //     waits on a prompt is refused, since the pane has no respond grant.
@@ -118,6 +121,15 @@ func TestHerdrSocketAPI(t *testing.T) {
 	if target["agent"] != "claude" || target["agent_status"] != "blocked" {
 		t.Fatalf("an agent on needs_input reads %v / %v", target["agent"], target["agent_status"])
 	}
+
+	// The person, outside every pane, reports for a pane, as a herdr plugin's
+	// command does. herdr lets any client report.
+	callerID := herdrPaneByLabel(t, base, "caller")["pane_id"].(string)
+	herdrCall(t, base, "pane.report_agent", map[string]any{"pane_id": callerID, "source": "e2e-mirror", "agent": "claude", "state": "working"})
+	if got := herdrPaneByLabel(t, base, "caller"); got["agent"] != "claude" || got["agent_status"] != "working" {
+		t.Fatalf("a report from outside every pane reads %v / %v, want claude / working", got["agent"], got["agent_status"])
+	}
+	herdrCall(t, base, "pane.release_agent", map[string]any{"pane_id": callerID, "source": "e2e-mirror", "agent": "claude"})
 
 	// A pane holds its grants: it finds itself, and may not type into a
 	// prompt without respond.
@@ -164,6 +176,31 @@ func TestHerdrSocketAPI(t *testing.T) {
 	if !strings.Contains(seen, `"label":"herdr-tab"`) {
 		t.Errorf("tab_created does not carry the label:\n%s", seen)
 	}
+
+	// env on workspace.create, tab.create and pane.split reaches the new
+	// pane's shell.
+	wsEnv := herdrCall(t, base, "workspace.create", map[string]any{"label": "herdr-env-ws", "env": map[string]string{"HERDR_E2E_ENV": "from-workspace"}})
+	herdrEcho(t, base, wsEnv["root_pane"].(map[string]any)["pane_id"].(string), "env-from-workspace")
+	tabEnv := herdrCall(t, base, "tab.create", map[string]any{"workspace_id": target["workspace_id"], "focus": false, "env": map[string]string{"HERDR_E2E_ENV": "from-tab"}})
+	herdrEcho(t, base, tabEnv["root_pane"].(map[string]any)["pane_id"].(string), "env-from-tab")
+	split := herdrCall(t, base, "pane.split", map[string]any{"target_pane_id": targetID, "direction": "right", "focus": false, "env": map[string]string{"HERDR_E2E_ENV": "from-split"}})
+	herdrEcho(t, base, split["pane"].(map[string]any)["pane_id"].(string), "env-from-split")
 	saveFrame(t, term, "herdr-socket-api")
 	alive(t, term, "after the herdr socket API")
+}
+
+// herdrEcho types echo env-$HERDR_E2E_ENV into pane and waits until
+// pane.read shows want.
+func herdrEcho(t *testing.T, base, pane, want string) {
+	t.Helper()
+	herdrCall(t, base, "pane.send_text", map[string]any{"pane_id": pane, "text": "echo env-$HERDR_E2E_ENV"})
+	herdrCall(t, base, "pane.send_keys", map[string]any{"pane_id": pane, "keys": []string{"Enter"}})
+	text := ""
+	for deadline := time.Now().Add(uiTimeout); time.Now().Before(deadline); time.Sleep(100 * time.Millisecond) {
+		read := herdrCall(t, base, "pane.read", map[string]any{"pane_id": pane, "source": "recent", "lines": 50, "format": "text"})["read"].(map[string]any)
+		if text = read["text"].(string); strings.Contains(text, want) {
+			return
+		}
+	}
+	t.Fatalf("pane %s never showed %s:\n%s", pane, want, text)
 }

@@ -166,7 +166,7 @@ func (m *OS) HelpCategories() []HelpCategory {
 // keys are the lines starting helpReviewPrefix.
 const (
 	helpRailReview   = "Rail agent row: review the pane's changes"
-	helpInboxReview  = "Inbox: review the changes in the item's pane"
+	helpInboxReview  = "Agents view: review the changes in the agent's pane"
 	helpReviewPrefix = "Review: "
 )
 
@@ -228,31 +228,29 @@ func generateAgentBindings(registry *config.KeybindRegistry, s *config.Settings)
 	add(agentRowKey(config.ActionAgentReply), "Rail agent row: reply to the agent")
 	add(agentRowKey(config.ActionAgentReview), helpRailReview)
 	add(agentRowKey(config.ActionAgentUnread), "Rail agent row: mark its finished turn unread")
-	add(agentRowKey(config.ActionAgentSnooze), "Rail agent row: snooze its Inbox item")
+	add(agentRowKey(config.ActionAgentSnooze), "Rail agent row: snooze what needs you in its pane")
 	add(agentRowKey(config.ActionAgentCancelQueued), "Rail agent row: drop the newest queued message")
 	add(agentRowKey(config.ActionAgentSubagents), "Rail agent row: open or close its subagent rows")
 
 	inbox := func(action, desc string) {
 		add(registry.GetInboxKeys(action), desc)
 	}
-	add([]string{"1-9"}, "Inbox: answer a held approval or a question by its number")
-	inbox(config.ActionInboxPeek, "Inbox: read an approval's or a question's prompt and answer it")
-	inbox(config.ActionInboxGo, "Inbox: go to the item's pane, or open its mail")
-	inbox(config.ActionInboxDismiss, "Inbox: dismiss the item")
-	inbox(config.ActionInboxReply, "Inbox: reply to mail")
-	inbox(config.ActionInboxResume, "Inbox: resume a conversation a restart left")
-	inbox(config.ActionInboxPassOn, "Inbox: pass held mail on to its agent")
-	inbox(config.ActionInboxFilter, "Inbox: show one kind, then the next")
-	inbox(config.ActionInboxSelect, "Inbox: narrow the list with a selector")
-	inbox(config.ActionInboxMailbox, "Inbox: open the whole mailbox")
-	inbox(config.ActionInboxReview, helpInboxReview)
-	inbox(config.ActionInboxSnooze, "Inbox: snooze the item, then 1 to 4 for how long")
-	inbox(config.ActionInboxUndo, "Inbox: undo the last dismiss or snooze")
-	inbox(config.ActionInboxShowSnoozed, "Inbox: show or hide snoozed items")
-	inbox(config.ActionInboxDenyReason, "Inbox: deny an approval or a plan with a reason")
+	add([]string{"1-9"}, "Agents view: answer a held approval or a question by its number")
+	for _, action := range []string{
+		config.ActionInboxAllow, config.ActionInboxAllowAlways, config.ActionInboxReply, config.ActionInboxDenyReason,
+		config.ActionInboxPeek, config.ActionInboxGo, config.ActionInboxWrite, config.ActionInboxNewAgent,
+		config.ActionInboxDismiss, config.ActionInboxResume, config.ActionInboxPassOn, config.ActionInboxFilter,
+		config.ActionInboxSelect, config.ActionInboxMailbox, config.ActionInboxReview, config.ActionInboxSnooze,
+		config.ActionInboxUndo, config.ActionInboxShowSnoozed, config.ActionInboxMark, config.ActionInboxMarkAll,
+		config.ActionInboxViewPane, config.ActionInboxOpen, config.ActionInboxBack,
+		config.ActionInboxTabPrev, config.ActionInboxTabNext, config.ActionInboxExpand,
+		config.ActionInboxDetailDown, config.ActionInboxDetailUp,
+	} {
+		inbox(action, config.ActionDescriptions[action])
+	}
 	inbox(config.ActionPeekApprove, "Prompt: approve")
 	inbox(config.ActionPeekApproveAlways, "Prompt: approve and do not ask again")
-	inbox(config.ActionPeekDeny, "Prompt: deny")
+	inbox(config.ActionPeekDeny, "Prompt: reject")
 	inbox(config.ActionPeekType, "Prompt: type an answer")
 	inbox(config.ActionMailReply, "Mailbox: reply in the open thread")
 	inbox(config.ActionMailFocusPane, "Mailbox: go to the pane that last wrote")
@@ -373,11 +371,12 @@ func generateWorkspaceBindings(registry *config.KeybindRegistry, s *config.Setti
 	return bindings
 }
 
-// generateMouseBindings lists the pointer gestures. They are written out rather
-// than derived because there is no registry for them: the gestures are decided
-// by internal/input's press/motion/release handlers, and this list is the only
-// place a user can read what those handlers do. Rail gestures live in the
-// Sidebar section, next to the rail's keys.
+// generateMouseBindings lists the fixed pointer gestures. They are written out
+// rather than derived because there is no registry for them: the gestures are
+// decided by internal/input's press/motion/release handlers, and this list is
+// the only place a user can read what those handlers do. The configurable
+// middle-button binding comes from the terminal-mode registry instead. Rail
+// gestures live in the Sidebar section, next to the rail's keys.
 func generateMouseBindings() []HelpBinding {
 	const cat = "Mouse"
 	return []HelpBinding{
@@ -402,7 +401,7 @@ func generateMouseBindings() []HelpBinding {
 		{Keys: []string{"right-click desktop"}, Description: "Desktop menu", Category: cat},
 		{Keys: []string{"click dock entry"}, Description: "Restore that minimized window", Category: cat},
 		{Keys: []string{"right-click dock"}, Description: "Dock menu, or the entry's own menu", Category: cat},
-		{Keys: []string{"right-click workspace tab"}, Description: "Switch or rename that workspace", Category: cat},
+		{Keys: []string{"right-click workspace tab"}, Description: "Switch to, rename or close that workspace", Category: cat},
 		{Keys: []string{"drag a panel"}, Description: "Move the panel. Click outside to close", Category: cat},
 	}
 }
@@ -550,17 +549,15 @@ func sidebarGestures() []HelpBinding {
 	}
 }
 
-// generateListBindings is the keys every list and panel shares (see
-// internal/listnav) and the settings page's own. They are fixed keys of the
-// panels rather than registry actions, so they are written out here. They are
-// listed in the Modes section; see GetHelpCategories.
+// generateListBindings is the keys of the lists and panels that cannot be
+// rebound, and the settings page's own. The keys that move the cursor are the
+// [keybindings.lists] section (see internal/listnav), so they are listed with
+// the other scopes and not here. They are fixed keys of the panels rather than
+// registry actions, so they are written out here. They are listed in the Modes
+// section; see GetHelpCategories.
 func generateListBindings() []HelpBinding {
 	const cat = "Modes"
 	return []HelpBinding{
-		{Keys: []string{"up", "down", "ctrl+p", "ctrl+n"}, Description: "Lists: move; at either end, wrap round", Category: cat},
-		{Keys: []string{"home", "end"}, Description: "Lists: first / last row", Category: cat},
-		{Keys: []string{"pgup", "pgdown"}, Description: "Lists: a page, stopping at the ends", Category: cat},
-		{Keys: []string{"k", "j", "g", "G"}, Description: "Lists: up, down, first, last, with no filter", Category: cat},
 		{Keys: []string{"ctrl+u"}, Description: "Lists: clear a typed filter", Category: cat},
 		{Keys: []string{"wheel"}, Description: "Lists: scroll the list under the pointer", Category: cat},
 		{Keys: []string{"/"}, Description: "Settings: search every tab", Category: cat},

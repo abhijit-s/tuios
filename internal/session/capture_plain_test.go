@@ -6,7 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Gaurav-Gosain/tuios/internal/vt"
+	"github.com/charmbracelet/x/ansi"
+	"tuios.dev/vt"
 )
 
 // captureLineByLine is the plain capture the long way: every scrollback line
@@ -113,5 +114,91 @@ func TestWaitForOutputBackstopSeesUnannouncedChange(t *testing.T) {
 				t.Fatal("the backstop never re-checked the changed pane")
 			}
 		})
+	}
+}
+
+// TestUnwrapCaptureJoinsWrappedRows writes lines longer than the pane, some
+// with a space or a wide character at the wrap edge, and requires an unwrapped
+// capture to give back each line as it was written. A line that fills the row
+// exactly and then ends must stay a line of its own. Runs on whichever backend
+// the build uses, so the ghostty workflow covers that backend too.
+func TestUnwrapCaptureJoinsWrappedRows(t *testing.T) {
+	const width = 10
+	lines := []string{
+		"short",
+		"exactly10!",
+		"a path/that/is/longer/than/the/pane/width.go:42",
+		"edge-at-9 wraps here", // a space lands in the last column
+		"wide 日本語日本語日本語 end",   // a wide character meets the edge
+		"\x1b[31mred text that wraps around\x1b[0m",
+		"last",
+	}
+	term := vt.NewWithScrollback(width, 4, 100)
+	for _, l := range lines {
+		_, _ = fmt.Fprintf(term, "%s\r\n", l)
+	}
+	p := &PTY{terminal: term}
+
+	got, _ := p.CaptureContentMeta(true, false, true)
+	got = trimCapture(got)
+	var want strings.Builder
+	for _, l := range lines {
+		want.WriteString(ansi.Strip(l) + "\n")
+	}
+	if got != want.String() {
+		t.Fatalf("unwrapped capture:\n got %q\nwant %q", got, want.String())
+	}
+
+	// Styled, the joined line keeps its escapes and still reads as one line.
+	styled, _ := p.CaptureContentMeta(true, true, true)
+	if n := strings.Count(trimCapture(styled), "\n"); n != len(lines) {
+		t.Fatalf("styled unwrapped capture has %d lines, want %d:\n%q", n, len(lines), styled)
+	}
+
+	// Without unwrap the rows stay as the pane shows them.
+	plain, _ := p.CaptureContentMeta(true, false, false)
+	if strings.Contains(plain, "longer/than/the/pane") {
+		t.Fatalf("a capture without unwrap joined rows: %q", plain)
+	}
+}
+
+// TestTrimCaptureDropsTheBlankRowsBelow keeps every line with content and the
+// blank lines between them, and drops only the blank lines at the end.
+func TestTrimCaptureDropsTheBlankRowsBelow(t *testing.T) {
+	for in, want := range map[string]string{
+		"a\n\nb\n\n   \n\x1b[0m\n": "a\n\nb\n",
+		"a":                        "a\n",
+		"\n\n":                     "",
+		"":                         "",
+	} {
+		if got := trimCapture(in); got != want {
+			t.Errorf("trimCapture(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// TestUnwrapStopsAtTheAlternateScreen opens the alternate screen over a line
+// that wraps from the history onto the main screen. The history's newest row
+// carries on to the main screen, so a capture of the alternate screen must not
+// join it to the alternate screen's first row. last-command-output reads the
+// main screen, so it must not join rows by the alternate screen's flags. The
+// emulator has no wrap flags for the main screen while the alternate one is
+// up, so those rows come back as the pane shows them.
+func TestUnwrapStopsAtTheAlternateScreen(t *testing.T) {
+	const alt = "\x1b[?1049h\x1b[H"
+	term := vt.NewWithScrollback(10, 3, 100)
+	_, _ = fmt.Fprint(term, "l0\r\nl1\r\n0123456789ABCDEFGHIJabcdefghij-END"+alt+strings.Repeat("q", 15))
+	p := &PTY{terminal: term}
+	got, _ := p.CaptureContentMeta(true, false, true)
+	if want := "l0\nl1\n0123456789\n" + strings.Repeat("q", 15) + "\n"; got != want {
+		t.Fatalf("unwrapped capture of the alternate screen:\n got %q\nwant %q", got, want)
+	}
+
+	term = vt.NewWithScrollback(10, 4, 100)
+	_, _ = fmt.Fprint(term, "\x1b]133;A\x07$ \x1b]133;B\x07x\r\n\x1b]133;C\x07"+
+		"AAAAAAAAAABBBBB\r\nshort\r\n\x1b]133;D;0\x07\x1b]133;A\x07$ "+alt+strings.Repeat("q", 30))
+	p = &PTY{terminal: term}
+	if out, _, ok := p.LastCommandOutput(true); !ok || out != "AAAAAAAAAA\nBBBBB\nshort" {
+		t.Fatalf("last command output = %q, want %q", out, "AAAAAAAAAA\nBBBBB\nshort")
 	}
 }

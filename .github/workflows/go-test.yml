@@ -74,13 +74,13 @@ jobs:
         # the job the change belongs to.
         #
         # go mod tidy ignores go.work, so it needs each Go library of this
-        # repository (progstatus/) at the version go.mod pins. The libraries
-        # come from a GOPROXY directory built from the pinned commits, so the
-        # check does not depend on tuios.dev.
+        # repository (progstatus/, vt/, swatch/, shot/, tml/, plot/, loom/) at the version go.mod pins.
+        # The libraries come from a GOPROXY directory built from the pinned
+        # commits, so the check does not depend on tuios.dev.
         run: |
           scripts/library-pins.sh proxy "$RUNNER_TEMP/libproxy"
           export GOPROXY="file://$RUNNER_TEMP/libproxy,$(go env GOPROXY)" GONOSUMDB=tuios.dev
-          for dir in . e2e/tui progstatus; do
+          for dir in . e2e/tui progstatus vt swatch shot tml plot loom sketch; do
             if ! (cd "$dir" && GOWORK=off go mod tidy -diff); then
               echo "$dir/go.mod is not tidy; run: (cd $dir && go mod tidy)" >&2
               exit 1
@@ -89,10 +89,10 @@ jobs:
 
       # ./... stops at a nested module, so the libraries are named too.
       - name: Vet
-        run: go vet ./... ./progstatus/...
+        run: go vet ./... ./progstatus/... ./vt/... ./swatch/... ./shot/... ./tml/... ./plot/... ./loom/... ./sketch/...
 
       - name: Build
-        run: go build ./... ./progstatus/...
+        run: go build ./... ./progstatus/... ./vt/... ./swatch/... ./shot/... ./tml/... ./plot/... ./loom/... ./sketch/...
 
       - name: Example tapes validate
         # Every example under examples/ is held to the parser the release
@@ -115,7 +115,7 @@ jobs:
         # -count=1 because the test cache replays a pass across a change the
         # cache key does not see, which is how a mutation sweep can come back
         # green on code that no longer exists.
-        run: go test ./... ./progstatus/... -count=1 -timeout 20m
+        run: go test ./... ./progstatus/... ./vt/... ./swatch/... ./shot/... ./tml/... ./plot/... ./loom/... ./sketch/... -count=1 -timeout 20m
 
   windows:
     name: go test (windows)
@@ -123,9 +123,9 @@ jobs:
     runs-on: windows-latest
     # The packages whose Windows code runs only on Windows: the herdr link
     # (hardlink, copy and a running link), the PATHEXT lookup and the job
-    # object for plugin processes, the stop event kill-server sets, and the
-    # herdr command line the link runs. The whole suite has never run on
-    # Windows and does not run here.
+    # object for plugin processes, the stop event kill-server sets, the
+    # herdr command line the link runs, and the opencode socket owner check.
+    # The whole suite has never run on Windows and does not run here.
     timeout-minutes: 15
 
     steps:
@@ -140,6 +140,70 @@ jobs:
 
       - name: Test
         run: go test -count=1 -timeout 10m ./internal/shimlink/ ./internal/herdrplugin/ ./internal/stopevent/ ./internal/herdrcli/
+
+      - name: Test the opencode socket owner check
+        # The rest of internal/transcriptview runs shell scripts, so only the
+        # owner check and its table parsers run here.
+        run: go test -count=1 -timeout 5m -run "TestOpenCodeConnOwner|TestTCPTableOwner|TestPcblistOwner|TestProcNetOwner" ./internal/transcriptview/
+
+  macos:
+    name: go test (macos)
+    if: github.event_name != 'schedule'
+    runs-on: macos-latest
+    # The opencode reader proves that a socket belongs to this user from the
+    # sysctl net.inet.tcp.pcblist_n, which only a real macOS kernel fills.
+    # The package's suite runs here, the real table included.
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: |
+            go.sum
+            .github/workflows/go-test.yml
+
+      - name: Test
+        run: go test -count=1 -timeout 10m ./internal/transcriptview/
+
+  sketch-fma:
+    name: sketch goldens (${{ matrix.name }})
+    if: github.event_name != 'schedule'
+    # tuios.dev/sketch promises pele's SVG byte for byte. The Go spec lets the
+    # compiler fuse x*y+z into one FMA, which rounds once where JavaScript
+    # rounds twice. arm64 fuses, and so does amd64 at GOAMD64=v3. The unit job
+    # runs on amd64 at v1, which never fuses, so these two run the goldens
+    # where the compiler does. If one fails, wrap the product in float64(),
+    # which the spec says rounds it on its own.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux/arm64
+            runner: ubuntu-24.04-arm
+            goamd64: ""
+          - name: linux/amd64 v3
+            runner: ubuntu-latest
+            goamd64: v3
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: |
+            go.sum
+            .github/workflows/go-test.yml
+
+      - name: Test sketch
+        env:
+          GOAMD64: ${{ matrix.goamd64 }}
+        run: go test -count=1 -timeout 10m ./sketch/...
 
   race:
     name: go test -race ./...
@@ -158,4 +222,4 @@ jobs:
           cache-dependency-path: go.sum
 
       - name: Test with the race detector
-        run: go test ./... ./progstatus/... -race -count=1 -timeout 80m
+        run: go test ./... ./progstatus/... ./vt/... ./swatch/... ./shot/... ./tml/... ./plot/... ./loom/... ./sketch/... -race -count=1 -timeout 80m

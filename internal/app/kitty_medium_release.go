@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/Gaurav-Gosain/tuios/internal/vt"
+	"tuios.dev/vt"
 )
 
 // The kitty spec gives a shared memory object (t=s) and a temporary file (t=t)
@@ -50,7 +50,7 @@ func releaseKittyMedium(cmd *vt.KittyCommand, path string) {
 			return
 		}
 	case vt.KittyMediumTempFile:
-		if !strings.Contains(path, vt.KittyTempMarker) || !vt.KittyInTempDir(path) {
+		if !strings.Contains(path, vt.KittyTempMarker) || !kittyInTempDir(path) {
 			return
 		}
 	default:

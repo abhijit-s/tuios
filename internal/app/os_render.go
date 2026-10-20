@@ -40,8 +40,9 @@ func (m *OS) markZenDirty() {
 
 // MarkTerminalsWithNewContent marks terminals that have new content as dirty.
 func (m *OS) MarkTerminalsWithNewContent() bool {
-	// Fast path: no windows
-	if len(m.Windows) == 0 {
+	// A docked session's pane is deliberately not in m.Windows, but its
+	// subscription uses the same output signal and frame budget.
+	if len(m.Windows) == 0 && !m.sidebarSessionOutputPending() {
 		return false
 	}
 
@@ -58,6 +59,7 @@ func (m *OS) MarkTerminalsWithNewContent() bool {
 	activeTerminals := 0
 	// A pane made since the last pass takes this client's frame rate.
 	m.setPaneFrameInterval()
+	m.clearViewedWorkspaceMarks()
 
 	for i := range m.Windows {
 		window := m.Windows[i]
@@ -88,7 +90,15 @@ func (m *OS) MarkTerminalsWithNewContent() bool {
 			// picture-in-picture view, and it is paced like an unfocused
 			// pane below: every third pass, with the flag kept between so
 			// the last output is still drawn once the pane goes quiet.
-			if window.HasNewOutput.Swap(false) && window.ID == m.pip.windowID {
+			out := window.HasNewOutput.Swap(false)
+			// Output on a workspace out of view marks its dock tab, once.
+			if out && !window.Minimized && m.noteWorkspaceMark(window.Workspace, workspaceMarkActivity) {
+				hasChanges = true
+			}
+			if out && m.cockpitNoteOutput(window) {
+				hasChanges = true
+			}
+			if out && window.ID == m.pip.windowID {
 				window.UpdateCounter++
 				if window.UpdateCounter%3 == 0 {
 					m.pip.dirty = true
@@ -130,8 +140,18 @@ func (m *OS) MarkTerminalsWithNewContent() bool {
 		if window.ID == m.pip.windowID {
 			m.pip.dirty = true
 		}
+		m.cockpitNoteOutput(window)
 	}
 
+	for edge := range m.sidebarSessions {
+		for _, w := range m.sidebarSessions[edge].windows {
+			if w.HasNewOutput.Swap(false) {
+				w.MarkContentDirty()
+				hasChanges = true
+				m.cachedViewContent = "" // the rail is composed into the cached frame
+			}
+		}
+	}
 	return hasChanges
 }
 

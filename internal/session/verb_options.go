@@ -329,46 +329,14 @@ func (d *Daemon) verbSetOption(cs *connState, params json.RawMessage) (any, *ver
 	return out, nil
 }
 
-// configuredOption is what an option reads as when this session was told
-// nothing about it: the value config.toml gives it, or the built-in default.
-//
-// Without the file tier, every path the person had configured read back as the
-// built-in default tagged source "default". The value was not merely
-// unattributed, it was wrong: appearance.tiling_scheme reported spiral while
-// the file said smart_split and every workspace was tiling by smart_split, and
-// appearance.window_title_format reported empty while a format was set and in
-// use. The daemon honours the file; only the readout did not, which is worse
-// than having no readout, because "source": "config" is a documented answer
-// this verb could never give for all but two hand-special-cased paths.
-//
-// Differing from the default is the signal that the file set it, the same test
-// agents.enabled already makes above. An option the person set to its own
-// default is therefore reported as a default, which names the value right and
-// its provenance imprecisely -- the one answer in reach, since an unset field
-// reads back as the default too (config.GetOptionValue).
-func (d *Daemon) configuredOption(opt config.Option, path string) (value, source string) {
-	fallback := config.EffectiveDefault(opt)
-	uc := d.userConfig.Load()
-	if uc == nil {
-		return fallback, "default"
-	}
-	held, ok := config.GetOptionValue(uc, path)
-	if !ok || held == fallback {
-		return fallback, "default"
-	}
-	return held, "config"
-}
-
-// verbGetOption reads the value an option has in effect, in three tiers: what
-// this session was told, else what config.toml gives it, else what the option
-// does untold. source names which tier answered.
+// verbGetOption reads an option: what this session was told, then what
+// config.toml says, then what the option does untold. See sessionOptions.
 //
 // Reading only the session's own overrides would make the ordinary question
 // (what is the dockbar position) fail on every session that never set it,
 // which is most of them. A caller cannot act on "not set" when what it wants
-// is the value in effect. The file tier closes the same gap one layer down:
-// see configuredOption.
-func (d *Daemon) verbGetOption(_ *connState, params json.RawMessage) (any, *verbError) {
+// is the value in effect.
+func (d *Daemon) verbGetOption(cs *connState, params json.RawMessage) (any, *verbError) {
 	var p struct {
 		Session string `json:"session"`
 		Key     string `json:"key"`
@@ -414,24 +382,13 @@ func (d *Daemon) verbGetOption(_ *connState, params json.RawMessage) (any, *verb
 			"source": source, "default": config.EffectiveDefault(opt), "option_type": opt.Type,
 		}, nil
 	}
-	if value, ok := sess.GetOption(path); ok {
-		out := map[string]any{"type": "option", "key": path, "value": value, "source": "session"}
+	if value, source, ok := d.optionsFor(cs, sess).lookup(path); ok {
+		out := map[string]any{"type": "option", "key": path, "value": value, "source": source}
 		if known {
 			out["default"] = config.EffectiveDefault(opt)
 			out["option_type"] = opt.Type
 		}
 		return out, nil
-	}
-	if known {
-		value, source := d.configuredOption(opt, path)
-		return map[string]any{
-			"type":        "option",
-			"key":         path,
-			"value":       value,
-			"source":      source,
-			"default":     config.EffectiveDefault(opt),
-			"option_type": opt.Type,
-		}, nil
 	}
 
 	// Unknown to the registry and never set here. Both halves of that are worth

@@ -4,10 +4,11 @@ import (
 	"encoding/base64"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
-	"github.com/Gaurav-Gosain/tuios/internal/vt"
+	"tuios.dev/vt"
 )
 
 const kittyMediumWin = "window-medium-0000-0000-000000000000"
@@ -129,17 +130,7 @@ func TestKittyTempFileOutsideTempDirIsRefused(t *testing.T) {
 // reaches a remote viewer.
 func TestKittyTempFileAsIcatWritesItIsSent(t *testing.T) {
 	kp, host := remoteKitty(t)
-	dir, err := os.MkdirTemp("", "tuios-kitty-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	// TestMain puts HOME under TMPDIR (see xdgisolate.go), which makes
-	// kittyTempDirs ignore TMPDIR itself rather than treat the whole home
-	// directory as temporary. Naming this test's own directory keeps the
-	// positive control meaningful regardless.
-	useKittyTempDirs(t, dir)
-	path := secretFile(t, dir, "tty-graphics-protocol-frame.rgba")
+	path := secretFile(t, kittyTestTempDir(t), "tty-graphics-protocol-frame.rgba")
 
 	sendKitty(kp, kittyFileCmd(vt.KittyMediumTempFile, path))
 
@@ -169,14 +160,44 @@ func TestKittyShmNameWithSlashIsNotForwarded(t *testing.T) {
 	}
 }
 
-// useKittyTempDirs makes dirs the only temporary directories for a test, and
-// clears TMPDIR.
+// useKittyTempDirs makes dirs the only fixed temporary directories for a
+// test, and clears TMPDIR. A TMPDIR the test sets later still counts when vt
+// accepts it.
 func useKittyTempDirs(t *testing.T, dirs ...string) {
 	t.Helper()
-	prev := vt.KittyFixedTempDirs
-	vt.KittyFixedTempDirs = dirs
-	t.Cleanup(func() { vt.KittyFixedTempDirs = prev })
+	fixed := map[string]bool{"/tmp": true, "/dev/shm": true, "/var/tmp": true}
+	prev := kittyInTempDir
+	kittyInTempDir = func(path string) bool {
+		all := slices.Clone(dirs)
+		for _, d := range vt.KittyTempDirs() {
+			if !fixed[d] {
+				all = append(all, d)
+			}
+		}
+		for _, dir := range all {
+			if r, err := filepath.EvalSymlinks(dir); err == nil {
+				dir = r
+			}
+			if strings.HasPrefix(path, strings.TrimSuffix(dir, "/")+"/") {
+				return true
+			}
+		}
+		return false
+	}
+	t.Cleanup(func() { kittyInTempDir = prev })
 	t.Setenv("TMPDIR", "")
+}
+
+// kittyTestTempDir returns a fresh directory that the kitty file checks
+// treat as the only temporary one. The checks refuse a file outside a
+// temporary directory, and they ignore a TMPDIR inside the home directory
+// (say ~/.cache/tmp), so a test that took its file from os.TempDir would
+// fail whenever TMPDIR points there.
+func kittyTestTempDir(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	useKittyTempDirs(t, dir)
+	return dir
 }
 
 // A TMPDIR that is the home directory, or a parent of it, would make every

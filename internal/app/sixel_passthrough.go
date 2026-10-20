@@ -9,9 +9,9 @@ import (
 	"time"
 
 	"github.com/Gaurav-Gosain/tuios/internal/debuglog"
-	"github.com/Gaurav-Gosain/tuios/internal/mosaic"
 	"github.com/Gaurav-Gosain/tuios/internal/terminal"
-	"github.com/Gaurav-Gosain/tuios/internal/vt"
+	"tuios.dev/shot/mosaic"
+	"tuios.dev/vt"
 )
 
 func sixelPassthroughLog(format string, args ...any) {
@@ -40,7 +40,7 @@ const (
 	// host that has kitty graphics and not sixel.
 	sixelViaKitty
 	// sixelSymbols draws the image as block glyphs, for a host with neither
-	// (see internal/mosaic). It is text, so nothing is sent beside the frame.
+	// (see shot/mosaic). It is text, so nothing is sent beside the frame.
 	sixelSymbols
 )
 
@@ -74,7 +74,7 @@ const (
 // SixelPassthrough shows the sixel images panes draw on this connection's
 // terminal.
 //
-// The emulator marks the cells an image covers (see internal/vt's
+// The emulator marks the cells an image covers (see vt's
 // sixel_marker.go) and hands the image here, where it is decoded and kept
 // under an id. The compositor finds the marked cells on each finished frame
 // (sixel_frame.go) and says which parts of which images are visible where;

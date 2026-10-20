@@ -37,6 +37,14 @@ any_of   = [
   { regex = ['(?i)^\s*❯.*(yes|allow)'] },
 ]
 
+# Gemini CLI draws its options without numbers (RadioButtonSelect with
+# showNumbers off, packages/cli/src/ui/components/messages/
+# ToolConfirmationMessage.tsx in @google/gemini-cli 0.64.0), so a digit picks
+# nothing and approve has no key that is safe to press. Every confirmation
+# ends with "No, suggest changes (esc)", and esc is that answer.
+[screen.rule.answers]
+deny = { keys = ["esc"] }
+
 # A turn in progress: the spinner line above the box carries the cancel hint.
 #
 #   ⠏ Thinking... (esc to cancel, 3s)
@@ -93,6 +101,21 @@ regex    = ['^\s*◇\s+Ready\b']
 # How a prompt is typed in. Gemini CLI is an Ink program: Ink reads a carriage
 # return as return and a line feed as a different key, and Gemini CLI handles
 # a bracketed paste as one paste. Not measured here.
+# Gemini CLI writes each chat under ~/.gemini/tmp/<project>/chats: one JSON
+# record per line since 0.3x (session-<time>-<id>.jsonl), one JSON document
+# before (session-<time>-<id>.json). The hook reports its path. Without the
+# hook the daemon takes the chat whose projectHash is the hash of the pane's
+# directory and whose startTime is the start of the pane's Gemini CLI. The file is read
+# only to show the conversation in the agent thread.
+[transcript]
+reader = "gemini-chat"
+dir    = "{home}/.gemini/tmp"
+glob    = "*/chats/session-*.json*"
+# Only .json and .jsonl: not the .jsonl.tmp-<pid> of a rewrite, nor the
+# .json.unreadable-<time> backup of a file Gemini CLI could not read.
+exclude = ["*.json[^l]*", "*.jsonl?*"]
+verify  = ["cwd"]
+
 [input]
 submit          = "cr"
 bracketed_paste = true

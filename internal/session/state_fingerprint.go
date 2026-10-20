@@ -100,6 +100,10 @@ func StateFingerprint(s *SessionState) uint64 {
 		str(w.PTYID)
 		flag(w.IsAltScreen)
 		flag(w.IsFloating)
+		str(w.Stack)
+		num(w.StackIndex)
+		str(w.Kind)
+		str(w.URI)
 		flag(w.Zoomed)
 		num(w.PreZoomX)
 		num(w.PreZoomY)
@@ -153,6 +157,13 @@ func StateFingerprint(s *SessionState) uint64 {
 		str(w.ScratchName)
 		str(w.ForegroundCmd)
 		num(w.ShellPID)
+		if w.StartedBy != nil {
+			str(w.StartedBy.Session)
+			str(w.StartedBy.Window)
+		} else {
+			str("")
+			str("")
+		}
 		num(len(w.Grants))
 		for _, g := range w.Grants {
 			str(g)

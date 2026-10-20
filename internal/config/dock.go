@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -26,6 +27,10 @@ const (
 	// DockComponentTransfers is the copies between machines: a bar and a
 	// percent while a copy runs. It draws nothing while no copy exists.
 	DockComponentTransfers = "transfers"
+	// DockComponentSession is the session name with the current workspace and
+	// the focused pane's place in it, "main 2:1" by default. It is a cell, so
+	// it goes wherever it is listed, and it is in no default list.
+	DockComponentSession = "session"
 )
 
 // DockCustomPrefix marks a name in one of the dock lists as referring to a
@@ -48,6 +53,7 @@ var dockBuiltins = []string{
 	DockComponentClock,
 	DockComponentSessionControls,
 	DockComponentTransfers,
+	DockComponentSession,
 }
 
 // DockBuiltinComponents returns the built-in component names, sorted. Used by
@@ -129,6 +135,111 @@ type DockConfig struct {
 	// Custom is the set of [dock.custom.NAME] tables. A list entry of
 	// "custom/NAME" draws the cell this table describes.
 	Custom map[string]DockCustomConfig `toml:"custom,omitempty"`
+
+	// Tabs is [dock.tabs]: how the workspace strip draws its tabs.
+	Tabs DockTabsConfig `toml:"tabs,omitempty"`
+
+	// Session is [dock.session]: the "session" component's text and style.
+	Session DockSessionConfig `toml:"session,omitempty"`
+}
+
+// Workspace tab styles accepted by [dock.tabs] style.
+const (
+	DockTabStylePill = "pill"
+	DockTabStyleFlat = "flat"
+)
+
+// DockTabsConfig is [dock.tabs]. With style left empty (or "pill") the strip
+// draws its rounded pills as it always has and the other fields are ignored;
+// "flat" draws each tab as a coloured run of text, the tabs joined by
+// Separator, the way a tmux status line draws its window list.
+type DockTabsConfig struct {
+	Style string `toml:"style,omitempty"`
+
+	// Separator is drawn between two flat tabs. Empty is one bare column.
+	Separator   string `toml:"separator,omitempty"`
+	SeparatorFg string `toml:"separator_fg,omitempty"`
+
+	ActiveFg     string `toml:"active_fg,omitempty"`
+	ActiveBg     string `toml:"active_bg,omitempty"`
+	ActiveBold   bool   `toml:"active_bold,omitempty"`
+	InactiveFg   string `toml:"inactive_fg,omitempty"`
+	InactiveBg   string `toml:"inactive_bg,omitempty"`
+	InactiveBold bool   `toml:"inactive_bold,omitempty"`
+
+	// NumberGlyphs is what {icon} in appearance.dock_workspace_tab_format
+	// prints for each workspace: the first entry stands for workspace 1, and
+	// a workspace past the end prints its number.
+	NumberGlyphs []string `toml:"number_glyphs,omitempty"`
+
+	// ZoomMarker is what {zoom} prints on the current workspace's tab while a
+	// pane in it is zoomed.
+	ZoomMarker string `toml:"zoom_marker,omitempty"`
+
+	// ShowAdd keeps the trailing "+" tab in the flat style, which drops it by
+	// default. The pill style always draws it.
+	ShowAdd bool `toml:"show_add,omitempty"`
+
+	// AttentionFg is the ink of a workspace's tab while a pane on it waits
+	// for a person: an agent that asks for input or stopped on an error. A
+	// colour value; empty leaves the tab's ink alone.
+	AttentionFg string `toml:"attention_fg,omitempty"`
+	// BellMarker is put after the label of a workspace whose pane rang the
+	// bell since you last looked at it, and ActivityMarker after one whose
+	// pane printed. Empty draws none, and tuios then keeps no record of it.
+	BellMarker     string `toml:"bell_marker,omitempty"`
+	ActivityMarker string `toml:"activity_marker,omitempty"`
+}
+
+// Flat reports whether the strip draws flat tabs.
+func (t DockTabsConfig) Flat() bool { return strings.TrimSpace(t.Style) == DockTabStyleFlat }
+
+// Icon is what {icon} prints for workspace n.
+func (t DockTabsConfig) Icon(n int) string {
+	if n >= 1 && n <= len(t.NumberGlyphs) && t.NumberGlyphs[n-1] != "" {
+		return t.NumberGlyphs[n-1]
+	}
+	return strconv.Itoa(n)
+}
+
+// DockCellStyle colours one dock cell. Every field is optional; a cell with
+// none set draws on the dock's quiet Panel ground as it always has. Colours are
+// "#rrggbb". The caps are drawn in the cell's background colour either side of
+// it, which is how a half-circle glyph reads as the cell's rounded end.
+type DockCellStyle struct {
+	Fg       string `toml:"fg,omitempty"`
+	Bg       string `toml:"bg,omitempty"`
+	Bold     bool   `toml:"bold,omitempty"`
+	CapLeft  string `toml:"cap_left,omitempty"`
+	CapRight string `toml:"cap_right,omitempty"`
+}
+
+// DockSessionConfig is [dock.session].
+type DockSessionConfig struct {
+	DockCellStyle
+
+	// Format is the cell's text. Placeholders are {session} (the session name),
+	// {workspace} (the current workspace number) and {pane} (the focused pane's
+	// 1-based place in that workspace). Empty takes DefaultDockSessionFormat.
+	Format string `toml:"format,omitempty"`
+}
+
+// DefaultDockSessionFormat is the session component's text when [dock.session]
+// gives no format.
+const DefaultDockSessionFormat = "{session} {workspace}:{pane}"
+
+// FormatDockSession renders the session component's text. A format that
+// starts or ends with an empty placeholder is trimmed, so a session with no
+// name does not leave a dangling space.
+func FormatDockSession(format, session string, workspace, pane int) string {
+	if format == "" {
+		format = DefaultDockSessionFormat
+	}
+	return strings.TrimSpace(strings.NewReplacer(
+		"{session}", session,
+		"{workspace}", strconv.Itoa(workspace),
+		"{pane}", strconv.Itoa(pane),
+	).Replace(format))
 }
 
 // DockClockConfig is [dock.clock].
@@ -159,6 +270,9 @@ type DockCustomConfig struct {
 
 	// MaxWidth caps the cell in cells; 0 takes DockCustomDefaultMaxWidth.
 	MaxWidth int `toml:"max-width,omitempty"`
+
+	// The cell's colours and caps; see DockCellStyle.
+	DockCellStyle
 }
 
 // Limits on what one custom component may cost. They exist because a dock cell
@@ -233,9 +347,9 @@ func (k DockRefreshKind) String() string {
 var dockEventTypes = []string{
 	"after-agent-state", "after-attach", "after-close-window", "after-detach",
 	"after-focus-change", "after-layout-change", "after-new-window",
-	"after-resize", "after-workspace-switch",
+	"after-resize", "after-theme-change", "after-workspace-switch",
 	"agent-state", "attached", "detached", "layout-changed", "resized",
-	"window-closed", "window-created", "window-focused", "workspace-switched",
+	"theme-changed", "window-closed", "window-created", "window-focused", "workspace-switched",
 }
 
 // DockEventTypes returns the event names a refresh contract may watch, sorted.
@@ -407,7 +521,24 @@ func validateDock(cfg *UserConfig, result *ValidationResult) {
 		}
 	}
 
+	if st := strings.TrimSpace(cfg.Dock.Tabs.Style); st != "" && st != DockTabStylePill && st != DockTabStyleFlat {
+		result.Warnings = append(result.Warnings, ValidationError{
+			Field: "dock.tabs", Key: "style",
+			Message: fmt.Sprintf("style %q is not %s or %s; drawing pills", st, DockTabStylePill, DockTabStyleFlat),
+		})
+	}
+	t := cfg.Dock.Tabs
+	validateDockColors(result, "dock.tabs", map[string]string{
+		"separator_fg": t.SeparatorFg, "active_fg": t.ActiveFg, "active_bg": t.ActiveBg,
+		"inactive_fg": t.InactiveFg, "inactive_bg": t.InactiveBg,
+		"attention_fg": t.AttentionFg,
+	})
+	validateDockColors(result, "dock.session", map[string]string{
+		"fg": cfg.Dock.Session.Fg, "bg": cfg.Dock.Session.Bg,
+	})
+
 	for name, spec := range cfg.Dock.Custom {
+		validateDockColors(result, "dock.custom."+name, map[string]string{"fg": spec.Fg, "bg": spec.Bg})
 		refresh, err := ParseDockRefresh(spec.Refresh)
 		switch {
 		case err != nil:
@@ -448,4 +579,20 @@ func validateDock(cfg *UserConfig, result *ValidationResult) {
 			})
 		}
 	}
+}
+
+// validateDockColors warns about every set colour that is not a colour (see
+// theme.ParseColor). The value is dropped where it is drawn, so the cell still
+// draws, without that colour.
+func validateDockColors(result *ValidationResult, field string, colors map[string]string) {
+	keys := make([]string, 0, len(colors))
+	for k := range colors {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	kv := make([]string, 0, 2*len(keys))
+	for _, k := range keys {
+		kv = append(kv, k, colors[k])
+	}
+	warnColours(result, field, "The dock ignores it", kv...)
 }

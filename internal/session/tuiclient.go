@@ -41,6 +41,15 @@ type DisconnectHandler func(err error)
 // TUIClient is used by the TUIOS TUI to communicate with the daemon.
 // It handles PTY I/O and state synchronization.
 type TUIClient struct {
+	// HandshakeTimeout, when set, bounds the dial and each read of the
+	// handshake, instead of the 30 seconds an attach is given. A client that
+	// dials a daemon that may still be starting sets it. See handshaking.
+	HandshakeTimeout time.Duration
+	handshaking      bool
+	// goodbye is the daemon's last word before it closed, and when it came.
+	// See daemon_goodbye.go.
+	goodbye atomic.Pointer[Goodbye]
+
 	// Served and AllowNested are sent with every attach. Set them before the
 	// first one. See AttachPayload.
 	Served      bool
@@ -57,6 +66,9 @@ type TUIClient struct {
 	// client a server runs for a remote viewer, "" for a terminal on this
 	// machine. Set it before Connect.
 	Kind string
+	// Passive shows a daemon pane but cannot execute full renderer commands.
+	// It accepts input without determining the shared session's size.
+	Passive bool
 	// DetachOthers is sent with the next AttachSession, as tuios attach -d
 	// asks: the other clients of the session are detached. AttachSession
 	// clears it, so a later attach on this client (a session switch, a host
@@ -73,6 +85,12 @@ type TUIClient struct {
 	// and tuios new set it, from their own environment, and a hello through
 	// a host never carries it. See display_follow.go.
 	Display ClientDisplay
+	// Term and ColorTerm are sent in the hello as HelloPayload.Term and
+	// HelloPayload.ColorTerm, and a session this client makes gives them to
+	// its panes. Only a client that runs where the person is sets them, with
+	// UseCallerTerm: tuios attach and tuios new. A server that serves a remote
+	// viewer leaves them empty, and its sessions get the daemon's fallback.
+	Term, ColorTerm string
 
 	// nestProbe is the nonce of the probe WriteNestProbe wrote. Set once,
 	// before the first attach.
@@ -201,6 +219,10 @@ type TUIClient struct {
 	// sidebarOps says the daemon's welcome offered MsgSidebarVisibility. See
 	// sidebar_visibility.go.
 	sidebarOps atomic.Bool
+	// listingPush says the daemon's welcome offered ListingPush: it sends
+	// MsgSessionsChanged, and the listing needs no poll. See
+	// daemon_listing_push.go.
+	listingPush atomic.Bool
 	// sessionUsed says the daemon's welcome offered MsgSessionUsed, and
 	// usedMu, usedAt and usedSession throttle it. See session_used.go.
 	sessionUsed atomic.Bool
@@ -256,6 +278,11 @@ type TUIClient struct {
 	// hostsChangedHandler takes the daemon's MsgHostsChanged push. See
 	// OnHostsChanged.
 	hostsChangedHandler HostsChangedHandler
+	// sessionsChangedHandler takes the daemon's MsgSessionsChanged push. See
+	// OnSessionsChanged.
+	sessionsChangedHandler func()
+	// paneMarkHandler takes the daemon's MsgPaneMark push. See OnPaneMark.
+	paneMarkHandler func(PaneMarkPayload)
 	// pasteRefusedHandler takes a paste the daemon refused. See
 	// paste_retry.go. pastes holds the large inputs sent and not answered,
 	// and pasteBarriers the pings behind them, by request id, under
@@ -346,6 +373,12 @@ type ClientCapabilities struct {
 	SymbolImages bool
 }
 
+// UseCallerTerm sets Term and ColorTerm to this process's terminal, detected
+// as the verb client's hello detects it.
+func (c *TUIClient) UseCallerTerm() {
+	c.Term, c.ColorTerm = helloTerm()
+}
+
 // Connect connects to the daemon and performs handshake.
 func (c *TUIClient) Connect(version string, width, height int) error {
 	return c.ConnectWithCapabilities(version, width, height, nil)
@@ -358,14 +391,21 @@ func (c *TUIClient) ConnectWithCapabilities(version string, width, height int, c
 		return fmt.Errorf("failed to get socket path: %w", err)
 	}
 
-	conn, err := net.DialTimeout("unix", socketPath, 5*time.Second)
+	dialWait := 5 * time.Second
+	if c.HandshakeTimeout > 0 {
+		dialWait = min(dialWait, c.HandshakeTimeout)
+	}
+	conn, err := net.DialTimeout("unix", socketPath, dialWait)
 	if err != nil {
 		return fmt.Errorf("failed to connect to daemon: %w", err)
 	}
 	c.conn = conn
 	c.br = nil
 
-	if err := c.handshake(version, width, height, caps); err != nil {
+	c.handshaking = true
+	err = c.handshake(version, width, height, caps)
+	c.handshaking = false
+	if err != nil {
 		_ = conn.Close()
 		return err
 	}
@@ -386,6 +426,17 @@ func (c *TUIClient) handshake(version string, width, height int, caps *ClientCap
 		Protocol:       ProtocolVersion,
 		Machine:        localHostLabel(),
 		ClientKind:     c.Kind,
+		// Every daemon reads these two fields, so an older one gives a
+		// session this client makes the caller's terminal too. A daemon
+		// drops a value that is not a short printable name.
+		Term:      c.Term,
+		ColorTerm: c.ColorTerm,
+		// See daemon_listing_push.go.
+		ListingPush: true,
+		// See pane_marks.go.
+		PaneMarks: true,
+		// See daemon_goodbye.go.
+		Goodbye: true,
 	}
 
 	// Add graphics capabilities if provided
@@ -476,6 +527,7 @@ func (c *TUIClient) handshake(version string, width, height int, caps *ClientCap
 	c.masterOps.Store(welcome.MasterLayoutOps)
 	c.sidebarOps.Store(welcome.SidebarOps && !legacySidebar())
 	c.sessionUsed.Store(welcome.SessionUsed)
+	c.listingPush.Store(welcome.ListingPush)
 	c.typeAtPromptSupported = welcome.TypeAtPrompt
 	c.graphicsSupported = welcome.ClientGraphics
 	c.windowSize = welcome.WindowSize && hello.WindowSize
@@ -508,6 +560,13 @@ func (c *TUIClient) noteDaemonBuild(clientVersion, daemonVersion string) {
 // ClientVersion is the build this client announced at the handshake.
 func (c *TUIClient) ClientVersion() string { return c.clientBuild }
 
+// DaemonVersion is the build the daemon named at the handshake.
+func (c *TUIClient) DaemonVersion() string {
+	c.multiClientMu.RLock()
+	defer c.multiClientMu.RUnlock()
+	return c.daemonBuild
+}
+
 // BuildMismatch reports the daemon's build and this client's when they differ,
 // and empty strings when they agree or when either is unknown.
 func (c *TUIClient) BuildMismatch() (clientBuild, daemonBuild string) {
@@ -533,6 +592,7 @@ func (c *TUIClient) AttachSession(name string, createNew bool, width, height int
 		AllowNested:  c.AllowNested,
 		NestProbe:    probe,
 		ViewOnly:     c.viewOnly(),
+		Passive:      c.Passive,
 		Cwd:          c.StartDir,
 		DetachOthers: c.DetachOthers,
 		Reconnect:    c.Reconnect,
@@ -772,6 +832,7 @@ func (c *TUIClient) attachWhileReading(name string, createNew bool, width, heigh
 		AllowNested: c.AllowNested,
 		NestProbe:   probe,
 		ViewOnly:    c.viewOnly(),
+		Passive:     c.Passive,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("attach encode: %w", err)
@@ -1090,6 +1151,28 @@ func (c *TUIClient) OnHostsChanged(handler HostsChangedHandler) {
 	c.hostsChangedHandler = handler
 	c.multiClientMu.Unlock()
 }
+
+// OnSessionsChanged registers the handler for MsgSessionsChanged, the
+// daemon's push when the session listing changed. It runs on the read-loop
+// goroutine, so it only queues.
+func (c *TUIClient) OnSessionsChanged(handler func()) {
+	c.multiClientMu.Lock()
+	c.sessionsChangedHandler = handler
+	c.multiClientMu.Unlock()
+}
+
+// OnPaneMark registers the handler for MsgPaneMark, the daemon's push when a
+// pane this client does not stream rang the bell or printed. It runs on the
+// read-loop goroutine, so it only queues. See pane_marks.go.
+func (c *TUIClient) OnPaneMark(handler func(PaneMarkPayload)) {
+	c.multiClientMu.Lock()
+	c.paneMarkHandler = handler
+	c.multiClientMu.Unlock()
+}
+
+// ListingPush reports whether the daemon pushes listing changes, so the
+// listing needs no poll.
+func (c *TUIClient) ListingPush() bool { return c.listingPush.Load() }
 
 // WatchDir asks the daemon to push MsgDirChanged when the names in dir change,
 // for the folder listed for windowID. It replaces the last watch, and an empty
@@ -1588,7 +1671,7 @@ func (c *TUIClient) GetTerminalState(ptyID string, maxScrollback, have int) (*Te
 		// The cells were asked for packed and stay packed: ApplyTerminalState
 		// reads them in that form. They are checked here, so a malformed
 		// snapshot fails the request rather than being half applied.
-		if err := payload.State.checkPacked(); err != nil {
+		if err := payload.State.CheckPacked(); err != nil {
 			return nil, fmt.Errorf("get terminal state: %w", err)
 		}
 		return payload.State, nil
@@ -1716,6 +1799,11 @@ func (c *TUIClient) handleMessage(msg *Message) {
 			closedHandler()
 		}
 
+	case MsgGoodbye:
+		var payload GoodbyePayload
+		_ = msg.ParsePayload(&payload)
+		c.goodbye.Store(&Goodbye{Reason: payload.Reason, At: time.Now()})
+
 	case MsgSessionEnded:
 		// The attached session was destroyed (killed from the CLI, from another
 		// client, or over the control plane). Notify once so the app can exit;
@@ -1790,6 +1878,23 @@ func (c *TUIClient) handleMessage(msg *Message) {
 		handler := c.hostsChangedHandler
 		c.multiClientMu.RUnlock()
 		if handler != nil {
+			handler(payload)
+		}
+
+	case MsgSessionsChanged:
+		c.multiClientMu.RLock()
+		handler := c.sessionsChangedHandler
+		c.multiClientMu.RUnlock()
+		if handler != nil {
+			handler()
+		}
+
+	case MsgPaneMark:
+		c.multiClientMu.RLock()
+		handler := c.paneMarkHandler
+		c.multiClientMu.RUnlock()
+		var payload PaneMarkPayload
+		if handler != nil && msg.ParsePayload(&payload) == nil {
 			handler(payload)
 		}
 
@@ -2055,6 +2160,21 @@ func (c *TUIClient) SessionGlobal(name string) bool {
 	return false
 }
 
+// SessionSpace is the space the named session is filed under, from the cached
+// listing. Empty for a session in none, for one this client has not been told
+// about, and from a daemon too old to send the field, which all read as a
+// session in no space.
+func (c *TUIClient) SessionSpace(name string) string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, s := range c.availableSessions {
+		if s.Name == name {
+			return s.Space
+		}
+	}
+	return ""
+}
+
 // SessionCurrentWorkspace is the workspace the named session is showing, from
 // the cached listing, or 0 when it is unknown: an older daemon does not send
 // the field, and a surface reading zero simply says nothing about where that
@@ -2268,6 +2388,11 @@ func listingsAgree(a, b []SessionInfo) bool {
 		if a[i].Dir != b[i].Dir || a[i].Branch != b[i].Branch {
 			return false
 		}
+		// Filing a session under a space moves no window, and the rail draws
+		// the row under the space's heading.
+		if a[i].Space != b[i].Space {
+			return false
+		}
 		if !slices.EqualFunc(a[i].Windows, b[i].Windows, windowSummariesAgree) {
 			return false
 		}
@@ -2321,7 +2446,11 @@ func (c *TUIClient) recv() (*Message, error) {
 	c.readMu.Lock()
 	defer c.readMu.Unlock()
 
-	_ = c.conn.SetReadDeadline(time.Now().Add(30 * time.Second))
+	wait := 30 * time.Second
+	if c.handshaking && c.HandshakeTimeout > 0 {
+		wait = c.HandshakeTimeout
+	}
+	_ = c.conn.SetReadDeadline(time.Now().Add(wait))
 	return ReadMessage(c.reader())
 }
 

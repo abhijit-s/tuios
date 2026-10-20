@@ -4,6 +4,7 @@ import (
 	"path/filepath"
 	"slices"
 
+	"github.com/Gaurav-Gosain/tuios/internal/federation"
 	"github.com/Gaurav-Gosain/tuios/internal/terminal"
 )
 
@@ -226,6 +227,8 @@ func contextMenuWindowName(m *OS, windowIndex int, fallback string) string {
 }
 
 // item builds a row, resolving its key hint from the live registry.
+//
+//go:noinline
 func (m *OS) item(icon, label, action string, dim bool) ContextMenuItem {
 	return ContextMenuItem{
 		Icon:   icon,
@@ -317,11 +320,17 @@ func (m *OS) dockItemMenu(windowIndex int) (string, []ContextMenuItem) {
 // them.
 //
 // The title is what the tab says, so the menu names the workspace it will act
-// on even when that workspace is not the one being shown.
+// on even when that workspace is not the one being shown. Every row acts on the
+// tab's workspace, Close included: it raises close_workspace's confirmation for
+// this workspace, and is dimmed when the workspace has no pane to close.
 func (m *OS) workspacePillMenu(ws int) (string, []ContextMenuItem) {
+	closeItem := m.item(glyphClose, "Close", "close_workspace", len(m.workspacePanes(ws)) == 0)
+	closeItem.Warn = true
 	return printableTitle(m.WorkspaceLabel(ws)), []ContextMenuItem{
 		m.item(glyphSwitch, "Switch to", "workspace_pill_switch", ws == m.CurrentWorkspace),
 		m.item(glyphRename, "Rename", "workspace_prefix_rename", false),
+		separator(),
+		closeItem,
 	}
 }
 
@@ -485,10 +494,15 @@ func (m *OS) machineMenu(host string) (string, []ContextMenuItem) {
 	if title == "" {
 		title = "Machine"
 	}
-	return title, []ContextMenuItem{
+	items := []ContextMenuItem{
 		m.item(glyphUp, "Move up", "reorder_up", first),
 		m.item(glyphDown, "Move down", "reorder_down", last),
 	}
+	// This machine's daemon is the one this client can restart.
+	if host == federation.LocalHostName && m.DaemonRestartAvailable() {
+		items = append(items, separator(), m.item(glyphRestore, "Restart the daemon", "restart_daemon", false))
+	}
+	return title, items
 }
 
 // ============================================================================

@@ -8,6 +8,7 @@ require (
 	charm.land/bubbletea/v2 v2.0.8
 	charm.land/lipgloss/v2 v2.0.6
 	charm.land/ssh v0.4.3
+	charm.land/tone v0.1.0
 	charm.land/wish/v2 v2.0.3
 	github.com/Gaurav-Gosain/sip v0.9.3
 	github.com/Gaurav-Gosain/tuiffects v0.7.1
@@ -26,7 +27,6 @@ require (
 	github.com/shirou/gopsutil/v4 v4.26.7
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pflag v1.0.10
-	go.mitchellh.com/libghostty v0.0.0-20260920220152-31b65cdc24cf
 	golang.org/x/image v0.45.0
 	golang.org/x/sys v0.48.0
 	golang.org/x/term v0.46.0
@@ -39,6 +39,7 @@ require (
 	github.com/mattn/go-runewidth v0.0.28 // indirect
 	github.com/pires/go-proxyproto v0.12.0 // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
+	go.mitchellh.com/libghostty v0.0.0-20260920220152-31b65cdc24cf // indirect
 )
 
 require (
@@ -51,7 +52,6 @@ require (
 	github.com/charmbracelet/x/ansi v0.11.8
 	github.com/charmbracelet/x/cellbuf v0.0.15 // indirect
 	github.com/charmbracelet/x/conpty v0.2.0 // indirect
-	github.com/charmbracelet/x/exp/charmtone v0.0.0-20260816001655-68d539dca504
 	github.com/charmbracelet/x/term v0.2.2
 	github.com/charmbracelet/x/termios v0.1.1 // indirect
 	github.com/charmbracelet/x/windows v0.2.2 // indirect
@@ -82,4 +82,8 @@ require (
 	golang.org/x/sync v0.23.0
 	golang.org/x/text v0.42.0
 	tuios.dev/progstatus v0.1.0
+	tuios.dev/shot v0.2.0
+	tuios.dev/sketch v0.0.0-20261019190825-c06bfb3b5dbb
+	tuios.dev/swatch v0.1.0
+	tuios.dev/vt v0.2.1-0.20261018063954-380e9b0f60bb
 )

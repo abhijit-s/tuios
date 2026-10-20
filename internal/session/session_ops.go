@@ -245,6 +245,11 @@ type NewWindowOptions struct {
 	// up. It is unexported: only verify-fan's status pipe sets it, and only
 	// for a local process on a platform that passes them (not Windows).
 	extraFiles []*os.File
+	// keepOpen keeps the window after its process exits and writes a line
+	// with the exit status under the last output. See keep_open.go. It is
+	// unexported: only new-window sets it, and the caller's onExit must not
+	// close the window for it to mean anything.
+	keepOpen bool
 	// Env is KEY=VALUE pairs the process gets on top of the daemon's own
 	// environment, from a caller that passed its own (fan, start-agent). The
 	// TUIOS_ variables are set after it, so it cannot change them. It is not
@@ -268,6 +273,20 @@ type NewWindowOptions struct {
 	// checks an explicit Cwd against Bound first (Daemon.childWindowBound).
 	Bounded bool
 	Bound   string
+	// Kind and URI make a window a renderer draws natively. See
+	// WindowState.Kind. With no Command, its program is the placeholder.
+	Kind string
+	URI  string
+}
+
+// WindowKinds are the kinds a window can be. Empty is "terminal".
+var WindowKinds = []string{"terminal", "view", "web", "app"}
+
+// PlaceholderCommand is the program of a window a renderer draws natively:
+// it prints one line that says what the window shows, for a terminal
+// client, and then waits without echoing what is typed.
+func PlaceholderCommand(kind, uri string) []string {
+	return []string{"/bin/sh", "-c", `stty -echo 2>/dev/null; printf '\033[2m%s pane\033[0m  %s\n' "$1" "$2"; exec sleep 2147483647`, "tuios-" + kind, kind, uri}
 }
 
 // AddDaemonWindowWith creates a daemon-owned window with explicit placement.
@@ -276,6 +295,12 @@ type NewWindowOptions struct {
 // window created on the current workspace and moved is visible on the wrong
 // workspace for as long as the two calls take, which an attached client renders.
 func (s *Session) AddDaemonWindowWith(opts NewWindowOptions, onExit func(ptyID string)) (WindowState, error) {
+	if opts.Kind == "terminal" {
+		opts.Kind = ""
+	}
+	if opts.Kind != "" && len(opts.Command) == 0 {
+		opts.Command = PlaceholderCommand(opts.Kind, opts.URI)
+	}
 	// A scratch pane is an ordinary tiled window on its group's workspace, not
 	// a popup. See scratch_workspace.go. While a client too old for that is
 	// attached it is a popup on the current workspace, as that client
@@ -378,7 +403,7 @@ func (s *Session) AddDaemonWindowWith(opts NewWindowOptions, onExit func(ptyID s
 
 	pty, err := s.createPTY(ptyWidth, ptyHeight, ptySpawn{
 		windowID: windowID, cwd: cwd, command: opts.Command, env: opts.Env, host: opts.Host,
-		onExit: onExit, stdout: opts.stdout, extraFiles: opts.extraFiles, grants: opts.Grants,
+		onExit: onExit, stdout: opts.stdout, extraFiles: opts.extraFiles, grants: opts.Grants, keepOpen: opts.keepOpen,
 		workspace: opts.Workspace, noStartDir: noStartDir,
 	})
 	if err != nil {
@@ -481,6 +506,8 @@ func (s *Session) AddDaemonWindowWith(opts NewWindowOptions, onExit func(ptyID s
 			PopupHeight: opts.PopupHeight,
 			Scratch:     scratch,
 			ScratchName: scratchName,
+			Kind:        opts.Kind,
+			URI:         opts.URI,
 		}
 		// A window on another machine holds what that machine gives it.
 		if opts.Host == "" {
@@ -551,35 +578,13 @@ func (s *Session) CloseDaemonWindow(target string) (string, error) {
 			return err
 		}
 
-		closed = state.Windows[idx]
-		workspace := closed.Workspace
-		state.Windows = append(state.Windows[:idx], state.Windows[idx+1:]...)
-		state.FocusHistory = RemoveFocus(state.FocusHistory, closed.ID)
+		closed = s.removeWindowLocked(state, idx)
 		// The window is gone, so nothing owns its agent state any more. The
 		// detector sweeps stale claims on its own tick too, but only when it is
 		// running, and a claim can now come from a source that is not the detector.
 		delete(s.agentClaims, closed.ID)
 		delete(s.agentHarnessPIDs, closed.ID)
-
-		// Repair focus if we removed the focused window.
-		if state.FocusedWindowID == closed.ID {
-			state.FocusedWindowID = focusAfterClose(state, workspace, closed.ID)
-		}
-		if state.WorkspaceFocus != nil && state.WorkspaceFocus[workspace] == closed.ID {
-			delete(state.WorkspaceFocus, workspace)
-			if state.FocusedWindowID != "" {
-				// Only re-point the workspace focus at a window that is actually on it.
-				for i := range state.Windows {
-					if state.Windows[i].ID == state.FocusedWindowID && state.Windows[i].Workspace == workspace {
-						state.WorkspaceFocus[workspace] = state.FocusedWindowID
-						break
-					}
-				}
-			}
-		}
-		// The last pane on the workspace on screen takes the person back
-		// to where they came from. See empty_workspace.go.
-		s.returnFromEmptyLocked(state, workspace)
+		delete(s.agentSharedGuards, closed.ID)
 		return nil
 	})
 	if err != nil {
@@ -591,6 +596,38 @@ func (s *Session) CloseDaemonWindow(target string) (string, error) {
 		_ = s.ClosePTY(closed.PTYID)
 	}
 	return closed.ID, nil
+}
+
+// removeWindowLocked takes the window at idx out of the window set, repairs
+// the focus it held, and returns it. The caller holds stateMu, inside a
+// mutation. Closing a window and moving it to another session both leave
+// through here.
+func (s *Session) removeWindowLocked(state *SessionState, idx int) WindowState {
+	gone := state.Windows[idx]
+	workspace := gone.Workspace
+	state.Windows = append(state.Windows[:idx], state.Windows[idx+1:]...)
+	state.FocusHistory = RemoveFocus(state.FocusHistory, gone.ID)
+
+	// Repair focus if we removed the focused window.
+	if state.FocusedWindowID == gone.ID {
+		state.FocusedWindowID = focusAfterClose(state, workspace, gone.ID)
+	}
+	if state.WorkspaceFocus != nil && state.WorkspaceFocus[workspace] == gone.ID {
+		delete(state.WorkspaceFocus, workspace)
+		if state.FocusedWindowID != "" {
+			// Only re-point the workspace focus at a window that is actually on it.
+			for i := range state.Windows {
+				if state.Windows[i].ID == state.FocusedWindowID && state.Windows[i].Workspace == workspace {
+					state.WorkspaceFocus[workspace] = state.FocusedWindowID
+					break
+				}
+			}
+		}
+	}
+	// The last pane on the workspace on screen takes the person back
+	// to where they came from. See empty_workspace.go.
+	s.returnFromEmptyLocked(state, workspace)
+	return gone
 }
 
 // FocusDaemonWindow makes the window matching target the focused window,
@@ -671,6 +708,42 @@ func (s *Session) CycleDaemonFocus(delta int) error {
 		}
 		state.WorkspaceFocus[state.CurrentWorkspace] = win.ID
 		state.FocusHistory = RecordFocus(state.FocusHistory, state.CurrentWorkspace, win.ID)
+		return nil
+	})
+}
+
+// setStartedBy records ref as the pane that started window.
+func (s *Session) setStartedBy(window string, ref *PaneRef) {
+	_ = s.mutateState(func(state *SessionState) error {
+		idx, err := findWindowStateIndex(state.Windows, window)
+		if err != nil {
+			return err
+		}
+		state.Windows[idx].StartedBy = ref
+		return nil
+	})
+}
+
+// renameStartedBy follows a session rename in the started_by of this
+// session's panes. It changes nothing, and publishes nothing, when no pane
+// names the old session.
+func (s *Session) renameStartedBy(old, name string) {
+	hit := false
+	for _, w := range s.GetState().Windows {
+		if w.StartedBy != nil && w.StartedBy.Session == old {
+			hit = true
+			break
+		}
+	}
+	if !hit {
+		return
+	}
+	_ = s.mutateState(func(state *SessionState) error {
+		for i := range state.Windows {
+			if ref := state.Windows[i].StartedBy; ref != nil && ref.Session == old {
+				state.Windows[i].StartedBy = &PaneRef{Session: name, Window: ref.Window}
+			}
+		}
 		return nil
 	})
 }
@@ -808,6 +881,21 @@ func (s *Session) markRestoredScratch(panes map[string]scratchPane) {
 			// A hidden group holds no focus, or the first client would show it.
 			if state.FocusedWindowID == w.ID {
 				state.FocusedWindowID = ""
+			}
+		}
+		return nil
+	})
+}
+
+// markRestoredViews puts back the kind and uri of restored windows a renderer
+// draws natively. They are daemon-owned like the scratch mark, so UpdateState
+// keeps only what canonical state already has, and a new session has none.
+func (s *Session) markRestoredViews(views map[string][2]string) {
+	_ = s.mutateState(func(state *SessionState) error {
+		for i := range state.Windows {
+			w := &state.Windows[i]
+			if v, ok := views[w.ID]; ok {
+				w.Kind, w.URI = v[0], v[1]
 			}
 		}
 		return nil

@@ -17,6 +17,9 @@ func (d *Daemon) handleHello(cs *connState, msg *Message) error {
 	payload.Term, payload.ColorTerm = helloTermValue(payload.Term), helloTermValue(payload.ColorTerm)
 	cs.hello = &payload
 	cs.mu.Lock()
+	cs.listingPush = payload.ListingPush
+	cs.paneMarks = payload.PaneMarks
+	cs.goodbye = payload.Goodbye
 	changed := cs.treeOps != payload.LayoutTreeOps || cs.scratchWS != payload.ScratchWorkspaces
 	cs.treeOps = payload.LayoutTreeOps
 	cs.scratchWS = payload.ScratchWorkspaces
@@ -97,6 +100,10 @@ func (d *Daemon) handleHello(cs *connState, msg *Message) error {
 		SessionUsed: true,
 		// See detach_client.go.
 		DetachOthers: true,
+		// See daemon_listing_push.go.
+		ListingPush: true,
+		// See pane_marks.go.
+		PaneMarks: true,
 	})
 }
 
@@ -227,6 +234,7 @@ func (d *Daemon) handleAttach(cs *connState, msg *Message) error {
 	cs.isTUIClient = true
 	cs.attachSeq = d.attachCount.Add(1)
 	cs.viewOnly = payload.ViewOnly
+	cs.passive = payload.Passive
 	cs.lastActivity = time.Time{}
 	cs.humanNonce = humanNonce
 	cs.missedStateSync = false
@@ -947,7 +955,9 @@ func (d *Daemon) handleUpdateState(cs *connState, msg *Message) error {
 	// and OSC 10 with. See report_colors.go.
 	reportBg, reportFg, reportPal := state.PaneReportBg, state.PaneReportFg, state.PaneReportPalette
 	accepted, behind, pushSeq := session.updateStateFrom(&state, d.mayActAsHuman(cs))
-	session.applyReportColors(reportBg, reportFg, reportPal)
+	if d.ownsReportColors(cs, session.ID) {
+		session.applyReportColors(reportBg, reportFg, reportPal)
+	}
 
 	// The merged state is a full copy of the session's, retitled from every
 	// live emulator. It is read only by the reconcile reply and the peer
@@ -1095,6 +1105,9 @@ func (d *Daemon) handleSubscribePTY(cs *connState, msg *Message) error {
 		cs.ptySubscriptions[payload.PTYID] = sub
 	}
 	cs.mu.Unlock()
+	// A client looks at the pane now. Its next output and bell are reported
+	// again to the clients that do not. See pane_marks.go.
+	pty.rearmPaneMarks()
 	if !paces {
 		pty.SetPacing(cs.clientID, false)
 	}
@@ -1136,6 +1149,9 @@ func (d *Daemon) handleUnsubscribePTY(cs *connState, msg *Message) error {
 		cs.mu.Lock()
 		cs.ptyResume[payload.PTYID] = resume
 		cs.mu.Unlock()
+		// The client stopped looking at the pane, so its next output and bell
+		// are news to it. See pane_marks.go.
+		pty.rearmPaneMarks()
 		debugLog("[DEBUG] Successfully unsubscribed client %s from PTY %s at %d", cs.clientID, shortID(payload.PTYID), resume)
 	}
 

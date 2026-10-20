@@ -7,7 +7,6 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/Gaurav-Gosain/tuios/internal/harness"
 	"github.com/Gaurav-Gosain/tuios/internal/transcript"
 	"github.com/Gaurav-Gosain/tuios/internal/transcriptview"
 	"github.com/charmbracelet/x/ansi"
@@ -81,7 +80,7 @@ func (d *Daemon) verbAgentTranscript(cs *connState, params json.RawMessage) (any
 	}
 	w := st.Windows[idx]
 	reg := d.agentMatcher.registry
-	path, harnessID, joined := sess.transcriptJoinOf(w.ID)
+	path, harnessID, format, session, joined := sess.transcriptJoinOf(w.ID)
 	if !joined {
 		if w.AgentHarness != "" && (reg == nil || reg.TranscriptFor(w.AgentHarness) == nil) {
 			return nil, unsupportedHarnessError(w.AgentHarness)
@@ -93,7 +92,7 @@ func (d *Daemon) verbAgentTranscript(cs *connState, params json.RawMessage) (any
 	if reg == nil {
 		return nil, unsupportedHarnessError(harnessID)
 	}
-	if tr := reg.TranscriptFor(harnessID); tr == nil || tr.Reader != harness.ReaderJSONL {
+	if tr := reg.TranscriptFor(harnessID); tr == nil || tr.Reader != format || !transcriptview.Known(format) {
 		return nil, unsupportedHarnessError(harnessID)
 	}
 	page, err := transcriptview.Read(path, transcriptview.Options{
@@ -102,6 +101,8 @@ func (d *Daemon) verbAgentTranscript(cs *connState, params json.RawMessage) (any
 		Limit:      limit,
 		Clean:      transcriptText,
 		CleanLines: maskSecretLines,
+		Format:     format,
+		Session:    session,
 	})
 	if err != nil {
 		if errors.Is(err, transcriptview.ErrNoFile) {
@@ -109,6 +110,12 @@ func (d *Daemon) verbAgentTranscript(cs *connState, params json.RawMessage) (any
 		}
 		if errors.Is(err, transcript.ErrNotRegular) {
 			return nil, newVerbError(ErrVerbNoTranscript, "the transcript of window "+echoName(p.Window)+" is not a regular file, so it was not read")
+		}
+		if errors.Is(err, transcriptview.ErrService) {
+			return nil, newVerbError(ErrVerbNoTranscript, "opencode did not give the session of window "+echoName(p.Window))
+		}
+		if errors.Is(err, transcriptview.ErrTooLarge) {
+			return nil, newVerbError(ErrVerbNoTranscript, "the transcript of window "+echoName(p.Window)+" is too large to read")
 		}
 		// The error would name the file, which is the person's project and
 		// session, so it is not passed on.
@@ -137,26 +144,32 @@ func (d *Daemon) verbAgentTranscript(cs *connState, params json.RawMessage) (any
 // daemon can read.
 func unsupportedHarnessError(harnessID string) *verbError {
 	return hintedVerbError(ErrVerbUnsupportedHarness, "the transcript of "+echoName(harnessID)+" cannot be read", &VerbHint{
-		Detail: "agent-transcript reads Claude Code transcripts. Read the pane with capture-pane or stream-pane instead.",
+		Detail: "agent-transcript reads the transcripts of Claude Code, Codex, Gemini CLI, Qwen Code, Copilot CLI and Amp. Read the pane with capture-pane or stream-pane instead.",
 	})
 }
 
-// transcriptJoinOf returns the file a window is joined to and its harness.
-func (s *Session) transcriptJoinOf(windowID string) (path, harnessID string, ok bool) {
+// transcriptJoinOf returns the file a window is joined to, its harness and
+// its format.
+func (s *Session) transcriptJoinOf(windowID string) (path, harnessID, format, session string, ok bool) {
 	s.transcripts.mu.Lock()
 	defer s.transcripts.mu.Unlock()
 	j, ok := s.transcripts.joins[windowID]
 	if !ok {
-		return "", "", false
+		return "", "", "", "", false
 	}
-	return j.reader.Path(), j.harness, true
+	return j.reader.Path(), j.harness, j.format, j.session, true
 }
 
 // noteTranscriptGrowth raises a transcript event when the joined file grew
 // since the last one. The event carries the cursor a read to the end would
 // return now, and nothing of the file.
 func (s *Session) noteTranscriptGrowth(windowID string, j *transcriptJoin) {
-	off := j.reader.Offset()
+	s.announceTranscript(windowID, j, j.reader.Offset())
+}
+
+// announceTranscript raises the transcript event for a join whose last whole
+// record ends at off, when off moved since the last event.
+func (s *Session) announceTranscript(windowID string, j *transcriptJoin, off int64) {
 	s.transcripts.mu.Lock()
 	grew := off > 0 && off != j.announced
 	if grew {

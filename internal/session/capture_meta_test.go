@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Gaurav-Gosain/tuios/internal/vt"
+	"tuios.dev/vt"
 )
 
 // TestPaneRevisionMovesWithOutputAndResize feeds the emulator through the
@@ -30,7 +30,7 @@ func TestPaneRevisionMovesWithOutputAndResize(t *testing.T) {
 	if m.HistoryRows != p.terminal.ScrollbackLen() || m.HistoryRows == 0 {
 		t.Errorf("history_rows = %d, scrollback holds %d", m.HistoryRows, p.terminal.ScrollbackLen())
 	}
-	content, cm := p.CaptureContentMeta(true, false)
+	content, cm := p.CaptureContentMeta(true, false, false)
 	if cm != m {
 		t.Errorf("CaptureContentMeta meta = %+v, want %+v", cm, m)
 	}

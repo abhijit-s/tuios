@@ -42,7 +42,7 @@ type overlayPanelHit struct {
 // row opens each of them over the panel too. The guard against a fourth is
 // TestEveryOverlayKindHasAPlaceInTheStack, which reads eachOverlayGate itself
 // rather than a second copy of this list.
-var overlayKindOrder = []string{"help", "palette", "launcher", "session", "navigator", "agentmail", "inbox", "workspace", overlayKindBuffers, overlayKindTransfers, "layout", "hostpicker", "aggregate", "settings", "keybinds", "themepicker", "glyphpicker", "effectpicker", "dockeditor", "sectioneditor", "accent", "screenshot", "quit", "sessionclose", "filedialog", overlayKindCopyDialog, "worktreeprompt", overlayKindLogs, overlayKindMessage}
+var overlayKindOrder = []string{"help", "palette", "launcher", "session", "navigator", "agentmail", "inbox", "workspace", overlayKindBuffers, overlayKindTransfers, "layout", "hostpicker", "aggregate", "settings", "keybinds", "themepicker", "themeeditor", "presetpicker", "glyphpicker", "effectpicker", "dockeditor", "sectioneditor", "accent", "screenshot", "quit", "sessionclose", overlayKindRestart, "filedialog", overlayKindCopyDialog, "worktreeprompt", overlayKindLogs, overlayKindMessage}
 
 // overlayGate pairs a draggable overlay kind with whether it is shown.
 type overlayGate struct {
@@ -75,6 +75,8 @@ func (m *OS) eachOverlayGate(yield func(kind string, open bool) bool) {
 		{"settings", m.ShowSettings},
 		{"keybinds", m.ShowKeybindManager},
 		{"themepicker", m.ShowThemePicker},
+		{"themeeditor", m.themeEditor.open},
+		{"presetpicker", m.presetPicker.open},
 		{"glyphpicker", m.ShowGlyphPicker},
 		{"effectpicker", m.ShowEffectPicker},
 		{"dockeditor", m.ShowDockEditor},
@@ -82,6 +84,7 @@ func (m *OS) eachOverlayGate(yield func(kind string, open bool) bool) {
 		{"accent", m.ShowAccentPicker},
 		{"quit", m.ShowQuitMenu},
 		{"sessionclose", m.ShowSessionClose},
+		{overlayKindRestart, m.DaemonRestartOpen()},
 		{"filedialog", m.FilePromptOpen()},
 		{overlayKindCopyDialog, m.CopyDialogOpen()},
 		{"worktreeprompt", m.WorktreePromptOpen()},
@@ -109,7 +112,8 @@ func (m *OS) openOverlayKinds() map[string]bool {
 
 // AnyOverlayOpen reports whether any overlay is logically open, independent of
 // whether its hit geometry has been recorded yet this frame. The hover and
-// focus-follows-mouse routing use it so an overlay guards its first frame too.
+// focus-follows-mouse routing use it so an overlay guards its first frame too,
+// and the fullscreen fast path uses it to stand down for any panel.
 func (m *OS) AnyOverlayOpen() bool {
 	found := false
 	m.eachOverlayGate(func(_ string, on bool) bool {

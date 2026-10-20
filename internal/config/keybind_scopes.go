@@ -65,6 +65,7 @@ const (
 	SectionDebugPrefix      = "debug_prefix"
 	SectionTapePrefix       = "tape_prefix"
 	SectionLayoutPrefix     = "layout_prefix"
+	SectionTuiosPrefix      = "tuios_prefix"
 	SectionTerminalMode     = "terminal_mode"
 	SectionSidebar          = "sidebar"
 	SectionSidebarFiles     = "sidebar_files"
@@ -76,6 +77,8 @@ const (
 	SectionCopyMode         = "copy_mode"
 	SectionGlobal           = "global"
 	SectionScript           = "script"
+	SectionLists            = "lists"
+	SectionGUI              = "gui"
 )
 
 // Scope identifiers. Stable strings rather than an iota because they are part of
@@ -98,8 +101,11 @@ const (
 	ScopePrefixDebug    = "prefix.debug"
 	ScopePrefixTape     = "prefix.tape"
 	ScopePrefixLayout   = "prefix.layout"
+	ScopePrefixTuios    = "prefix.tuios"
 	ScopeGlobal         = "global"
 	ScopeScript         = "script"
+	ScopeLists          = "lists"
+	ScopeGUI            = "gui"
 )
 
 // Scopes returns every keyboard context, in the order a reader should meet
@@ -230,13 +236,72 @@ func Scopes(leader string) []Scope {
 			Reaches:  ReachChorded,
 		},
 		{
+			ID: ScopePrefixTuios, Name: "tuios menu", Chord: leader + " ctrl+t",
+			Sections: []string{SectionTuiosPrefix},
+			Reaches:  ReachChorded,
+		},
+		{
+			// Read by every list overlay while it is open, so a key here moves
+			// the cursor in the palette, the pickers and the settings page.
+			ID: ScopeLists, Name: "Lists",
+			Sections: []string{SectionLists},
+			Reaches:  ReachModal,
+		},
+		{
 			// Only live while a .tape is playing back, so sharing ctrl+p with the
 			// palette is not a conflict: the two contexts are never both active.
 			ID: ScopeScript, Name: "Script playback",
 			Sections: []string{SectionScript},
 			Reaches:  ReachModal,
 		},
+		{
+			// Read only by the native GUI client, which looks these keys up
+			// before the leader and the pane. The terminal client never does,
+			// so they take nothing from it, and they are listed so the GUI's
+			// keys are rebound in the same file as every other key.
+			ID: ScopeGUI, Name: "GUI app",
+			Sections: []string{SectionGUI},
+			Reaches:  ReachSteals,
+		},
 	}
+}
+
+// subPrefixGates maps each sub-prefix scope to the prefix_mode action that
+// opens it.
+var subPrefixGates = map[string]string{
+	ScopePrefixWindow:   "prefix_window",
+	ScopePrefixMinimize: "prefix_minimize",
+	ScopePrefixWorkspce: "prefix_workspace",
+	ScopePrefixDebug:    "prefix_debug",
+	ScopePrefixTape:     "prefix_tape",
+	ScopePrefixLayout:   "prefix_layout",
+	ScopePrefixTuios:    "prefix_tuios",
+}
+
+// ScopesFor is Scopes for one keymap: each sub-prefix chord is spelled with
+// the key that opens it there. A preset or a user can move that key: under
+// zellij the window menu is ctrl+g p, and Scopes alone would say ctrl+g t,
+// which opens the workspace menu. A sub-prefix with no key keeps the default
+// chord.
+func ScopesFor(kb *KeybindingsConfig) []Scope {
+	leader := kb.LeaderKey
+	if leader == "" {
+		leader = DefaultLeaderKey
+	}
+	scopes := Scopes(leader)
+	for i, s := range scopes {
+		gate, ok := subPrefixGates[s.ID]
+		if !ok {
+			continue
+		}
+		for _, key := range kb.PrefixMode[gate] {
+			if key = strings.TrimSpace(key); key != "" {
+				scopes[i].Chord = leader + " " + key
+				break
+			}
+		}
+	}
+	return scopes
 }
 
 // section returns the config table with the given name, or nil.
@@ -270,10 +335,14 @@ func (k *KeybindingsConfig) section(name string) map[string][]string {
 		return k.TapePrefix
 	case SectionLayoutPrefix:
 		return k.LayoutPrefix
+	case SectionTuiosPrefix:
+		return k.TuiosPrefix
 	case SectionGlobal:
 		return k.Global
 	case SectionScript:
 		return k.Script
+	case SectionLists:
+		return k.Lists
 	case SectionTerminalMode:
 		return k.TerminalMode
 	case SectionSidebar:
@@ -292,6 +361,8 @@ func (k *KeybindingsConfig) section(name string) map[string][]string {
 		return k.Transfers
 	case SectionCopyMode:
 		return k.CopyMode
+	case SectionGUI:
+		return k.GUI
 	}
 	return nil
 }
@@ -370,7 +441,7 @@ func press(chord, key string) string {
 func (r *KeybindRegistry) Bindings() []Binding {
 	kb := &r.config.Keybindings
 	var out []Binding
-	for _, scope := range Scopes(kb.LeaderKey) {
+	for _, scope := range ScopesFor(kb) {
 		// The window-mode scope flattens seven sections into a single lookup, so
 		// a key is contested across all of them at once. winner holds the index
 		// into out of the binding that actually runs, per key.
@@ -492,6 +563,9 @@ func lookupForm(key string) string {
 // action name with its underscores opened up.
 func describeAction(action string) string {
 	if desc := ActionDescriptions[action]; desc != "" {
+		return desc
+	}
+	if desc := GUIActionDescriptions[action]; desc != "" {
 		return desc
 	}
 	return strings.ReplaceAll(action, "_", " ")

@@ -144,7 +144,9 @@ They write only the keys you changed, and never copy the other files into
 config.toml. A change made while a file changed on disk keeps the new values
 of that file. Each change goes to one file:
 
-- A key that a file sets goes to the last file that sets it.
+- A key that a file sets goes to the last file that sets it. The look file,
+  `config.d/look.toml`, is not a target: a change to a key that it sets goes
+  to config.toml. See [Looks](THEMES.md#looks).
 - A new entry in a table of entries, such as a new `[hosts.NAME]`, goes to the
   last writable file that has entries in that table.
 - Any other new key goes to config.toml.
@@ -177,6 +179,10 @@ has an error, the reset still keeps an `include` list that it can read.
 
 You can share one `config.toml` between a Mac and a Linux machine, for example with a dotfiles repo. tuios reads `opt+` and `option+` as `alt+` on every platform. On Linux, a key such as `opt+1` is `alt+1`.
 
+The `[keybindings.terminal_mode]` table also accepts `middle` for the middle
+mouse button, with `ctrl`, `alt` or `shift`, such as `ctrl+middle`. A program
+that uses the mouse gets a plain middle press.
+
 tuios ignores a key that it cannot read and loads the rest of the file. The action gets its default key when it has no other key. If another action already has that default key, the action has no key. tuios shows a config problem when it starts, and the log viewer (leader `D` `l`) names each key and its file. `tuios keybinds doctor` and `tuios config apply` list these keys too.
 
 ## Keyboard layout and Option characters
@@ -184,13 +190,13 @@ tuios ignores a key that it cannot read and loads the rest of the file. The acti
 ```toml
 [keybindings]
 keyboard_layout = "us"   # us, other
-option_glyphs = "bind"   # bind, type
+option_glyphs = "auto"   # auto, alt, bind, type
 ```
 
 | Key | Default | What it does |
 |---|---|---|
 | `keyboard_layout` | `us` | `us` lets a binding on `opt+shift+7` also match `opt+&`, as on a US keyboard. Set `other` for AZERTY, QWERTZ and other layouts. A key that the terminal reports through the Kitty keyboard protocol uses that report. |
-| `option_glyphs` | `bind` | What a character that macOS Option typed does. `bind` runs the Option binding that the character stands for on a US layout. `type` sends it to the pane. Set `type` if you use Option to type characters. |
+| `option_glyphs` | `auto` | What a character that macOS Option typed does. `auto` reads the keyboard layout of the Mac when tuios starts. It reads it again when such a character arrives and the last read is more than 30 seconds old. On a US or ABC layout it runs the Option binding for the character. On other layouts the character goes to the pane. A `keyboard_layout` that you set overrides the layout of the Mac. `alt` runs the binding only when the terminal also reports Alt. `bind` always runs it. `type` always sends the character to the pane. A tuios that serves SSH or web clients uses the layout of the Mac it runs on. |
 
 See [Shifted digits and AZERTY](KEYBINDINGS.md#shifted-digits-and-azerty) and
 [One Option key for typing](KEYBINDINGS.md#one-option-key-for-typing).
@@ -283,6 +289,29 @@ tuios writes. In Ghostty, a program can ask for `Shift+click` with
 `XTSHIFTESCAPE`, or you can set `mouse-shift-capture = true`. tuios does not
 ask, because that takes `Shift` selection away from you.
 
+## Pause focus follows mouse
+
+`appearance.focus_follows_mouse = true` focuses the pane under the pointer as
+the mouse moves. Set `appearance.focus_follows_mouse_pause` to hold a key that
+pauses it:
+
+```toml
+[appearance]
+focus_follows_mouse = true
+focus_follows_mouse_pause = "ctrl"   # ctrl, alt, or off (the default)
+```
+
+- Hold the key and move the mouse. The focus stays on the current pane.
+- Release the key. The next mouse move focuses the pane under the pointer.
+- The key still goes to the pane. A program that reads the mouse gets the
+  motion with the key on it. `Ctrl`+drag and `Alt`+drag work as before.
+
+tuios reads the key from the mouse reports that your terminal sends. Most
+terminals send `Ctrl` and `Alt`. `Shift` is not a choice, because most terminals
+keep `Shift` with the mouse for their own selection. On macOS, some terminals
+use `Option` with the mouse for their own actions. If `alt` does not work in
+your terminal, use `ctrl`.
+
 ## Neovim pane navigation
 
 `appearance.nvim_navigation` is `false` by default. Set it to `true` to enable
@@ -372,6 +401,44 @@ display = "follow"
 `[pip]` sets the size (`width`, `height`, border included, default 40x12) and the first `corner` (default `bottom-right`) of the picture-in-picture view that `p` pins. See [SESSIONS.md](SESSIONS.md#picture-in-picture).
 
 `[[keybindings.command]]` binds a key to a command that you write: a scratch terminal, a popup, a pane or a command with no window. A mistake in an entry is a warning, and tuios ignores that entry. See [KEYBINDINGS.md](KEYBINDINGS.md#command-keys).
+
+## Animation speed
+
+`appearance.animation_speed` is the percent window animations run at: minimize
+and restore, snap, swap and zoom. 100 is the speed tuios ships with. 200 runs
+them in half the time, and 50 in twice the time.
+
+```toml
+[appearance]
+animation_speed = 200   # a number from 25 to 400
+# animation_speed = 0   # 100, the default
+```
+
+A value outside 25 to 400 moves to the nearest end. `appearance.motion = "none"`
+still turns the animations off, whatever the speed. Overlay fades and the copy
+sweep keep their own timing. The copy sweep uses `appearance.selection.flash_ms`.
+
+## Theme transition
+
+`appearance.theme_transition` sets how tuios shows a change of theme. The
+change can come from the theme picker, `tuios set-config`, a config reload or
+the Omarchy theme.
+
+- `none` changes the colors in one frame. This is the default.
+- `circle` grows the new theme from the middle of the screen, over the old one.
+- `fade` changes every cell from the old colors to the new colors.
+
+```toml
+[appearance]
+theme_transition = "circle"
+theme_transition_duration = 450   # milliseconds, from 100 to 2000
+```
+
+`appearance.animation_speed` also applies to the duration. A value outside 100
+to 2000 moves to the nearest end. `appearance.motion = "none"` turns the
+transition off. The `fade` transition needs a truecolor terminal. On a terminal
+with fewer colors, tuios changes the colors in one frame. While the transition
+runs, the screen outside the circle does not change.
 
 ## Frame rate
 
@@ -489,6 +556,145 @@ tuios does not draw kitty graphics images as block characters yet. On a
 terminal without graphics, a program that only uses kitty graphics uses its
 own text output.
 
+## Mermaid diagram colours
+
+`tuios mermaid` builds its colours from your tuios theme. `[mermaid] theme`
+picks one of the named diagram themes instead. The `--theme` flag wins over it.
+
+```toml
+[mermaid]
+theme = "flexoki"   # tuios (the default), pele, flexoki, flexoki-dark, nord,
+                    # everforest, gruvbox, rose-pine, catppuccin-mocha,
+                    # catppuccin-latte, tokyo-night, dracula, solarized-light, kanagawa
+```
+
+## CharmTone themes
+
+tuios has two built-in themes made from
+[CharmTone](https://github.com/charmbracelet/tone), the colour system of Charm.
+
+| Theme | Ground | Text | Accent |
+|-------|--------|------|--------|
+| `charmtone` | Pepper `#201F26` | Sash `#ECEBF0` | Charple `#6B50FF` |
+| `charmtone-light` | Salt `#F7F6FB` | Char `#3A3943` | Charple `#6B50FF` |
+
+```toml
+[appearance]
+theme = "charmtone"
+background = "theme"   # paint the Pepper ground behind the panes
+```
+
+The dark theme uses the ANSI colours of Crush, the coding agent from Charm.
+Bright black is Squid, so that shell suggestions and comments are easy to read.
+The light theme uses a darker shade of each colour.
+CharmTone has no dark yellow, so yellow is Cumin, a light brown.
+Run `tuios list-themes charmtone-light` to see the contrast of each colour.
+
+## Omarchy themes
+
+On [Omarchy](https://omarchy.org), tuios uses the Omarchy theme when you set
+no theme. The panes, the chrome, the rail and the dock take the colours of the
+applied theme. The answers to OSC 10, 11 and 4 in a pane are the theme's
+colours too.
+
+When you switch the Omarchy theme, tuios changes its colours at the same
+moment as your terminal. You do not restart tuios and you do not press a key.
+A program in a pane that turned on mode 2031 gets a light or dark report each
+time the theme changes. tuios sends no SIGWINCH. See
+[Programs That Follow the Theme](THEMES.md#programs-that-follow-the-theme).
+On a machine without Omarchy, tuios watches nothing.
+
+| `appearance.theme` | On a machine with Omarchy | On a machine without Omarchy |
+|---|---|---|
+| empty (the default) | The Omarchy theme | The colours of your terminal |
+| `omarchy` | The Omarchy theme | The colours of your terminal, and a warning |
+| `none` | The colours of your terminal | The colours of your terminal |
+| a theme id | That theme | That theme |
+
+```toml
+[appearance]
+theme = "omarchy"   # use the Omarchy theme, and warn where Omarchy is missing
+```
+
+`appearance.theme_light` names a second theme for a light terminal. `theme` is
+then the dark theme. See
+[THEMES.md](THEMES.md#a-light-and-a-dark-theme).
+
+tuios reads `~/.local/state/omarchy/current/theme/colors.toml` (Omarchy 4),
+then `~/.config/omarchy/current/theme/colors.toml` (Omarchy 3). The pane
+colours are the ones Omarchy gives kitty, ghostty and foot. The chrome takes:
+
+| Chrome | Omarchy key |
+|---|---|
+| Accent | `accent` |
+| Focused border in window mode | the first colour of `hyprland_active_border`, else `accent` |
+| Terminal mode, copy mode, errors, notices | `green`, `yellow`, `red`, `blue` |
+| Dialogs | `lighter_background`, with `dark_background` and `darker_background` below it |
+
+Each installed Omarchy theme is also in the theme list as `omarchy/NAME`, such
+as `omarchy/gruvbox`. Such an id is fixed. It does not change with the Omarchy
+theme.
+
+`tuios list-themes` shows the Omarchy theme it found, and whether tuios uses
+it:
+
+```
+active: omarchy (default)
+omarchy: Tokyo Night, from /home/you/.local/state/omarchy/current. tuios follows it.
+```
+
+`SWATCH_OMARCHY_DIR` names another `current` directory to read.
+
+## Colour values
+
+Every colour key in tuios takes the same values: the backgrounds, the
+border colours, `scrollbar.tint`, `[appearance.selection]`, the dock's
+`fg` and `bg` keys, `[dock.tabs]`, the agent row's `fg`, and a theme
+file's `chrome` object.
+
+| Value | Example | What it is |
+|---|---|---|
+| Hex | `"#7dcfff"`, `"#7cf"` | That colour on every theme. |
+| ANSI number | `"5"`, `"208"` | `0` to `15` are the sixteen slots below. `16` to `255` are the 256-colour palette. |
+| Slot name | `"magenta"`, `"bright_magenta"`, `"fg"`, `"bg"` | One of the theme's sixteen colours, or its foreground or background. `purple` is the same slot as `magenta`. |
+| Role name | `"accent"`, `"warning"`, `"surface"` | The colour the chrome uses for that role. See the list below. |
+| CharmTone name | `"charple"`, `"guac"` | A colour from Charm's CharmTone palette. |
+
+The role names are `accent`, `accent_bright`, `success`, `warning`,
+`error`, `info`, `surface`, `canvas`, `panel` and `card`, the roles a
+theme's `chrome` object sets (see [THEMES.md](THEMES.md)). The roles for one
+piece of chrome have a dotted name: `border.unfocused`, `border.copy`,
+`border.multifocus`, `rule`, `status.attention`, `status.busy`,
+`dots.close`, `dots.minimize`, `dots.zoom`, `dock.ground` and `rail.ground`.
+`text`, `dim` and `muted` are the three text inks. You can use them, but a
+theme cannot set them.
+
+A slot name or a role name follows the theme. Change the theme and the
+colour changes with it. At 16 colours, a slot name is the terminal's own
+slot, so your terminal's palette paints it. A hex colour stays the same on
+every theme.
+
+```toml
+[appearance]
+border_focused_color = "accent"          # the theme's accent, on every theme
+dock_background      = "surface"
+
+[appearance.selection]
+bg = "bright_black"
+
+[dock.tabs]
+active_bg = "accent"
+inactive_fg = "muted"
+```
+
+Case does not matter, and `bright-magenta` is the same as
+`bright_magenta`. A key that has its own words keeps them: `off` and
+`theme` for a background, and `quiet`, `border` and `muted` for the
+scrollbar tint. There `muted` is the tint word, not the text ink. tuios
+reads each value when the config or the theme changes, not on each frame.
+A value that is not a colour is ignored, and the validator says what to
+write instead.
+
 ## Backgrounds
 
 A cell that has no background of its own is transparent, so your terminal's
@@ -499,12 +705,17 @@ instead, one surface at a time or all at once.
 
 | Option | Surface | Values | Default |
 |---|---|---|---|
-| `appearance.background` | Every surface below that is not set on its own | `off`, `theme`, `#RRGGBB` | `off` |
-| `appearance.pane_background` | Pane content, the thin scrollbar over it and the scrollback browser | `off`, `theme`, `#RRGGBB`, or empty | empty (follows `background`) |
-| `appearance.desktop_background` | Behind and between panes: gaps between tiled panes, the space around floating ones, an empty workspace and its welcome splash | `off`, `theme`, `#RRGGBB`, or empty | empty (follows `background`) |
-| `appearance.window_chrome_background` | Pane borders and title bars, the lines between shared-border panes, the capture marquee | `off`, `theme`, `#RRGGBB`, or empty | empty (follows `background`) |
-| `appearance.dock_background` | The dock | `off`, `theme`, `#RRGGBB`, or empty | empty (follows `background`) |
-| `appearance.sidebar.background` | The rail | `off`, `theme`, `#RRGGBB`, or empty | empty (follows `background`) |
+| `appearance.background` | Every surface below that is not set on its own | `off`, `theme`, a [colour](#colour-values) | `off` |
+| `appearance.pane_background` | Pane content, the thin scrollbar over it and the scrollback browser | `off`, `theme`, a colour, or empty | empty (follows `background`) |
+| `appearance.desktop_background` | Behind and between panes: gaps between tiled panes, the space around floating ones, an empty workspace and its welcome splash | `off`, `theme`, a colour, or empty | empty (follows `background`) |
+| `appearance.window_chrome_background` | Pane borders and title bars, the lines between shared-border panes, the capture marquee | `off`, `theme`, a colour, or empty | empty (follows `background`) |
+| `appearance.dock_background` | The dock | `off`, `theme`, a colour, or empty | empty (follows `background`) |
+| `appearance.sidebar.background` | The rail | `off`, `theme`, a colour, or empty | empty (follows `background`) |
+
+A theme can name a ground for the dock and the rail (`chrome.dock.ground` and
+`chrome.rail.ground`, see [THEMES.md](THEMES.md#roles-for-one-piece-of-chrome)).
+The theme's ground shows when `dock_background` or `sidebar.background` is
+empty and `background` is `off`. A value in either key wins.
 
 What each value paints:
 
@@ -512,7 +723,7 @@ What each value paints:
 |---|---|
 | `off` | Nothing. The cell is transparent and your terminal's own background shows through. |
 | `theme` | The active theme's background, with the theme's foreground on text left in the default colour. With no theme set there is no theme background, so it behaves as `off`. |
-| `#RRGGBB` | That colour. With a theme set, default-coloured text takes the theme's foreground, lifted until it reads on the colour; with none, it keeps your terminal's own. |
+| A [colour](#colour-values) | That colour. With a theme set, default-coloured text takes the theme's foreground, lifted until it reads on the colour; with none, it keeps your terminal's own. |
 
 **Precedence.** A surface's own option wins whenever it holds a value, `off`
 included. Left empty, it follows `appearance.background`. So one line paints
@@ -528,7 +739,7 @@ pane_background = "off"       # panes keep the terminal's own background
 background = "#181825"
 ```
 
-A value that is not a keyword or a `#RRGGBB` literal resolves to `off` for that
+A value that is not a keyword or a colour resolves to `off` for that
 surface (it does not fall back to `background`), and the validator warns about
 it, as it does about `theme` with no theme set.
 
@@ -611,7 +822,7 @@ becomes shell code. Any installed package can write a desktop entry.
 When the last pane on the workspace on screen closes, tuios shows the
 workspace you came from. This happens when the pane's program stops, when you
 close the pane, when `tuios xpanes -ss` closes it, and with
-`tuios close-workspace`.
+`tuios close-workspace` or the `close_workspace` action.
 
 tuios goes back in this order:
 
@@ -832,6 +1043,24 @@ You can also set the icons on the settings page, in the Dock section, or with
 back to the icon of the glyph set, in the settings, with set-config and in
 `config.toml`. The change applies at once.
 
+## Prefix indicator
+
+When you press the leader key, the mode pill shows a keyboard icon on the
+warning colour until you press the next key. With `use_ascii_only`, the icon is
+`P`. `appearance.dock_prefix_indicator` sets where the armed leader shows:
+
+| Value | What it does |
+| --- | --- |
+| `pill` | The mode pill shows the armed leader. This is the default |
+| `badge` | A `PREFIX` badge shows in the corner across from the dock. The mode pill does not change |
+
+```toml
+[appearance]
+dock_prefix_indicator = "badge"
+```
+
+The badge shows for each value when the dock is hidden or has no mode pill.
+The option is on the settings page, in the Dock section.
 ## Workspace label cap
 
 `appearance.dock_workspace_label_max` caps a workspace tab's label in cells,
@@ -872,6 +1101,55 @@ this.
 When clients with different docks share a session, the panes keep the
 largest dock height. A client with a compact dock shows a blank row in that
 case.
+
+## Window titles
+
+A pane's title sits on its border. Two options set its shape and its place:
+
+| Option | Values | Default |
+|---|---|---|
+| `appearance.window_title_style` | `pill`: the name on a fill in the border's colour, with rounded caps. `tab`: the fill with no caps. `plain`: the name in the border's colour, with no fill | `pill` |
+| `appearance.window_title_align` | `auto`: on the top row, the end away from the window buttons; on the bottom row, the middle. `left`, `center`, `right`: that place in the room the buttons leave | `auto` |
+
+```toml
+[appearance]
+window_title_style = "plain"
+window_title_align = "center"
+```
+
+`appearance.window_title_position` sets the row: `top`, `bottom` or
+`hidden`. The caps of `pill` come from the glyph set. Both options are on the
+settings page, in the Appearance section, and `tuios set-config` applies them
+at once.
+
+## Focused border gradient
+
+`appearance.border_focused_gradient` draws the focused pane's border in two
+or more colours that blend from one to the next.
+`appearance.border_gradient_angle` sets the direction in degrees.
+
+| Option | Values | Default |
+|---|---|---|
+| `appearance.border_focused_gradient` | two or more [colours](#colour-values), separated by spaces or commas. Empty draws one colour | empty |
+| `appearance.border_gradient_angle` | `0` to `359`. `0` runs left to right, `90` top to bottom, `45` from the top left corner to the bottom right one | `45` |
+
+```toml
+[appearance]
+border_focused_gradient = "#33ccff #00ff99"
+border_gradient_angle = 45
+```
+
+- The gradient is static. It changes only when the pane moves, resizes or
+  takes focus.
+- The border steps through 8 colours, so the cells of one step share one
+  colour code. This keeps the bytes sent to the terminal small.
+- The window buttons and the title keep their own colours.
+- A focused border in a colour for its state (copy mode or an agent that
+  waits, see [THEMES.md](THEMES.md#roles-for-one-piece-of-chrome)) is drawn
+  in that colour, not the gradient.
+- At 16 colours the border uses one colour, as before.
+- A colour value can name a slot or a role, such as `"accent accent_bright"`,
+  so the gradient follows the theme.
 
 ## Borderless zoom
 
@@ -1022,13 +1300,81 @@ on-click = "tuios new-window log -- git log --oneline -20"
 ```
 
 The lists above are the default: omit the whole table and the bar is unchanged.
+
+The clock draws hours and minutes (`15:04`) unless `dock.clock.format` or
+`appearance.clock_format` sets another Go time layout. To show seconds, set
+`format = "15:04:05"`. A clock with seconds draws a frame every second. A
+clock without seconds draws one frame a minute.
+When the `center` list has a clock or a custom cell, the center is at the
+middle of the terminal. A notification does not move it or shorten its
+minimized pane labels. On a crowded bar, the center moves left to keep the
+right-hand cells on the screen. Click a cut notification to read the full
+message.
 `transfers` shows the copies between machines. It shows nothing while no copy
 exists. One copy is a bar and a percent, `[####--] 61%`. More copies are a
 count and a percent, `3 copies 42%`. `waiting` means a link is down, and
 `1 failed` stays until you open the Copies panel. A click opens the panel. Add
 `transfers` to your own `right` list to see it there.
+`session` shows the session name, workspace and pane, `main 2:1`, and is in no
+default list. `[dock.session]` takes `format` (`{session}`, `{workspace}`,
+`{pane}`) and the cell style keys `fg`, `bg`, `bold`, `cap_left` and
+`cap_right`, which `[dock.custom.NAME]` takes too. Colours take any [colour value](#colour-values).
 A custom component's first line of stdout becomes its cell, it is hidden when
 the command fails, and `tuios list-dock-components` says which and why.
+
+### Workspace tab style
+
+By default the workspace strip draws rounded pills. `[dock.tabs]` can draw
+flat tabs instead, the way a tmux status line draws its window list:
+
+```toml
+[appearance]
+dock_workspace_tab_format = "{name}{zoom} {icon}"
+
+[dock.tabs]
+style         = "flat"        # pill (default) | flat
+separator     = " • "         # drawn between flat tabs
+separator_fg  = "#4c3743"
+active_fg     = "#272e33"
+active_bg     = "#a7c080"
+active_bold   = true
+inactive_fg   = "#4f5b58"
+number_glyphs = ["I", "II", "III"]  # {icon}: the first entry is workspace 1; past the end prints the number
+zoom_marker   = " [ ]"        # {zoom} on the current workspace while a pane is zoomed
+show_add      = false         # keep the trailing "+" tab in the flat style
+```
+
+Colours take any [colour value](#colour-values). The colours are overrides:
+a flat strip with none set puts the current tab on the theme's accent, in
+bold, and draws the others in dim text on the bar's own ground, so it still
+shows where you are. A value that is not a colour is ignored, with a
+warning, as if it were unset.
+Besides `{index}` and `{name}`, the tab format takes `{icon}` and `{zoom}`.
+The flat style shows even a lone workspace and drops the `+` tab unless
+`show_add` is on. With no `[dock.tabs]` table the strip is unchanged.
+
+#### Tab marks
+
+Three more keys mark a workspace you are not looking at, in the pill style and
+the flat style:
+
+```toml
+[dock.tabs]
+attention_fg    = "warning"   # the tab's ink while a pane on it waits for you
+bell_marker     = "!"         # after the label when a pane on it rang the bell
+activity_marker = "#"         # after the label when a pane on it printed
+```
+
+- `attention_fg` is the ink of the tab while an agent on that workspace asks
+  for input or stopped on an error. It takes any [colour value](#colour-values).
+- `bell_marker` and `activity_marker` go after the label, after the label
+  cap. The bell marker comes first.
+- A mark stays until you look at the workspace.
+- The current workspace's tab never carries them.
+- With a key empty, tuios draws nothing for it and keeps no record.
+- Attached to a daemon, the marks need a daemon of this version or newer.
+  An older daemon does not report a pane on another workspace, so its tab
+  gets no bell or activity mark.
 
 `examples/dock/README.md` is the full contract and five working recipes.
 
@@ -1081,13 +1427,134 @@ hides or shows the opposite edge, while `Ctrl+B b` keeps its existing legacy
 rail toggle. The opposite-edge toggle does not opt in an edge whose
 `enabled = true` was never configured.
 
+### Show a daemon session in each rail
+
+To use a rail as a terminal, assign a **local daemon session** to that edge.
+Its panes on the session's current workspace stack **top to bottom** in the
+rail, independent of the central session's layout and attachment.
+For example, create two sessions, then edit `config.toml`:
+
+```sh
+tuios new side-left --detach
+tuios new side-right --detach
+```
+
+```toml
+[appearance.sidebar]
+enabled = true
+position = "right"
+width = 36
+
+[appearance.sidebar.right]
+session = "side-right"
+
+[appearance.sidebar.left]
+enabled = true
+width = 36
+session = "side-left"
+```
+
+Settings → Sidebar exposes separate **Left session**, **Right session**,
+width and workspace controls. Entering a session name enables that edge.
+An empty session name restores that rail's ordinary sections (including
+`sections` and `custom`). While a daemon session occupies the rail, its
+ordinary custom-section command does not run. `session_workspace = 0` or an omitted value shows
+the rail on every central workspace; set `session_workspace = 2` on one
+edge to show it only on workspace 2 (or use `1`–`9`). This controls
+*visibility*, not the assigned session's own workspace. Each
+edge is independent, so one can follow while the other is pinned.
+
+Click a pane to type in it. With the rail focused, `Ctrl+B` then `-` splits
+**downwards**: it creates a normal pane in the assigned daemon session and
+stacks it below the others. `Ctrl+B` then `c` also creates a pane there;
+`Ctrl+B` then `|` stacks it vertically rather than subdividing a narrow rail
+sideways. `Ctrl+B` then `n` or `p` changes the active pane; clicking any
+pane's title bar focuses that pane. Each pane uses its normal title and title
+position, not the assigned session ID. Its close and minimize buttons target
+that daemon pane; zoom temporarily expands the pane within the rail. The
+session assignment remains in Settings. There is no extra row above the rail
+pane's normal border. The rail crops the daemon's existing grid; it does not
+resize a PTY, suppress leading guest whitespace, or shift cursor and mouse
+coordinates. A narrow rail does not change the size seen by another viewer.
+All visible panes remain on screen. If
+the rail is too short to give every pane at least six rows, it shows a
+contiguous group containing
+the active pane; cycling focus brings the others into view.
+
+Switching central workspaces, hiding the rail or detaching this TUI client
+does not end the assigned daemon session or its processes. Reattaching
+restores the pane's output. A *daemon restart* is different: it ends running
+pane programs and restores saved layouts with new shells. Right-clicking the
+rail currently opens Sidebar Settings, not a pane picker. The assignment can
+be entered before its daemon session exists: the rail shows an attach error
+and retries when the session is created. Standalone mode cannot attach sessions.
+
+## The rail's current row
+
+`appearance.sidebar.row_style` sets how the rail marks the session you are on
+and the pane that has focus:
+
+| Value | What it draws |
+|---|---|
+| `bar` | A bar in the gutter, in the session's colour. This is the default |
+| `marker` | A `›` in the gutter, in the session's colour. `>` with ASCII glyphs |
+| `underline` | The name underlined, in the session's colour |
+| `pill` | The name on a fill of the session's colour, with the pill caps of the glyph set |
+
+```toml
+[appearance.sidebar]
+row_style = "pill"
+```
+
+A row that waits for a person keeps its attention mark in the gutter. The
+marker glyph is the `marker` role of the glyph set (see [GLYPHS.md](GLYPHS.md)).
+The option is on the settings page, in the Sidebar section.
+
+## The rail's section headers
+
+`appearance.sidebar.header_style` sets how a section header is drawn:
+
+| Value | What it draws |
+|---|---|
+| `auto` | The label, with a rule after it when `header_case` is `uppercase`. This is the default |
+| `plain` | The label with no rule |
+| `rule` | The label and a rule to the rail's edge |
+| `pill` | The label on a quiet fill, with the pill caps of the glyph set |
+| `icon` | The section's icon, then the label |
+
+```toml
+[appearance.sidebar]
+header_style = "icon"
+```
+
+The icons are glyph roles: `section_sessions`, `section_terminals`,
+`section_agents`, `section_files` and `section_git` (see
+[GLYPHS.md](GLYPHS.md)). With Nerd Fonts on, the default icons are Nerd Font
+icons. The `unicode` glyph set has its own. With no icon, the header is plain.
+`header_case` still sets the case of the label. On a narrow rail, a pill or
+an icon can leave no room for a header's `+`.
+
+## The rail's section spacing
+
+`appearance.sidebar.density` sets the space between the rail's sections.
+`normal` (the default) stacks them as the rail always has. `roomy` puts a
+blank row in front of each section header after the first. The block pinned
+to the bottom keeps its own line, which holds the divider.
+
+```toml
+[appearance.sidebar]
+density = "roomy"
+```
+
+The panes do not move. Only the rail's rows change.
+
 ## A rail section that overflows
 
 A section with more rows than the lines it is given shows as many as fit. It ends in `… +N` for the rest. The wheel over a section scrolls it. The keyboard cursor scrolls it to keep itself in view.
 
 While rows are out of view, the section draws a scroll thumb in the rail's edge rule, beside its rows and not its heading. The thumb takes the rule's own cell, so the rows keep their full width. Its size is the share of the rows on screen. It reaches the first line only at the top of the section, and the last line only at the bottom, where there is no `+N` row. A section that fits draws the plain rule.
 
-A hover peek of another session's panes is windowed like the terminals section it is drawn in. It gets a thumb on the same terms. There is no thumb on the collapsed strip or on a section of one line.
+A hover peek of another session's panes shows the peeked list from its top, ending in `+N` when the list is longer than the section. When the terminals section is above the sessions section, the peek keeps the section's resting height, so the session row under the pointer does not move. When it is below, as in the default order, the section is sized for the peeked list like any other. The peek gets a thumb on the same terms, at the top of the column, and leaves the attached session's scroll where it was. There is no thumb on the collapsed strip or on a section of one line.
 
 The glyph is the active glyph set's `scrollbar_thumb` role. It is `┃` by default, `#` under `--ascii-only`, and `█` in the `heavy` set. Where the thumb would be the same glyph as the rule, as with a heavy border style, it is drawn as `█` (`#` under `--ascii-only`). `appearance.scrollbar.*` and `appearance.hide_scrollbar` style the pane scroll bar only, not the rail's thumb.
 
@@ -1275,7 +1742,7 @@ token_env = "TUIOS_HOOK_TOKEN"              # optional, sent as a bearer token
 | Key | Default | What it does |
 | --- | --- | --- |
 | `enabled` | `true` | Turns every notification off when `false`. Nothing is sent without a provider. |
-| `web_url` | empty | The address of tuios-web. Each notification links to `web_url/inbox?item=ID`, which opens the Inbox on the item. See [WEB.md](WEB.md#open-the-inbox-from-a-notification). |
+| `web_url` | empty | The address of tuios-web. Each notification links to `web_url/inbox?item=ID`, which opens the agents view on the item. See [WEB.md](WEB.md#open-the-agents-view-from-a-notification). |
 | `content` | `summary` | `summary` sends the kind, the pane name and the one line the Inbox shows. `title` sends only the kind and the session. |
 | `quiet_active_seconds` | `120` | Holds a notification while you typed into a pane at an attached client in this many seconds. When you stay away that long and the item is still open, tuios sends it. `0` sends at once. |
 | `cooldown_seconds` | `60` | The shortest time between two notifications for the same pane and kind. |
@@ -1766,7 +2233,7 @@ That is the stronger choice:
 files_read_roots = ["~/share"]
 ```
 
-The rule covers `file-read`, `file-hash`, `file-walk`, a copy out, and the
+The rule covers `file-read`, `file-preview`, `file-hash`, `file-walk`, a copy out, and the
 names and sizes `file-stat` and `file-list` show. The read deny list still
 holds inside every root. A file with more than one name (a hard link) is never
 read over a link, inside a root or outside one. Copy it to a new file to share
@@ -1860,6 +2327,15 @@ A link connects as usual and does not use the folder in these cases:
 - A socket path in the folder is too long. The limit is 107 characters on
   Linux and 103 on macOS. Set `XDG_RUNTIME_DIR` to a shorter folder.
 - tuios runs on Windows. Win32-OpenSSH has no `ControlMaster`.
+
+A master connection can outlive the network under it, for example when a
+laptop sleeps. The link's ssh then waits on it, and the link's keepalives do
+not reach it. The link pings its host when it carried nothing for 15 seconds.
+When the host does not answer, the link ends, and the next dial runs ssh with
+`-o ControlPath=none` and opens a connection of its own. The link does the
+same after this machine wakes from sleep, and after a dial that timed out. A machine that needs
+a password or a second factor fails that one dial, and the dial after it uses
+the master again.
 
 `%C` names a master by the local host, the remote host, the port and the
 user. It does not include a `ProxyCommand`, so a host reached through two

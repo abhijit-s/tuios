@@ -6,6 +6,7 @@ import (
 	"go/parser"
 	"go/token"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -97,6 +98,135 @@ func setsSelector(lit *ast.CompositeLit, field, pkg, name string) bool {
 		}
 		x, ok := sel.X.(*ast.Ident)
 		return ok && x.Name == pkg
+	}
+	return false
+}
+
+// themeFileWriters are the functions in internal/app that write or remove a
+// file in the themes directory, or open the way to one. Each must read
+// ConfigReadOnly: an SSH or web client must not change the host's theme
+// files any more than its config.toml. A new writer is added here.
+var themeFileWriters = []string{
+	"ThemeEditorSave",      // the theme editor's ctrl+s
+	"ThemePickerAskDelete", // the theme picker's ctrl+d, which the delete waits on
+}
+
+// TestThemeFileWritersHonourConfigReadOnly holds each named writer to a read
+// of ConfigReadOnly in its own body. Checked over the syntax tree for the
+// reason TestSSHSessionsDoNotWriteTheHostConfig gives: what has to hold is
+// that every writer checks, including one written later.
+func TestThemeFileWritersHonourConfigReadOnly(t *testing.T) {
+	names, err := filepath.Glob(filepath.Join("..", "app", "*.go"))
+	if err != nil {
+		t.Fatalf("listing internal/app: %v", err)
+	}
+	fset := token.NewFileSet()
+	found := map[string]bool{}
+	for _, name := range names {
+		if strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		file, err := parser.ParseFile(fset, name, nil, 0)
+		if err != nil {
+			t.Fatalf("parsing %s: %v", name, err)
+		}
+		for _, decl := range file.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Body == nil || !slices.Contains(themeFileWriters, fn.Name.Name) {
+				continue
+			}
+			found[fn.Name.Name] = true
+			reads := false
+			ast.Inspect(fn.Body, func(n ast.Node) bool {
+				if sel, ok := n.(*ast.SelectorExpr); ok && sel.Sel.Name == "ConfigReadOnly" {
+					reads = true
+				}
+				return !reads
+			})
+			if !reads {
+				t.Errorf("%s in %s writes a theme file and never reads ConfigReadOnly; a served client would change the host's files",
+					fn.Name.Name, filepath.Base(name))
+			}
+		}
+	}
+	for _, w := range themeFileWriters {
+		if !found[w] {
+			t.Errorf("%s is named as a theme file writer but internal/app has no such function; this guard is looking at nothing", w)
+		}
+	}
+}
+
+// themeFileWriteSites are the functions in internal/app that call a theme
+// file writer, each with the gate in themeFileWriters that stands in front of
+// it. ThemePickerConfirmDelete deletes only what ThemePickerAskDelete asked
+// about, so the ask is its gate.
+var themeFileWriteSites = map[string]string{
+	"ThemeEditorSave":          "ThemeEditorSave",
+	"ThemePickerConfirmDelete": "ThemePickerAskDelete",
+}
+
+// TestEveryThemeFileWriteIsGated finds every reach for a theme file writer in
+// internal/app: theme.DeleteThemeFile, and a draft's Save or SaveOver. Each
+// must sit in a function named in themeFileWriteSites, so a writer added
+// later cannot skip the ConfigReadOnly check by not being on the list.
+//
+// Negative control: a call to st.draft.Save() in any other function fails
+// this test with that function's name.
+func TestEveryThemeFileWriteIsGated(t *testing.T) {
+	names, err := filepath.Glob(filepath.Join("..", "app", "*.go"))
+	if err != nil {
+		t.Fatalf("listing internal/app: %v", err)
+	}
+	fset := token.NewFileSet()
+	seen := map[string]bool{}
+	for _, name := range names {
+		if strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		file, err := parser.ParseFile(fset, name, nil, 0)
+		if err != nil {
+			t.Fatalf("parsing %s: %v", name, err)
+		}
+		for _, decl := range file.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Body == nil {
+				continue
+			}
+			ast.Inspect(fn.Body, func(n ast.Node) bool {
+				sel, ok := n.(*ast.SelectorExpr)
+				if !ok || !writesThemeFile(sel) {
+					return true
+				}
+				gate, listed := themeFileWriteSites[fn.Name.Name]
+				switch {
+				case !listed:
+					t.Errorf("%s in %s writes a theme file and is not in themeFileWriteSites; name it there with the gate that reads ConfigReadOnly",
+						fn.Name.Name, fset.Position(sel.Pos()))
+				case !slices.Contains(themeFileWriters, gate):
+					t.Errorf("%s is gated by %s, which is not in themeFileWriters", fn.Name.Name, gate)
+				}
+				seen[fn.Name.Name] = true
+				return true
+			})
+		}
+	}
+	for site := range themeFileWriteSites {
+		if !seen[site] {
+			t.Errorf("%s is named as a theme file write site but writes nothing; this guard is looking at nothing", site)
+		}
+	}
+}
+
+// writesThemeFile reports whether sel reaches for a theme file writer:
+// theme.DeleteThemeFile, or Save or SaveOver on a draft.
+func writesThemeFile(sel *ast.SelectorExpr) bool {
+	switch sel.Sel.Name {
+	case "DeleteThemeFile":
+		x, ok := sel.X.(*ast.Ident)
+		return ok && x.Name == "theme"
+	case "Save", "SaveOver":
+		x, ok := sel.X.(*ast.SelectorExpr)
+		return ok && x.Sel.Name == "draft"
 	}
 	return false
 }

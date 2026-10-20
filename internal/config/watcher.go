@@ -8,6 +8,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -62,10 +63,25 @@ import (
 // ticker here and none is reachable from here: a file nobody edits produces no
 // events, so an idle client pays no wakeups. That is why notification was
 // chosen over a poll, and it is what BenchmarkIdleTick measures.
+//
+// The one exception is an asset directory that is a symlink on a system where
+// fsnotify uses kqueue (see relinkUnseen): it is read every relinkPoll, because
+// no event says it was pointed elsewhere.
 
 // configDebounce is how long the watcher waits for a save to finish before it
 // reads the file.
 const configDebounce = 200 * time.Millisecond
+
+// relinkUnseen is true where fsnotify watches with kqueue. kqueue reports a
+// change to a directory's entries only as a name that was not there before, so
+// a symlink replaced under the same name, the way home-manager and stow switch
+// a generation, produces no event at all.
+var relinkUnseen = runtime.GOOS == "darwin" || runtime.GOOS == "dragonfly" ||
+	strings.HasSuffix(runtime.GOOS, "bsd")
+
+// relinkPoll is how often an asset directory that is a symlink is read for
+// where it points, where relinkUnseen.
+const relinkPoll = 2 * time.Second
 
 // ConfigReloadCallback is called when config changes are detected. Exactly one
 // of newConfig and err is set. An err means the file on disk cannot be used and
@@ -89,7 +105,19 @@ type WatcherOptions struct {
 	// what is in force, and an edit and its undo inside one debounce must
 	// still reach it.
 	DeliverUnchanged bool
+	// AssetDirs are directories of files the config names by id, the themes
+	// and glyphs directories, watched beside the config. A directory that is
+	// not there at start is watched once it is made in the config directory.
+	// A change to a .json file in one, or to ThemeReloadStamp, calls OnAssets
+	// after the same debounce. OnAssets runs on the watcher's goroutine.
+	AssetDirs []string
+	OnAssets  func()
 }
+
+// ThemeReloadStamp is a file in the config directory whose change asks every
+// watcher to read the theme and glyph files again: what tuios theme reload
+// writes.
+const ThemeReloadStamp = ".reload-themes"
 
 // Watcher watches the config file for changes and triggers reloads. A config
 // split over several files is watched as a whole: every included file, every
@@ -115,6 +143,13 @@ type Watcher struct {
 	files map[string]bool
 	// dirs are the directories under watch.
 	dirs map[string]bool
+	// assets are the asset directories, true once under watch.
+	assets      map[string]bool
+	assetsTimer *time.Timer
+	// links are the asset directories that have been symlinks, to where each
+	// pointed when it was last watched, kept only where relinkUnseen.
+	links       map[string]string
+	relinkTimer *time.Timer
 }
 
 // NewWatcher creates a file watcher for the config file.
@@ -140,6 +175,8 @@ func NewWatcherWithOptions(configPath string, callback ConfigReloadCallback, opt
 		stopCh:   make(chan struct{}),
 		files:    map[string]bool{main: true},
 		dirs:     map[string]bool{},
+		assets:   map[string]bool{},
+		links:    map[string]string{},
 	}
 
 	// The directory, not the file: see the note at the top of this file. Added
@@ -150,6 +187,15 @@ func NewWatcherWithOptions(configPath string, callback ConfigReloadCallback, opt
 		return nil, err
 	}
 	cw.dirs[filepath.Dir(main)] = true
+	if opts.OnAssets != nil {
+		cw.mu.Lock()
+		for _, dir := range opts.AssetDirs {
+			// One watch per directory that is there. One that is not costs
+			// nothing until it is made.
+			cw.watchAsset(absPath(dir))
+		}
+		cw.mu.Unlock()
+	}
 
 	// The files as they stand are what the client is already running, so the
 	// first event that finds them unchanged is dropped rather than delivered.
@@ -237,7 +283,12 @@ func (cw *Watcher) run() {
 			if !ok {
 				return
 			}
-			if !cw.relevant(filepath.Clean(event.Name)) {
+			name := filepath.Clean(event.Name)
+			if cw.assetEvent(name, event) {
+				cw.armAssets()
+				continue
+			}
+			if !cw.relevant(name) {
 				continue
 			}
 			// Chmod alone is not a content change. Rename and Remove are: an
@@ -261,6 +312,157 @@ func (cw *Watcher) run() {
 			return
 		}
 	}
+}
+
+// assetEvent reports whether an event is about a theme or glyph file, and
+// starts watching an asset directory that has just been made.
+func (cw *Watcher) assetEvent(name string, event fsnotify.Event) bool {
+	if cw.opts.OnAssets == nil {
+		return false
+	}
+	if name == filepath.Join(filepath.Dir(cw.path), ThemeReloadStamp) {
+		return true
+	}
+	cw.mu.Lock()
+	defer cw.mu.Unlock()
+	if _, ok := cw.assets[name]; ok {
+		// The directory itself came or went. A watch follows an inode, so a
+		// directory removed and made again, or a symlink pointed at another
+		// directory (home-manager, stow), needs a new watch: the old one is
+		// gone, or still on the old target. Remove fails harmlessly when the
+		// kernel already dropped the watch.
+		switch {
+		case event.Has(fsnotify.Create):
+			cw.watchAsset(name)
+		case event.Has(fsnotify.Remove), event.Has(fsnotify.Rename):
+			_ = cw.watcher.Remove(name)
+			cw.assets[name] = false
+		}
+		return true
+	}
+	return cw.isAssetDir(filepath.Dir(name)) && strings.HasSuffix(strings.ToLower(name), ".json")
+}
+
+// watchAsset watches an asset directory, again if it already was. Called with
+// cw.mu held.
+func (cw *Watcher) watchAsset(dir string) {
+	if !relinkUnseen {
+		_ = cw.watcher.Remove(dir)
+		cw.assets[dir] = cw.watcher.Add(dir) == nil
+		return
+	}
+	// kqueue drops the watch of a directory removed, so there is no old watch
+	// on dir to drop, and dropping its entry in the config directory's watch
+	// would make the next change there report dir as made again.
+	//
+	// kqueue names the files behind a watched link by the link, and keeps them
+	// under that name when the link is pointed elsewhere, so a file of the same
+	// name behind the new target is never reported. The directory the link
+	// resolves to is watched instead, and dropped when the link moves.
+	to := linkTarget(dir)
+	if old := cw.links[dir]; old != "" && !cw.watchedElsewhere(old, dir) {
+		_ = cw.watcher.Remove(old)
+	}
+	watch := dir
+	if to != "" {
+		watch = to
+	}
+	cw.assets[dir] = cw.watcher.Add(watch) == nil
+	// A directory that was a link is read for as long as the watcher runs: a
+	// link made again under the same name is no event either.
+	if _, was := cw.links[dir]; was || to != "" {
+		cw.links[dir] = to
+	}
+	if len(cw.links) > 0 && cw.relinkTimer == nil {
+		cw.relinkTimer = time.AfterFunc(relinkPoll, cw.relink)
+	}
+}
+
+// watchedElsewhere reports whether path is still watched for something other
+// than the link at dir: another asset directory's target, an asset directory
+// itself, or a directory the config is read from. fsnotify keeps one watch per
+// path, so removing it for dir would remove it for those too. Called with
+// cw.mu held.
+func (cw *Watcher) watchedElsewhere(path, dir string) bool {
+	if cw.dirs[path] || cw.assets[path] {
+		return true
+	}
+	for d, to := range cw.links {
+		if d != dir && to == path {
+			return true
+		}
+	}
+	return false
+}
+
+// isAssetDir reports whether dir is an asset directory under watch, or the
+// directory one that is a link resolves to. Called with cw.mu held.
+func (cw *Watcher) isAssetDir(dir string) bool {
+	if cw.assets[dir] {
+		return true
+	}
+	for _, to := range cw.links {
+		if to != "" && to == dir {
+			return true
+		}
+	}
+	return false
+}
+
+// linkTarget is the directory dir resolves to, or "" when dir is not a
+// symlink.
+func linkTarget(dir string) string {
+	if fi, err := os.Lstat(dir); err != nil || fi.Mode()&os.ModeSymlink == 0 {
+		return ""
+	}
+	to, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return ""
+	}
+	return to
+}
+
+// relink watches again every asset directory whose link points elsewhere, and
+// reports it as an asset change: the files behind it are other files.
+func (cw *Watcher) relink() {
+	select {
+	case <-cw.stopCh:
+		return
+	default:
+	}
+	cw.mu.Lock()
+	cw.relinkTimer = nil
+	moved := false
+	for dir, to := range cw.links {
+		if linkTarget(dir) != to {
+			cw.watchAsset(dir)
+			moved = true
+		}
+	}
+	if cw.relinkTimer == nil {
+		cw.relinkTimer = time.AfterFunc(relinkPoll, cw.relink)
+	}
+	cw.mu.Unlock()
+	if moved {
+		cw.armAssets()
+	}
+}
+
+// armAssets restarts the asset debounce, apart from the config's, so a theme
+// save does not delay a config save or make it read the config again.
+func (cw *Watcher) armAssets() {
+	cw.mu.Lock()
+	defer cw.mu.Unlock()
+	if cw.assetsTimer != nil {
+		cw.assetsTimer.Stop()
+	}
+	cw.assetsTimer = time.AfterFunc(configDebounce, func() {
+		select {
+		case <-cw.stopCh:
+		default:
+			cw.opts.OnAssets()
+		}
+	})
 }
 
 // arm restarts the debounce timer.
@@ -352,6 +554,12 @@ func (cw *Watcher) Stop() {
 		cw.mu.Lock()
 		if cw.debounceTimer != nil {
 			cw.debounceTimer.Stop()
+		}
+		if cw.assetsTimer != nil {
+			cw.assetsTimer.Stop()
+		}
+		if cw.relinkTimer != nil {
+			cw.relinkTimer.Stop()
 		}
 		cw.mu.Unlock()
 		_ = cw.watcher.Close()

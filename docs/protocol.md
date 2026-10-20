@@ -153,7 +153,7 @@ connection it opens from a pane. It is absent from an older daemon.
 `darwin`, `windows`. A client attached from another machine reads it to start
 a command entry with `sh -c` or `cmd /C`. It is absent from an older daemon.
 
-A client may also send `term` and `color_term`, its `TERM` and `COLORTERM`. A session the connection later creates, with `new-session` or `switch-session`'s `create`, gives its panes that terminal, as a session made by attaching or by `tuios new` gets the client's. A caller with no terminal of its own (a script, CI, an agent) sends them empty or leaves them out, and its sessions get the daemon's fallback, `xterm-256color` and `truecolor`. The `tuios` CLI sends both.
+A client may also send `term` and `color_term`, its `TERM` and `COLORTERM`. A session the connection later creates, with `new-session`, `switch-session`'s `create` or `start-agent`, gives its panes that terminal, as a session made by attaching or by `tuios new` gets the client's. A caller with no terminal of its own (a script, CI, an agent) sends them empty or leaves them out, and its sessions get the daemon's fallback, `xterm-256color` and `truecolor`. The `tuios` CLI sends both.
 
 The handshake is optional, not a gate: a daemon serves every other verb whether
 or not `hello` was called, and a daemon older than the handshake answers
@@ -175,6 +175,40 @@ Changes that alter what an existing verb does, for a caller that relied on the
 old behaviour. None of them bumps the protocol integer: every field keeps its
 name and type, and a caller that sends nothing new keeps working. What changes
 is an answer, and each entry says which.
+
+**send-agent-message takes a message in parts.** `text` is no longer
+required when `parts` is given. `parts` is the form `queue-prompt` takes. A
+message that fits 8 KiB and holds no image has its blocks put in place. Any
+other has each paste and image written to the paste folder, attached, and
+named in the body. A daemon from before this answers `text is required` for a
+message sent in parts alone.
+
+**queue-prompt takes host.** A message for a pane on a linked machine is
+passed there over the link. See [The delivery queue](#the-delivery-queue).
+
+**queue-prompt takes images.** A part may be `{"kind":"image","data":…}`. A
+daemon from before this answers `invalid_params` for the kind. See
+[The delivery queue](#the-delivery-queue).
+
+**queue-prompt takes a message in parts.** `text` is no longer required when
+`parts` is given, and the result gains `parts`, the count read. A message
+with a long paste can now put a file in the paste folder when it is typed. The
+queues are also bounded in bytes, 32 MiB a pane and 128 MiB in all, and
+`queue_full` covers both bounds. See [The delivery queue](#the-delivery-queue).
+A caller that sends only `text` sees no change.
+
+**A link checks that its host still answers.** A link that carried no frame
+for 15 seconds sends `hello`, with no params, on a stream of its own. A reply
+of any kind, an error included, counts as an answer. Two pings in a row with
+no answer in 5 seconds end the link, and it is dialed again. After this
+machine wakes from sleep, or after `retry-host`, one ping with no answer is
+enough. `retry-host` on a host that is up now sends that ping at once, and on
+a host that is not up it starts the backoff again from 1 second. The next
+dial after a ping ends a link, after a wake from sleep, or after a dial that
+timed out runs ssh with `-o ControlPath=none`, so a master connection that did
+not survive the sleep is not used. The drop reason is
+"The host stopped answering." An older far daemon answers the ping as it
+answers any `hello`.
 
 **list-worktrees reports a merged branch.** With `changes`, each row gains
 `merged`, and `merged_into` when `merged` is true. See
@@ -218,6 +252,20 @@ phones. When an Inbox item of a kind a phone asked for opens or closes, the
 daemon sends an encrypted push to the phone's push service. The verbs take
 the person's `human_nonce`, from an attach or a presence with no session, and
 over a link the `respond` capability. Each registration opens an Inbox item.
+
+**A pane records the pane that started it.** When a process in a pane calls
+`new-window`, `split-window`, `start-agent`, `fan` or `new-worktree`, the pane
+it makes records the caller's pane. What changes for a caller:
+
+- `list-windows`, `get-window` and every `list-agents` entry gain
+  `started_by`, `{"session", "window"}`. It is omitted when no pane started
+  the window: the call came from outside every pane, or over a link.
+- The synced window state gains `started_by`, taken from the daemon's own
+  state on every client push, and saved with the session. An older peer drops
+  it. The gui-bridge `state` window rows gain it too.
+- The new verbs `search-panes`, `command-history` and `list-ports` read pane
+  text, the shell commands a pane ran, and the TCP ports a pane's processes
+  listen on (see [search-panes](#search-panes)).
 
 **A pane's OSC 7501 reports are part of its state.** A program in a pane can
 report what it does with the Program Status Protocol (see
@@ -1568,6 +1616,9 @@ catalog.
 | `repo_not_found` | No checkout on this machine has the origin `repo_url` names, and `clone` was not passed. Pass `clone`, a `repos_root`, or `repo` with the directory. |
 | `not_repo` | No git repository is under the pane or session named, so there is nothing to review. Nothing was read. |
 | `no_notes` | `send-review` found no unsent review notes for the pane. Nothing was typed. |
+| `hunk_changed` | `review-stage` did not find the file or the hunk in the diff now. Nothing was changed. Read the diff again with the same `index` and `context`. |
+| `index_changed` | `review-stage` did not undo the call: the index changed after it. Nothing was changed. |
+| `whole_file_only` | `review-stage` stages a rename, a binary file or a file past the diff caps only whole. Nothing was changed. Leave `hunk` and `lines` out. |
 | `no_checkpoint` | The pane has no checkpoint by that number, or none at all. Nothing was read or changed. The hint lists the numbers it has. |
 | `nothing_to_commit` | `ship-commit` found no change in the work tree. `ship-push` and `ship-pr` raise it for a branch with no commit. Nothing was changed. |
 | `merge_conflict` | `ship-merge` stopped on conflicts and undid the merge. The main checkout is as it was. The hint lists the files in `available`. |
@@ -1980,6 +2031,8 @@ Response:
 ]}}
 ```
 
+A session filed under a space also carries `space`. See [set-session-space](#set-session-space).
+
 ### list-clients
 
 List every connection to the daemon. No params. Each row carries the daemon's
@@ -2260,6 +2313,10 @@ pane started, and `tty`, the path of its terminal device. A zoomed window has
 `zoomed: true`. A floating window has `floating: true`. It sits over the tiled
 windows at its own rectangle.
 
+A window that a process in another pane opened has `started_by`, that pane
+as `{"session", "window"}`. See
+[Which pane started a pane](#which-pane-started-a-pane).
+
 ### get-window
 
 Describe one window, as the client protocol's `GetWindow` command does. With
@@ -2302,7 +2359,21 @@ shell, not parsed by any shell; with a client attached, the window closes when
 it exits), `host` (run the window's process on a machine from the `[hosts]`
 table; omit or pass `local` for this machine), and `close_on_exit` (default
 false; close the window when its process exits, also with no client attached.
-Without it, a detached session keeps the window until something closes it).
+Without it, a detached session keeps the window until something closes it),
+`keep_open` (default false; keep the window after its process exits, with a
+line that shows the exit status under the last output; not with
+`close_on_exit`), `wait` (default false; answer when the process exits, with
+`exit_code` and, when a signal stopped it, `signal`; not for a window on
+another machine), `timeout` (with `wait`, milliseconds before the
+`timeout` error; 0 waits with no limit), and `env` (an object of variables
+to set in the process; checked as `start-agent` checks its `env`; not for a
+window on another machine, and refused from another machine). `new-session`
+takes the same `env` for its first window, and refuses it with `window` false.
+
+A daemon that does not know `keep_open` and `wait` refuses them with
+`invalid_params`, as it refuses any parameter it does not know. A daemon from
+before that refusal ignores them: the result has no `keep_open` and no
+`exit_code`. A caller checks for those fields.
 
 Request:
 
@@ -3245,6 +3316,16 @@ Params:
   only the last N lines.
 - `start`, `end` (optional ints): a 1 based inclusive line region. When set, the
   region wins over `lines`.
+- `unwrap` (optional bool): join the rows the terminal wrapped because a line
+  was longer than the pane, so each line comes back as the program wrote it. A
+  row that ends with a newline stays a line of its own. `lines`, `start` and
+  `end` then count the joined lines. The result adds `unwrapped: true`.
+- `trim` (optional bool): drop the blank lines at the end of the capture. The
+  result adds `trimmed: true`.
+
+A daemon from v0.8.0 on that does not know `unwrap` or `trim` refuses the
+call with `invalid_params`, and its hint names the parameter. A daemon older
+than v0.8.0 ignores them and omits `unwrapped` and `trimmed`.
 
 Request:
 
@@ -3298,6 +3379,105 @@ exactly like `recent`; it is now rejected rather than silently ignored, because
 the emulator does not record which rows are continuations and unwrapping them
 would mean guessing. A caller that needs logical lines should widen the pane
 with `resize` before capturing.
+
+### search-panes
+
+Find text in the history and the screen of every pane on this machine.
+
+Params: `query` (required, at most 512 bytes), `regex` (bool, default false:
+`query` is literal text), `case` (`smart`, the default, ignores case unless
+the query has a capital letter; `sensitive`; `insensitive`), `sessions`
+(list, default every session), `max` (default 200, at most 1000), `per_pane`
+(default 20, at most 200). A pattern is a Go regular expression, which runs in
+linear time. A pattern that matches an empty line is `invalid_params`.
+
+```json
+{"verb": "search-panes", "params": {"query": "panic:"}}
+```
+
+```json
+{"result": {
+  "matches": [
+    {"session": "work", "window": "7e02...", "name": "build", "workspace": 1,
+     "row": 812, "text": "panic: runtime error", "start": 0, "end": 6,
+     "age_rows": 30}
+  ],
+  "panes_searched": 4,
+  "truncated": false
+}}
+```
+
+`row` counts the pane's history rows from the top, then its screen rows: row
+`history_rows` is the top row of the screen. `age_rows` is how many rows the
+row is above the bottom of the screen. `text` is the row, cut to 400
+characters around the match, and `start` and `end` are the first match's
+character offsets in `text`. In each pane the newest match comes first, and
+the pane with the newest output comes first. Each pane gets 50 ms. `truncated`
+is true when `max` or `per_pane` cut the matches, or when a pane took longer.
+
+A restricted connection under scope own may not call it. Over a link it needs
+`list`.
+
+### command-history
+
+The commands that shells in panes on this machine ran, newest first. Only a
+shell that sends OSC 133 marks reports its commands (see [run](#run)). A pane
+keeps its last 200 finished commands. A command that ran again in the same
+pane is listed once, at its newest run.
+
+Params: `session` and `window` (both optional; without either, every pane),
+`limit` (default 200, at most 2000), `query` (only the commands whose text
+holds it; smart case, as for `search-panes`).
+
+```json
+{"result": {"commands": [
+  {"session": "work", "window": "7e02...", "name": "build", "seq": 41,
+   "cmdline": "go test ./...", "exit": 1, "at": 1791712193354,
+   "duration_ms": 8120, "cwd": "/home/me/src/api", "row": 790}
+]}}
+```
+
+`seq` is the pane's `command_seq` when the command finished. `cmdline` is cut
+to 512 bytes, with likely secrets masked. `exit` is null when the shell sent
+no status. `at` is when the command started, in Unix milliseconds. `cwd` is
+the folder the shell last reported over OSC 7 when the command started, empty
+when it never reported one. `row` is the history row of the command's prompt,
+numbered as in `search-panes`, and -1 when the prompt has left the history.
+
+### list-ports
+
+The TCP ports that processes in panes on this machine listen on. A pane's
+processes are its program and every process under it. A process that left the
+pane's process tree, such as a daemon that detached, is not listed.
+
+Params: `session` (optional; default every session).
+
+```json
+{"result": {"supported": true, "ports": [
+  {"session": "api-feat", "window": "7e02...", "port": 5173,
+   "addr": "127.0.0.1", "pid": 41234, "comm": "node",
+   "worktree": "/home/me/.local/share/tuios/worktrees/api/feat"}
+]}}
+```
+
+On Linux the daemon reads `/proc/net/tcp`, `/proc/net/tcp6` and each
+process's open files. On macOS it runs `lsof` for the panes' processes, with a
+1 second limit. Elsewhere `supported` is false and `ports` is empty. `addr` is
+the address the socket listens on (`0.0.0.0` or `::` for every address).
+`worktree` is the session's worktree folder, empty for a session that is not a
+worktree session. An answer can be up to 1 second old.
+
+Over a link it needs `list`.
+
+### Which pane started a pane
+
+When a process in a pane calls `new-window`, `split-window`, `start-agent`,
+`fan` or `new-worktree`, each pane the call makes records the caller's pane as
+`started_by`, `{"session": "work", "window": "7e02..."}`. The daemon finds the
+caller's pane the way pane grants do, from the kernel's record of its pid. A
+call from outside every pane, or over a link, records nothing. `list-windows`,
+`get-window` and `list-agents` show it, and it is saved with the session. A
+session rename updates it.
 
 ### screenshot
 
@@ -3394,6 +3574,26 @@ Response:
 ```json
 {"result": {"type": "ok"}}
 ```
+
+### set-session-space
+
+File a session under a space, a named group of related sessions, or take it out of any. A space is only a label on its sessions: it has no record of its own, exists while at least one session is in it, and is saved and restored with each session. `list-sessions` carries `space` on every session that is in one.
+
+Params: `session` (the most recently active when omitted), `space`. An empty or omitted `space` takes the session out of any space.
+
+Request:
+
+```json
+{"verb": "set-session-space", "params": {"session": "work", "space": "payments"}}
+```
+
+Response:
+
+```json
+{"result": {"type": "session_space_set", "session": "work", "space": "payments"}}
+```
+
+Surrounding whitespace is trimmed first. A space name then follows the session name rules and is at most 64 bytes. Any other is refused with `invalid_params` on `space`. A global session cannot be in a space, so filing one is refused with `invalid_params` (`a global session cannot be in a space`) and nothing changes. `new-session` takes the same `space` param, refused the same way, and files the session as it is made, so it never exists in no space. Its result echoes `space`. Only these two verbs write a session's space: a client's state sync never moves it. A pane needs the `admin` grant, and over a link the verb needs `write`.
 
 ### new-worktree
 
@@ -3707,7 +3907,7 @@ base, else the merge base with the upstream, else `HEAD`), `against` (another
 session of the same fan: the two attempts diffed with each other; not with
 `base` or `uncommitted`), `uncommitted` (only what is not committed, against
 `HEAD`), `paths` (at most 256, relative, each taken literally), `context` (0
-to 20, default 3). A `base` that does not resolve, or reads as an option, is
+to 20, default 3), `index` (`unstaged` or `staged`; see below). A `base` that does not resolve, or reads as an option, is
 `invalid_params`, and so is an `against` that is not another attempt of the
 fan. A named or recorded base is taken through its merge base with `HEAD`.
 
@@ -3743,9 +3943,73 @@ Every call finds the pane's notes again in the diff it read and returns them
 as `notes`, as `review-note` lists them. The answer is marked `untrusted`: the
 text is the repository's.
 
+`index` reads the worktree's own index instead of a base. `unstaged` is the
+index (written with `git write-tree`) against the working files, untracked
+files included as `U`. `staged` is `HEAD` (the empty tree before the first
+commit) against the index. `base` is then `index` or `HEAD`, `base_sha` is a
+tree, and the result has `index`. It takes no `base`, `against` or
+`uncommitted`. The notes are returned, and are not moved by an index diff. A
+hunk's `header` and its `lines` are the same as `review-stage` reads them for
+the same `index` and `context`.
+
+`highlight` (default false) adds two fields to each line. `hl` is the
+syntax colour: `[start, end, class]` runs in bytes of `text`, where `class`
+is a number. The result's `classes` names the numbers in order (`plain`,
+`keyword`, `type`, ...). `changed` is the `[start, end]` bytes of a removed
+or added line that changed against the line it pairs with. Each field is
+absent when it is empty. The old side and the new side of a hunk are each
+coloured as one text. A truncated file, a binary file and a very large text
+are not coloured.
+
 A pane without `admin` reads its own session and fan group, and the session
 `against` names must be in its reach too. Over a link it needs `write`, since
 it returns file contents.
+
+### review-stage
+
+Stage or unstage a change in the worktree under a pane. Only the index
+changes. The working files do not change. One call runs at a time in a
+worktree.
+
+Params: `session`, `window` (as for `review-diff`), `action` (`stage`,
+`unstage` or `undo`), `path` (relative to the repository root), `hunk` (a
+header exactly as `review-diff` returned it; omit for the whole file),
+`lines` (indices into that hunk's `lines`; only added and removed lines
+count; omit for the whole hunk), `context` (the context of that diff, default
+3), `undo` (for `undo`), `human_nonce`.
+
+- `stage` reads the `unstaged` diff of `path` again. A whole file is
+  `git add -A`, which also stages a deletion or an untracked file. A hunk or
+  lines become a patch applied with `git apply --cached`: an unselected
+  added line is left out, and an unselected removed line stays.
+- `unstage` reads the `staged` diff. A whole file is `git reset`, or a
+  removal from the index before the first commit. A hunk or lines are the
+  reverse: an unselected added line stays, and an unselected removed line is
+  left out.
+- A rename and its old path are staged together, and only whole, as is a
+  binary file (`whole_file_only`). A hunk no longer in the diff is
+  `hunk_changed`.
+- Every result has `undo`: `entries`, the index entries of the paths touched
+  before the call (`{path, mode, sha}`, or `{path, absent: true}`), and
+  `after`, the same paths after it.
+- `undo` takes that object. It is `index_changed` unless the index still
+  holds `after`. Then it writes `entries` back with `git update-index`, and
+  answers with `undo` swapped, so sending that back redoes the call.
+
+```json
+{"verb": "review-stage", "params": {"action": "stage", "session": "work",
+ "path": "list.txt", "hunk": "@@ -8,5 +8,7 @@ seven", "lines": [4]}}
+```
+
+```json
+{"result": {"type": "review_stage", "session": "work", "window": "ee773ef6-...",
+ "worktree": "/src/repo", "path": "list.txt", "action": "stage",
+ "undo": {"entries": [{"path": "list.txt", "mode": "100644", "sha": "e68fa666..."}],
+          "after": [{"path": "list.txt", "mode": "100644", "sha": "e5dcefbe..."}]}}}
+```
+
+It is the person's tool: refused on a restricted connection, `admin` for a
+pane, `write` over a link. A `human_nonce` that is given must be live.
 
 ### review-note
 
@@ -4337,6 +4601,9 @@ The five hook fields:
 - `harness_pid`: the pid of the harness process that ran the hook. Read only
   with `agent_session_id`, and held in daemon memory. It lets a new session
   from the same harness process pass the nested-session guard below.
+- `session_start`: true on the report a conversation's `SessionStart` sends.
+  It matters only for a harness whose manifest sets `shared_server`. See the
+  guard below.
 - `activity`: the hook event itself, for the pane's activity ring: `event`
   (`prompt`, `tool`, `tool_done`, `tool_failed` or `turn_end`), `tool`,
   `target`, `text`, `files`, `ok` and `model`, all optional but `event`. It is
@@ -4371,6 +4638,19 @@ different session is also accepted when its `harness_pid` is the one the
 window's current session was reported with: that is a new conversation in the
 same process, such as `/clear` after an interrupted turn that never reported
 `Stop`.
+
+A harness whose manifest sets `shared_server = true` (Codex) runs the hooks of
+every conversation from one server process. A conversation in another
+terminal can share that process, its pid and the pane's `TUIOS_PANE_ID`. For
+such a harness, a report with `session_start` sets the conversation that owns
+the window. A report for another conversation of the same harness is refused
+with `foreign_session`, at rest and mid-turn, unless it carries
+`session_start`. The last four conversations that owned the window are the
+exception: the next report from one of them takes the window back, and the
+owner it displaces joins the list. `report-agent-activity` from one of them is
+not refused either. The daemon forgets both when the pane is back at
+its shell. Until a `session_start` arrives, the window is open to any report.
+`set-agent-session` is not guarded this way, and it clears the guard.
 
 `reason`, `activity_recorded` and the hook fields are additive. A client that
 sends none of the fields is handled exactly as before. A daemon older than them does not
@@ -5454,6 +5734,7 @@ this section is the contract around them.
 | `file-stat` | Describes one path: `exists`, `size`, and `info` (name, path, kind `file`, `dir`, `symlink` or `other`, `link_kind` and `link` for a link, size, `mtime` in Unix ms, `mode` as `ls` prints it, `perm` as a number, `hidden`). With `part`, it describes the part file of a copy to the path instead. |
 | `file-list` | Lists a folder a page at a time (`offset`, `limit` up to 5000, `hidden`): folders first, then names in natural order (`file2` before `file10`). It reads at most 50000 names (`capped`). Part files are not listed. |
 | `file-read` | Up to 4 MiB of a regular file, base64, from `offset`. |
+| `file-preview` | What Quick Look in the GUI shows of one file, made on the machine the file is on. An image comes back scaled to `max_px` (default 1600, at most 4096) on its long side, a PDF page (`page`) and a film frame as an image when that machine has `pdftoppm` and `ffmpeg`, text as its first 256 KiB, and anything else as its type and size (`kind` `binary`). Without `pdftoppm` a PDF up to 8 MiB is sent as it is. A WebP or a BMP, and a picture whose decode would take more than 256 MB here (a large progressive JPEG), is sent as it is, up to 16 MiB, with its own `mime`, for the client to decode. The file is opened once, with the read rules of `file-read`, and the tools read that open file, not the path. ffmpeg and ffprobe open only the file and only the MP4, QuickTime, Matroska, WebM and AVI containers. A pipe or a device is described, not read. |
 | `file-hash` | The sha256 of a file, of a range of it (`offset`, `length`), or of a copy's part (`part`, `part_id`). |
 | `file-walk` | Every file and folder under a folder, for a folder copy, at most 20000 entries. With `stream`, up to 1000000 entries, one JSON line each after the reply, then a last line `{end, bytes, skipped, skipped_count}`, or `{end, code, error}`. Each entry has `rel` (slash separated), `size`, `dir`, `perm` and `mtime`. Links are not followed. A link, a named pipe, a socket and a device are not copied: `skipped` names the first 200 with `rel` and `kind`, and `skipped_count` counts all of them. |
 | `file-mkdir` | Makes a folder and its parents. With `receive`, it ignores `path` and makes the receive folder: where a copy from the caller lands when it names no folder. For a linked machine that is the first folder of its `files_roots`, else `~/Downloads/tuios`. The reply's `path` names it. |
@@ -5640,7 +5921,7 @@ profiles), the crontab spools, `/proc`, tuios's own config, state
 and data folders, and the daemon's socket folder (the mail stash) apart from
 its drop folder.
 
-**Reads over a link.** A read (`file-read`, `file-hash`, `file-walk`,
+**Reads over a link.** A read (`file-read`, `file-preview`, `file-hash`, `file-walk`,
 `open-file-stream` read), and a look at a path's name and size (`file-stat`,
 `file-list`), from one of these is `forbidden` too, so a linked
 machine cannot read keys or credentials out: `~/.ssh` (except a `*.pub` key),
@@ -5720,12 +6001,12 @@ the one before. The configuration is in
 | `list` | `list-*`, `session-info`, `ssh-agent-path`, `display-env`, `get-window`, `capture-pane`, `screenshot`, `get-option`, `get-agent-state`, `resolve-pane`, `explain-agent-*`, `wait-for`, `subscribe`, `unsubscribe`, `peek-prompt`, `read-dir`, `wait-dir`, `compare-fan`, `agent-activity`, `get-approval`, `file-stat`, `file-list` |
 | `mail` | `send-agent-message`, `read-agent-messages`, `stash-put`, `stash-list`, `stash-get` |
 | `open` | `new-session`, `new-window`, `split-window`, `popup`, `new-worktree`, `fan`, `start-agent`, `open-pane`, `resize-pane`, `close-pane`, `pane-cwd`, `pane-agent`, `pane-calls` |
-| `write` | `send-keys`, `send-text`, `ask-agent`, `run-command`, `switch-session`, `detach-client`, `close-window`, `close-workspace`, `kill-session`, `focus-window`, `move-window`, `set-window`, `select-workspace`, `set-layout`, `resize`, `set-option`, `set-session-*`, `set-workspace-*`, `set-agent-*`, `resume-agent`, `request-approval`, `refresh-dock`, `pip`, `remove-worktree`, `bundle-worktree`, `run`, `ask-human` (whose handler refuses a link caller anyway), `review-diff` (it returns file contents), `review-note`, `send-review`, `queue-prompt`, `cancel-queued`, `keep-fan` |
+| `write` | `send-keys`, `send-text`, `ask-agent`, `run-command`, `switch-session`, `detach-client`, `close-window`, `close-workspace`, `kill-session`, `focus-window`, `move-window`, `set-window`, `select-workspace`, `set-layout`, `resize`, `set-option`, `set-session-*`, `set-workspace-*`, `set-agent-*`, `resume-agent`, `request-approval`, `refresh-dock`, `pip`, `remove-worktree`, `bundle-worktree`, `run`, `ask-human` (whose handler refuses a link caller anyway), `review-diff` (it returns file contents), `review-note`, `review-stage`, `send-review`, `queue-prompt`, `cancel-queued`, `keep-fan` |
 | `open` and `write` | `verify-fan` |
 | `open` and `files` | `paste-pane-image` |
 | `write` and `files` | `paste-image` |
 | `respond` | `respond`, `reply-approval`, `dismiss-attention`, `release-agent-message`, `answer-ask`, `mark-attention`, `register-push`, `list-push`, `remove-push` |
-| `files` | `file-read`, `file-hash`, `file-walk`, `open-file-stream`, `file-mkdir`, `file-rename`, `file-remove`, `file-commit`, `file-abort`, `file-drop-dir`, `file-check`, `open-tree-stream`, `speed-test`. Writes are also held to `files_roots` and the deny list in [Files and transfers](#files-and-transfers), and reads to the read deny list. |
+| `files` | `file-read`, `file-preview`, `file-hash`, `file-walk`, `open-file-stream`, `file-mkdir`, `file-rename`, `file-remove`, `file-commit`, `file-abort`, `file-drop-dir`, `file-check`, `open-tree-stream`, `speed-test`. Writes are also held to `files_roots` and the deny list in [Files and transfers](#files-and-transfers), and reads to the read deny list. |
 | every one | `open-host-connection`, `retry-host`, `set-pane-grants` (whose handler refuses a link caller anyway), `transfer-start`, `transfer-list`, `transfer-pause`, `transfer-resume`, `transfer-cancel`, `transfer-answer`, `transfer-clear`, `host-speed-test`, `drop-files` (they make this daemon use its own links) |
 
 Binary messages: `MsgList`, the PTY subscribe messages, `MsgGetTerminalState`,
@@ -6101,6 +6382,7 @@ them:
 | --- | --- | --- | --- | --- |
 | `review-diff` | The diff of what the agent in a pane changed, against its base or a fan sibling, marked `untrusted` | `read`, own session and fan group | `write` (file contents) | no |
 | `review-note` | Add, edit, remove, list or clear review notes on a pane's changes | `write`; `add` and `edit` only on a pane the caller could type into | `write` | a note is the person's only with a live `human_nonce` |
+| `review-stage` | Stage or unstage a file, a hunk or lines of a pane's worktree, and undo it; only the index changes | refused | `write` | no; a `human_nonce` that is given must be live |
 | `send-review` | Send the unsent notes to the agent through the delivery queue | `write`, and a typing verb: the target holds nothing the caller does not, and is not on `needs_input` unless the caller holds `respond` | `write` | "from the person" only with a live `human_nonce`; a note by anyone else is labelled with its author, and withheld when its author may not type there now |
 | `compare-fan` | One row per attempt of a fan: branch, agent, state, changes, last check | `read`, own fan group | `list` | no |
 | `verify-fan` | Run one check with `sh -c` in a window named `verify` in every attempt; the window holds no grants | `fan`, own fan group | `open` and `write` | no |
@@ -6137,13 +6419,59 @@ by printing something and then going silent for 5 seconds. [AGENT_STATE.md](AGEN
 describes the whole lifecycle.
 
 `queue-prompt` params: `session`, `window` (default the focused window; it
-must run an agent, and `human` is `no_keyboard`), `text` (required, at most
-16 KiB), `human_nonce`, `from`.
+must run an agent, and `human` is `no_keyboard`), `text` (at most 16 KiB,
+required without `parts`), `parts`, `human_nonce`, `from`.
 
 ```json
 {"id":1,"verb":"queue-prompt","params":{"session":"work","window":"build","text":"make the backoff jitter configurable"}}
 {"id":1,"result":{"type":"prompt_queued","id":"q3","position":1,"queued":1,"delivering":false}}
 ```
+
+`host` names a machine from `[hosts]`: the message is for a pane there. This
+daemon passes it, with its parts, to that machine's daemon over the link, on
+a connection of its own, and answers with the far daemon's result and `host`.
+The far daemon queues it as `link:THIS-MACHINE`, held to its policy for this
+machine: `write`, and `files` for a block or an image. Only a caller outside
+every pane may send one, since the far daemon sees only the link. The
+person's nonce is checked here and not sent on.
+
+`parts` is the message as ordered parts, the form the reply composer sends:
+`{"kind":"text","text":…}` for typed text, `{"kind":"paste","text":…,"n":1}`
+for a pasted block, and `{"kind":"image","data":…,"n":1}` for an image, `data`
+being the file in base64, where `n` is the block's number as the person saw
+it. A message takes at most 64 parts, 8 images of 8 MiB each, and 8 MiB in
+all. With `parts`, `text` is ignored, so
+a client can send both and a daemon older than `parts` types the text. Such a
+daemon answers without the `parts` count in the result.
+
+```json
+{"id":1,"verb":"queue-prompt","params":{"window":"build","parts":[{"kind":"text","text":"this fails: "},{"kind":"paste","text":"--- FAIL: TestJitter\n…","n":1}]}}
+{"id":1,"result":{"type":"prompt_queued","id":"q4","position":1,"queued":1,"delivering":true,"parts":2}}
+```
+
+The daemon on the pane's machine chooses how each block travels when it types
+the message, not when it queues it:
+
+- When the whole message is 12 KiB or less and the pane takes a bracketed
+  paste, each block is typed in its place, as one paste.
+- Otherwise each block is written to a file in the paste folder beside the
+  daemon's socket, and the typed text names it in the block's place:
+  `[Pasted text #1: PATH, 42 lines]`. The file is mode 0600 in a 0700 folder,
+  written through an `os.Root` at the folder and never through a link. It is
+  kept for 24 hours and removed when the daemon stops.
+- Each image is written there too, named by the type its bytes show. The
+  harness's `[input] images` places its path: in a paste of its own between
+  the text before and after it (`path_paste`, when the pane takes a bracketed
+  paste), as `[Image #1] PATH` in the text (`path_text`), or nowhere:
+  `images = "none"` refuses the message at `queue-prompt` with
+  `invalid_params`.
+
+The text parts with each block's label must fit 16 KiB. A pane's queue holds
+at most 32 MiB and every queue together 128 MiB; past either, `queue_full`.
+Over a link, a message with a block needs `files` in that machine's
+`[hosts]` policy, at `queue-prompt` and again when it is typed. A message
+whose file cannot be written is dropped, and an Inbox question says so on the
+pane's blocking key.
 
 `delivering` is true when the entry is next and the agent is at rest now, so
 it is typed within about a second. Errors: `queue_full` when the pane already
@@ -6177,6 +6505,36 @@ For every entry the pane is checked for `needs_input` right before it is
 typed. An entry being typed cannot be dropped. A pane on another machine,
 whose calls arrive through its report channel, may neither queue nor drop:
 both verbs answer `forbidden`.
+
+### The reply history
+
+`reply-history` and `add-reply-history` keep what the person sent to each
+agent, for the reply editor's `up` and `ctrl+r`. The history is in the
+daemon's memory only and ends with it: replies hold pasted logs and secrets.
+Both verbs take a live `human_nonce`, so no pane and no caller without it
+reads or adds to it. The history holds what was sent to the agents of every
+session, so the nonce must prove the person for every session: an attach
+nonce, or a presence made with no session. A presence made for one session is
+refused. Over a link they need `respond`.
+
+`add-reply-history` params: `target` (the key the client keeps the history
+under, at most 512 bytes), `parts` (as `queue-prompt` takes them),
+`human_nonce`. A target keeps 100 messages, and 64 targets are kept, the
+least used going first. The same message again moves to the end. A message
+keeps at most 256 KiB of pastes and images: past that the largest are
+dropped, and `dropped` names them. The whole history holds at most 32 MiB;
+past that the oldest messages of the least used targets go first.
+
+`reply-history` params: `target`, `human_nonce`. It answers `entries`, oldest
+first, each with `parts`, `at` (Unix ms) and `dropped`.
+
+```json
+{"id":1,"verb":"reply-history","params":{"target":"harness:claude-code:/work/api","human_nonce":"…"}}
+{"id":1,"result":{"type":"reply_history","target":"harness:claude-code:/work/api","entries":[{"parts":[{"kind":"text","text":"rerun with -count=1"}],"at":1792181183703}]}}
+```
+
+The TUI's target is `harness:HARNESS:FOLDER` when it knows both, and
+`pane:SESSION/WINDOW` otherwise.
 
 ## Event stream
 
@@ -6406,7 +6764,11 @@ Conditions:
 - `window-output` matches `pattern` against the target window's captured
   content. Checked once immediately, then re-checked as the window produces
   output.
-- `window-exit` resolves when the target window's shell process exits.
+- `window-exit` resolves when the target window's shell process exits. The
+  result carries `exit_code` (-1 when a signal stopped the process) and
+  `signal` when a signal stopped it. Both are omitted when the status is not
+  known, such as for a window on another machine. An older client ignores
+  them.
 - `window-idle` resolves after the target window produces no output for `idle`
   milliseconds.
 - `session-exists` resolves when a session named `session` exists.

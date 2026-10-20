@@ -2,14 +2,13 @@ package session
 
 import (
 	"encoding/json"
-	"fmt"
 	"slices"
 	"time"
 
 	"github.com/Gaurav-Gosain/tuios/internal/capture"
 	"github.com/Gaurav-Gosain/tuios/internal/config"
-	"github.com/Gaurav-Gosain/tuios/internal/shot"
 	"github.com/Gaurav-Gosain/tuios/internal/theme"
+	"tuios.dev/shot"
 )
 
 // The screenshot verb renders a window to a styled image and writes it.
@@ -35,7 +34,7 @@ const (
 )
 
 // verbScreenshot renders one window and writes the file.
-func (d *Daemon) verbScreenshot(_ *connState, params json.RawMessage) (any, *verbError) {
+func (d *Daemon) verbScreenshot(cs *connState, params json.RawMessage) (any, *verbError) {
 	var p struct {
 		Session    string `json:"session"`
 		Window     string `json:"window"`
@@ -69,7 +68,7 @@ func (d *Daemon) verbScreenshot(_ *connState, params json.RawMessage) (any, *ver
 		return nil, mapResolveErr(err, sess)
 	}
 
-	settings, warnings := d.screenshotSettings(sess, p.Theme)
+	settings, warnings := d.screenshotSettings(cs, sess, p.Theme)
 	if p.Format != "" {
 		settings.Format, _ = shot.ParseFormat(p.Format)
 	}
@@ -103,10 +102,10 @@ func (d *Daemon) verbScreenshot(_ *connState, params json.RawMessage) (any, *ver
 	}
 
 	settings.Title = d.screenshotTitle(sess, p.Window, settings.Title)
-	frame, frameWarnings := capture.Frame(settings, palette, false)
+	frame, frameWarnings := capture.Frame(settings, palette, grid, false)
 	warnings = append(warnings, frameWarnings...)
 
-	data, err := shot.Render(settings.Format, grid, frame, nil)
+	data, err := shot.Render(settings.Format, grid, frame)
 	if err != nil {
 		return nil, newVerbError(ErrVerbCommandFailed, err.Error())
 	}
@@ -139,90 +138,54 @@ func warningsOrEmpty(w []string) []string {
 	return w
 }
 
-// screenshotSettings resolves the [screenshot] section for a session: the
-// session's own options where it set them, the registry defaults elsewhere.
-//
-// The daemon has no config of its own to read here. It holds each session's
-// options, which is what set-option writes and what a client hands over on
-// attach, so that is the only honest source.
-func (d *Daemon) screenshotSettings(sess *Session, themeOverride string) (capture.Settings, []string) {
+// screenshotSettings resolves the [screenshot] section for a session. The
+// session's overrides win, then config.toml, then the defaults: the order the
+// client draws by. See sessionOptions.
+func (d *Daemon) screenshotSettings(cs *connState, sess *Session, themeOverride string) (capture.Settings, []string) {
+	opts := d.optionsFor(cs, sess)
 	cfg := config.ScreenshotConfig{
-		Format:      sessOption(sess, "screenshot.format"),
-		Directory:   sessOption(sess, "screenshot.directory"),
-		Frame:       sessOption(sess, "screenshot.frame"),
-		Background:  sessOption(sess, "screenshot.background"),
-		Controls:    sessOption(sess, "screenshot.controls"),
-		TitleFormat: sessOption(sess, "screenshot.title_format"),
-		FontFamily:  sessOption(sess, "screenshot.font_family"),
-		FontFile:    sessOption(sess, "screenshot.font_file"),
+		Format:      opts.get("screenshot.format"),
+		Directory:   opts.get("screenshot.directory"),
+		Frame:       opts.get("screenshot.frame"),
+		Background:  opts.get("screenshot.background"),
+		Controls:    opts.get("screenshot.controls"),
+		TitleFormat: opts.get("screenshot.title_format"),
+		FontFamily:  opts.get("screenshot.font_family"),
+		FontFile:    opts.get("screenshot.font_file"),
 	}
-	if v, ok := sessOptionInt(sess, "screenshot.padding"); ok {
+	if v, ok := opts.getInt("screenshot.padding"); ok {
 		cfg.Padding = &v
 	}
-	if v, ok := sessOptionInt(sess, "screenshot.radius"); ok {
+	if v, ok := opts.getInt("screenshot.radius"); ok {
 		cfg.Radius = &v
 	}
-	if v, ok := sessOptionInt(sess, "screenshot.scale"); ok {
+	if v, ok := opts.getInt("screenshot.scale"); ok {
 		cfg.Scale = &v
 	}
-	if v, ok := sessOptionBool(sess, "screenshot.shadow"); ok {
+	if v, ok := opts.getBool("screenshot.shadow"); ok {
 		cfg.Shadow = &v
 	}
-	if v, ok := sessOptionBool(sess, "screenshot.cursor"); ok {
+	if v, ok := opts.getBool("screenshot.cursor"); ok {
 		cfg.Cursor = v
 	}
 
 	themeID := themeOverride
 	if themeID == "" {
-		themeID = sessOption(sess, "appearance.theme")
+		themeID = opts.get(optionTheme)
 	}
-	if themeID == "none" {
+	// No theme follows Omarchy where it is installed, as the client does.
+	themeID = followOmarchy(themeID)
+	if themeID == theme.NoneID {
 		themeID = ""
 	}
-	glyphs := sessOption(sess, "appearance.glyphs")
+	glyphs := opts.get("appearance.glyphs")
 	s := capture.SettingsFrom(cfg, themeID, glyphs)
 	// The pane's own option wins, and unset follows the default for every
 	// surface, the same precedence the client paints by.
 	s.PaneBackground = config.ResolveBackground(
-		sessOption(sess, "appearance.pane_background"),
-		sessOption(sess, "appearance.background"))
+		opts.get("appearance.pane_background"),
+		opts.get("appearance.background"))
 	return s, nil
-}
-
-// sessOption reads a session option, falling back to the registry default so
-// an unset key and an absent one behave alike.
-func sessOption(sess *Session, path string) string {
-	if sess != nil {
-		if v, ok := sess.GetOption(path); ok {
-			return v
-		}
-	}
-	if opt, ok := config.LookupOption(path); ok {
-		return opt.Default
-	}
-	return ""
-}
-
-func sessOptionInt(sess *Session, path string) (int, bool) {
-	v := sessOption(sess, path)
-	if v == "" {
-		return 0, false
-	}
-	var n int
-	if _, err := fmt.Sscanf(v, "%d", &n); err != nil {
-		return 0, false
-	}
-	return n, true
-}
-
-func sessOptionBool(sess *Session, path string) (bool, bool) {
-	switch sessOption(sess, path) {
-	case "true", "on", "1", "yes", "enabled":
-		return true, true
-	case "false", "off", "0", "no", "disabled":
-		return false, true
-	}
-	return false, false
 }
 
 // screenshotTitle renders the title bar text from the window's own name

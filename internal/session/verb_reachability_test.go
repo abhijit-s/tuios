@@ -79,10 +79,12 @@ var exampleOutcomes = map[string]exampleOutcome{
 	"dismiss-attention#0": {errCode: ErrVerbNotHuman, why: "only a client attached right now may dismiss, and none is"},
 	// The same holds for answering an approval. The allowed path is proved in
 	// approvals_test.go.
-	"reply-approval#0":   {errCode: ErrVerbNotHuman, why: "only a client attached right now may answer, and none is"},
-	"agent-transcript#0": {errCode: ErrVerbNotHuman, why: "only a client attached right now may read a transcript, and none is"},
-	"agent-transcript#1": {errCode: ErrVerbNotHuman, why: "only a client attached right now may read a transcript, and none is"},
-	"agent-transcript#2": {errCode: ErrVerbNotHuman, why: "only a client attached right now may read a transcript, and none is"},
+	"reply-approval#0":    {errCode: ErrVerbNotHuman, why: "only a client attached right now may answer, and none is"},
+	"agent-transcript#0":  {errCode: ErrVerbNotHuman, why: "only a client attached right now may read a transcript, and none is"},
+	"agent-transcript#1":  {errCode: ErrVerbNotHuman, why: "only a client attached right now may read a transcript, and none is"},
+	"reply-history#0":     {errCode: ErrVerbNotHuman, why: "only a client attached right now reads the reply history, and none is"},
+	"add-reply-history#0": {errCode: ErrVerbNotHuman, why: "only a client attached right now adds to the reply history, and none is"},
+	"agent-transcript#2":  {errCode: ErrVerbNotHuman, why: "only a client attached right now may read a transcript, and none is"},
 	// The phones for Web Push are the person's, and the example's nonce is a
 	// placeholder. e2e/tui/webpush_test.go registers one with a real nonce.
 	"register-push#0": {errCode: ErrVerbNotHuman, why: "only the person may register a phone, with a live nonce"},
@@ -159,6 +161,7 @@ var exampleOutcomes = map[string]exampleOutcome{
 	"file-read#0":        {errCode: ErrVerbNoFile, why: "~/notes.md does not exist here"},
 	"file-rename#0":      {errCode: ErrVerbNoFile, why: "~/a.txt does not exist here"},
 	"file-hash#0":        {errCode: ErrVerbNoFile, why: "~/big.iso does not exist here"},
+	"file-preview#0":     {errCode: ErrVerbNoFile, why: "~/Pictures/cat.jpg does not exist here"},
 	"file-walk#0":        {errCode: ErrVerbNoFile, why: "~/photos does not exist here"},
 	"file-commit#0":      {errCode: ErrVerbNoFile, why: "no copy to ~/big.iso is in flight here"},
 	"open-file-stream#0": {errCode: ErrVerbNoFile, why: "~/big.iso does not exist here"},
@@ -229,6 +232,12 @@ var exampleOutcomes = map[string]exampleOutcome{
 	// agent. The review verbs are proved in verb_review_test.go.
 	"review-diff#0": {errCode: ErrVerbSessionNotFound, why: "api-fan-retry-2 does not exist here"},
 	"send-review#0": {errCode: ErrVerbInvalidParams, why: "the fixture's build window runs no agent"},
+	// The fixture's repository has no api/retry.go, and the undo example's
+	// sha is a placeholder. review-stage is proved in
+	// e2e/tui/review_stage_test.go.
+	"review-stage#0": {errCode: ErrVerbHunkChanged, why: "the fixture's repository has no change to api/retry.go"},
+	"review-stage#1": {errCode: ErrVerbHunkChanged, why: "the fixture's repository has no change to api/retry.go"},
+	"review-stage#2": {errCode: ErrVerbInvalidParams, why: "the example's sha is a placeholder"},
 	// No agent finished a turn in the fixture, so no pane has a checkpoint.
 	// The checkpoints are proved in e2e/tui/checkpoint_test.go.
 	"checkpoint-diff#0":    {errCode: ErrVerbNoCheckpoint, why: "no agent finished a turn, so build has no checkpoint 2"},
@@ -236,6 +245,7 @@ var exampleOutcomes = map[string]exampleOutcome{
 	// The fixture has no agent panes, so there is nothing to queue for,
 	// and so no entry to drop. The queue is proved in agent_queue_test.go.
 	"queue-prompt#0":  {errCode: ErrVerbInvalidParams, why: "the fixture's build window runs no agent"},
+	"queue-prompt#1":  {errCode: ErrVerbInvalidParams, why: "the fixture's build window runs no agent; its parts are read and checked first"},
 	"cancel-queued#1": {errCode: ErrVerbInvalidParams, why: "nothing is queued, so q3 is not an entry"},
 	"compare-fan#0":   {errCode: ErrVerbSessionNotFound, why: "api-fan-retry-1 does not exist here"},
 	"verify-fan#0":    {errCode: ErrVerbSessionNotFound, why: "api-fan-retry-1 does not exist here"},
@@ -288,15 +298,15 @@ func TestEveryVerbExampleReachesItsHandler(t *testing.T) {
 	t.Chdir(testutil.GitRepo(t))
 	d, socketPath := startTestDaemon(t)
 
-	names := make([]string, 0, len(verbRegistry))
-	for name := range verbRegistry {
+	names := make([]string, 0, len(verbRegistry()))
+	for name := range verbRegistry() {
 		names = append(names, name)
 	}
 	sort.Strings(names)
 
 	seen := map[string]bool{}
 	for _, name := range names {
-		entry := verbRegistry[name]
+		entry := verbRegistry()[name]
 		if len(entry.examples) == 0 {
 			t.Errorf("verb %q documents no example, so nothing here can call it", name)
 			continue
@@ -404,14 +414,13 @@ var verbsWithNoDocumentedResult = map[string]bool{
 	"session-info": true, "set-session-accent": true,
 	"set-session-name": true, "set-workspace-name": true,
 	"set-workspace-order": true, "unsubscribe": true,
-	"wait-for": true,
 }
 
 // TestVerbResultSchemasAreDeclaredOrListed keeps the gap above from widening.
 // A result schema is what lets the test check that a handler filled anything
 // in, so a verb without one is a verb the check cannot hold to much.
 func TestVerbResultSchemasAreDeclaredOrListed(t *testing.T) {
-	for name, entry := range verbRegistry {
+	for name, entry := range verbRegistry() {
 		if len(entry.returns) == 0 && !verbsWithNoDocumentedResult[name] {
 			t.Errorf("verb %q names no return fields: document them in its registry "+
 				"entry, or add it to verbsWithNoDocumentedResult", name)
@@ -421,7 +430,7 @@ func TestVerbResultSchemasAreDeclaredOrListed(t *testing.T) {
 		}
 	}
 	for name := range verbsWithNoDocumentedResult {
-		if _, ok := verbRegistry[name]; !ok {
+		if _, ok := verbRegistry()[name]; !ok {
 			t.Errorf("verbsWithNoDocumentedResult names %q, which the registry does not have", name)
 		}
 	}
@@ -446,6 +455,13 @@ func freshWorkSession(t *testing.T, d *Daemon) {
 		if _, err := sess.AddDaemonWindow(name, nil); err != nil {
 			t.Fatalf("add window %q: %v", name, err)
 		}
+	}
+	// The session move-window's to_session example moves a window to.
+	if d.manager.GetSession("review") != nil {
+		_ = d.manager.DeleteSession("review")
+	}
+	if _, err := d.manager.CreateSession("review", &SessionConfig{}, 80, 24); err != nil {
+		t.Fatalf("create the session the move-window example names: %v", err)
 	}
 	// The paste buffers the buffer examples name, fresh for each example
 	// since delete-buffer and paste-buffer with delete remove one.

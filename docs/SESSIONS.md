@@ -100,11 +100,42 @@ also run it explicitly:
 tuios daemon                 # run in the foreground (useful for debugging)
 tuios daemon --log-level=messages
 tuios kill-server            # stop the daemon and all its sessions
+tuios restart-server         # stop it and start the newest tuios installed
 ```
 
 `tuios kill-server` is synchronous. It returns only after every session's state
 has been written and the daemon's socket has been removed, so a new daemon can
 be started as soon as it returns.
+
+### Restart the daemon after an update
+
+The daemon runs the build it started with until it stops. After an update,
+`tuios restart-server` moves it to the new build. It lists the panes that run
+a program in each session, and the agents that can resume, and asks. Then it
+stops the daemon, starts the new one, and says which sessions came back. Each
+session comes back with its layout, its pane history and new shells. See
+[`tuios restart-server`](CLI_REFERENCE.md#tuios-restart-server).
+
+In the app, the notice that says the daemon runs another version does the
+same: click it, check the list and press `r`. The command palette has "Restart
+the daemon" too. tuios then starts again in the same session, on the new
+build. See [KEYBINDINGS.md](KEYBINDINGS.md#restart-the-daemon).
+
+The daemon tells its clients why it stops. After `kill-server --restart`,
+which `restart-server` and the app run, it says "restart". After a plain
+`kill-server` it says "stop". A crash says nothing.
+
+- After "restart", a client on this machine waits up to 15 seconds from the
+  goodbye for the new daemon. When the new daemon holds the session, the
+  client attaches to it again by itself and says "The daemon restarted. tuios
+  reattached."
+- After "stop", the client quits at once, as it always did.
+- After a drop with no goodbye, the client waits up to 6 seconds.
+
+Each dial of the wait gives the daemon 2 seconds to answer. Keys typed while
+the client waits are not sent, and the wait note says so. When no daemon comes
+back, or the new daemon does not hold the session, the client quits with the
+same message as before.
 
 More than one client can be attached to the same session at once. All of them
 see the same windows and output. `window_size` in `[daemon]` sets the size of
@@ -457,6 +488,7 @@ BSP tree and the layout mode.
 | Running programs (vim, tail, a build) | Yes | No | No | No |
 | Agent conversations (resumable harnesses) | Yes, the agent keeps running | The conversation, not the process: see below | Same | Same |
 | Sidebar shown or hidden | Yes | Yes | Partial: as of the last save | Partial: as of the last save |
+| Space membership | Yes | Yes | Partial: as of the last save | Partial: as of the last save |
 | Copy-mode position, selection | No, per-client | No | No | No |
 | Input mode (window vs terminal) | No, per-client | No | No | No |
 
@@ -493,6 +525,8 @@ titles, custom names, workspace, minimize state, its focus, its BSP trees, its
 layout mode, and each window's working directory. It does not hold anything
 about the processes that were running. Each pane's history is saved in a
 separate file. See [Pane history](#pane-history).
+
+A session filed under a space (`tuios new --space`, or [`tuios set-session-space`](CLI_REFERENCE.md#tuios-set-session-space)) has the space's name in its state file, and a restore puts the session back in that space. A space's name is at most 64 bytes. A global session cannot be in a space: `set-session-space` refuses to file one. A daemon from before spaces ignores the `space` key.
 
 When the daemon starts, it restores every session it finds saved state for. For
 each window it spawns a **fresh shell** in that window's saved working directory
@@ -1242,6 +1276,21 @@ a pane that set its own `XDG_RUNTIME_DIR`), the command runs against the daemon
   passthrough, which tuios drops, and an agent that opens panes through tmux
   reached the outer tmux. Running tmux inside a tuios pane still works, and no
   longer warns about nesting.
+- **Panes never inherit an agent tool call's session variables or its
+  `NO_COLOR`.** A command such as `tuios new --detach` starts a daemon when
+  none is running, and the daemon keeps that command's environment. When an
+  agent ran it, every pane used to get the agent's session and tool-call
+  variables, such as Codex's `CODEX_THREAD_ID` and `CODEX_CI` or Claude Code's
+  `CLAUDECODE` and `CLAUDE_CODE_SESSION_ID`, the `AI_AGENT` marker and Codex's
+  `CODEX_SANDBOX` variables, along with the `NO_COLOR` the
+  tool call sets for its own output. Programs in every pane then drew without
+  colour, and a Codex started in a pane was taken for a nested session, so the
+  pane never reported its state. These are removed, together with `CLICOLOR`,
+  `CLICOLOR_FORCE` and `FORCE_COLOR`; `CODEX_HOME`, `CODEX_API_KEY` and
+  `CLAUDE_CONFIG_DIR` stay. Other variables, such as `GIT_PAGER`, still come
+  from the daemon's environment. To have `NO_COLOR` in every pane, set it in
+  your shell's startup file, or pass it with `--env` to `start-agent` and
+  `fan`.
 - **Resurrection restores structure, not work.** It is a way to get your layout
   and directories back, not a way to survive a crash without losing anything.
 

@@ -11,6 +11,7 @@ import (
 	"os"
 	"runtime"
 	"slices"
+	"sync"
 	"time"
 
 	"github.com/Gaurav-Gosain/tuios/internal/agentproto"
@@ -166,6 +167,8 @@ type verbError struct {
 func (e *verbError) Error() string { return e.Code + ": " + e.Message }
 
 // newVerbError builds a *verbError with the given code and message.
+//
+//go:noinline
 func newVerbError(code, message string) *verbError {
 	return &verbError{Code: code, Message: message}
 }
@@ -254,14 +257,29 @@ func selectWriteParams(what string) []verbParam {
 	}
 }
 
-// verbRegistry is the dispatch table for every JSON verb the daemon supports.
-// It is built once at package init so list-verbs and dispatch share one source
-// of truth. It is populated in init() to avoid a static initialization cycle
-// (list-verbs reads the registry).
-var verbRegistry map[string]verbEntry
+// verbRegistry returns the dispatch table for every JSON verb the daemon
+// supports, so list-verbs and dispatch share one source of truth.
+//
+// It is built on first use, not in init. A table that init builds is reachable
+// in every program that links this package, and so is every handler it names,
+// which is most of the daemon. The browser build links this package for its
+// types and never runs a daemon, and the table alone kept about 3 MB of daemon
+// code in it. A function rather than a package-level initializer, because the
+// table names list-verbs, which reads the table: an initializer would be a
+// static initialization cycle.
+func verbRegistry() map[string]verbEntry {
+	verbRegistryOnce.Do(func() { verbRegistryMap = buildVerbRegistry() })
+	return verbRegistryMap
+}
 
-func init() {
-	verbRegistry = map[string]verbEntry{
+var (
+	verbRegistryOnce sync.Once
+	verbRegistryMap  map[string]verbEntry
+)
+
+// buildVerbRegistry makes the table verbRegistry returns.
+func buildVerbRegistry() map[string]verbEntry {
+	table := map[string]verbEntry{
 		"hello": {
 			description: "Handshake: report the protocol version this daemon speaks and the version range it accepts. Also tells the daemon the caller's terminal, so a session this connection later creates (new-session, switch-session's create) gets it rather than the daemon's fallback.",
 			params: []verbParam{
@@ -468,9 +486,12 @@ func init() {
 				{Name: "window_name", Type: "string", Description: "Name for the first window. Omit to use the shell's title."},
 				{Name: "cwd", Type: "string", Description: "Directory the session's windows start in: the first window, and any later one with no directory to inherit. Omit to use the daemon's."},
 				{Name: "command", Type: "[]string", Description: "Argv to exec as the first window's process instead of a shell. No shell parses it, so nothing needs quoting."},
+				{Name: "space", Type: "string", Description: "Space to file the session under, as set-session-space does: trimmed, then held to the session name rules and 64 bytes. Omit for none."},
+				{Name: "env", Type: "object", Description: "Environment variables for the window's process, name to value, on top of the daemon's. TUIOS_ names, TMUX and TMUX_PANE are refused, and a call from another machine may not pass env. Not for a window on another machine. Not saved: a restored pane starts without it."},
 			},
 			returns: []verbParam{
 				{Name: "session", Type: "string", Description: "Name of the new session. Use it as the session parameter of every later call."},
+				{Name: "space", Type: "string", Description: "Space the session is filed under. Absent when space was not given."},
 				{Name: "session_id", Type: "string", Description: "Id of the new session."},
 				{Name: "width", Type: "int", Description: "Nominal width the session was created at."},
 				{Name: "height", Type: "int", Description: "Nominal height the session was created at."},
@@ -483,6 +504,7 @@ func init() {
 				`{"id":1,"verb":"new-session"}`,
 				`{"id":1,"verb":"new-session","params":{"name":"work","window_name":"build","cwd":"/src/api"}}`,
 				`{"id":1,"verb":"new-session","params":{"name":"empty","window":false}}`,
+				`{"id":1,"verb":"new-session","params":{"name":"ledger","space":"accounts"}}`,
 			},
 			handler: (*Daemon).verbNewSession,
 		},
@@ -757,7 +779,7 @@ func init() {
 			handler:  (*Daemon).verbListHosts,
 		},
 		"retry-host": {
-			description: "Ask the link to one host to dial again now instead of after its backoff. While the host waits for a Tailscale SSH sign-in, the link also dials again every few seconds for two minutes, so a new sign-in page shows up soon and the link comes up soon after the person signs in. A dial in progress is not stopped.",
+			description: "Dial the link to one host again now. The backoff starts again from one second. If the link is up, the link pings the host instead. If the host does not answer in 5 seconds, the link dials again. If the host waits for a Tailscale SSH sign-in, the link dials every few seconds for two minutes. A dial in progress continues.",
 			params: []verbParam{
 				{Name: "host", Type: "string", Required: true, Description: "A host by name from the [hosts] config table."},
 			},
@@ -957,7 +979,7 @@ func init() {
 				{Name: "host", Type: "string", Description: "One host by name, or \"local\" for this machine. Omit for every host."},
 			},
 			returns: []verbParam{
-				{Name: "hosts", Type: "[]string", Description: "One entry per host, local first, carrying that host's status and its sessions. An entry that failed carries an error and a code; when the host answered before, it also carries the sessions it last gave, with stale true and fetched_at in unix seconds. Each session carries agent_state, the most urgent agent state among its panes, so a listing can say which sessions want a person without a second call. events says how this daemon follows the host."},
+				{Name: "hosts", Type: "[]string", Description: "One entry per host, local first, carrying that host's status and its sessions. An entry that failed carries an error and a code; when the host answered before, it also carries the sessions it last gave, with stale true and fetched_at in unix seconds. Each session carries agent_state, the most urgent agent state among its panes, so a listing can say which sessions want a person without a second call, and space when it is filed under one on its host. events says how this daemon follows the host."},
 			},
 			examples: []string{
 				`{"id":1,"verb":"list-host-sessions"}`,
@@ -1014,10 +1036,16 @@ func init() {
 				{Name: "workspace", Type: "int", Description: "Workspace number to create the window on. Omit for the current workspace."},
 				{Name: "cwd", Type: "string", Description: "Directory to start the shell in. Omit to inherit the daemon's."},
 				{Name: "focus", Type: "bool", Description: "Focus the new window. Pass false to leave the focus where it is.", Default: "true"},
-				{Name: "command", Type: "[]string", Description: "Argv to exec as the window's process instead of a shell. No shell parses it, so nothing needs quoting. The window closes when the program exits."},
+				{Name: "command", Type: "[]string", Description: "Argv to exec as the window's process instead of a shell. No shell parses it, so nothing needs quoting. The window closes when the program exits, unless keep_open is set."},
 				{Name: "host", Type: "string", Description: "Run the window's process on another machine, named as it is in the [hosts] config table. The window belongs to this session and is drawn and sized here; only the process is there. Omit, or pass \"local\", for this machine."},
 				grantsParam,
 				{Name: "close_on_exit", Type: "bool", Description: "Close the window when its process exits, also with no client attached. Without it, a detached session keeps a window whose process exited until something closes it.", Default: "false"},
+				{Name: "keep_open", Type: "bool", Description: "Keep the window after its process exits. The window shows a line with the exit status under the last output, and stays until something closes it. Cannot be used with close_on_exit.", Default: "false"},
+				{Name: "wait", Type: "bool", Description: "Answer when the process exits, with exit_code. Use keep_open too to read the output after the exit. Not for a window on another machine.", Default: "false"},
+				{Name: "timeout", Type: "int", Description: "With wait: milliseconds to wait before failing with the timeout code. 0 waits with no limit.", Default: "0"},
+				{Name: "kind", Type: "string", Description: "What draws the window: terminal, or view, web or app for a window a native renderer (tuios-gpui) draws itself. Such a window runs a placeholder that shows its uri in a terminal client.", Default: "terminal", Accepted: WindowKinds},
+				{Name: "uri", Type: "string", Description: "What a view, web or app window shows, such as tuios://review/<pane> or a page. Needed for those kinds."},
+				{Name: "env", Type: "object", Description: "Environment variables for the window's process, name to value, on top of the daemon's. TUIOS_ names, TMUX and TMUX_PANE are refused, and a call from another machine may not pass env. Not for a window on another machine. Not saved: a restored pane starts without it."},
 			},
 			returns: []verbParam{
 				{Name: "window_id", Type: "string", Description: "Id of the new window. Use it to address the window in later calls."},
@@ -1027,11 +1055,15 @@ func init() {
 				{Name: "pty_id", Type: "string", Description: "Id of the window's PTY."},
 				{Name: "focused", Type: "bool", Description: "Whether the window took the focus."},
 				{Name: "unplaced", Type: "bool", Description: "True while the window's geometry is a placeholder. An attached client replaces it. On a detached session it stays true and the reported size is nominal."},
+				{Name: "keep_open", Type: "bool", Description: "True when the window stays after its process exits. Omitted otherwise. A daemon that does not know keep_open omits it too."},
+				{Name: "exit_code", Type: "int", Description: "With wait: the process's exit status, -1 when a signal ended it."},
+				{Name: "signal", Type: "int", Description: "With wait: the signal that ended the process. Omitted when it exited on its own."},
 			},
 			examples: []string{
 				`{"id":1,"verb":"new-window","params":{"session":"work","name":"build"}}`,
 				`{"id":1,"verb":"new-window","params":{"session":"work","name":"tests","workspace":2,"cwd":"/src/api","focus":false}}`,
 				`{"id":1,"verb":"new-window","params":{"session":"work","name":"htop","command":["/usr/bin/htop"]}}`,
+				`{"id":1,"verb":"new-window","params":{"session":"work","name":"tests","focus":false,"command":["sh","-c","make test"],"keep_open":true,"wait":true}}`,
 			},
 			handler: (*Daemon).verbNewWindow,
 		},
@@ -1110,21 +1142,27 @@ func init() {
 			handler: (*Daemon).verbFocusWindow,
 		},
 		"move-window": {
-			description: "Move a window to another workspace.",
+			description: "Move a window to another workspace, or with to_session to another session. The program in the window keeps running, and the window keeps its id and its scrollback.",
 			params: []verbParam{
 				sessionParam,
 				{Name: "window", Type: "string", Description: "Window to move. Omit to move the focused one."},
-				{Name: "workspace", Type: "int", Required: true, Description: "Workspace number to move the window to."},
-				{Name: "follow", Type: "bool", Description: "Switch to that workspace after moving.", Default: "false"},
+				{Name: "workspace", Type: "int", Description: "Workspace number to move the window to. Required without to_session. With to_session, omit it to use the workspace the destination shows."},
+				{Name: "follow", Type: "bool", Description: "Switch to that workspace after moving. With to_session, focus the window in the destination.", Default: "false"},
+				{Name: "to_session", Type: "string", Description: "Session to move the window to, by name or id. A popup, a scratch pane and a pane on another machine cannot move (pane_not_movable). The window's own session is refused (same_session)."},
 			},
 			returns: []verbParam{
-				{Name: "window_id", Type: "string", Description: "Id of the window that moved."},
+				{Name: "window_id", Type: "string", Description: "Id of the window that moved. A move to another session keeps it."},
+				{Name: "session", Type: "string", Description: "Session the window is in now."},
+				{Name: "from_session", Type: "string", Description: "Session the window left. Only with to_session."},
 				{Name: "from_workspace", Type: "int", Description: "Workspace it was on."},
 				{Name: "workspace", Type: "int", Description: "Workspace it is on now."},
-				{Name: "current_workspace", Type: "int", Description: "Workspace showing after the call. It changes only when follow is true."},
+				{Name: "current_workspace", Type: "int", Description: "Workspace the window's session shows after the call. It changes only when follow is true."},
 			},
-			examples: []string{`{"id":1,"verb":"move-window","params":{"session":"work","window":"build","workspace":2,"follow":true}}`},
-			handler:  (*Daemon).verbMoveWindow,
+			examples: []string{
+				`{"id":1,"verb":"move-window","params":{"session":"work","window":"build","workspace":2,"follow":true}}`,
+				`{"id":1,"verb":"move-window","params":{"session":"work","window":"build","to_session":"review"}}`,
+			},
+			handler: (*Daemon).verbMoveWindow,
 		},
 		"set-window": {
 			description: "Change a window's name or minimized state. Pass only the fields to change.",
@@ -1393,9 +1431,13 @@ func init() {
 				{Name: "lines", Type: "int", Description: "Keep only the last N lines. Blank rows below the cursor do not count. Ignored when start or end is given."},
 				{Name: "start", Type: "int", Description: "1-based inclusive first line of the region to keep."},
 				{Name: "end", Type: "int", Description: "1-based inclusive last line of the region to keep."},
+				{Name: "unwrap", Type: "bool", Description: "Join the rows the terminal wrapped because a line was longer than the pane, so each line is one line as the program wrote it. A row that ends with a newline stays a line of its own. lines, start and end then count the joined lines.", Default: "false"},
+				{Name: "trim", Type: "bool", Description: "Drop the blank lines at the end of the capture, which are the empty rows below the cursor. lines, start and end then count what is left.", Default: "false"},
 			},
 			returns: []verbParam{
-				{Name: "content", Type: "string", Description: "The captured text, one line per row."},
+				{Name: "content", Type: "string", Description: "The captured text, one line per row, or per line with unwrap."},
+				{Name: "unwrapped", Type: "bool", Description: "True when unwrap joined the wrapped rows. Omitted otherwise."},
+				{Name: "trimmed", Type: "bool", Description: "True when trim dropped the blank lines at the end. Omitted otherwise."},
 				{Name: "source", Type: "string", Description: "The buffer captured.", Accepted: captureSources},
 				{Name: "styled", Type: "bool", Description: "Whether content carries ANSI styling."},
 				{Name: "resolved", Type: "bool", Description: "Whether index colours were rewritten to 24-bit RGB."},
@@ -1403,8 +1445,11 @@ func init() {
 				{Name: "revision", Type: "int", Description: "A number that grows each time the pane's content can change: output reaches it, or it is resized. Two captures of one source with one revision have the same content. It counts from 0 again when the daemon restarts. Not on a last-command-output capture."},
 				{Name: "boot_id", Type: "string", Description: "The daemon start the revision belongs to, the boot_id of subscribe and list-attention. Compare revisions only when boot_id is the same."},
 			},
-			examples: []string{`{"id":1,"verb":"capture-pane","params":{"session":"work","source":"recent","lines":50}}`},
-			handler:  (*Daemon).verbCapturePane,
+			examples: []string{
+				`{"id":1,"verb":"capture-pane","params":{"session":"work","source":"recent","lines":50}}`,
+				`{"id":1,"verb":"capture-pane","params":{"session":"work","source":"recent","unwrap":true,"trim":true}}`,
+			},
+			handler: (*Daemon).verbCapturePane,
 		},
 		"screenshot": {
 			description: "Render a window to an image file.",
@@ -1501,8 +1546,8 @@ func init() {
 				{Name: "themes", Type: "[]string", Description: "Matching theme ids, capped at 100. truncated reports when the cap applied."},
 				{Name: "total", Type: "int", Description: "How many themes are registered in all."},
 				{Name: "matched", Type: "int", Description: "How many the filter matched, before the cap."},
-				{Name: "active", Type: "string", Description: "The theme this session is set to. Empty means no theme, which is the terminal's own colours."},
-				{Name: "active_source", Type: "string", Description: `"session" for a theme set on this session, "default" for the built-in.`, Accepted: []string{"session", "default"}},
+				{Name: "active", Type: "string", Description: "The theme this session is set to. With no theme set, it is omarchy where Omarchy is installed, because the client follows Omarchy there. Elsewhere it is empty, which means the terminal's own colours."},
+				{Name: "active_source", Type: "string", Description: `"session" for a theme set on this session, "config" for one config.toml sets, "default" for the built-in.`, Accepted: []string{"session", "config", "default"}},
 				{Name: "themes_dir", Type: "string", Description: "Where a custom theme file goes. Writing <id>.json here registers it. No restart is needed."},
 				{Name: "problems", Type: "[]string", Description: "One line per theme file that could not be read, with the reason. Present only when a file is malformed."},
 				{Name: "palette", Type: "object", Description: "Present when theme was given: id, display_name, dark, bg, fg, cursor, swatches (each with hex, ratio, floor, passes) and illegible, the names of the swatches that did not clear their floor."},
@@ -1524,7 +1569,7 @@ func init() {
 				{Name: "roles", Type: "[]string", Description: "Every role a set can name, which is what to write in a set file."},
 				{Name: "total", Type: "int", Description: "How many sets there are."},
 				{Name: "glyphs_dir", Type: "string", Description: "Directory user sets are read from; write <id>.json there."},
-				{Name: "active", Type: "string", Description: "The set in effect, with active_source saying whether it came from the session or the default."},
+				{Name: "active", Type: "string", Description: "The set in effect, with active_source saying whether it came from the session, config.toml or the default."},
 				{Name: "problems", Type: "[]string", Description: "One line per set file that could not be read and per role dropped for being the wrong width. Present only when there are any."},
 				{Name: "set", Type: "object", Description: "Present when glyphs was given: id, display_name, inherits, ascii, names (the roles the set states) and drawn (the character each role would actually render as, defaults folded in)."},
 			},
@@ -1535,7 +1580,7 @@ func init() {
 			handler: (*Daemon).verbListGlyphs,
 		},
 		"get-option": {
-			description: "Read an option. Reports the session's override when one is set, otherwise the default.",
+			description: "Read an option. Reports the session's override when one is set, then the value config.toml sets, otherwise the default.",
 			params: []verbParam{
 				sessionParam,
 				{Name: "key", Type: "string", Required: true, Description: "Option path to read."},
@@ -1543,7 +1588,7 @@ func init() {
 			returns: []verbParam{
 				{Name: "key", Type: "string", Description: "The option that was read."},
 				{Name: "value", Type: "string", Description: "The value in effect."},
-				{Name: "source", Type: "string", Description: `Where the value came from: "session" for an override set on this session, "config" for the daemon's config file (daemon.window_size only), "default" for the built-in.`, Accepted: []string{"session", "config", "default"}},
+				{Name: "source", Type: "string", Description: `Where the value came from: "session" for an override set on this session, "config" for a value config.toml or a file it brings in sets, "default" for the built-in.`, Accepted: []string{"session", "config", "default"}},
 				{Name: "default", Type: "string", Description: "The built-in default, so a caller can tell an override from a default that happens to match."},
 				{Name: "option_type", Type: "string", Description: "bool, int or string."},
 			},
@@ -1609,6 +1654,23 @@ func init() {
 			examples: []string{`{"id":1,"verb":"set-session-accent","params":{"session":"work","accent":"cyan"}}`},
 			handler:  (*Daemon).verbSetSessionAccent,
 		},
+		"set-session-space": {
+			description: "File a session under a space, a named group of related sessions that tuios ls and the sidebar list together. A space exists while at least one session is in it. It survives a daemon restart with the session. A global session is in no space, and filing one is refused.",
+			params: []verbParam{
+				sessionParam,
+				{Name: "space", Type: "string", Description: "The space's name. Surrounding whitespace is trimmed, and the rest follows the session name rules (no slash, backslash or control character) and is at most 64 bytes. Omit or pass an empty string to take the session out of any space."},
+			},
+			returns: []verbParam{
+				{Name: "type", Type: "string", Description: "Always session_space_set."},
+				{Name: "session", Type: "string", Description: "The session's name."},
+				{Name: "space", Type: "string", Description: "The space the session is in now, empty for none."},
+			},
+			examples: []string{
+				`{"id":1,"verb":"set-session-space","params":{"session":"work","space":"payments"}}`,
+				`{"id":1,"verb":"set-session-space","params":{"session":"work","space":""}}`,
+			},
+			handler: (*Daemon).verbSetSessionSpace,
+		},
 		"set-workspace-name": {
 			description: "Name a workspace. The workspace keeps its number for addressing. An unnamed workspace shows its number.",
 			params: []verbParam{
@@ -1642,6 +1704,7 @@ func init() {
 				{Name: "transcript_path", Type: "string", Description: "The transcript file the harness is writing, as a hook reports it. For a harness whose manifest has a transcript reader, the window is joined to this exact file instead of a searched one. It must be a regular file under the harness's transcript folder, and a process in a pane may name one only for its own pane. Kept in daemon memory only."},
 				{Name: "if_state", Type: "string", Description: "Comma-separated states. The report applies only when the window is in one of them now, and is otherwise refused with reason if_state.", Accepted: AgentStateNames},
 				{Name: "harness_pid", Type: "int", Description: "The pid of the harness process that ran the hook. With agent_session_id, a different session from the same harness process is a new conversation in that process (/clear or /resume, even after an interrupted turn that never reported Stop), so it takes the pane over instead of being refused as foreign_session. Kept in daemon memory only."},
+				{Name: "session_start", Type: "bool", Description: "Marks the report of a conversation starting or resuming, as a SessionStart hook sends it. For a harness whose manifest sets shared_server (Codex), a report for a conversation other than the pane's own takes the pane over only with this set, and is otherwise refused with reason foreign_session."},
 				{Name: "agent_cwd", Type: "string", Description: "The folder the harness reported for its session (a hook payload's cwd). The first one for a session is kept as the agent's start folder, when it is the folder the pane's process runs in. The risk rules use it as the root of a pane that started in the home folder or above. Later reports never move it."},
 				{Name: "activity", Type: "object", Description: "One hook event of the pane's own agent, for its activity ring: event (prompt, tool, tool_done, tool_failed or turn_end), tool, target, text, files, ok and model. It is recorded whenever the report passes the identity guard, whether or not the state applies, and read back with agent-activity. It also sets the reserved metadata keys now (a tool call starting) and prompt (a prompt), and model when the harness named one. Display only. A hook sends it only to a daemon whose list-verbs lists it."},
 			},
@@ -1856,6 +1919,12 @@ func init() {
 				`{"id":1,"verb":"wait-for","params":{"condition":"command-finished","session":"work","window":"build","command_seq":4,"timeout":600000}}`,
 				`{"id":1,"verb":"wait-for","params":{"condition":"agent-state","select":"group:fan/add-retry","until":"idle,done","every":true}}`,
 			},
+			returns: []verbParam{
+				{Name: "condition", Type: "string", Description: "The condition that matched."},
+				{Name: "window", Type: "string", Description: "The window that matched, for a condition about a window."},
+				{Name: "exit_code", Type: "int", Description: "For window-exit and command-finished: the exit status, -1 when a signal ended the process. Omitted when it is not known, such as for a window on another machine."},
+				{Name: "signal", Type: "int", Description: "For window-exit: the signal that ended the process. Omitted when it exited on its own."},
+			},
 			handler: (*Daemon).verbWaitFor,
 		},
 		"list-agents": {
@@ -1888,7 +1957,8 @@ func init() {
 				{Name: "from", Type: "string", Description: "The sending window, normally $TUIOS_PANE_ID. It is a claim the daemon cannot verify, and it is what the rate cap and the loop guards are keyed on. From another machine it is kept as a label and not resolved. human from a process inside a pane of this daemon is refused with forbidden."},
 				{Name: "from_host", Type: "string", Description: "The name of the machine the sender is on, normally $TUIOS_HOST. Kept only for a send that arrived over a link, as the sender's own claim."},
 				{Name: "subject", Type: "string", Description: "Optional one-line summary, at most 120 characters."},
-				{Name: "text", Type: "string", Required: true, Description: "The message body, at most 8 KiB."},
+				{Name: "text", Type: "string", Description: "The message body, at most 8 KiB. Required without parts. With parts it is ignored."},
+				{Name: "parts", Type: "[]object", Description: "The message in ordered parts, as queue-prompt takes them: text, paste and image. When the whole message fits 8 KiB and holds no image, the blocks are put in their place. Otherwise each paste and image is written to the paste folder on this machine, kept for 24 hours, attached to the message, and named in the body: [Pasted text #1: PATH, 42 lines], [Image #1: PATH]. The attachments, given and written, are at most 8. From a linked machine, writing a file needs files in its policy."},
 				{Name: "reply_to", Type: "int", Description: "The id of the message this one answers. The reply joins that message's thread, and a reply to a reply joins the same one. A reply is the only acknowledgement between agents that means anything."},
 				{Name: "attachments", Type: "[]string", Description: "Absolute paths to existing files on the daemon's host. The ring stores the reference, never the bytes, so the producer keeps the file."},
 				{Name: "human_nonce", Type: "string", Description: "The nonce from an attach reply, which the tuios client sends with a reply from its mail overlay. A message from human is stored as verified_human only when this matches a client attached to the session now, over the same kind of connection, the sender is outside every pane, and, where the kernel gives both pids, the sender is the process that attached. Without it, from human is stored as claimed_human."},
@@ -2275,22 +2345,27 @@ func init() {
 	}
 	// The verbs of the agent review, triage, queue and approval work, kept in
 	// a file of their own. See verb_protocol_agents.go.
-	maps.Copy(verbRegistry, agentWorkVerbs())
+	maps.Copy(table, agentWorkVerbs())
 	// The checkpoint verbs. See verb_checkpoint.go.
-	maps.Copy(verbRegistry, checkpointVerbs())
+	maps.Copy(table, checkpointVerbs())
 	// The ship verbs. See verb_ship.go.
-	maps.Copy(verbRegistry, shipVerbs())
+	maps.Copy(table, shipVerbs())
 	// The paste buffer verbs. See verb_buffers.go.
-	maps.Copy(verbRegistry, bufferVerbs())
+	maps.Copy(table, bufferVerbs())
 	// The file verbs, transfers, the drop folder and previews. See
 	// verb_files.go, transfer.go, drop_files.go and verb_preview.go.
-	maps.Copy(verbRegistry, fileVerbs())
-	maps.Copy(verbRegistry, transferVerbs())
-	maps.Copy(verbRegistry, dropVerbs())
+	maps.Copy(table, fileVerbs())
+	maps.Copy(table, transferVerbs())
+	maps.Copy(table, dropVerbs())
+	maps.Copy(table, previewVerbs())
 	// The tree stream, the check-ahead and the link speed test. See
 	// transfer_tree.go and transfer_speed.go.
-	maps.Copy(verbRegistry, treeVerbs())
-	maps.Copy(verbRegistry, speedVerbs())
+	maps.Copy(table, treeVerbs())
+	maps.Copy(table, speedVerbs())
+	// search-panes, command-history and list-ports. See verb_find.go and
+	// verb_ports.go.
+	maps.Copy(table, findVerbs())
+	return table
 }
 
 // detectJSONClient inspects the first byte of the connection without consuming
@@ -2401,6 +2476,8 @@ func (d *Daemon) handleJSONConnection(cs *connState, br *bufio.Reader) {
 // verb that waits (a send-text into a pane that does not read, a routed verb)
 // does not hold the budget while it waits. See verb_lines.go.
 func (d *Daemon) dispatchVerbLine(cs *connState, line []byte, release func()) error {
+	// A verb can change what the session listing shows.
+	d.wakes.listing.Set()
 	var req verbRequest
 	err := json.Unmarshal(line, &req)
 	if release != nil {
@@ -2463,7 +2540,7 @@ func (d *Daemon) dispatchVerbLine(cs *connState, line []byte, release func()) er
 // socket's adapters (herdr_api.go), so a herdr client in a pane is held to
 // exactly what the same call as a verb would be.
 func (d *Daemon) admitVerb(cs *connState, verb string, params json.RawMessage) (verbEntry, json.RawMessage, *verbError) {
-	entry, ok := verbRegistry[verb]
+	entry, ok := verbRegistry()[verb]
 	if !ok {
 		known := knownVerbNames()
 		return verbEntry{}, nil, hintedVerbError(ErrVerbUnknownVerb, "unknown verb "+echoName(verb), &VerbHint{
@@ -2500,6 +2577,9 @@ func (d *Daemon) admitVerb(cs *connState, verb string, params json.RawMessage) (
 	// A session named by a name it was renamed from is named by its current
 	// one from here on. See session_rename.go.
 	params = d.followRenamedSession(verb, params)
+	// A window moved out of the session named goes to the one it is in now.
+	// See window_move_session.go.
+	params = d.followMovedWindow(params)
 	granted, verr := d.checkGrants(cs, verb, params)
 	if verr != nil {
 		return verbEntry{}, nil, verr
@@ -2642,7 +2722,7 @@ func (d *Daemon) verbListVerbs(_ *connState, params json.RawMessage) (any, *verb
 	}
 
 	if p.Verb != "" {
-		entry, ok := verbRegistry[p.Verb]
+		entry, ok := verbRegistry()[p.Verb]
 		if !ok {
 			known := knownVerbNames()
 			return nil, hintedVerbError(ErrVerbUnknownVerb, "unknown verb "+echoName(p.Verb), &VerbHint{
@@ -2665,7 +2745,7 @@ func (d *Daemon) verbListVerbs(_ *connState, params json.RawMessage) (any, *verb
 	names := knownVerbNames()
 	verbs := make([]verbDoc, 0, len(names))
 	for _, name := range names {
-		verbs = append(verbs, describeVerb(name, verbRegistry[name]))
+		verbs = append(verbs, describeVerb(name, verbRegistry()[name]))
 	}
 	return map[string]any{
 		"type":           "verb_list",
@@ -2702,7 +2782,7 @@ func VerbDocs() []VerbDoc {
 	names := knownVerbNames()
 	out := make([]VerbDoc, 0, len(names))
 	for _, name := range names {
-		out = append(out, describeVerb(name, verbRegistry[name]))
+		out = append(out, describeVerb(name, verbRegistry()[name]))
 	}
 	return out
 }

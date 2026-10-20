@@ -86,6 +86,9 @@ var verbCapabilities = map[string][]string{
 	"ssh-agent-path":       {config.LinkAllowList},
 	"display-env":          {config.LinkAllowList},
 	"list-windows":         {config.LinkAllowList},
+	"search-panes":         {config.LinkAllowList},
+	"command-history":      {config.LinkAllowList},
+	"list-ports":           {config.LinkAllowList},
 	"get-window":           {config.LinkAllowList},
 	"list-workspaces":      {config.LinkAllowList},
 	"capture-pane":         {config.LinkAllowList},
@@ -124,6 +127,7 @@ var verbCapabilities = map[string][]string{
 	"file-read":        {config.LinkAllowFiles},
 	"file-hash":        {config.LinkAllowFiles},
 	"file-walk":        {config.LinkAllowFiles},
+	"file-preview":     {config.LinkAllowFiles},
 	"open-file-stream": {config.LinkAllowFiles},
 	"file-mkdir":       {config.LinkAllowFiles},
 	"file-rename":      {config.LinkAllowFiles},
@@ -209,6 +213,7 @@ var verbCapabilities = map[string][]string{
 	"set-session-name":    {config.LinkAllowWrite},
 	"rename-session":      {config.LinkAllowWrite},
 	"set-session-accent":  {config.LinkAllowWrite},
+	"set-session-space":   {config.LinkAllowWrite},
 	"set-workspace-name":  {config.LinkAllowWrite},
 	"set-workspace-order": {config.LinkAllowWrite},
 	"set-agent-state":     {config.LinkAllowWrite},
@@ -227,6 +232,8 @@ var verbCapabilities = map[string][]string{
 	// The conversation holds the prompts, file contents and command output.
 	// Reading it is as much the person's act as answering for them.
 	"agent-transcript":      {config.LinkAllowRespond},
+	"reply-history":         {config.LinkAllowRespond},
+	"add-reply-history":     {config.LinkAllowRespond},
 	"dismiss-attention":     {config.LinkAllowRespond},
 	"release-agent-message": {config.LinkAllowRespond},
 	"answer-ask":            {config.LinkAllowRespond},
@@ -254,6 +261,8 @@ var verbCapabilities = map[string][]string{
 	"review-diff":    {config.LinkAllowWrite},
 	"review-note":    {config.LinkAllowWrite},
 	"send-review":    {config.LinkAllowWrite},
+	// review-stage writes the index, as a commit does.
+	"review-stage":   {config.LinkAllowWrite},
 	"queue-prompt":   {config.LinkAllowWrite},
 	"cancel-queued":  {config.LinkAllowWrite},
 	"keep-fan":       {config.LinkAllowWrite},

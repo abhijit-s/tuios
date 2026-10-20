@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Gaurav-Gosain/tuios/internal/shot"
 	"github.com/Gaurav-Gosain/tuitest"
+	"tuios.dev/shot"
 )
 
 // The agent switch, [agents] enabled = false, on a real daemon and a real
@@ -137,7 +137,7 @@ func railHasAgent(s tuitest.Screen, railCol int, pane string) bool {
 	return false
 }
 
-// railShot saves the frame as text and as a PNG drawn by internal/shot.
+// railShot saves the frame as text and as a PNG drawn by tuios.dev/shot.
 func railShot(t *testing.T, term *tuitest.Terminal, name string) {
 	t.Helper()
 	dir := artifactDir(t)
@@ -185,11 +185,11 @@ func TestAgentsOffShowsNoAgentRow(t *testing.T) {
 				if err := term.SendKeys(tuitest.Ctrl('b'), "i"); err != nil {
 					t.Fatal(err)
 				}
-				if err := term.WaitForText("Inbox", uiTimeout); err != nil {
+				if err := term.WaitForText("Agents", uiTimeout); err != nil {
 					t.Fatalf("the Inbox key opened nothing with the features on: %v\n%s", err, term.Snapshot())
 				}
 				alive(t, term, "after the Inbox opened")
-				if !helpFinds(t, term, "Inbox on its", "Open the Inbox on its mail") {
+				if !helpFinds(t, term, "mail for you", "Open the agents view on the mail for you") {
 					t.Fatalf("the help does not list the Inbox key with the features on\n%s", term.Snapshot())
 				}
 				return
@@ -236,7 +236,7 @@ func TestAgentsOffShowsNoAgentRow(t *testing.T) {
 				t.Errorf("ASSERTION: the Inbox opened with the features off\n%s", term.Snapshot())
 			}
 			alive(t, term, "after the Inbox key with the features off")
-			if helpFinds(t, term, "Inbox on its", "Open the Inbox on its mail") {
+			if helpFinds(t, term, "mail for you", "Open the agents view on the mail for you") {
 				t.Errorf("ASSERTION: the help lists the Inbox key with the features off\n%s", term.Snapshot())
 			}
 		})

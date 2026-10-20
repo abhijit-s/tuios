@@ -525,6 +525,8 @@ const agentDetectMissLimit = 6
 // lock held. ptyID is the PTY the read was taken for, so a window whose PTY was
 // swapped while the read ran is not judged on a read of the old one.
 type detectReading struct {
+	// at is when the reading was taken, before the process was read.
+	at      int64
 	ptyID   string
 	info    foregroundInfo
 	running bool
@@ -619,9 +621,10 @@ func (s *Session) scanAgentDetection(
 		if due != nil && !t.holdsAgent && !due(t.ptyID) {
 			continue
 		}
+		at := time.Now().UnixNano()
 		info, running := resolve(t.ptyID)
 		det, isAgent := identify(info)
-		readings[t.windowID] = detectReading{ptyID: t.ptyID, info: info, running: running, det: det, isAgent: isAgent}
+		readings[t.windowID] = detectReading{at: at, ptyID: t.ptyID, info: info, running: running, det: det, isAgent: isAgent}
 	}
 
 	shell := agentBaseName(s.getShell())
@@ -694,7 +697,8 @@ func (s *Session) detectionPass(st *SessionState, readings map[string]detectRead
 		// process was read for the agent check either way. Counted apart from
 		// the agent states: a pane starting or leaving a command has to reach
 		// the clients, but it is not a state change.
-		if cmd := ClampDisplayText(foregroundCommand(info, running, shell)); cmd != w.ForegroundCmd {
+		fg := foregroundCommand(info, running, shell)
+		if cmd := ClampDisplayText(fg); cmd != w.ForegroundCmd {
 			if write {
 				w.ForegroundCmd = cmd
 			}
@@ -713,6 +717,16 @@ func (s *Session) detectionPass(st *SessionState, readings map[string]detectRead
 		}
 		det := r.det
 		detected := running && r.isAgent
+		// A pane back at its shell has no harness left to protect, so the
+		// shared-server guard forgets its conversations. The stored
+		// AgentSessionID stays, for a later resume. A guard armed after the
+		// reading was taken is newer than what the reading says, so it stays.
+		if g, ok := s.agentSharedGuards[w.ID]; ok && g.armedAt < r.at && !detected && running && info.atShell() && fg == "" {
+			out.bookkeeping = true
+			if write {
+				delete(s.agentSharedGuards, w.ID)
+			}
+		}
 		claim := s.agentClaims[w.ID]
 		owned := claim.auto
 		// Noted whoever owns the claim, and before the switch, because
@@ -770,6 +784,7 @@ func (s *Session) detectionPass(st *SessionState, readings map[string]detectRead
 			}
 			delete(s.agentClaims, w.ID)
 			delete(s.agentHarnessPIDs, w.ID)
+			delete(s.agentSharedGuards, w.ID)
 			w.AgentState = AgentStateNone
 			clearAgentNote(w)
 			w.AgentHarness = ""
@@ -824,6 +839,7 @@ func (s *Session) detectionPass(st *SessionState, readings map[string]detectRead
 				}
 				delete(s.agentClaims, w.ID)
 				delete(s.agentHarnessPIDs, w.ID)
+				delete(s.agentSharedGuards, w.ID)
 				w.AgentState = AgentStateNone
 				clearAgentNote(w)
 				w.AgentHarness = ""
@@ -855,6 +871,15 @@ func (s *Session) detectionPass(st *SessionState, readings map[string]detectRead
 				break
 			}
 			delete(s.agentHarnessPIDs, id)
+		}
+	}
+	for id := range s.agentSharedGuards {
+		if _, ok := live[id]; !ok {
+			out.bookkeeping = true
+			if !write {
+				break
+			}
+			delete(s.agentSharedGuards, id)
 		}
 	}
 	return out
@@ -941,6 +966,7 @@ func (s *Session) reconcileAgentOnOutput(
 			}
 			delete(s.agentClaims, w.ID)
 			delete(s.agentHarnessPIDs, w.ID)
+			delete(s.agentSharedGuards, w.ID)
 			w.AgentState = AgentStateNone
 			clearAgentNote(w)
 			w.AgentHarness = ""

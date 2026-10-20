@@ -127,9 +127,13 @@ var verbScopes = map[string]scopeKind{
 	"list-themes":        scopeGlobal,
 	"list-glyphs":        scopeGlobal,
 	"list-hooks":         scopeGlobal,
+	// search-panes takes a list of sessions, and every session without one.
+	"search-panes": scopeGlobal,
 
 	"session-info":    scopeRead,
 	"list-windows":    scopeRead,
+	"command-history": scopeRead,
+	"list-ports":      scopeRead,
 	"get-window":      scopeRead,
 	"list-workspaces": scopeRead,
 	"capture-pane":    scopeRead,
@@ -203,6 +207,7 @@ var verbScopes = map[string]scopeKind{
 	"file-read":            scopeDeny,
 	"file-hash":            scopeDeny,
 	"file-walk":            scopeDeny,
+	"file-preview":         scopeDeny,
 	"open-file-stream":     scopeDeny,
 	"file-mkdir":           scopeDeny,
 	"file-rename":          scopeDeny,
@@ -240,6 +245,7 @@ var verbScopes = map[string]scopeKind{
 	"set-session-name":     scopeDeny,
 	"rename-session":       scopeDeny,
 	"set-session-accent":   scopeDeny,
+	"set-session-space":    scopeDeny,
 	"set-workspace-name":   scopeDeny,
 	"set-workspace-order":  scopeDeny,
 	"resume-agent":         scopeDeny,
@@ -250,7 +256,9 @@ var verbScopes = map[string]scopeKind{
 	"reply-approval":       scopeDeny,
 	// The conversation is the person's to read. A restricted connection is
 	// automation, never the person.
-	"agent-transcript": scopeDeny,
+	"agent-transcript":  scopeDeny,
+	"reply-history":     scopeDeny,
+	"add-reply-history": scopeDeny,
 
 	// From the host policy and dropped-link work: the link handshake,
 	// ending a hosted pane, and passing on held mail are for a link
@@ -290,6 +298,9 @@ var verbScopes = map[string]scopeKind{
 	"verify-fan":     scopeLaunch,
 	"keep-fan":       scopeDeny,
 	"mark-attention": scopeDeny,
+	// review-stage writes the index of a pane's worktree. It is the person's
+	// tool, so a restricted caller has no use for it.
+	"review-stage": scopeDeny,
 
 	// From the checkpoint work (verb_checkpoint.go). Listing and reading a
 	// pane's checkpoints are reads of its session. A restore writes the
@@ -690,7 +701,7 @@ func (d *Daemon) holdToPane(verb string, kind scopeKind, params json.RawMessage,
 		m = map[string]json.RawMessage{}
 	}
 	declares := func(name string) bool {
-		entry, ok := verbRegistry[verb]
+		entry, ok := verbRegistry()[verb]
 		return ok && slices.ContainsFunc(entry.params, func(p verbParam) bool { return p.Name == name })
 	}
 	str := func(name string) string {

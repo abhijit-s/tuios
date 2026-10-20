@@ -4,8 +4,8 @@ import (
 	"image/color"
 	"sync"
 
+	"charm.land/tone"
 	"github.com/Gaurav-Gosain/tuios/internal/overlay"
-	"github.com/charmbracelet/x/exp/charmtone"
 	tint "github.com/lrstanley/bubbletint/v2"
 )
 
@@ -41,7 +41,7 @@ func ReadableAt(c, bg color.Color, floor float64) color.Color {
 // spelled inside UI() because RailGround reads it once per drawn row, and
 // building the whole palette to reach one constant field means measuring a pill
 // foreground's contrast every time.
-var uiCanvas = charmtone.Pepper
+var uiCanvas = tone.Pepper
 
 // railRuleMemo holds the grounds a structure ink has been measured for and the
 // answers. The measurement bisects over contrast ratios, and the grounds a
@@ -62,6 +62,9 @@ var railRuleMemo struct {
 // RailRuleOn is the structure ink for a rule drawn on a ground its caller
 // paints itself, like the collapsed strip's bands.
 func RailRuleOn(bg color.Color) color.Color {
+	if c := chromeFurniture(RoleRule); c != nil {
+		return c
+	}
 	r, g, b, a := bg.RGBA()
 	key := [4]uint32{r, g, b, a}
 
@@ -104,12 +107,12 @@ var chromeRamp = struct {
 	canvas, panel, card float64 // steps below, below and above Surface
 	fg, fgDim, fgMute   float64 // ink tiers on Surface
 }{
-	canvas: overlay.ContrastRatio(charmtone.Char, charmtone.Pepper),
-	panel:  overlay.ContrastRatio(charmtone.Char, charmtone.BBQ),
-	card:   overlay.ContrastRatio(charmtone.Iron, charmtone.Char),
-	fg:     overlay.ContrastRatio(charmtone.Butter, charmtone.Char),
-	fgDim:  overlay.ContrastRatio(charmtone.Smoke, charmtone.Char),
-	fgMute: overlay.ContrastRatio(charmtone.Squid, charmtone.Char),
+	canvas: overlay.ContrastRatio(tone.Char, tone.Pepper),
+	panel:  overlay.ContrastRatio(tone.Char, tone.BBQ),
+	card:   overlay.ContrastRatio(tone.Iron, tone.Char),
+	fg:     overlay.ContrastRatio(tone.Butter, tone.Char),
+	fgDim:  overlay.ContrastRatio(tone.Smoke, tone.Char),
+	fgMute: overlay.ContrastRatio(tone.Squid, tone.Char),
 }
 
 // UI returns the active chrome palette. Neutrals and semantic status colors come
@@ -155,6 +158,7 @@ type uiKey struct {
 	tint    *tint.Tint
 	colours [6]*tint.Color
 	chrome  *Chrome
+	host    *hostGround
 }
 
 func currentUIKey() uiKey {
@@ -163,6 +167,8 @@ func currentUIKey() uiKey {
 		k.tint = t
 		k.colours = [6]*tint.Color{t.BrightBlue, t.BrightCyan, t.BrightRed, t.BrightGreen, t.Yellow, t.Bg}
 		k.chrome = CurrentChrome()
+	} else {
+		k.host = hostInForce()
 	}
 	return k
 }
@@ -176,34 +182,41 @@ var uiMemo struct {
 
 // buildUI builds the palette for depth d.
 func buildUI(d overlay.Depth) overlay.Palette {
+	return buildUIWith(d, Current(), CurrentChrome())
+}
+
+// buildUIWith builds the palette for depth d from the theme t and its chrome
+// ch, either of which may be nil. The theme editor builds one for a draft that
+// is not in force.
+func buildUIWith(d overlay.Depth, cur *tint.Tint, ch *Chrome) overlay.Palette {
 	p := overlay.Palette{
 		Canvas:   uiCanvas,
-		Panel:    charmtone.BBQ,
-		Surface:  charmtone.Char,
-		RowSel:   charmtone.BBQ,
-		Card:     charmtone.Iron,
-		Selected: charmtone.Charple,
+		Panel:    tone.BBQ,
+		Surface:  tone.Char,
+		RowSel:   tone.BBQ,
+		Card:     tone.Iron,
+		Selected: tone.Charple,
 
-		Fg:    charmtone.Butter,
-		FgDim: charmtone.Smoke,
+		Fg:    tone.Butter,
+		FgDim: tone.Smoke,
 		// One step up the ramp from Oyster, which measures 2.60:1 on the
 		// canvas, 1.81:1 on the surface a settings hint is written on, 1.35:1
 		// on a card. Quiet is a tier of the hierarchy, not permission to be
 		// unreadable.
-		FgMute: charmtone.Squid,
+		FgMute: tone.Squid,
 
-		Accent:       charmtone.Charple,
-		AccentBright: charmtone.Hazy,
-		PillFg:       charmtone.Pepper,
+		Accent:       tone.Charple,
+		AccentBright: tone.Hazy,
+		PillFg:       tone.Pepper,
 
-		Warn:    charmtone.Cherry,
-		Success: charmtone.Julep,
-		Info:    charmtone.Malibu,
-		Warning: charmtone.Tang,
+		Warn:    tone.Cherry,
+		Success: tone.Julep,
+		Info:    tone.Malibu,
+		Warning: tone.Tang,
 	}
 	customRamp := false
 
-	if t := Current(); t != nil {
+	if t := cur; t != nil {
 		p.Accent = t.BrightBlue
 		p.AccentBright = t.BrightCyan
 		p.Selected = t.BrightBlue
@@ -215,7 +228,7 @@ func buildUI(d overlay.Depth) overlay.Palette {
 		// A theme that names its own chrome colours overrides the slots above,
 		// one role at a time. See Chrome: the point is a palette whose accent
 		// is not its bright blue.
-		if c := CurrentChrome(); c != nil {
+		if c := ch; c != nil {
 			if c.Accent != nil {
 				p.Accent, p.Selected, p.Info = c.Accent, c.Accent, c.Accent
 			}
@@ -247,6 +260,7 @@ func buildUI(d overlay.Depth) overlay.Palette {
 			if c.Card != nil {
 				p.Card, customRamp = c.Card, true
 			}
+			p.Attention, p.Busy = c.Furniture(RoleAttention), c.Furniture(RoleBusy)
 		}
 	}
 
@@ -257,12 +271,31 @@ func buildUI(d overlay.Depth) overlay.Palette {
 	// is (see GroundUI), with the ink tiers measured on it. A theme that names
 	// its own ramp has chosen already, and at 16 colours the ground is the
 	// terminal's.
+	//
+	// With theme = "none", the ground is the local terminal's own when it
+	// said (see SetHostGround). A dark one moves the ramp the way a theme's
+	// surface does.
 	light := false
-	if t := Current(); t != nil && !customRamp && d != overlay.Depth16 && GroundIsLight(t.Bg) {
-		light = true
-		c := lightDialogChrome(t.Bg)
-		p.Canvas, p.Panel, p.RowSel, p.Surface, p.Card = c.Canvas, c.Panel, c.Panel, c.Surface, c.Card
-		p.Fg, p.FgDim, p.FgMute = c.fg, c.fgDim, c.fgMute
+	var ground color.Color
+	groundLight := false
+	if t := cur; t != nil {
+		ground, groundLight = AsColor(t.Bg), GroundIsLight(t.Bg)
+	} else if h := hostInForce(); h != nil {
+		ground, groundLight = h.bg, h.light
+	}
+	if ground != nil && !customRamp && d != overlay.Depth16 {
+		var c Chrome
+		if groundLight {
+			light = true
+			c = lightDialogChrome(ground)
+		} else if cur == nil {
+			customRamp = true
+			c = hostDarkChrome(ground)
+		}
+		if light || customRamp {
+			p.Canvas, p.Panel, p.RowSel, p.Surface, p.Card = c.Canvas, c.Panel, c.Panel, c.Surface, c.Card
+			p.Fg, p.FgDim, p.FgMute = c.fg, c.fgDim, c.fgMute
+		}
 	}
 
 	switch d {
@@ -277,6 +310,8 @@ func buildUI(d overlay.Depth) overlay.Palette {
 		// which is picked to read on its own background; the quiet ink is
 		// bright black, the one slot every palette makes a quiet grey.
 		p.Fg, p.FgDim, p.FgMute = overlay.NoColor, overlay.NoColor, overlay.Slot(8)
+		// Derive takes them from the warning and info slots.
+		p.Attention, p.Busy = nil, nil
 	case overlay.Depth256:
 		if !customRamp && !light {
 			// Set by hand on the grey ramp. Stepping the charmtone neutrals
@@ -290,6 +325,12 @@ func buildUI(d overlay.Depth) overlay.Palette {
 		p.Accent, p.AccentBright, p.Selected = overlay.To256(p.Accent), overlay.To256(p.AccentBright), overlay.To256(p.Selected)
 		p.Warn, p.Success = overlay.To256(p.Warn), overlay.To256(p.Success)
 		p.Info, p.Warning = overlay.To256(p.Info), overlay.To256(p.Warning)
+		if p.Attention != nil {
+			p.Attention = overlay.To256(p.Attention)
+		}
+		if p.Busy != nil {
+			p.Busy = overlay.To256(p.Busy)
+		}
 	}
 	if light {
 		liftOnLight(&p, d)
@@ -370,6 +411,9 @@ func liftOnLight(p *overlay.Palette, d overlay.Depth) {
 			c = overlay.Darker(*it.ink, step)
 		}
 		*it.ink = c
+	}
+	if d == overlay.Depth256 {
+		p.Warning = overlay.WarningApart256(p.Warning, p.Warn, rows, MarkFloor)
 	}
 }
 

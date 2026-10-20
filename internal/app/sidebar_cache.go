@@ -259,6 +259,11 @@ func (m *OS) sidebarSignature() uint64 {
 
 	// The switch numbers are drawn state, on while show_numbers is set.
 	mixB(m.Settings.SidebarShowNumbers)
+	// The row style marks the current row's gutter or its name.
+	mixS(m.Settings.RailRowStyle)
+	mixS(m.Settings.RailHeaderStyle)
+	mixS(m.Settings.RailHeaderCase)
+	mixB(m.Settings.RailRoomy)
 
 	// Which terminal rows carry a workspace tag turns on which workspace is
 	// current; the per-window workspaces themselves are folded in below. The
@@ -355,6 +360,10 @@ func (m *OS) sidebarSignature() uint64 {
 	} else {
 		mixI(-1)
 	}
+	// The attached session's space decides which heading its row is drawn
+	// under, and like its worktree record it arrives on the session state, so
+	// the client's cache generation below does not speak for it.
+	mixS(m.SessionSpace)
 
 	// Foreign-session data, folded by generation instead of by locking the client.
 	if m.DaemonClient != nil {

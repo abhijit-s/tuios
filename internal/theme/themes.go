@@ -43,6 +43,9 @@ var ensureRegistryOnce sync.Once
 func EnsureRegistry() {
 	ensureRegistryOnce.Do(func() {
 		newBuiltinRegistry()
+		registerCharmToneThemes()
+		registerOmarchyThemes()
+		rememberBuiltins()
 		if themesDir, err := GetThemesDir(); err == nil {
 			if _, err := LoadCustomThemes(themesDir); err != nil {
 				log.Printf("Warning: error loading custom themes: %v", err)
@@ -71,4 +74,14 @@ func CurrentThemeID() string {
 		return ""
 	}
 	return t.ID
+}
+
+// ThemeIsDark reports whether a registered theme is a dark one, as its file or
+// the built-in table says.
+func ThemeIsDark(id string) (dark, ok bool) {
+	t, ok := tint.GetTint(id)
+	if !ok || t == nil {
+		return false, false
+	}
+	return t.Dark, true
 }

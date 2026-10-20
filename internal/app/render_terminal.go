@@ -3,16 +3,16 @@ package app
 import (
 	"fmt"
 	"image/color"
-	"strconv"
 	"strings"
 
 	"charm.land/lipgloss/v2"
 	"github.com/Gaurav-Gosain/tuios/internal/config"
+	"github.com/Gaurav-Gosain/tuios/internal/overlay"
 	"github.com/Gaurav-Gosain/tuios/internal/pool"
 	"github.com/Gaurav-Gosain/tuios/internal/terminal"
 	"github.com/Gaurav-Gosain/tuios/internal/theme"
-	"github.com/Gaurav-Gosain/tuios/internal/vt"
 	uv "github.com/charmbracelet/ultraviolet"
+	"tuios.dev/vt"
 )
 
 // The marks a pane paints over its own output: the selection, the search
@@ -28,11 +28,21 @@ import (
 // holds the values they were built from, so an edit in the settings page shows
 // on the next frame and nothing else costs a rebuild.
 type markStyles struct {
-	from      string
+	markInputs
 	selection lipgloss.Style
 	search    lipgloss.Style
 	match     lipgloss.Style
 	cursor    lipgloss.Style
+}
+
+// markInputs is what the mark styles were built from.
+type markInputs struct {
+	gen                         uint64
+	depth                       overlay.Depth
+	selBg, selFg                string
+	selBold                     bool
+	searchBg, searchFg, matchBg string
+	matchFg, cursorBg, cursorFg string
 }
 
 // markStyle builds one mark. An empty foreground leaves the text the colour
@@ -41,30 +51,32 @@ type markStyles struct {
 func markStyle(bg, fg string, bold bool) lipgloss.Style {
 	st := lipgloss.NewStyle()
 	if bg != "" {
-		st = st.Background(lipgloss.Color(bg))
+		st = st.Background(configInk(bg))
 	}
 	if fg != "" {
-		st = st.Foreground(lipgloss.Color(fg))
+		st = st.Foreground(configInk(fg))
 	}
 	return st.Bold(bold)
 }
 
 // marks are this client's mark styles, rebuilt when the settings behind them
-// change.
+// change, or when the theme or the colour depth does, since a colour written
+// as a role or a slot name resolves on the theme.
 func (m *OS) marks() *markStyles {
 	s := &m.Settings
-	from := strings.Join([]string{
-		s.SelectionBg, s.SelectionFg, strconv.FormatBool(s.SelectionBold),
-		s.SearchBg, s.SearchFg, s.MatchBg, s.MatchFg,
-		s.CopyCursorBg, s.CopyCursorFg,
-	}, "\x00")
-	if m.markStyleCache != nil && m.markStyleCache.from == from {
-		return m.markStyleCache
+	in := markInputs{
+		gen: theme.Generation(), depth: theme.Depth(),
+		selBg: s.SelectionBg, selFg: s.SelectionFg, selBold: s.SelectionBold,
+		searchBg: s.SearchBg, searchFg: s.SearchFg, matchBg: s.MatchBg, matchFg: s.MatchFg,
+		cursorBg: s.CopyCursorBg, cursorFg: s.CopyCursorFg,
+	}
+	if c := m.markStyleCache; c != nil && c.markInputs == in {
+		return c
 	}
 	m.markStyleCache = &markStyles{
-		from:      from,
-		selection: markStyle(s.SelectionBg, s.SelectionFg, s.SelectionBold),
-		search:    markStyle(s.SearchBg, s.SearchFg, false),
+		markInputs: in,
+		selection:  markStyle(s.SelectionBg, s.SelectionFg, s.SelectionBold),
+		search:     markStyle(s.SearchBg, s.SearchFg, false),
 		// The match under the cursor is bold as well as brighter. It is the
 		// one of many that the next keypress acts on, and two marks that
 		// differ only in shade are hard to tell apart at a glance.
@@ -550,10 +562,12 @@ func (m *OS) renderTerminal(window *terminal.Window, isFocused bool, inTerminalM
 		dimMemo      blendMemo
 		dimFg, dimBg color.Color
 		dimT         float64
+		dimText      bool
 	)
 	if dim > 0 {
 		if dimFg, dimBg = m.paneDimGround(); dimBg != nil {
 			dimT = float64(dim) / 100
+			dimText = m.Settings.DimForeground
 		}
 	}
 
@@ -744,12 +758,12 @@ func (m *OS) renderTerminal(window *terminal.Window, isFocused bool, inTerminalM
 
 			// The link this cell belongs to, carried to the outer terminal as
 			// OSC 8. A marked link wins over a detected one. The test in front
-			// is three length checks, which is what a cell outside any link
+			// is three field reads, which is what a cell outside any link
 			// pays; a change flushes the run and writes the sequence between
 			// runs, never inside one.
-			if openLink.URL != "" || bareRow != nil || (cell != nil && cell.Link.URL != "") {
+			if openLink.URL != "" || bareRow != nil || (cell != nil && cell.Link.URL != "" && frameLink(cell.Link.URL)) {
 				var cellLink uv.Link
-				if cell != nil {
+				if cell != nil && cell.Link.URL != "" && frameLink(cell.Link.URL) {
 					cellLink = cell.Link
 				}
 				if cellLink.URL == "" && bareRow != nil {
@@ -925,7 +939,7 @@ func (m *OS) renderTerminal(window *terminal.Window, isFocused bool, inTerminalM
 				// own entry and the focused pane's entries are untouched.
 				styleCell := cell
 				if dimT > 0 {
-					styleCell = dimCell(&dimScratch, cell, dimFg, dimBg, dimT, &dimMemo)
+					styleCell = dimCell(&dimScratch, cell, dimFg, dimBg, dimT, dimText, &dimMemo)
 				}
 				if isCursorPos {
 					styleCell = paneGroundCell(&groundScratch, styleCell, ground)

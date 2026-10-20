@@ -84,6 +84,7 @@ func (d *ActionDispatcher) registerPrefixHandlers() {
 	d.Register("prefix_debug", makeSubPrefixHandler(func(o *app.OS) { o.DebugPrefixActive = true }))
 	d.Register("prefix_tape", makeSubPrefixHandler(func(o *app.OS) { o.TapePrefixActive = true }))
 	d.Register("prefix_layout", makeSubPrefixHandler(func(o *app.OS) { o.LayoutPrefixActive = true }))
+	d.Register("prefix_tuios", makeSubPrefixHandler(func(o *app.OS) { o.TuiosPrefixActive = true }))
 
 	// Window prefix (leader, t, ...)
 	d.Register("window_prefix_new", handleNewWindow)
@@ -93,6 +94,7 @@ func (d *ActionDispatcher) registerPrefixHandlers() {
 	d.Register("window_prefix_prev", handlePrefixPrevWindow)
 	d.Register("window_prefix_tiling", handleToggleTiling)
 	d.Register("window_prefix_cancel", handlePrefixCancel)
+	d.registerPrefixTreeHandlers()
 
 	// Minimize prefix (leader, m, ...)
 	d.Register("minimize_prefix_focused", handleMinimizeFocused)
@@ -193,6 +195,12 @@ func handlePrefixCancel(_ tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
 }
 
 func handlePrefixCloseWindow(_ tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
+	if o.SidebarSessionFocused() {
+		if w := o.SidebarSessionWindow(); w != nil {
+			o.SidebarSessionIntent("CloseWindow", w.ID)
+		}
+		return o, nil
+	}
 	if len(o.Windows) == 0 || o.FocusedWindow < 0 {
 		return o, nil
 	}
@@ -273,6 +281,10 @@ func handlePrefixKeybinds(_ tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
 }
 
 func handlePrefixNextWindow(_ tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
+	if o.SidebarSessionFocused() {
+		o.SidebarSessionIntent("NextWindow")
+		return o, nil
+	}
 	prev := o.FocusedWindow
 	if len(o.Windows) > 0 {
 		o.CycleToNextVisibleWindow()
@@ -282,6 +294,10 @@ func handlePrefixNextWindow(_ tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
 }
 
 func handlePrefixPrevWindow(_ tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
+	if o.SidebarSessionFocused() {
+		o.SidebarSessionIntent("PrevWindow")
+		return o, nil
+	}
 	prev := o.FocusedWindow
 	if len(o.Windows) > 0 {
 		o.CycleToPreviousVisibleWindow()
@@ -329,6 +345,8 @@ func handlePrefixFullscreen(_ tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
 	o.ToggleZoom()
 	if fw := o.GetFocusedWindow(); fw != nil && fw.Zoomed {
 		o.ShowNotification("ZOOM", "info", o.Settings.NotificationDuration)
+	} else {
+		o.ClearNotification("ZOOM")
 	}
 	return o, nil
 }

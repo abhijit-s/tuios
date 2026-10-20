@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Gaurav-Gosain/tuios/internal/vt"
+	"tuios.dev/vt"
 )
 
 // A snapshot writes cells, and cells say nothing about whether a row wrapped.
@@ -115,16 +115,5 @@ func TestApplyTerminalStateCarriesWraps(t *testing.T) {
 		if got != want {
 			t.Errorf("history row %d (%q): wrapped = %v, want %v", i, fresh.ScrollbackLine(i).String(), got, want)
 		}
-	}
-}
-
-// The bitset survives a trip through its own encoding.
-func TestWrapBitsRoundTrip(t *testing.T) {
-	flags := []bool{true, false, false, true, false, false, false, false, true, true}
-	if got := wrapFlags(wrapBits(flags), len(flags)); !sameFlags(got, flags) {
-		t.Errorf("round trip %v, want %v", got, flags)
-	}
-	if wrapBits(make([]bool, 20)) != nil {
-		t.Error("no flag set should put nothing on the wire")
 	}
 }

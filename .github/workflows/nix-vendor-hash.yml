@@ -13,6 +13,19 @@ on:
       - go.work
       - go.work.sum
       - progstatus/go.mod
+      - vt/go.mod
+      - vt/go.sum
+      - swatch/go.mod
+      - swatch/go.sum
+      - shot/go.mod
+      - shot/go.sum
+      - tml/go.mod
+      - plot/go.mod
+      - plot/go.sum
+      - loom/go.mod
+      - loom/go.sum
+      - sketch/go.mod
+      - sketch/go.sum
       - tuios.nix
       - flake.nix
       - flake.lock
@@ -24,6 +37,19 @@ on:
       - go.work
       - go.work.sum
       - progstatus/go.mod
+      - vt/go.mod
+      - vt/go.sum
+      - swatch/go.mod
+      - swatch/go.sum
+      - shot/go.mod
+      - shot/go.sum
+      - tml/go.mod
+      - plot/go.mod
+      - plot/go.sum
+      - loom/go.mod
+      - loom/go.sum
+      - sketch/go.mod
+      - sketch/go.sum
       - tuios.nix
       - flake.nix
       - flake.lock

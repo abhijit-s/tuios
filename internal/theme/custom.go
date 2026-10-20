@@ -1,11 +1,12 @@
 package theme
 
 import (
-	"encoding/json"
 	"fmt"
 	"log"
 	"os"
 	"path/filepath"
+	"slices"
+	"sort"
 	"strings"
 
 	"github.com/adrg/xdg"
@@ -49,22 +50,36 @@ func readCustomThemes(themesDir string) (loaded, problems []string, err error) {
 		return nil, nil, fmt.Errorf("failed to read themes directory: %w", err)
 	}
 
+	// Every file is read before any is registered, so a file's base can be
+	// another file whatever order the directory lists them in.
+	files := make(map[string]*themeFile)
+	names := make(map[string]string)
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(strings.ToLower(entry.Name()), ".json") {
 			continue
 		}
-
 		path := filepath.Join(themesDir, entry.Name())
-		t, err := LoadCustomThemeFile(path)
-		if err != nil {
-			problems = append(problems, fmt.Sprintf("skipping custom theme %s: %v", entry.Name(), err))
-			continue
+		// #nosec G304 - path is from user's config directory, reading custom themes is intentional
+		data, err := os.ReadFile(path)
+		if err == nil {
+			var f *themeFile
+			if f, err = readThemeFile(path, data); err == nil {
+				files[f.ID], names[f.ID] = f, entry.Name()
+				continue
+			}
 		}
-
-		tint.Register(t)
-		loaded = append(loaded, t.ID)
+		problems = append(problems, fmt.Sprintf("skipping custom theme %s: %v", entry.Name(), err))
 	}
 
+	resolved, failed := loadThemeFiles(files)
+	for id := range resolved {
+		loaded = append(loaded, id)
+	}
+	for id, err := range failed {
+		problems = append(problems, fmt.Sprintf("skipping custom theme %s: %v", names[id], err))
+	}
+	sort.Strings(loaded)
+	sort.Strings(problems)
 	return loaded, problems, nil
 }
 
@@ -101,8 +116,11 @@ func ReloadCustomThemes() (loaded, problems []string) {
 // rather than two and a restart. It costs a directory scan only on the path
 // that is about to fail anyway.
 func Exists(id string) bool {
-	if id == "" {
-		// Empty is the no-theme state, not a name that has to resolve.
+	if id == "" || id == NoneID || id == OmarchyID {
+		// Empty and none are the no-theme state, not names that have to
+		// resolve. omarchy is valid on a machine without Omarchy too: a
+		// config file goes from machine to machine, and Initialize says
+		// what is missing.
 		return true
 	}
 	EnsureRegistry()
@@ -114,45 +132,30 @@ func Exists(id string) bool {
 	return ok
 }
 
-// LoadCustomThemeFile reads a JSON file and returns a *tint.Tint.
-// Derives ID from filename if the id field is empty.
-// Sets DisplayName from ID if empty. Fills missing color fields with defaults.
+// LoadCustomThemeFile reads one theme file and returns its theme, with its
+// base merged in. The id comes from the file name when the file names none. A
+// colour the file and its bases leave out is the xterm default. The chrome is
+// filed under the id; the caller registers the tint.
 func LoadCustomThemeFile(path string) (*tint.Tint, error) {
 	// #nosec G304 - path is from user's config directory, reading custom themes is intentional
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read theme file: %w", err)
 	}
-
-	var t tint.Tint
-	if err := json.Unmarshal(data, &t); err != nil {
-		return nil, fmt.Errorf("failed to parse theme JSON: %w", err)
+	f, err := readThemeFile(path, data)
+	if err != nil {
+		return nil, err
 	}
-
-	// Derive ID from filename if not set in JSON
-	if t.ID == "" {
-		base := filepath.Base(path)
-		t.ID = strings.ToLower(strings.TrimSuffix(base, filepath.Ext(base)))
+	r, err := mergeBase(f)
+	if err != nil {
+		return nil, err
 	}
-
-	if t.ID == "" {
-		return nil, fmt.Errorf("theme has no ID")
+	chrome, err := buildChrome(r.chrome, r.tint)
+	if err != nil {
+		return nil, err
 	}
-
-	// Set DisplayName from ID if empty
-	if t.DisplayName == "" {
-		t.DisplayName = t.ID
-	}
-
-	fillDefaults(&t)
-
-	// The chrome object is read from the same bytes rather than from the tint:
-	// tint.Tint is a third-party struct with sixteen slots and no room for
-	// tuios's own colours, so the two halves of a theme file are parsed
-	// separately and filed under the same id.
-	registerChrome(t.ID, parseChrome(data))
-
-	return &t, nil
+	registerChrome(r.tint.ID, chrome)
+	return r.tint, nil
 }
 
 // fillDefaults fills nil color pointers with xterm defaults.
@@ -230,4 +233,23 @@ func copyColor(c *tint.Color) *tint.Color {
 	}
 	dup := *c
 	return &dup
+}
+
+// ReloadThemeFiles reads the theme and glyph directories again and puts what
+// changed in force: a theme in use that a file defines is selected again, so
+// the frame draws the edited colours, and the generation moves so every memo
+// keyed on it is rebuilt. It returns one line per theme file it could not
+// use. A glyph set's problems are for tuios list-glyphs, since most are roles
+// a set names and tuios does not draw, which no save fixes.
+//
+// It changes process-wide state, like every theme selection. Call it once per
+// process, not once per client.
+func ReloadThemeFiles() []string {
+	loaded, problems := ReloadCustomThemes()
+	ReloadGlyphSets()
+	if t := Current(); t != nil && slices.Contains(loaded, t.ID) {
+		tint.SetTintID(t.ID)
+		generation.Add(1)
+	}
+	return problems
 }

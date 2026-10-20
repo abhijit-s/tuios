@@ -1,7 +1,9 @@
 package app
 
 import (
+	"fmt"
 	"log"
+	"sync"
 
 	"github.com/Gaurav-Gosain/tuios/internal/session"
 	"github.com/Gaurav-Gosain/tuios/internal/terminal"
@@ -26,6 +28,48 @@ import (
 // TestEveryDaemonHandlerIsWiredHere pins that no entry point registers one of
 // these itself.
 
+// queueSidebarSessionState keeps the newest state for one rail when the UI is
+// slower than daemon pushes. A mutex also keeps an old client's late callback
+// from evicting a newer generation between receive and send. The UI only
+// receives; it never writes this channel.
+func queueSidebarSessionState(events chan sidebarSessionEvent, mu *sync.Mutex, event sidebarSessionEvent) {
+	mu.Lock()
+	defer mu.Unlock()
+	select {
+	case queued := <-events:
+		if queued.generation > event.generation ||
+			(queued.generation == event.generation && queued.state != nil && event.state != nil &&
+				queued.state.SnapshotSeq > 0 && event.state.SnapshotSeq > 0 && queued.state.SnapshotSeq > event.state.SnapshotSeq) {
+			event = queued
+		}
+	default:
+	}
+	events <- event // one buffered slot; only this function sends to it
+}
+
+// WireSidebarSessionClient wires the separate passive viewer. Capture the
+// channels on the UI goroutine so shutdown cannot race a daemon callback.
+func (m *OS) WireSidebarSessionClient(client *session.TUIClient, edge sidebarEdge, generation uint64) {
+	events, states, done := m.sidebarSessionEvents, m.sidebarSessionStateEvents[edge], m.sidebarSessionDone
+	stateMu := &m.sidebarSessionStateMu[edge]
+	queueTerminal := func(event sidebarSessionEvent) {
+		// The terminal event has its own queue and is never displaced by state.
+		select {
+		case events <- event:
+		case <-done:
+		}
+	}
+	client.OnStateSync(func(state *session.SessionState, _, _ string) {
+		queueSidebarSessionState(states, stateMu, sidebarSessionEvent{edge: edge, generation: generation, kind: "state", state: state})
+	})
+	client.OnSessionEnded(func(_, reason string) {
+		queueTerminal(sidebarSessionEvent{edge: edge, generation: generation, kind: "ended", err: fmt.Errorf("session ended: %s", reason)})
+	})
+	client.OnDisconnect(func(err error) {
+		queueTerminal(sidebarSessionEvent{edge: edge, generation: generation, kind: "ended", err: err})
+	})
+}
+
 // WireDaemonClient registers this model as the listener for everything the
 // daemon sends an attached client: routed verbs, state syncs, peers joining and
 // leaving, the session's size, the session ending and the connection going.
@@ -33,6 +77,11 @@ func (m *OS) WireDaemonClient(client *session.TUIClient) {
 	if client == nil {
 		return
 	}
+	// The listing poll is planned per connection: a daemon that pushes
+	// listing changes stopped it, and one that does not (an older host)
+	// needs it again. The new client's cache holds names only until its
+	// first refresh. Update re-plans both; see foreignSessionReplanCmd.
+	m.foreignSessionReplan = true
 	// A new connection starts with nothing said about focus. A client that
 	// replaces a lost one already knows, so it says so at once.
 	if m.hostFocus != hostFocusUnknown {
@@ -70,6 +119,20 @@ func (m *OS) WireDaemonClient(client *session.TUIClient) {
 	client.OnHostsChanged(func(session.HostsChangedPayload) {
 		if m.QueueClientEvent(ClientEvent{Type: "hosts-changed"}) {
 			clientLog("ClientEventChan full, displaced an event for a hosts change")
+		}
+	})
+	// The daemon's session listing changed. The rail refreshes in Update,
+	// where the refresh plan lives; see SessionsChangedMsg.
+	client.OnSessionsChanged(func() {
+		if m.QueueClientEvent(ClientEvent{Type: "sessions-changed"}) {
+			clientLog("ClientEventChan full, displaced an event for a listing change")
+		}
+	})
+	// A pane this client does not stream rang the bell or printed. The dock
+	// marks its workspace tab in Update; see PaneMarkMsg.
+	client.OnPaneMark(func(mark session.PaneMarkPayload) {
+		if m.QueueClientEvent(ClientEvent{Type: "pane-mark", PaneMark: mark}) {
+			clientLog("ClientEventChan full, displaced an event for a pane mark")
 		}
 	})
 	// A paste the daemon refused twice, or one too large to send. The person

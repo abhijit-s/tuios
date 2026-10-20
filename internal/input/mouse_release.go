@@ -58,6 +58,19 @@ func handleMouseRelease(msg tea.MouseReleaseMsg, o *app.OS) (*app.OS, tea.Cmd) {
 	// Reset pointer shape on release
 	o.ResetPointerShape()
 
+	// A rail session's tracked mouse click needs its matching release. The
+	// center pane must not receive a release for a press it never saw.
+	if mouse := msg.Mouse(); mouse.Button != tea.MouseRight {
+		if w := o.SidebarSessionPaneAt(mouse.X, mouse.Y); w != nil {
+			if w.Terminal != nil && w.Terminal.HasMouseMode() {
+				if tx, ty, inside := w.ScreenToTerminal(mouse.X, mouse.Y); inside {
+					sendMouseToWindow(o, w, uv.MouseReleaseEvent{X: tx, Y: ty, Button: uv.MouseButton(mouse.Button), Mod: uv.KeyMod(mouse.Mod)})
+				}
+			}
+			return o, nil
+		}
+	}
+
 	// A sidebar session gesture resolves on release: commit a reorder drag, or
 	// deliver the plain click (switch / toggle) the press deferred.
 	if o.SidebarDragActive() {
@@ -116,24 +129,19 @@ func handleMouseRelease(msg tea.MouseReleaseMsg, o *app.OS) (*app.OS, tea.Cmd) {
 
 	// A plain right press on a pane arms a resize. Below the drag threshold it
 	// was a click: cancel the resize (restoring the few cells of jitter it may
-	// have applied) and open the pane menu at the press position. A pane whose
-	// app requested mouse tracking keeps the old contract, no menu without
-	// ctrl/shift, because the right button belongs to that app. At or past the
-	// threshold the resize completes below.
+	// have applied) and open the pane menu at the press position. At or past
+	// the threshold the resize completes below.
+	//
+	// That holds over a pane whose app tracks the mouse too. Its right button
+	// is the app's only in terminal mode, where the press is forwarded and
+	// never arms this. A press that got here reached no app, and leaving the
+	// menu shut made the click do nothing at all.
 	if o.RightClickPending {
 		o.RightClickPending = false
 		mouse := msg.Mouse()
 		if abs(mouse.X-o.RightPressX)+abs(mouse.Y-o.RightPressY) < rightClickDragThreshold {
-			pressX, pressY := o.RightPressX, o.RightPressY
-			appOwnsMouse := false
-			if idx := findClickedWindow(pressX, pressY, o); idx != -1 {
-				win := o.Windows[idx]
-				appOwnsMouse = win.Terminal != nil && win.Terminal.HasMouseMode()
-			}
 			cancelRightClickResize(o)
-			if !appOwnsMouse {
-				o.OpenContextMenu(pressX, pressY)
-			}
+			o.OpenContextMenu(o.RightPressX, o.RightPressY)
 			return o, nil
 		}
 	}
@@ -150,6 +158,12 @@ func handleMouseRelease(msg tea.MouseReleaseMsg, o *app.OS) (*app.OS, tea.Cmd) {
 			abs(mouse.X-o.DragStartX)+abs(mouse.Y-o.DragStartY) < clickToTypeDragThreshold {
 			enterTerminalOnRelease = true
 		}
+	}
+	// A terminal-mode middle-button binding consumed the press, so its release
+	// is tuios's too. In particular, never send a mouse-tracking program an
+	// unmatched release after the paste binding took the press.
+	if terminalMouseBindingConsumesRelease(msg, o) {
+		return o, nil
 	}
 	// Forward mouse release to terminal if in terminal mode and window has mouse tracking
 	if o.Mode == app.TerminalMode {

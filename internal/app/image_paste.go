@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/Gaurav-Gosain/tuios/internal/composer"
 	"strings"
 	"time"
 
@@ -113,6 +114,8 @@ type imageProbeMsg struct {
 	// keyProbeOff says the type ask was too slow or cannot work here, so the
 	// paste key stops making it.
 	keyProbeOff bool
+	// reply is the reply draft the image is for, nil for a pane.
+	reply *composer.Model
 }
 
 // ImagePastedMsg is the daemon's answer: the path to paste into window.
@@ -220,6 +223,9 @@ func probeImageCmd(clip *imageClipboard, window string, mode imagePasteMode) tea
 
 // applyImageProbe acts on what the clipboard held.
 func (m *OS) applyImageProbe(msg imageProbeMsg) tea.Cmd {
+	if msg.reply != nil {
+		return m.applyReplyImageProbe(msg)
+	}
 	if msg.keyProbeOff {
 		m.imagePaste.keyProbeOff = true
 	}
@@ -313,7 +319,7 @@ func (m *OS) deliverImageCmd(window string, data []byte) tea.Cmd {
 func (m *OS) applyImagePasted(msg ImagePastedMsg) {
 	if msg.Err != nil {
 		if callErr, ok := errors.AsType[*session.VerbCallError](msg.Err); ok && callErr.Code == session.ErrVerbUnknownVerb {
-			m.ShowNotification("This daemon cannot take a pasted image. Restart it with a newer tuios: tuios kill-server", "error", m.Settings.NotificationDuration*2)
+			m.ShowNotification("This daemon cannot take a pasted image. "+m.restartHint(), "error", m.Settings.NotificationDuration*2)
 			return
 		}
 		if callErr, ok := errors.AsType[*session.VerbCallError](msg.Err); ok && callErr.Code == session.ErrVerbUnknownHost && callErr.Hint != nil && callErr.Hint.Detail != "" {

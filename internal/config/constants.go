@@ -41,6 +41,13 @@ const (
 
 	// FastAnimationDuration is the duration for snapping and window swapping animations
 	FastAnimationDuration = 200 * time.Millisecond
+
+	// AnimationSpeedDefault, Min and Max bound appearance.animation_speed, a
+	// percent the durations above are divided by: 200 runs them in half the
+	// time, 50 in twice the time.
+	AnimationSpeedDefault = 100
+	AnimationSpeedMin     = 25
+	AnimationSpeedMax     = 400
 )
 
 // =============================================================================
@@ -164,6 +171,10 @@ var (
 	// DockModeIconTiling is the icon for tiling mode (Nerd Font: nf-fa-th, a 3x3 grid)
 	DockModeIconTiling string
 
+	// DockModeIconPrefix is the mode pill's label while the leader is armed
+	// (Nerd Font: nf-fa-keyboard)
+	DockModeIconPrefix string
+
 	// DockIconTerminalCount is the icon for terminal count (Nerd Font: nf-fa-terminal)
 	DockIconTerminalCount string
 
@@ -201,6 +212,7 @@ func init() {
 	DockModeIconWindow = " " + fa.WindowRestore.String() + " "
 	DockModeIconTerminal = " " + fa.Terminal.String() + " "
 	DockModeIconTiling = " " + fa.Th.String() + " "
+	DockModeIconPrefix = " " + fa.Keyboard.String() + " "
 	DockIconTerminalCount = fa.Terminal.String()
 	DockIconWorkspaceCount = fa.ThLarge.String()
 	DockIconLeaveRunning = fa.SignOut.String()
@@ -234,6 +246,9 @@ const (
 
 	// DockModeIconTilingASCII is the ASCII fallback for tiling mode
 	DockModeIconTilingASCII = " # "
+
+	// DockModeIconPrefixASCII is the ASCII fallback for the armed leader
+	DockModeIconPrefixASCII = " P "
 
 	// DockIconTerminalCountASCII is the ASCII fallback for terminal count
 	DockIconTerminalCountASCII = "win"
@@ -422,7 +437,7 @@ func (s *Settings) GetAnimationDuration() time.Duration {
 	if !s.MotionAllows(MotionBasic) {
 		return 0
 	}
-	return DefaultAnimationDuration
+	return s.scaleAnimation(DefaultAnimationDuration)
 }
 
 // GetFastAnimationDuration returns the animation duration for fast operations.
@@ -432,7 +447,19 @@ func (s *Settings) GetFastAnimationDuration() time.Duration {
 	if !s.MotionAllows(MotionBasic) {
 		return 0
 	}
-	return FastAnimationDuration
+	return s.scaleAnimation(FastAnimationDuration)
+}
+
+// scaleAnimation divides d by the animation_speed percent. Zero, which a
+// Settings built by hand carries, reads as the default speed. Any other value
+// outside the range moves to the nearest end, as the config loader does.
+func (s *Settings) scaleAnimation(d time.Duration) time.Duration {
+	speed := s.AnimationSpeed
+	if speed == 0 {
+		speed = AnimationSpeedDefault
+	}
+	speed = min(max(speed, AnimationSpeedMin), AnimationSpeedMax)
+	return d * AnimationSpeedDefault / time.Duration(speed)
 }
 
 // SidebarDefaultSections is the rail's layout as it ships.
@@ -517,6 +544,46 @@ const (
 // RailHeaderCases lists the valid values for appearance.sidebar.header_case.
 var RailHeaderCases = []string{RailHeaderLowercase, RailHeaderUppercase}
 
+// The rail's row styles, appearance.sidebar.row_style: how the row you are on
+// is marked. bar is the gutter mark the rail has always drawn, marker a
+// pointer glyph in the gutter, underline the name underlined in the row's
+// colour, and pill the name on a fill of that colour.
+const (
+	RailRowBar       = "bar"
+	RailRowMarker    = "marker"
+	RailRowUnderline = "underline"
+	RailRowPill      = "pill"
+)
+
+// RailRowStyles lists the valid values for appearance.sidebar.row_style.
+var RailRowStyles = []string{RailRowBar, RailRowMarker, RailRowUnderline, RailRowPill}
+
+// The rail's header styles, appearance.sidebar.header_style. auto draws a
+// rule after an uppercase header and none after a lowercase one, as the rail
+// always has. plain never draws the rule and rule always does. pill puts the
+// label on a quiet fill, and icon puts the section's icon in front of it.
+const (
+	RailHeaderAuto  = "auto"
+	RailHeaderPlain = "plain"
+	RailHeaderRule  = "rule"
+	RailHeaderPill  = "pill"
+	RailHeaderIcon  = "icon"
+)
+
+// The rail's densities, appearance.sidebar.density. normal stacks the
+// sections as the rail always has, roomy puts a blank row in front of each
+// section header after the first.
+const (
+	RailDensityNormal = "normal"
+	RailDensityRoomy  = "roomy"
+)
+
+// RailDensities lists the valid values for appearance.sidebar.density.
+var RailDensities = []string{RailDensityNormal, RailDensityRoomy}
+
+// RailHeaderStyles lists the valid values for appearance.sidebar.header_style.
+var RailHeaderStyles = []string{RailHeaderAuto, RailHeaderPlain, RailHeaderRule, RailHeaderPill, RailHeaderIcon}
+
 // Where a delete from the files section sends the file.
 //
 // Trash is the default. The rail is an incidental place for a keystroke to land
@@ -565,16 +632,20 @@ func (s *Settings) FormatWindowTitle(title string, index int, cwd string) string
 }
 
 // FormatWorkspaceTab renders a dock workspace tab label from the configured
-// DockWorkspaceTabFormat. Placeholders are {index} (the workspace number) and
-// {name} (the workspace's name, or its number when unnamed). An empty format
-// returns the name unchanged, which is the historic rendering.
-func (s *Settings) FormatWorkspaceTab(name string, index int) string {
+// DockWorkspaceTabFormat. Placeholders are {index} (the workspace number),
+// {name} (the workspace's name, or its number when unnamed), {icon} (the
+// [dock.tabs] number_glyphs entry for the number) and {zoom} (the [dock.tabs]
+// zoom_marker while the workspace has a zoomed pane). An empty format returns
+// the name unchanged, which is the historic rendering.
+func (s *Settings) FormatWorkspaceTab(name string, index int, icon, zoom string) string {
 	if s.DockWorkspaceTabFormat == "" {
 		return name
 	}
 	return strings.NewReplacer(
 		"{name}", name,
 		"{index}", strconv.Itoa(index),
+		"{icon}", icon,
+		"{zoom}", zoom,
 	).Replace(s.DockWorkspaceTabFormat)
 }
 
@@ -709,8 +780,12 @@ const (
 // setting worked and no way to tell a dimmed pane from a crashed one.
 const DimUnfocusedMax = 90
 
-// DefaultClockFormat is what the clock has always drawn.
-const DefaultClockFormat = "15:04:05"
+// DefaultClockFormat is the layout the clock draws with when none is set. It
+// has no seconds: the dock engine arms the clock's timer for the next change
+// of what it draws, so a clock without seconds wakes the client once a minute
+// where one with seconds wakes it every second. A layout with seconds, such as
+// "15:04:05", still draws them.
+const DefaultClockFormat = "15:04"
 
 // GetClockFormat returns the layout in effect.
 func (s *Settings) GetClockFormat() string {
@@ -849,6 +924,15 @@ func (s *Settings) GetDockModeIconTerminal() string {
 // when set, and otherwise the built-in for the glyph set.
 func (s *Settings) GetDockModeIconTiling() string {
 	return s.dockModeIcon(s.DockModeIconTiling, DockModeIconTiling, DockModeIconTilingASCII)
+}
+
+// GetDockModeIconPrefix returns the mode pill's label while the leader is
+// armed, for the current glyph set.
+func (s *Settings) GetDockModeIconPrefix() string {
+	if s.NerdFontsOff() {
+		return DockModeIconPrefixASCII
+	}
+	return DockModeIconPrefix
 }
 
 // GetDockIconLeaveRunning returns the leave-running icon for the current glyph set.
@@ -1119,14 +1203,17 @@ func (s *Settings) GetScrollbarThumbChar() string {
 	return scrollbarThinThumb
 }
 
-// ScrollbarTintHex returns the configured tint when it is a colour literal
-// rather than a keyword. A malformed one is not a colour, so it is refused here
-// as well as warned about at load: a bar drawn in nothing is invisible.
-func (s *Settings) ScrollbarTintHex() (string, bool) {
-	if IsHexColor(s.ScrollbarTint) {
-		return s.ScrollbarTint, true
+// ScrollbarTintColor returns the configured tint when it is a colour rather
+// than a keyword (see theme.ParseColor). A malformed one is not a colour, so it
+// is refused here as well as warned about at load: a bar drawn in nothing is
+// invisible. A keyword wins over a name it shares: muted is the keyword.
+func (s *Settings) ScrollbarTintColor() (string, bool) {
+	switch v := s.ScrollbarTint; v {
+	case ScrollbarTintQuiet, ScrollbarTintBorder, ScrollbarTintMuted:
+		return "", false
+	default:
+		return v, theme.IsColor(v)
 	}
-	return "", false
 }
 
 // ScrollbarTintResolved is the keyword the tint is behaving as, with unset
@@ -1144,7 +1231,8 @@ func (s *Settings) ScrollbarTintResolved() string {
 }
 
 // ResolveBackground is what one surface's background is behaving as, given its
-// own setting and appearance.background: off, theme, or a #RRGGBB literal.
+// own setting and appearance.background: off, theme, or a colour (see
+// theme.ParseColor).
 //
 // The surface's own setting wins whenever it holds a value, off included, so
 // one surface can be left bare while the rest are painted. Empty follows the
@@ -1157,7 +1245,7 @@ func ResolveBackground(own, all string) string {
 		v = all
 	}
 	switch {
-	case v == BackgroundTheme, IsHexColor(v):
+	case v == BackgroundTheme, theme.IsColor(v):
 		return v
 	default:
 		return BackgroundOff

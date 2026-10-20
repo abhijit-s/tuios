@@ -4,8 +4,8 @@ import (
 	"testing"
 
 	"github.com/Gaurav-Gosain/tuios/internal/capture"
-	"github.com/Gaurav-Gosain/tuios/internal/shot"
-	"github.com/Gaurav-Gosain/tuios/internal/vt"
+	"tuios.dev/shot"
+	"tuios.dev/vt"
 )
 
 // The daemon's screenshot verb draws a pane on the ground the session's
@@ -37,7 +37,7 @@ func TestDaemonScreenshotUsesThePaneBackground(t *testing.T) {
 			if tc.all != "" {
 				sess.SetOption("appearance.background", tc.all)
 			}
-			settings, _ := (&Daemon{}).screenshotSettings(sess, "")
+			settings, _ := (&Daemon{}).screenshotSettings(nil, sess, "")
 			palette, _ := capture.Palette(settings.ThemeID)
 			palette = capture.WithPaneBackground(palette, settings.PaneBackground, settings.ThemeID)
 

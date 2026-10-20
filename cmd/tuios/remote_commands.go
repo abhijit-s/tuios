@@ -21,11 +21,11 @@ import (
 	"github.com/Gaurav-Gosain/tuios/internal/harness"
 	"github.com/Gaurav-Gosain/tuios/internal/plural"
 	"github.com/Gaurav-Gosain/tuios/internal/session"
-	"github.com/Gaurav-Gosain/tuios/internal/shot"
 	"github.com/Gaurav-Gosain/tuios/internal/sortx"
 	"github.com/Gaurav-Gosain/tuios/internal/tape"
 	"github.com/google/uuid"
 	"github.com/spf13/cobra"
+	"tuios.dev/shot"
 )
 
 // runListVerbs prints the control protocol's verb catalog. It is the discovery
@@ -229,13 +229,34 @@ func sendKeysSummary(sentTo, windowID, window string, keys int) string {
 	return fmt.Sprintf("sent %d %s to window %s (%s)", keys, noun, window, shortWindowID(windowID))
 }
 
+// newWindowOptions is the `tuios new-window` command line. workspace 0 means
+// the current one, an empty cwd means the daemon's own directory, and a
+// non-empty command is an argv the window execs as its process instead of a
+// shell. A non-empty host puts the window's process on another machine; the
+// window is still this session's. Non-empty grants are what the window's
+// process may do through tuios.
+type newWindowOptions struct {
+	session, name string
+	workspace     int
+	cwd           string
+	focus         bool
+	command       []string
+	host          string
+	grants        []string
+	kind, uri     string
+	jsonOut       bool
+	printID       bool
+	// keepOpen keeps the window after its program exits. wait waits for the
+	// exit and exits with the program's status; timeout bounds that wait in
+	// milliseconds, 0 for none.
+	keepOpen bool
+	wait     bool
+	timeout  int
+}
+
 // runNewWindow opens a window in a session and reports its id, which is the
-// handle every later call needs. workspace 0 means the current one, an empty
-// cwd means the daemon's own directory, and a non-empty command is an argv the
-// window execs as its process instead of a shell. A non-empty host puts the
-// window's process on another machine; the window is still this session's.
-// Non-empty grants are what the window's process may do through tuios.
-func runNewWindow(sessionName, name string, workspace int, cwd string, focus bool, command []string, host string, grants []string, jsonOutput, printID bool) error {
+// handle every later call needs.
+func runNewWindow(o newWindowOptions) error {
 	client, err := dialVerb()
 	if err != nil {
 		return err
@@ -243,38 +264,88 @@ func runNewWindow(sessionName, name string, workspace int, cwd string, focus boo
 	defer func() { _ = client.Close() }()
 
 	params := map[string]any{
-		"session":   sessionName,
-		"name":      name,
-		"workspace": workspace,
-		"cwd":       cwd,
-		"focus":     focus,
+		"session":   o.session,
+		"name":      o.name,
+		"workspace": o.workspace,
+		"cwd":       o.cwd,
+		"focus":     o.focus,
 	}
-	if len(command) > 0 {
-		params["command"] = command
+	if len(o.command) > 0 {
+		params["command"] = o.command
 	}
-	if host != "" {
-		params["host"] = host
+	if o.host != "" {
+		params["host"] = o.host
 	}
-	if len(grants) > 0 {
-		params["grants"] = grants
+	if len(o.grants) > 0 {
+		params["grants"] = o.grants
 	}
-	raw, err := client.Call("new-window", params)
+	if o.kind != "" {
+		params["kind"] = o.kind
+	}
+	if o.uri != "" {
+		params["uri"] = o.uri
+	}
+	if o.keepOpen {
+		params["keep_open"] = true
+	}
+	call := client.Call
+	if o.wait {
+		params["wait"] = true
+		if o.timeout > 0 {
+			params["timeout"] = o.timeout
+		}
+		// The daemon answers when the program exits. With no timeout there
+		// is no bound worth guessing, so the call waits a day.
+		callTimeout := 24 * time.Hour
+		if o.timeout > 0 {
+			callTimeout = time.Duration(o.timeout)*time.Millisecond + 10*time.Second
+		}
+		call = func(verb string, params any) (json.RawMessage, error) {
+			return client.CallWithTimeout(verb, params, callTimeout)
+		}
+	}
+	raw, err := call("new-window", params)
 	if err != nil {
-		return reportVerbError(explainVerbError("new-window", err), jsonOutput)
-	}
-	if jsonOutput {
-		return printVerbResult(raw, jsonOutput)
+		if staleNewWindowParam(err) {
+			err = errStaleNewWindow
+		}
+		if err != errStaleNewWindow {
+			err = explainVerbError("new-window", err)
+		}
+		return reportVerbError(err, o.jsonOut)
 	}
 	var res struct {
+		Type     string `json:"type"`
 		WindowID string `json:"window_id"`
 		Name     string `json:"name"`
 		Host     string `json:"host"`
+		KeepOpen bool   `json:"keep_open"`
+		ExitCode *int   `json:"exit_code"`
+		Signal   int    `json:"signal"`
 	}
 	if err := json.Unmarshal(raw, &res); err != nil {
 		return fmt.Errorf("failed to parse response: %w", err)
 	}
+	// A daemon older than v0.8.0 ignores keep_open and wait, and opens an
+	// ordinary window. Say so, because the window closes on exit and the
+	// call did not wait.
+	if (o.keepOpen && !res.KeepOpen) || (o.wait && res.ExitCode == nil) {
+		if o.wait {
+			return reportVerbError(errStaleNewWindow, o.jsonOut)
+		}
+		fmt.Fprintln(os.Stderr, "warning: "+errStaleNewWindow.Error()+".")
+	}
+	if o.jsonOut {
+		if err := printVerbResult(raw, true); err != nil {
+			return err
+		}
+		return newWindowExitStatus(o.wait, res.ExitCode, res.Signal)
+	}
+	if o.wait {
+		return newWindowExitStatus(true, res.ExitCode, res.Signal)
+	}
 	// The full id and nothing else, for id=$(tuios new-window --print-id).
-	if printID {
+	if o.printID {
 		fmt.Println(res.WindowID)
 		return nil
 	}
@@ -285,6 +356,37 @@ func runNewWindow(sessionName, name string, workspace int, cwd string, focus boo
 		return nil
 	}
 	fmt.Printf("%s  %s\n", shortWindowID(res.WindowID), res.Name)
+	return nil
+}
+
+// errStaleNewWindow is what new-window says when the daemon does not know
+// keep_open or wait. Since v0.8.0 a daemon refuses a parameter it does not
+// know, and its own wording ("fix the name") points at the caller instead of
+// at the daemon. An older one ignores the parameter and answers without the
+// fields that say it was used.
+var errStaleNewWindow = errors.New("the running daemon is older than this tuios and does not know --keep-open or --wait. Run 'tuios restart-server' to update it")
+
+// staleNewWindowParam reports whether err is that refusal.
+func staleNewWindowParam(err error) bool {
+	call, ok := errors.AsType[*session.VerbCallError](err)
+	return ok && call.Code == session.ErrVerbInvalidParams && call.Hint != nil &&
+		(call.Hint.Param == "keep_open" || call.Hint.Param == "wait" || call.Hint.Param == "timeout")
+}
+
+// newWindowExitStatus is how new-window --wait exits: with the program's own
+// status, or 128 plus the signal that ended it, as a shell reports it.
+func newWindowExitStatus(wait bool, code *int, signal int) error {
+	if !wait || code == nil {
+		return nil
+	}
+	switch {
+	case signal > 0:
+		return &statusError{code: 128 + signal}
+	case *code < 0:
+		return &statusError{code: 1}
+	case *code > 0:
+		return &statusError{code: *code}
+	}
 	return nil
 }
 
@@ -322,7 +424,7 @@ func runSplitWindow(sessionName, windowTarget, direction, name string, jsonOutpu
 			return reportVerbError(&diagnosticError{
 				What:  fmt.Sprintf("The running daemon cannot split toward %s.", direction),
 				Cause: "the daemon is older than this tuios. It knows only horizontal and vertical.",
-				Fix:   "run 'tuios kill-server' and start tuios again. Saved sessions come back with new shells.",
+				Fix:   "run 'tuios restart-server'. Saved sessions come back with new shells.",
 				Err:   err,
 			}, jsonOutput)
 		}
@@ -384,20 +486,27 @@ func runFocusWindow(sessionName, windowTarget, relative, direction string, jsonO
 	return nil
 }
 
-// runMoveWindow moves a window to another workspace.
-func runMoveWindow(sessionName, windowTarget string, workspace int, follow, jsonOutput bool) error {
+// runMoveWindow moves a window to another workspace, or with toSession to
+// another session.
+func runMoveWindow(sessionName, windowTarget, toSession string, workspace int, follow, jsonOutput bool) error {
 	client, err := dialVerb()
 	if err != nil {
 		return err
 	}
 	defer func() { _ = client.Close() }()
 
-	raw, err := client.Call("move-window", map[string]any{
-		"session":   sessionName,
-		"window":    windowTarget,
-		"workspace": workspace,
-		"follow":    follow,
-	})
+	params := map[string]any{
+		"session": sessionName,
+		"window":  windowTarget,
+		"follow":  follow,
+	}
+	if workspace != 0 {
+		params["workspace"] = workspace
+	}
+	if toSession != "" {
+		params["to_session"] = toSession
+	}
+	raw, err := client.Call("move-window", params)
 	if err != nil {
 		return reportVerbError(explainVerbError("move-window", err), jsonOutput)
 	}
@@ -405,12 +514,18 @@ func runMoveWindow(sessionName, windowTarget string, workspace int, follow, json
 		return printVerbResult(raw, jsonOutput)
 	}
 	var res struct {
-		WindowID string `json:"window_id"`
-		From     int    `json:"from_workspace"`
-		To       int    `json:"workspace"`
+		WindowID    string `json:"window_id"`
+		From        int    `json:"from_workspace"`
+		To          int    `json:"workspace"`
+		Session     string `json:"session"`
+		FromSession string `json:"from_session"`
 	}
 	if err := json.Unmarshal(raw, &res); err != nil {
 		return fmt.Errorf("failed to parse response: %w", err)
+	}
+	if res.FromSession != "" {
+		fmt.Printf("moved %s from session %s to session %s, workspace %d\n", shortWindowID(res.WindowID), res.FromSession, res.Session, res.To)
+		return nil
 	}
 	fmt.Printf("moved %s from workspace %d to %d\n", shortWindowID(res.WindowID), res.From, res.To)
 	return nil
@@ -666,36 +781,71 @@ func runSendText(sessionName, windowTarget, text string, jsonOutput bool) error 
 // A capture from another machine is fenced as untrusted content, like mail,
 // because it is text a program there wrote. Control characters are removed
 // from it unless the caller asked for escape codes with --ansi or --resolved.
-func runCapturePane(sessionName, windowTarget string, scrollback, ansi, resolved bool, palette []string, lines int, lastCommand, jsonOutput bool) error {
-	t, err := dialTarget(sessionName, windowTarget)
+// captureOptions is the `tuios capture-pane` command line.
+type captureOptions struct {
+	session, window            string
+	scrollback, ansi, resolved bool
+	palette                    []string
+	lines                      int
+	lastCommand, unwrap, trim  bool
+	jsonOut                    bool
+}
+
+func runCapturePane(o captureOptions) error {
+	t, err := dialTarget(o.session, o.window)
 	if err != nil {
 		return err
 	}
 	defer t.Close()
 
 	params := map[string]any{
-		"session":    sessionName,
-		"window":     windowTarget,
-		"scrollback": scrollback,
-		"ansi":       ansi,
-		"resolved":   resolved,
-		"palette":    palette,
-		"lines":      lines,
+		"session":    o.session,
+		"window":     o.window,
+		"scrollback": o.scrollback,
+		"ansi":       o.ansi,
+		"resolved":   o.resolved,
+		"palette":    o.palette,
+		"lines":      o.lines,
 	}
 	// Sent only when asked for, so a capture against an older daemon keeps
 	// working: it would refuse a source it does not know.
-	if lastCommand {
+	if o.lastCommand {
 		params["source"] = "last-command-output"
+	}
+	if o.unwrap {
+		params["unwrap"] = true
+	}
+	if o.trim {
+		params["trim"] = true
 	}
 	raw, err := t.client.Call("capture-pane", t.params(params))
 	if err != nil {
-		return reportVerbError(t.explain("capture-pane", err), jsonOutput)
+		if call, ok := errors.AsType[*session.VerbCallError](err); ok && call.Code == session.ErrVerbInvalidParams &&
+			call.Hint != nil && (call.Hint.Param == "unwrap" || call.Hint.Param == "trim") {
+			return reportVerbError(errStaleCapture, o.jsonOut)
+		}
+		return reportVerbError(t.explain("capture-pane", err), o.jsonOut)
 	}
-	if jsonOutput {
-		return printVerbResultOn(t, raw, jsonOutput)
+	// A daemon older than v0.8.0 ignores unknown parameters and omits the
+	// fields that say unwrap and trim were used.
+	var echo struct {
+		Unwrapped bool `json:"unwrapped"`
+		Trimmed   bool `json:"trimmed"`
 	}
-	return printCapture(os.Stdout, raw, t.host, t.window, ansi || resolved)
+	if json.Unmarshal(raw, &echo) == nil && ((o.unwrap && !echo.Unwrapped) || (o.trim && !echo.Trimmed)) {
+		fmt.Fprintln(os.Stderr, "warning: "+errStaleCapture.Error()+".")
+	}
+	if o.jsonOut {
+		return printVerbResultOn(t, raw, o.jsonOut)
+	}
+	return printCapture(os.Stdout, raw, t.host, t.window, o.ansi || o.resolved)
 }
+
+// errStaleCapture is what capture-pane says when the daemon does not know
+// unwrap or trim. Since v0.8.0 a daemon refuses a parameter it does not know,
+// and its own wording ("fix the name") points at the caller instead of at the
+// daemon.
+var errStaleCapture = errors.New("the running daemon is older than this tuios and does not know --unwrap or --trim. Run 'tuios restart-server' to update it")
 
 // printCapture writes a capture-pane result. A capture from this machine is
 // the content as it is. A capture from host is fenced with
@@ -1543,6 +1693,21 @@ func runSetSessionAccent(sessionName, accent string) error {
 	})
 }
 
+// runSetSessionSpace files a session under a space, or takes it out of any
+// when space is empty.
+func runSetSessionSpace(sessionName, space string) error {
+	return callAndReport("set-session-space", map[string]any{
+		"session": sessionName,
+		"space":   space,
+	}, func(res map[string]any) {
+		if res["space"] == "" {
+			fmt.Printf("Session %v is in no space.\n", res["session"])
+			return
+		}
+		fmt.Printf("Session %v is in space %v.\n", res["session"], res["space"])
+	})
+}
+
 // runSetWorkspaceName labels a workspace. The number stays its identity.
 func runSetWorkspaceName(sessionName string, workspace int, name string) error {
 	return callAndReport("set-workspace-name", map[string]any{
@@ -1643,6 +1808,7 @@ func runWaitFor(sessionName, windowTarget, condition, pattern, until string, idl
 		Window    string `json:"window"`
 		Session   string `json:"session"`
 		ExitCode  *int   `json:"exit_code"`
+		Signal    int    `json:"signal"`
 		Cmdline   string `json:"cmdline"`
 	}
 	if err := json.Unmarshal(raw, &res); err != nil {
@@ -1654,6 +1820,14 @@ func runWaitFor(sessionName, windowTarget, condition, pattern, until string, idl
 			status = fmt.Sprintf("exit %d", *res.ExitCode)
 		}
 		fmt.Printf("%s matched on %s%s: %s, %s\n", res.Condition, plainLine(res.Window), t.on(), status, plainLine(res.Cmdline))
+		return nil
+	}
+	if res.Condition == "window-exit" && res.ExitCode != nil {
+		status := fmt.Sprintf("exit %d", *res.ExitCode)
+		if res.Signal > 0 {
+			status = fmt.Sprintf("signal %d", res.Signal)
+		}
+		fmt.Printf("%s matched on %s%s: %s\n", res.Condition, plainLine(res.Window), t.on(), status)
 		return nil
 	}
 	if res.Window != "" && anySession && res.Session != "" {

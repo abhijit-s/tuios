@@ -175,6 +175,15 @@ func unmarshalRecord(line []byte, rec *ccRecord) error {
 	return err
 }
 
+// claudeLine decodes one Claude Code record.
+func claudeLine(r *reader, line []byte, off int64) (decoded, bool) {
+	var rec ccRecord
+	if err := unmarshalRecord(line, &rec); err != nil {
+		return decoded{}, false
+	}
+	return decoded{entries: r.recordEntries(&rec, off)}, true
+}
+
 // recordEntries turns one record at offset off into entries.
 func (r *reader) recordEntries(rec *ccRecord, off int64) []Entry {
 	// A subagent's records share the file with its parent's. They are the
@@ -231,6 +240,8 @@ func (r *reader) blockEntry(rec *ccRecord, b *ccBlock) (Entry, bool) {
 }
 
 // rawText is the raw of a text entry, cut to rawTextMax.
+//
+//go:noinline
 func rawText(s string) *rawEntry {
 	text, cut := cutString(s, rawTextMax)
 	return &rawEntry{text: text, textCut: cut}

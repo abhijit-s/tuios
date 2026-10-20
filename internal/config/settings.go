@@ -213,6 +213,15 @@ type Settings struct {
 	// the heading treatment (bold, secondary ink, the rule glyph and the
 	// uppercase label). Set via appearance.sidebar.header_case.
 	RailHeaderCase string
+	// RailRowStyle is how the rail marks the row you are on. Set via
+	// appearance.sidebar.row_style; read it through GetRailRowStyle.
+	RailRowStyle string
+	// RailHeaderStyle is how a rail section header is drawn. Set via
+	// appearance.sidebar.header_style; read it through GetRailHeaderStyle.
+	RailHeaderStyle string
+	// RailRoomy puts a blank row in front of each rail section header after
+	// the first. Set via appearance.sidebar.density = "roomy".
+	RailRoomy bool
 	// SidebarEditor is the terminal editor command; empty uses the environment.
 	SidebarEditor string
 
@@ -332,6 +341,17 @@ type Settings struct {
 	// flat filled cell, for anyone who reads a row of caps as a row of beads.
 	DockPillCaps bool
 
+	// DockPrefixIndicator is where an armed leader shows: "pill" colours the
+	// dock's mode pill, "badge" draws the floating PREFIX badge. The badge is
+	// drawn either way when the dock is hidden or has no mode pill.
+	DockPrefixIndicator string
+
+	// BorderFocusedGradient and BorderGradientAngle are
+	// appearance.border_focused_gradient and border_gradient_angle. Read the
+	// stops through BorderGradientStops.
+	BorderFocusedGradient string
+	BorderGradientAngle   int
+
 	// DockModeIconWindow, DockModeIconTerminal and DockModeIconTiling are the
 	// mode pill's icons from appearance.dock_mode_icon_*. Nil is unset, which
 	// draws the built-in for the glyph set. An empty string draws no icon.
@@ -410,6 +430,11 @@ type Settings struct {
 	// Set via --window-title-position flag or appearance.window_title_position config
 	WindowTitlePosition string
 
+	// WindowTitleStyle and WindowTitleAlign are appearance.window_title_style
+	// and window_title_align.
+	WindowTitleStyle string
+	WindowTitleAlign string
+
 	// WindowTitleFormat is the template used to build a window's displayed title.
 	// Empty (the default) means the title is shown as-is. See FormatWindowTitle for
 	// the supported placeholders.
@@ -458,6 +483,13 @@ type Settings struct {
 	// window-manager habit, so it defaults off and users opt in.
 	// Set via appearance.focus_follows_mouse config.
 	FocusFollowsMouse bool
+
+	// FocusFollowsMousePause is the modifier, "ctrl" or "alt", that pauses
+	// FocusFollowsMouse while it is held. Empty never pauses. tuios learns the
+	// modifier from the motion report itself, and does not consume it: a pane
+	// program that tracks the mouse still gets the motion with the modifier.
+	// Set via appearance.focus_follows_mouse_pause config.
+	FocusFollowsMousePause string
 
 	// AltDrag makes alt + left-drag move a pane, the gesture nearly every desktop
 	// window manager binds. It is on by default because the hands that know it
@@ -683,6 +715,20 @@ type Settings struct {
 	// another, where two panes change at once and neither says so.
 	ZoomAnimation bool
 
+	// AnimationSpeed is the percent window animations run at: 100 is as
+	// shipped, 200 twice as fast, 50 half as fast.
+	AnimationSpeed int
+
+	// ThemeTransition is how a change of theme is shown: ThemeTransitionNone
+	// swaps the colours in one frame, ThemeTransitionFade crosses the whole
+	// screen over, and ThemeTransitionCircle grows the new theme from the
+	// middle of the screen. Read it through ThemeTransitionStyle, which also
+	// honours appearance.motion.
+	ThemeTransition string
+	// ThemeTransitionMs is how long the transition takes at animation speed
+	// 100. Read it through ThemeTransitionDuration.
+	ThemeTransitionMs int
+
 	// ZoomBorderless makes a zoom the whole pane region with no chrome: the
 	// zoomed pane drops its border and title bar, and its guest is told the
 	// full size of the region. zoom_size and zoom_max_width do not apply while
@@ -700,6 +746,13 @@ type Settings struct {
 	// thing a rice wants. One number is also the only form that says the same thing
 	// on a light theme as on a dark one.
 	DimUnfocused int
+
+	// DimForeground lets DimUnfocused carry a pane's text toward its ground,
+	// the same as its background. True, the default, dims both; false keeps
+	// the text at full strength and dims only the background, for a rice that
+	// wants an unfocused pane to read as quieter without its text going dim
+	// too.
+	DimForeground bool
 
 	// DimMultifocus dims the panes in the multifocus set like every other
 	// unfocused pane. False, the default, leaves them undimmed: they take the
@@ -814,6 +867,8 @@ func DefaultSettings() Settings {
 		DockWorkspaceTooltip:        true,
 		DockWorkspaceLabelMax:       12,
 		DockPillCaps:                true,
+		DockPrefixIndicator:         DefaultDockPrefixIndicator,
+		BorderGradientAngle:         DefaultBorderGradientAngle,
 		HideWindowButtons:           false,
 		WindowButtonStyle:           WindowButtonStyleDots,
 		WindowButtonPosition:        WindowButtonPositionLeft,
@@ -839,6 +894,8 @@ func DefaultSettings() Settings {
 		OSC52Write:                  OSC52WriteFocused,
 		HideScrollbar:               false,
 		WindowTitlePosition:         DefaultWindowTitlePosition,
+		WindowTitleStyle:            DefaultWindowTitleStyle,
+		WindowTitleAlign:            DefaultWindowTitleAlign,
 		WindowTitleFormat:           "",
 		HideClock:                   false,
 		ShowClock:                   false,
@@ -869,9 +926,13 @@ func DefaultSettings() Settings {
 		ScrollColumnMax:             ScrollColumnWidthMax,
 		ZoomSize:                    ZoomSizeDefault,
 		ZoomAnimation:               true,
+		AnimationSpeed:              AnimationSpeedDefault,
+		ThemeTransition:             ThemeTransitionNone,
+		ThemeTransitionMs:           ThemeTransitionMsDefault,
 		ZoomFollowsFocus:            true,
 		WindowButtonZoom:            true,
 		DimUnfocused:                0,
+		DimForeground:               true,
 		Background:                  BackgroundOff,
 		ClockFormat:                 "",
 		ZoomMaxWidth:                0,

@@ -9,7 +9,7 @@ import (
 
 	"github.com/Gaurav-Gosain/tuios/internal/invisible"
 	"github.com/Gaurav-Gosain/tuios/internal/theme"
-	"github.com/Gaurav-Gosain/tuios/internal/vt"
+	"tuios.dev/vt"
 )
 
 // The navigator's preview shows a pane's screen in its own colours.
@@ -40,13 +40,11 @@ type navInk struct {
 
 // navThemeInk is the theme in force now.
 func navThemeInk() navInk {
-	if !theme.IsEnabled() {
+	fg, bg, cur, pal, ok := theme.EmulatorColors()
+	if !ok {
 		return navInk{}
 	}
-	return navInk{
-		on: true, fg: theme.TerminalFg(), bg: theme.TerminalBg(), cur: theme.TerminalCursor(),
-		ansiPalette: theme.GetANSIPalette(),
-	}
+	return navInk{on: true, fg: fg, bg: bg, cur: cur, ansiPalette: pal}
 }
 
 // navParser parses styled captures, one after another, with one emulator. A

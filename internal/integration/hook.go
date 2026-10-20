@@ -15,6 +15,7 @@ package integration
 
 import (
 	"encoding/json"
+	"strconv"
 	"strings"
 )
 
@@ -135,10 +136,15 @@ type Report struct {
 	// State is empty, without SessionOnly, for a report that is its Activity
 	// alone, a report-agent-activity call: a subagent starting or stopping,
 	// which says nothing about what the pane's own agent is doing.
-	State          string `json:"state,omitempty"`
-	Kind           string `json:"kind,omitempty"`
-	Message        string `json:"message,omitempty"`
-	SessionID      string `json:"agent_session_id,omitempty"`
+	State     string `json:"state,omitempty"`
+	Kind      string `json:"kind,omitempty"`
+	Message   string `json:"message,omitempty"`
+	SessionID string `json:"agent_session_id,omitempty"`
+	// SessionStart marks the report of a conversation starting or resuming.
+	// For a harness that runs every conversation from one server process,
+	// it is the only report that lets a different conversation take a pane
+	// over. See Manifest.SharedServer in internal/harness.
+	SessionStart   bool   `json:"session_start,omitempty"`
 	TranscriptPath string `json:"transcript_path,omitempty"`
 	// Cwd is the folder the harness names in the hook payload. The daemon
 	// keeps the first one of a session as the agent's start folder.
@@ -376,10 +382,48 @@ func StdoutAnswer(harness string) string {
 	return ""
 }
 
+// StartsWithContext reports whether a harness adds the plain text a
+// SessionStart hook prints to the agent's context. The hook then tells the
+// agent where it runs (see SessionStartHint). Claude Code and Codex both do,
+// and treat an empty stdout as nothing to add.
+func StartsWithContext(harness string) bool {
+	id, _ := Canonical(harness)
+	return id == ClaudeCode || id == Codex
+}
+
+// SessionStartHint is what the SessionStart hook prints for the agent: the
+// pane and the session it runs in, and where to learn the rest. It is two
+// short lines because it costs tokens in every session.
+//
+// The text goes into the agent's context, so neither name may carry text of
+// its own there. A session name may hold any printable text, and a pane given
+// by name instead of id may even hold a newline, so the pane must be a short id
+// (hex digits) or nothing is printed, and the session is cut to
+// maxHintSession runes and quoted with every non-printable rune escaped
+// (newlines, U+2028, bidi overrides).
+func SessionStartHint(pane, session string) string {
+	if pane == "" || session == "" || strings.ContainsFunc(pane, func(r rune) bool {
+		return !('0' <= r && r <= '9' || 'a' <= r && r <= 'f' || 'A' <= r && r <= 'F')
+	}) {
+		return ""
+	}
+	if r := []rune(session); len(r) > maxHintSession {
+		session = string(r[:maxHintSession]) + "..."
+	}
+	return "You run in tuios pane " + pane + " in session " + strconv.Quote(session) + ".\n" +
+		"Run `tuios --skill` to learn how to drive tuios.\n"
+}
+
+// maxHintSession is the most runes of a session name the start hint shows.
+const maxHintSession = 64
+
 // fields reads a decoded payload without panicking on a field of the wrong
 // type: a harness that changes a field's type costs that field, not the hook.
 type fields map[string]any
 
+// str is the string at key, or "" when it is missing or not a string.
+//
+//go:noinline
 func (f fields) str(key string) string {
 	if v, ok := f[key].(string); ok {
 		return v
@@ -405,6 +449,8 @@ func eventName(in Input, p fields) string {
 }
 
 // first is the first of keys holding a non-empty string.
+//
+//go:noinline
 func (f fields) first(keys ...string) string {
 	for _, k := range keys {
 		if v := f.str(k); v != "" {

@@ -14,8 +14,8 @@ import (
 	"github.com/Gaurav-Gosain/tuios/internal/pool"
 	"github.com/Gaurav-Gosain/tuios/internal/terminal"
 	"github.com/Gaurav-Gosain/tuios/internal/theme"
-	"github.com/Gaurav-Gosain/tuios/internal/vt"
 	uv "github.com/charmbracelet/ultraviolet"
+	"tuios.dev/vt"
 )
 
 func (m *OS) GetCanvas(render bool) *frameCanvas {
@@ -66,6 +66,10 @@ func (m *OS) GetCanvas(render bool) *frameCanvas {
 	// window composed from its cached layer is not redrawn and still has them on
 	// screen. What has to go is a closed window's.
 	m.pruneWindowButtonRects()
+	// The focused border's gradient is marked again by whichever path draws
+	// that border on this frame. See border_gradient.go.
+	m.gradient.on = false
+	gradient := m.gradientOn()
 
 	topMargin := m.GetTopMargin()
 	viewportHeight := m.GetUsableHeight()
@@ -214,7 +218,15 @@ func (m *OS) GetCanvas(render bool) *frameCanvas {
 		isMultifocused := len(m.MultifocusSet) > 0 && m.MultifocusSet[window.ID]
 		var borderColorObj color.Color
 		tint, quietTint, tinted := m.sessionBorderTint()
+		var stateColor color.Color
+		if isFocused {
+			stateColor = m.focusedStateBorder(window)
+		}
 		switch {
+		case stateColor != nil:
+			// Copy mode or an agent that waits, in a colour the theme names
+			// for it, outranks the mode and the session.
+			borderColorObj = stateColor
 		case isFocused && m.Mode == TerminalMode:
 			// The mode colour outranks the session's. This border says the keys
 			// are going into the guest, which is the more urgent fact and the
@@ -236,6 +248,9 @@ func (m *OS) GetCanvas(render bool) *frameCanvas {
 			borderColorObj = quietTint
 		default:
 			borderColorObj = theme.BorderUnfocusedOn(m.host.bg)
+		}
+		if gradient && isFocused && stateColor == nil && !rendersBorderless(window) && !m.zenBordersHidden(true) {
+			m.markGradient(window.ID, image.Rect(window.X, window.Y, window.X+window.Width, window.Y+window.Height), borderColorObj)
 		}
 
 		// Effective z-index, computed once so the cached and freshly-rendered
@@ -367,6 +382,7 @@ func (m *OS) GetCanvas(render bool) *frameCanvas {
 	if frame := m.renderScratchFrame(); frame != nil {
 		layers = append(layers, frame)
 	}
+	layers = append(layers, m.renderStackRows()...)
 
 	// Add the shared-border dividers when the panes have given up their own borders
 	if m.panesBorderless() {
@@ -727,10 +743,18 @@ func (m *OS) safeComposeFrame() (frame string, ok bool) {
 // composeFrame renders the full frame, using the fullscreen fast path when it is
 // eligible and falling back to the compositor otherwise.
 func (m *OS) composeFrame() string {
+	frame := m.composeFrameOnce()
+	// The frame a theme transition starts from. See theme_transition.go.
+	m.themeFx.lastFrame = frame
+	return frame
+}
+
+func (m *OS) composeFrameOnce() string {
 	// The ground a pane's program is told it is on, kept in step with the one
 	// it is drawn on. First, because every path below draws the panes. See
 	// background.go.
 	m.syncReportColors()
+	m.noteThemeChange()
 
 	// The screen saver is the frame, not a layer over one.
 	//
@@ -746,6 +770,12 @@ func (m *OS) composeFrame() string {
 	// The panes are still there and still running; what is skipped is drawing
 	// them. The saver's own capture was taken when it started, so it has the
 	// screen it is animating and needs nothing further from the compositor.
+	if m.themeFx.pending {
+		// Before anything below draws: the canvas still holds the frame in
+		// the old theme. See theme_transition.go.
+		m.keepThemeFrame()
+	}
+	m.canvasIsFrame = false
 	if m.screensaver.active && m.screensaver.frame != "" {
 		m.OverlayHits = m.OverlayHits[:0]
 		m.SixelPassthrough.SetFrame(nil, 0, 0, 0, 0)
@@ -788,6 +818,11 @@ func (m *OS) composeFrame() string {
 	if m.celebration.active() {
 		m.celebration.draw(canvas)
 	}
+	// The old theme outside the circle, over everything drawn in the new
+	// one.
+	if m.themeFx.running() {
+		m.applyThemeTransition(canvas, time.Now())
+	}
 	// Last, so the images are cut by everything drawn over the panes.
 	m.scanSixelFrame(canvas)
 	// The frame goes out as the canvas wrote it. The bubbletea renderer
@@ -796,6 +831,7 @@ func (m *OS) composeFrame() string {
 	// wish or sip sets per connection. Passing it through lipgloss.Sprint as
 	// well copied the whole frame twice on a truecolor terminal and stripped
 	// every colour when this process's stdout was not a TTY.
+	m.canvasIsFrame = true
 	return canvas.Render()
 }
 
@@ -804,7 +840,12 @@ func (m *OS) composeFrame() string {
 // visible windows, any overlay, separators, graphics, or active manipulation or
 // animation. Pure: it does not mutate render state.
 func (m *OS) fullscreenFastWindow() (*terminal.Window, bool) {
-	if len(m.Animations) > 0 || m.Renaming() || m.FilePromptOpen() {
+	if len(m.Animations) > 0 || m.Renaming() {
+		return nil, false
+	}
+	// A gradient border is a pass over the canvas, which this path does not
+	// build. Only when one is configured.
+	if m.Settings.BorderFocusedGradient != "" && m.gradientOn() {
 		return nil, false
 	}
 	// The screen saver is a compositor overlay, and the fast path skips
@@ -813,11 +854,12 @@ func (m *OS) fullscreenFastWindow() (*terminal.Window, bool) {
 	if m.screensaver.active {
 		return nil, false
 	}
-	if m.ShowHelp || m.ShowCommandPalette || m.ShowLauncher || m.ShowSessionSwitcher || m.ShowAgentMail || m.ShowInbox || m.ShowWorkspaceSwitcher || m.buffers.open || m.navigator.open || m.ShowLayoutPicker || m.ShowHostPicker ||
-		m.ShowQuitMenu || m.ShowScrollbackBrowser || m.ShowLogs || m.msgView.open || m.ShowCacheStats ||
-		m.ShowAggregateView || m.ShowTapeManager || m.ShowTapeReview || m.ShowSettings || m.ShowThemePicker || m.ShowEffectPicker ||
-		m.ShowKeybindManager || m.ShowAccentPicker || m.PrefixActive || m.ContextMenu != nil ||
-		m.Capture.Active || m.ShotPreview.Open || m.review.open {
+	// Every panel is drawn by renderOverlays, which the fast path skips. The
+	// panels are asked through eachOverlayGate, the list mouse routing reads,
+	// so a panel added there cannot open over a lone pane unseen while it
+	// takes every key. The rest are the surfaces that list does not carry.
+	if m.AnyOverlayOpen() || m.ShowScrollbackBrowser || m.ShowCacheStats || m.ShowTapeManager || m.ShowTapeReview ||
+		m.PrefixActive || m.ContextMenu != nil || m.Capture.Active || m.review.open {
 		return nil, false
 	}
 	if m.TapeRecorder != nil && m.TapeRecorder.IsRecording() {
@@ -852,6 +894,11 @@ func (m *OS) fullscreenFastWindow() (*terminal.Window, bool) {
 	// The celebration is a pass over the canvas too, for the second or so it
 	// is on screen.
 	if m.celebration.active() {
+		return nil, false
+	}
+	// And the theme transition, which keeps the old frame's cells outside
+	// its circle.
+	if m.themeFx.running() {
 		return nil, false
 	}
 	// A hover label is a layer the fast path does not compose. The dock's
@@ -937,6 +984,25 @@ func (m *OS) fastPathPaints() bool {
 		(m.surfaceGround(surfaceDock).on() && m.Settings.DockbarPosition != "hidden")
 }
 
+// focusedStateBorder is the focused pane's border for a state the theme
+// names a colour for: border.copy in copy mode, status.attention while the
+// pane's agent waits for input. Nil when the pane is in neither state, or
+// the theme names no colour for it, and the mode's colour is drawn.
+func (m *OS) focusedStateBorder(w *terminal.Window) color.Color {
+	if w == nil {
+		return nil
+	}
+	if w.CopyModeVisible() {
+		if c := theme.BorderFocusedCopy(); c != nil {
+			return c
+		}
+	}
+	if c := theme.BorderFocusedAttention(); c != nil && m.windowMarkState(w) == "needs_input" {
+		return c
+	}
+	return nil
+}
+
 // buildFullscreenFrame renders the window box and stacks it with the dock,
 // skipping the compositor. Mutates render state (renders the window, clears its
 // dirty flags), so it must only be called after eligibility is confirmed.
@@ -948,7 +1014,13 @@ func (m *OS) buildFullscreenFrame(window *terminal.Window) string {
 
 	isFocused := m.FocusedWindow >= 0 && m.FocusedWindow < len(m.Windows) && m.Windows[m.FocusedWindow] == window
 	var borderColorObj color.Color
+	var stateColor color.Color
+	if isFocused {
+		stateColor = m.focusedStateBorder(window)
+	}
 	switch {
+	case stateColor != nil:
+		borderColorObj = stateColor
 	case isFocused && m.Mode == TerminalMode:
 		borderColorObj = theme.BorderFocusedTerminalOn(m.host.bg)
 	case isFocused:
@@ -1076,11 +1148,22 @@ func (m *OS) View() tea.View {
 		// A frame to flush: the frame ticker runs at the frame rate again.
 		// It goes out now rather than at its next tick, unless it equals the
 		// last one; see below.
+		//
+		// A frame equal to the last one leaves the ticker where it is. It has
+		// nothing to write, and the cursor, the one thing it can still move,
+		// goes out through kickFlush. The git section's reading every 2 s
+		// composes such a frame, and waking the ticker for it kept an idle
+		// client with that section at about 110 context switches a second.
 		if content != m.cachedViewContent {
 			composed = true
 		}
 		m.cachedViewContent = content
-		m.noteFrame()
+		if composed && !m.quietFrame {
+			m.noteFrame()
+			// The panes may have reflowed or used the alternate screen
+			// for this frame. See releaseEmulatorScratch.
+			m.emulatorReleasePending = true
+		}
 		// This frame carries the beam at the pointer's newest position, so the
 		// skipped move it was waiting for has been drawn. Cleared here rather
 		// than on the motion path so a frame composed for any other reason (a
@@ -1098,7 +1181,7 @@ func (m *OS) View() tea.View {
 	// cached frame can carry a picture-in-picture box placed for where the
 	// cursor was. Such a frame is composed again rather than reused: the box
 	// must never cover the cursor the same frame shows.
-	if m.renderSkipped && m.cachedViewContent != "" && !m.pipCoversCursor(m.getRealCursor()) {
+	if cur, _ := m.viewCursor(); m.renderSkipped && m.cachedViewContent != "" && !m.pipCoversCursor(cur) {
 		view.SetContent(m.cachedViewContent)
 	} else if !compose() {
 		return m.crashView()
@@ -1119,12 +1202,18 @@ func (m *OS) View() tea.View {
 	// app that asked for less than 1003 still sees only what it asked for (#78);
 	// see guestWantsMotion.
 	view.MouseMode = tea.MouseModeAllMotion
+	if m.MouseOff {
+		view.MouseMode = tea.MouseModeNone
+	}
 
 	view.ReportFocus = true
 	m.notePaneFocus()
 	view.DisableBracketedPasteMode = false
 	view.KeyboardEnhancements = m.keyboardEnhancements()
-	view.Cursor = m.getRealCursor()
+	// With no cursor shown, the cursor is parked hidden at the caret, so an
+	// input method opens its window there. See cursor_park.go.
+	var cursorShown bool
+	view.Cursor, cursorShown = m.viewCursor()
 	// The emulator's cursor can move between the read the composed frame
 	// placed the picture-in-picture box by and the read above, since pane
 	// output is written on another goroutine. When the move took it under the
@@ -1133,8 +1222,9 @@ func (m *OS) View() tea.View {
 		if !compose() {
 			return m.crashView()
 		}
-		view.Cursor = m.getRealCursor()
+		view.Cursor, cursorShown = m.viewCursor()
 	}
+	m.cursorPark.set(view.Cursor, cursorShown)
 	// The title of the terminal tuios runs in, when a tool set one through
 	// herdr's client.window_title.set. Empty leaves the title alone.
 	view.WindowTitle = m.ClientTitle
@@ -1209,9 +1299,9 @@ func (m *OS) flushGraphicsForView() {
 	// of the drag. Hiding keeps the image data resident, so the gesture ending
 	// puts it back with no round trip to whatever drew it.
 	hideImages := m.Resizing || m.ShowHelp || m.ShowCommandPalette || m.ShowLauncher || m.ShowSessionSwitcher || m.ShowAgentMail || m.ShowInbox ||
-		m.ShowWorkspaceSwitcher || m.buffers.open || m.navigator.open || m.ShowLayoutPicker || m.ShowHostPicker || m.ShowQuitMenu || m.ShowScrollbackBrowser ||
+		m.ShowWorkspaceSwitcher || m.buffers.open || m.navigator.open || m.ShowLayoutPicker || m.ShowHostPicker || m.ShowQuitMenu || m.DaemonRestartOpen() || m.ShowScrollbackBrowser ||
 		m.ShowLogs || m.msgView.open || m.ShowCacheStats || m.ShowAggregateView ||
-		m.ShowSettings || m.ShowThemePicker || m.ShowKeybindManager || m.ShowAccentPicker || m.ShowTapeManager || m.ShowTapeReview ||
+		m.ShowSettings || m.ShowThemePicker || m.themeEditor.open || m.presetPicker.open || m.ShowKeybindManager || m.ShowAccentPicker || m.ShowTapeManager || m.ShowTapeReview ||
 		m.ShotPreview.Open || m.review.open
 	if m.KittyPassthrough != nil {
 		// Self-placed remote video images are hidden/dropped here, not by
@@ -1232,6 +1322,9 @@ func (m *OS) flushGraphicsForView() {
 	} else {
 		m.clearLauncherIcons()
 	}
+	// The reply's image previews belong to the Inbox, the same way. A nil
+	// check when no reply has shown a picture.
+	m.flushReplyPreviewForFrame()
 	// The preview's picture belongs to the panel that is doing the hiding, the
 	// same as the launcher's icons, so it runs past hideImages rather than
 	// through it.

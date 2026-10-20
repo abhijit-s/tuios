@@ -385,7 +385,12 @@ func (m *OS) InboxReview() (tea.Cmd, bool) {
 	}
 	it, ok := m.inboxSelected()
 	if !ok {
-		return nil, false
+		// An agent with no Inbox item: review its pane.
+		e, ok := m.cockpitAgent()
+		if !ok {
+			return nil, false
+		}
+		it = session.AttentionItem{Session: e.SessionID, Window: e.WindowID, Host: e.Host, Name: e.Title}
 	}
 	if it.Host != "" {
 		m.reviewNotify(inboxWho(it)+" is on "+printableTitle(it.Host)+". Attach there to review it", "info", m.Settings.NotificationDuration)
@@ -559,7 +564,7 @@ func reviewErrorText(err error) string {
 	if callErr, ok := errors.AsType[*session.VerbCallError](err); ok {
 		switch callErr.Code {
 		case session.ErrVerbUnknownVerb:
-			return "This daemon cannot review changes. Restart it with a newer tuios: tuios kill-server"
+			return "This daemon cannot review changes. " + restartHintPlain
 		case session.ErrVerbNotRepo:
 			if strings.Contains(callErr.Message, "no git repository") {
 				return "No git repository under this pane"

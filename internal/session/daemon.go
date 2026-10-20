@@ -255,6 +255,9 @@ type Daemon struct {
 	// pastes holds the images the person pasted into panes. See
 	// paste_image.go.
 	pastes *pasteStore
+	// replyHistory is what the person sent to each agent, in memory only.
+	// See reply_history.go.
+	replyHistory replyHistory
 	// buffers holds the paste buffers every client and session shares. See
 	// verb_buffers.go.
 	buffers     *pastebuf.Store
@@ -341,12 +344,18 @@ type Daemon struct {
 	// agents_switch.go. It is read on every tick, verb and output event, and
 	// written by a config reload, so it is atomic.
 	agentsOff atomic.Bool
+
+	// wakes are the latches the background loops sleep on at idle. See
+	// idle_wakes.go.
+	wakes idleWakes
 	// agentsSwitchMu orders a switch with the clear a racing detection pass
 	// makes after it. See noteSessionScanned.
 	agentsSwitchMu sync.Mutex
 	// paneCreators maps a window id to the window of the pane that opened
 	// it, for the typing rule with the agent features off.
 	paneCreators sync.Map
+	// ports is list-ports' last reading of the system. See verb_ports.go.
+	ports portsCache
 
 	// evidenceClock is the time the detection verbs measure evidence_age_ms
 	// against. Nil means time.Now; tests replace it. See agent_evidence.go.
@@ -386,7 +395,14 @@ const defaultAgentDetectInterval = 2 * time.Second
 // starts in it goes unechoed, so output is what says it is worth reading
 // again, and this bound covers a program started with no output at all. At the
 // default two-second tick it is every fifth tick. See PTY.detectScanDue.
-const agentDetectQuietBound = 10 * time.Second
+//
+// It is also how long the monitor keeps looking after the last activity before
+// it sleeps, so the bound holds for a program started within it. One started
+// with no output and no input later than that is found when the pane next
+// prints. See agentMonitor.
+//
+// A variable so the idle budget test can shorten it.
+var agentDetectQuietBound = 10 * time.Second
 
 // detectQuietTicks is how many ticks a quiet pane waits between reads at the
 // given poll interval: agentDetectQuietBound in ticks, and never less than one,
@@ -503,6 +519,15 @@ type connState struct {
 	pendingStream *eventSub
 	streaming     bool
 
+	// listingPush says the client's hello set ListingPush: it reads
+	// MsgSessionsChanged. Guarded by mu. See daemon_listing_push.go.
+	listingPush bool
+	// paneMarks says the client's hello set PaneMarks: it reads MsgPaneMark.
+	// Guarded by mu. See pane_marks.go.
+	paneMarks bool
+	// goodbye says the client's hello set Goodbye: it reads MsgGoodbye.
+	// Guarded by mu. See daemon_goodbye.go.
+	goodbye bool
 	// isTUIClient indicates this is a full TUI client (vs a control client)
 	// TUI clients can receive and execute remote commands
 	isTUIClient bool
@@ -548,6 +573,9 @@ type connState struct {
 	// largest and latest it does not count toward the session's size.
 	// Guarded by mu.
 	viewOnly bool
+	// passive is a pane viewer without a full renderer command executor.
+	// It does not size the session, but may write to its subscribed PTY. Guarded by mu.
+	passive bool
 
 	// takeover, when a verb sets it, runs after that verb's reply line has been
 	// written and owns the connection from then on; the JSON loop returns
@@ -906,6 +934,7 @@ func NewDaemon(cfg *DaemonConfig) *Daemon {
 	d.manager.SetReturnWhenEmpty(!cfg.StayOnEmptyWorkspace)
 	d.agentDetectInterval = resolveAgentDetectInterval(cfg.AgentAutoDetect, cfg.AgentDetectInterval)
 	d.agentsOff.Store(cfg.AgentsOff)
+	d.wakes.init()
 	d.loadHooks(cfg)
 	d.notify = newPushNotifier(d, cfg.Notify)
 
@@ -979,6 +1008,8 @@ func (d *Daemon) onSessionCreated(s *Session) {
 	// A new or restored session's panes start with the link, so it has to
 	// point somewhere from the start. See ssh_agent_follow.go.
 	d.agentEnsureSession(s.ID)
+	s.setIdleWakes(&d.wakes)
+	d.wakes.listing.Set()
 	name := s.Name()
 	// Every daemon-side mutation reaches the attached clients from here, so a
 	// change the daemon made itself shows up in a live TUI without the verb that
@@ -1009,6 +1040,11 @@ func (d *Daemon) onSessionCreated(s *Session) {
 		d.broadcastStateSync(sessionID, state, "update", "")
 	})
 	s.SetHostShownProbe(func() bool { return d.sessionShown(sessionID) })
+	// A pane's first output or bell since its subscriptions changed. See
+	// pane_marks.go.
+	s.SetPaneMarkSink(func(ptyID, windowID string, mark uint32) {
+		d.goTracked(func() { d.sendPaneMark(sessionID, ptyID, windowID, mark) })
+	})
 	s.SetEventSink(func(ev SessionEvent) {
 		// Read per event, not once at creation: a rename changes it, and
 		// every record made from here must carry the name the session has now.
@@ -1019,6 +1055,7 @@ func (d *Daemon) onSessionCreated(s *Session) {
 		// next detection poll. Throttled per PTY so a busy pane pays no cost.
 		if ev.Type == EventWindowClosed {
 			d.paneCreators.Delete(ev.Window)
+			forgetMovedWindow(ev.Window)
 		}
 		if ev.Type == eventProgramStatus {
 			if s.applyProgramStatus(ev.Window, ev.PTYID, !d.agentsOff.Load()) {
@@ -1235,6 +1272,7 @@ func (d *Daemon) onSessionRenamed(s *Session, old string) {
 // PTYs are closed and their windows are gone, but the socket stays open, so the
 // client sits in a dead session with no way to learn what happened.
 func (d *Daemon) onSessionDeleted(s *Session) {
+	d.wakes.listing.Set()
 	// The session's ssh agent link goes with it.
 	d.agentForgetSession(s.ID)
 	d.displayForgetSession(s.ID)
@@ -1430,6 +1468,7 @@ func (d *Daemon) Start() error {
 	go d.cleanupLoop()
 	go d.stallMonitor()
 	go d.agentMonitor()
+	go d.listingNotifier()
 
 	return nil
 }
@@ -1527,6 +1566,8 @@ func (cs *connState) drop() {
 func (d *Daemon) shutdown() error {
 	d.shutdownOnce.Do(func() {
 		log.Println("Shutting down daemon...")
+		// The clients hear why before anything closes under them.
+		d.sayGoodbye()
 
 		// The Inbox is saved first and not again. Everything below closes
 		// panes, and a pane closing on shutdown is not the person dealing
@@ -1860,6 +1901,8 @@ func (d *Daemon) handleConnectionOn(conn net.Conn, viaLink, linkHuman bool) {
 		d.clientsMu.Lock()
 		delete(d.clients, clientID)
 		d.clientsMu.Unlock()
+		// The listing says which sessions have a client.
+		d.wakes.listing.Set()
 		// A connection to a host carries the person's agent for that
 		// host's link, with no session here, so it is forgotten on close.
 		d.agentForgetHosts(clientID)
@@ -2014,6 +2057,11 @@ func (d *Daemon) serveMessage(cs *connState, msg *Message, release func()) {
 }
 
 func (d *Daemon) handleMessage(cs *connState, msg *Message) error {
+	// A request can change what the listing shows: an attach, a rename, a
+	// new session. Asking for the listing changes nothing.
+	if msg.Type != MsgList {
+		d.wakes.listing.Set()
+	}
 	switch msg.Type {
 	case MsgHello:
 		return d.handleHello(cs, msg)
@@ -2080,37 +2128,83 @@ func (d *Daemon) handleMessage(cs *connState, msg *Message) error {
 	}
 }
 
-func (d *Daemon) cleanupLoop() {
-	ticker := time.NewTicker(30 * time.Second)
-	defer ticker.Stop()
+// CleanupEvery is how often cleanupLoop runs: TUIOS_CLEANUP_SECONDS when
+// set, for tests, else 30 seconds. A client releases its own emulators'
+// buffers at the same interval.
+func CleanupEvery() time.Duration {
+	if s := os.Getenv("TUIOS_CLEANUP_SECONDS"); s != "" {
+		if n, err := strconv.Atoi(s); err == nil && n > 0 {
+			return time.Duration(n) * time.Second
+		}
+	}
+	return 30 * time.Second
+}
 
-	const pendingRequestTTL = 2 * time.Minute
+// cleanupLoop releases what activity leaves behind and expires routed
+// requests whose result never came, every cleanupEvery.
+//
+// It sleeps while nothing happens. What it releases (alternate screens, reflow
+// scratch, the heap a flood left behind) is left by output, input and
+// resizes, and what it expires is a routed request. Each of those raises the
+// cleanup latch. A run that finds the latch down and no request waiting is
+// the last one until the latch goes up again, so the loop runs at most twice
+// after the last activity and then arms no timer.
+func (d *Daemon) cleanupLoop() {
+	every := CleanupEvery()
+	timer := time.NewTimer(every)
+	defer timer.Stop()
+	asleep := false
 
 	for {
 		select {
 		case <-d.ctx.Done():
 			return
-		case <-ticker.C:
-			// Expire stale pending requests whose TUI result never arrived so
-			// they do not pin the requester's connState forever.
-			now := time.Now()
-			d.pendingRequestsMu.Lock()
-			for id, pr := range d.pendingRequests {
-				ttl := pendingRequestTTL
-				if pr.ttl > 0 {
-					ttl = pr.ttl
-				}
-				if now.Sub(pr.created) > ttl {
-					delete(d.pendingRequests, id)
-				}
+		case <-d.wakes.cleanup.C():
+			// The token can outlive the flag: a run took the flag before this
+			// token was read.
+			if asleep && d.wakes.cleanup.Up() {
+				asleep = false
+				timer.Reset(every)
 			}
-			d.pendingRequestsMu.Unlock()
-			// A flood of output that has ended leaves its garbage and its
-			// peak heap goal behind, and an idle daemon runs no collection to
-			// lower either. memtrim trims only when the daemon is quiet.
-			memtrim.Request()
+		case <-timer.C:
+			d.wakes.cleanupTicks.Add(1)
+			active := d.wakes.cleanup.Take()
+			if !d.cleanupOnce() && !active {
+				asleep = true
+				continue
+			}
+			timer.Reset(every)
 		}
 	}
+}
+
+// cleanupOnce is one run of cleanupLoop. It reports whether a routed request
+// is still waiting, which needs another run to expire it.
+func (d *Daemon) cleanupOnce() bool {
+	const pendingRequestTTL = 2 * time.Minute
+
+	d.releaseAltScreens()
+	// Expire stale pending requests whose TUI result never arrived so
+	// they do not pin the requester's connState forever.
+	now := time.Now()
+	d.pendingRequestsMu.Lock()
+	for id, pr := range d.pendingRequests {
+		ttl := pendingRequestTTL
+		if pr.ttl > 0 {
+			ttl = pr.ttl
+		}
+		if now.Sub(pr.created) > ttl {
+			delete(d.pendingRequests, id)
+		}
+	}
+	waiting := len(d.pendingRequests) > 0
+	d.pendingRequestsMu.Unlock()
+	d.releaseReflowScratch()
+	// A flood of output that has ended leaves its garbage and its
+	// peak heap goal behind, and an idle daemon runs no collection to
+	// lower either. memtrim trims only when the daemon is quiet.
+	memtrim.Request()
+	return waiting
 }
 
 // resolveAgentStallTimeout picks the stall heuristic's silence window: an
@@ -2190,55 +2284,105 @@ func resolveAgentDetectInterval(enabled *bool, cfg time.Duration) time.Duration 
 // running set-agent-state. It is strictly subordinate to explicit reports and to
 // the stall heuristic (see Session.scanAgentDetection). It exits when the daemon
 // context is cancelled, and does nothing at all when auto-detection is disabled.
+//
+// It sleeps while nothing happens. A program starts or stops in a pane that
+// takes input, prints, or was just made, and each of those raises the detect
+// latch. After quietTicks looks with the latch down, which is the quiet bound
+// in which every pane is read once more, the monitor stops its timer and waits
+// for the latch. It keeps looking while an agent it owns is out of the
+// foreground, because the misses that clear it take consecutive looks. Output
+// also runs the exit probe on its own (reconcileAgentOnOutput), so a sleeping
+// monitor misses no exit.
 func (d *Daemon) agentMonitor() {
 	if d.agentDetectInterval <= 0 {
 		return
 	}
-	ticker := time.NewTicker(d.agentDetectInterval)
-	defer ticker.Stop()
+	timer := time.NewTimer(d.agentDetectInterval)
+	defer timer.Stop()
 	quietTicks := detectQuietTicks(d.agentDetectInterval)
+	quiet := int32(0)
+	asleep := false
 
 	for {
 		select {
 		case <-d.ctx.Done():
 			return
-		case <-ticker.C:
+		case <-d.wakes.detect.C():
+			// The token can outlive the flag: a look took the flag before
+			// this token was read.
+			if asleep && d.wakes.detect.Up() {
+				asleep, quiet = false, 0
+				timer.Reset(d.agentDetectInterval)
+			}
+		case <-timer.C:
+			d.wakes.detectTicks.Add(1)
+			active := d.wakes.detect.Take()
 			// With the agent features off the tick reads nothing: no
-			// process table, no transcript. See agents_switch.go.
+			// process table, no transcript. See agents_switch.go. Turning
+			// them on raises the latch.
 			if d.agentsOff.Load() {
+				asleep = true
 				continue
 			}
-			reg := d.agentMatcher.registry
-			now := time.Now().UnixNano()
-			for _, sess := range d.manager.AllSessions() {
-				due := func(ptyID string) bool {
-					pty := sess.GetPTY(ptyID)
-					return pty == nil || pty.detectScanDue(now, quietTicks)
-				}
-				sess.scanAgentDetection(d.foregroundResolver(sess), d.agentMatcher.identifyDetail, due)
-				// The transcript joins ride this tick rather than one of their
-				// own. It runs only for a pane already known to be running a
-				// harness that has a transcript and that has no join yet, so a
-				// session that is fully joined, or that runs no agent at all,
-				// does nothing here.
-				sess.maintainAgentTranscripts(reg, d.paneAgentIdentifier(sess))
-				if d.noteSessionScanned(sess) {
-					break
-				}
+			pending := d.agentDetectScan()
+			if active {
+				quiet = 0
+			} else {
+				quiet++
 			}
+			if quiet >= quietTicks && !pending {
+				asleep = true
+				continue
+			}
+			timer.Reset(d.agentDetectInterval)
 		}
 	}
+}
+
+// agentDetectScan is one look of agentMonitor at every session. It reports
+// whether a session needs another look with nothing new happening.
+func (d *Daemon) agentDetectScan() bool {
+	quietTicks := detectQuietTicks(d.agentDetectInterval)
+	reg := d.agentMatcher.registry
+	now := time.Now().UnixNano()
+	pending := false
+	for _, sess := range d.manager.AllSessions() {
+		due := func(ptyID string) bool {
+			pty := sess.GetPTY(ptyID)
+			return pty == nil || pty.detectScanDue(now, quietTicks)
+		}
+		sess.scanAgentDetection(d.foregroundResolver(sess), d.agentMatcher.identifyDetail, due)
+		// The transcript joins ride this tick rather than one of their
+		// own. It runs only for a pane already known to be running a
+		// harness that has a transcript and that has no join yet, so a
+		// session that is fully joined, or that runs no agent at all,
+		// does nothing here.
+		sess.maintainAgentTranscripts(reg, d.paneAgentIdentifier(sess))
+		if d.noteSessionScanned(sess) {
+			break
+		}
+		if sess.detectPending() {
+			pending = true
+		}
+	}
+	// The view-only transcripts are searched across sessions, since two
+	// agents in one folder may sit in two of them. A search on its backoff
+	// keeps the tick running until it is done.
+	if d.searchViewTranscripts(reg) {
+		pending = true
+	}
+	return pending
 }
 
 // paneAgentIdentifier reports the working directory and build version of the
 // agent in a pane, which is what a searched transcript candidate is checked
 // against before it is believed.
-func (d *Daemon) paneAgentIdentifier(sess *Session) func(ptyID string) (string, string) {
+func (d *Daemon) paneAgentIdentifier(sess *Session) func(ptyID string) agentIdentity {
 	resolve := d.foregroundResolver(sess)
-	return func(ptyID string) (string, string) {
+	return func(ptyID string) agentIdentity {
 		info, running := resolve(ptyID)
 		if !running {
-			return "", ""
+			return agentIdentity{}
 		}
 		// The agent's own process, not the wrapper above it: a transcript is
 		// checked against the agent's directory and build, and a shell that
@@ -2283,46 +2427,99 @@ func (d *Daemon) foregroundResolver(sess *Session) func(ptyID string) (foregroun
 	}
 }
 
-// stallMonitor periodically applies the agent-state output-stall heuristic to
-// every live session, demoting panes that reported working but have gone quiet
-// to idle after the screen tier has had a last look at them. It is the fallback
-// for agents that never report their own state and is strictly secondary to
+// stallMonitor applies the agent-state output-stall heuristic to every live
+// session, demoting panes that reported working but have gone quiet to idle
+// after the screen tier has had a last look at them. It is the fallback for
+// agents that never report their own state and is strictly secondary to
 // explicit reports (see Session.applyStallHeuristic). It exits when the daemon
 // context is cancelled, and does nothing at all when the heuristic is disabled.
+//
+// It sleeps until the earliest working pane could stall, and arms no timer
+// while no pane is working. A pane starts working through a change to its
+// session's state, which raises the stall latch and makes the monitor work
+// out its deadline again. Output only moves a deadline later, so the timer
+// firing early costs one look and a new deadline. A pane the screen tier kept
+// working has a deadline in the past, and is looked at again every interval,
+// as every pane was before.
 func (d *Daemon) stallMonitor() {
 	if d.agentStallTimeout <= 0 {
 		return
 	}
-	// Tick often enough to demote within a fraction of the timeout, but never
-	// spin: at least once a second, at most once every ten.
+	// Look again at a pane kept working often enough to demote within a
+	// fraction of the timeout, but never spin: at least once a second, at most
+	// once every ten.
 	interval := min(max(d.agentStallTimeout/4, time.Second), 10*time.Second)
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
+	timer := time.NewTimer(time.Hour)
+	timer.Stop()
+	defer timer.Stop()
 
 	for {
+		if at, ok := d.nextStallCheck(interval); ok {
+			timer.Reset(time.Until(at))
+		} else {
+			timer.Stop()
+		}
 		select {
 		case <-d.ctx.Done():
 			return
-		case <-ticker.C:
-			if d.agentsOff.Load() {
-				continue
-			}
-			now := time.Now()
-			reg := d.agentMatcher.registry
-			for _, sess := range d.manager.AllSessions() {
-				sess.applyStallHeuristic(now, d.agentStallTimeout, func(ptyID string) int64 {
-					if pty := sess.GetPTY(ptyID); pty != nil {
-						return pty.LastOutput()
-					}
-					return 0
-				}, func(ptyID string) bool {
-					// The last look before the pane is called idle. A stalled pane
-					// emits nothing, so the scan the output path would have run is
-					// the one that never happens.
-					return sess.scanStalledPane(ptyID, reg)
-				})
-			}
+		case <-d.wakes.stall.C():
+			d.wakes.stall.Take()
+		case <-timer.C:
+			d.wakes.stallTicks.Add(1)
+			d.stallScan(time.Now())
 		}
+	}
+}
+
+// nextStallCheck is when stallMonitor next looks, and false when no pane is
+// working. A deadline already past is a pane the last look kept working: it is
+// looked at again after interval.
+func (d *Daemon) nextStallCheck(interval time.Duration) (time.Time, bool) {
+	if d.agentsOff.Load() {
+		return time.Time{}, false
+	}
+	var next int64
+	found := false
+	for _, sess := range d.manager.AllSessions() {
+		at, ok := sess.nextStallAt(d.agentStallTimeout, func(ptyID string) int64 {
+			if pty := sess.GetPTY(ptyID); pty != nil {
+				return pty.LastOutput()
+			}
+			return 0
+		})
+		if ok && (!found || at < next) {
+			next, found = at, true
+		}
+	}
+	if !found {
+		return time.Time{}, false
+	}
+	now := time.Now()
+	at := time.Unix(0, next)
+	if !at.After(now) {
+		at = now.Add(interval)
+	}
+	return at, true
+}
+
+// stallScan is one look of stallMonitor at every session.
+func (d *Daemon) stallScan(now time.Time) {
+	if d.agentsOff.Load() {
+		return
+	}
+	reg := d.agentMatcher.registry
+	for _, sess := range d.manager.AllSessions() {
+		sess.applyStallHeuristic(now, d.agentStallTimeout, func(ptyID string) int64 {
+			if pty := sess.GetPTY(ptyID); pty != nil {
+				return pty.LastOutput()
+			}
+			return 0
+		}, func(ptyID string) bool {
+			// The last look before the pane is called idle. A stalled pane
+			// emits nothing, so the scan the output path would have run is
+			// the one that never happens.
+			return sess.scanStalledPane(ptyID, reg)
+		})
 	}
 }
 

@@ -147,6 +147,11 @@ func (m *OS) federationRefreshPlan() (after time.Duration, refresh bool) {
 	if m.hostSignInWatching() {
 		return hostRefreshActive, true
 	}
+	// A rail click waits for this machine's link. The session opens on the
+	// snapshot that says the link is up, so the poll runs fast until then.
+	if m.hostOpen != nil && !m.hostOpen.dialing {
+		return hostOpenPoll, true
+	}
 	// The push arrives on the attach connection. While the client is attached
 	// to another machine that connection goes to the far daemon, not to the
 	// one that pushes, so the rail keeps its poll.
@@ -742,7 +747,7 @@ func (m *OS) drawHostRow(
 		st.Cursor = st.Cursor || isCursor(sidebarRowHost, GlobalSessionName, "")
 		add := ""
 		if !collapsed {
-			labelW := sidebarHeaderLabelW(m.Settings.GetRailFoldOpenGlyph() + " " + node.Title)
+			labelW := sidebarHeaderLabelW(m.Settings.GetRailFoldOpenGlyph()+" "+node.Title, nil)
 			if tok, span, ok := sidebarHeaderAdd(sidebarRowGlobalNew, cw, labelW, pal,
 				headerHoverX, isCursor(sidebarRowGlobalNew, GlobalSessionName, ""), &m.Settings,
 				sidebarRowBg(st, pal)); ok {
@@ -766,7 +771,7 @@ func (m *OS) drawHostRow(
 			if node.Host == m.attachedMachine() {
 				kind, id = sidebarRowNewSession, ""
 			}
-			labelW := sidebarHeaderLabelW(m.Settings.GetRailFoldOpenGlyph() + " " + node.Title)
+			labelW := sidebarHeaderLabelW(m.Settings.GetRailFoldOpenGlyph()+" "+node.Title, nil)
 			if kind != sidebarRowNewSession || canCreate {
 				if tok, span, ok := sidebarHeaderAdd(kind, cw, labelW, pal,
 					headerHoverX, isCursor(kind, id, ""), &m.Settings,
@@ -793,30 +798,18 @@ func (m *OS) drawHostRow(
 		return
 	}
 
-	// A session row. It is a target only when its host is up.
-	if m.hostIsUp(node.Host) {
-		st.Cursor = st.Cursor || isCursor(sidebarRowHostSession, node.Host, remoteSessionName(node))
-		recordHit(sidebarRowHostSession, node.Host, remoteSessionName(node), -1, 1)
-	}
+	// A session row. It is a target in every link state: a click on a host
+	// that is not up asks for the link and opens the session when it comes
+	// up. See host_open.go.
+	st.Cursor = st.Cursor || isCursor(sidebarRowHostSession, node.Host, remoteSessionName(node))
+	recordHit(sidebarRowHostSession, node.Host, remoteSessionName(node), -1, 1)
 	*lines = append(*lines, compose(st.mark(pal, m.sidebarRemoteSessionRow(node, cw, variant, pal, st, showCounts))))
-}
-
-// openRemoteSession attaches a session that lives on another machine, in this
-// client. The connection goes through this machine's daemon over its link,
-// and the session is drawn here with this machine's theme and config. See
-// SwitchToHostSession.
-func (m *OS) openRemoteSession(host, sessionName string) {
-	if !m.hostIsUp(host) {
-		m.reportSwitchFailure(&hostUnavailableError{host: host})
-		return
-	}
-	m.clearSidebarReturn() // opening the session is where the user asked to end up
-	m.openSession(host, sessionName)
 }
 
 // createRemoteSession creates a session on another machine and attaches it in
 // this client. The host's daemon creates it under the first free name.
 func (m *OS) createRemoteSession(host string) {
+	m.cancelHostOpen()
 	if !m.hostIsUp(host) {
 		m.ShowNotification(host+" is unavailable", "warning", m.Settings.NotificationWarningDuration)
 		return

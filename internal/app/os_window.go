@@ -37,8 +37,13 @@ func (m *OS) ToggleFloating() {
 				sl := m.GetOrCreateScrollingLayout()
 				sl.RemoveWindow(m.GetWindowIntID(fw.ID))
 				m.ScrollingSetPositions()
-			} else {
+			} else if m.UseBSPLayout {
 				m.RemoveWindowFromBSPTree(fw)
+			} else {
+				// Master-stack has no tree to take the pane out of. The BSP
+				// call above ends in ApplyBSPLayout, which would lay the
+				// rest out as BSP.
+				m.TileAllWindows()
 			}
 		}
 		fw.SetTiled(false)
@@ -55,8 +60,10 @@ func (m *OS) ToggleFloating() {
 					sl.AddColumn(intID)
 				}
 				m.TileAllWindows()
-			} else {
+			} else if m.UseBSPLayout {
 				m.AddWindowToBSPTree(fw)
+			} else {
+				m.TileAllWindows()
 			}
 		}
 		fw.InvalidateCache()
@@ -743,7 +750,10 @@ func (m *OS) addLocalWindow(dir, name string, command []string) *OS {
 		// untiled session cannot leave the flag on a pane for whenever tiling is
 		// next turned on.
 		window.Opening = true
-		if m.UseScrollingLayout {
+		// Only BSP places a new pane by splitting the tree. The tree path
+		// ends in ApplyBSPLayout, so under master-stack it laid the panes
+		// out as BSP while the session still said master-stack.
+		if m.UseScrollingLayout || !m.UseBSPLayout {
 			m.TileAllWindows()
 		} else {
 			tree := m.GetOrCreateBSPTree()
@@ -1013,6 +1023,9 @@ func (m *OS) DeleteWindow(i int) *OS {
 			// place, discarded that whole layout and rebuilt a default one.
 			if owner := m.WorkspaceTrees[deletedWorkspace]; owner != nil && windowIntID > 0 {
 				owner.RemoveWindow(windowIntID)
+				// A stack that lost its open pane opens its next member,
+				// which the retile below gives a tile.
+				m.openOrphanStacks()
 				m.LogInfo("BSP: Removed window from the workspace %d tree, which now has %d windows",
 					deletedWorkspace, owner.WindowCount())
 				if owner.IsEmpty() {

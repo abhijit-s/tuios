@@ -14,10 +14,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Gaurav-Gosain/tuios/internal/mosaic"
-	"github.com/Gaurav-Gosain/tuios/internal/shot"
-	"github.com/Gaurav-Gosain/tuios/internal/vt"
 	"github.com/Gaurav-Gosain/tuitest"
+	"tuios.dev/shot"
+	"tuios.dev/shot/mosaic"
+	"tuios.dev/vt"
 )
 
 // These tests cover a pane's image on a host terminal that draws no graphics,
@@ -372,7 +372,7 @@ func startSymbolPaneWith(t *testing.T, host *sixelHost, cfg symbolConfig, colort
 // pane, and clears it.
 //
 // The PNGs under artifactDir are the host's frames drawn through
-// internal/shot, which draws every glyph set itself.
+// tuios.dev/shot, which draws every glyph set itself.
 func TestImageSymbolsOnAHostWithoutGraphics(t *testing.T) {
 	// The ceilings are mean error per channel, out of 255. Measured: see
 	// the log line each run prints.

@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/Gaurav-Gosain/tuios/internal/vt"
+	"tuios.dev/vt"
 )
 
 // resolveImageNumber finishes, for the host, what the emulator did for a
@@ -27,7 +27,7 @@ func (kp *KittyPassthrough) resolveImageNumber(cmd *vt.KittyCommand, rawData []b
 	}
 	if cmd.ImageID == 0 {
 		if cmd.Action == vt.KittyActionDelete &&
-			cmd.Delete != vt.KittyDeleteByNumber && cmd.Delete != vt.KittyDeleteByNumberPlacement {
+			cmd.Delete != vt.KittyDeleteByNumber && cmd.Delete != vt.KittyDeleteByNumberFree {
 			return rawData, true
 		}
 		return rawData, false

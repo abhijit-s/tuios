@@ -150,7 +150,7 @@ func TestReplyOnAnOlderDaemon(t *testing.T) {
 	m.InboxReply()
 	m.InboxReplyType("more")
 	runMsg(t, m, m.InboxReplySend())
-	if !strings.Contains(lastNotice(m).Message, "tuios kill-server") {
+	if msg := lastNotice(m).Message; !strings.Contains(msg, "Restart the daemon") && !strings.Contains(msg, "tuios restart-server") {
 		t.Errorf("the dock said %q", lastNotice(m).Message)
 	}
 	m.InboxReply()
@@ -160,7 +160,7 @@ func TestReplyOnAnOlderDaemon(t *testing.T) {
 	if _, handled := m.SidebarAgentReply("here", "w-2"); handled {
 		t.Error("the rail's r did not fall through to rename")
 	}
-	for _, h := range m.inboxRowHints(done, true) {
+	for _, h := range m.cockpitHints(time.Now()) {
 		if h.Label == "reply" {
 			t.Error("the footer offers reply on a daemon with no queue")
 		}
@@ -187,7 +187,7 @@ func TestQueueKeysFromSendKeysAreRefused(t *testing.T) {
 		t.Errorf("the dock said %q", n.Message)
 	}
 
-	m.Inbox.reply.dropped = &inboxReplyDrop{session: "here", window: "w-2", who: "api", text: "put back", at: time.Now()}
+	m.Inbox.reply.dropped = &inboxReplyDrop{session: "here", window: "w-2", who: "api", reply: inboxSentReply{text: "put back"}, at: time.Now()}
 	m.ProcessingRemoteKeys = true
 	cmd, handled = m.sidebarAgentUndoDrop("here", "w-2")
 	m.ProcessingRemoteKeys = false
@@ -211,4 +211,67 @@ func forgetSidebarState(t *testing.T) {
 	path := filepath.Join(sidebarStateDir(), sidebarStateFileName)
 	_ = os.Remove(path)
 	t.Cleanup(func() { _ = os.Remove(path) })
+}
+
+// TestFailedReplyKeepsBothDrafts: a reply is out to the daemon, the person
+// opens the editor on the same pane and starts a new draft, and then the
+// daemon refuses the first reply. Neither draft may be lost, whether the
+// new one is still open or esc kept it.
+func TestFailedReplyKeepsBothDrafts(t *testing.T) {
+	for _, closeFirst := range []bool{false, true} {
+		done := item("1", session.AttentionFinished, "here", "w-2", "done", 1)
+		m, q := replyOS(t, done)
+		m.OpenInbox("")
+		m.InboxReply()
+		m.InboxReplyType("first reply")
+		first := m.InboxReplySend()
+		m.InboxReply()
+		m.InboxReplyType("second draft")
+		if closeFirst {
+			m.InboxReplyCancel()
+		}
+		q.err = &session.VerbCallError{Code: session.ErrVerbInternal, Message: "boom"}
+		runMsg(t, m, first)
+		if closeFirst {
+			m.InboxReply()
+		}
+		if !m.InboxReplyOpen() {
+			t.Fatal("the editor is not open")
+		}
+		got := m.Inbox.reply.editor.comp.Text()
+		if got != "first reply\n\nsecond draft" {
+			t.Fatalf("closed first %v: the draft is %q, want both", closeFirst, got)
+		}
+	}
+}
+
+// TestReplyClipboardImageLandsInItsOwnDraft: ctrl+v in the reply attaches the
+// clipboard's image. The read is slow, and a read for a draft that was sent
+// meanwhile must not land in the next draft.
+func TestReplyClipboardImageLandsInItsOwnDraft(t *testing.T) {
+	done := item("1", session.AttentionFinished, "here", "w-2", "done", 1)
+	m, _ := replyOS(t, done)
+	f := &fakeClipboard{types: []string{"image/png"}, image: fakePNG}
+	env := f.env("linux", wayland, "wl-paste")
+	m.SetImagePasteSeams(&env, nil, nil)
+	m.OpenInbox("")
+	m.InboxReply()
+	m.InboxReplyType("first")
+	stale := m.InboxReplyKey(tea.KeyPressMsg{Code: 'v', Mod: tea.ModCtrl})
+	if stale == nil {
+		t.Fatal("ctrl+v read nothing")
+	}
+	m.InboxReplySend()
+	m.InboxReply()
+	runMsg(t, m, stale)
+	if n, _ := m.Inbox.reply.editor.comp.Images(); n != 0 {
+		t.Fatal("an image read for a sent draft landed in the next one")
+	}
+	runMsg(t, m, m.InboxReplyKey(tea.KeyPressMsg{Code: 'v', Mod: tea.ModCtrl}))
+	if n, _ := m.Inbox.reply.editor.comp.Images(); n != 1 {
+		t.Fatalf("ctrl+v attached %d images, want 1: %q", n, m.Inbox.reply.editor.comp.Notice())
+	}
+	if got := m.Inbox.reply.editor.comp.Text(); got != "[Image #1 · png]" {
+		t.Errorf("the draft reads %q", got)
+	}
 }

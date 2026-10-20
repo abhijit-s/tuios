@@ -39,7 +39,7 @@ Tables are not scalar options and are edited in config.toml:
 and value rules; `now`, `context`, `subagents` and `prompt` read what the hooks
 and status line feed, and `meta` leaves those keys out), `[dock]`, `[appearance.sidebar.custom]`, `[hooks]`, `[hosts]`, `[notify]`, `[agents.approvals]`, `[agents.checkpoints]`,
 `[agents.permissions]`, `[agents] herdr_protocol` and the keybindings. The file is watched; a hook the
-daemon runs needs `tuios kill-server` to take effect.
+daemon runs needs `tuios restart-server` to take effect.
 
 The config can be more than one file. config.toml can name more files in a
 top-level `include = [...]` list, and the `*.toml` files in `config.d` next to
@@ -80,6 +80,10 @@ no border and no title bar. The pane's program gets the full size. With it on,
 shows no icon, and `default` puts back the icon of the glyph set. An icon can
 be at most 8 cells wide, with no control characters. To remove the whole pill,
 remove `"mode"` from `[dock] left`.
+
+`appearance.dock_prefix_indicator` sets where an armed leader shows: `pill`
+(the default) puts a keyboard icon on the mode pill in the warning colour,
+`badge` draws a `PREFIX` badge. The badge also shows when the dock is hidden.
 
 `daemon.window_size` sets the size of a session with more than one client:
 `latest` (the default), the client that last had input, `smallest`, or
@@ -143,6 +147,9 @@ question about the screen. Do not change them unless the person asks.
 - A dock message that is too long ends with `more`. A click on it, or
   `Ctrl+B N` for the last message, opens the message view with the whole text.
   A notice you post with `send-agent-message` to the session can show there.
+- With `appearance.focus_follows_mouse` on, the pane under the pointer takes
+  focus. While the person holds the `appearance.focus_follows_mouse_pause` key
+  (`ctrl` or `alt`), the focus stays where it is. The pane still gets the key.
 - `Ctrl+click` on a link opens it. `appearance.links`,
   `appearance.link_click` and `appearance.link_opener` set which links,
   which click and which opener.
@@ -173,11 +180,22 @@ question about the screen. Do not change them unless the person asks.
 | **Spacing** | ground between panes, padding inside overlay panels | `appearance.gap`, `appearance.panel_padding` |
 | **Composition** | what a window title, a workspace tab and the clock carry | `window_title_format`, `dock_workspace_tab_format`, `clock_format` |
 
+A pane title's shape and place: `window_title_style` (`pill`, `tab`, `plain`)
+and `window_title_align` (`auto`, `left`, `center`, `right`). The rail's
+current row: `appearance.sidebar.row_style` (`bar`, `marker`, `underline`,
+`pill`). Its section headers: `appearance.sidebar.header_style` (`auto`,
+`plain`, `rule`, `pill`, `icon`). The space between its sections:
+`appearance.sidebar.density` (`normal`, `roomy`).
+
 The dock's workspace tabs take two composition knobs of their own:
 `dock_workspace_tab_format` is the format string each tab prints, and
 `appearance.dock_workspace_label_max` caps the label in cells, so one long
 name cannot push the other pills off the bar. The cap is 12; `0` draws the
 whole name and lets the strip scroll.
+`{index}`, `{name}`, `{icon}` and `{zoom}` are the format's placeholders. The
+last two read `number_glyphs` (the first entry is workspace 1) and
+`zoom_marker` from the `[dock.tabs]` table. That table also switches the strip
+from pills to flat tabs (`style = "flat"`).
 
 The options `list-options` prints are scalars, and spacing and composition are
 set with them like any other. Colour and shape are names from an open set, each standing for a
@@ -192,7 +210,7 @@ tuios list-themes --filter catppuccin
 ```
   catppuccin_frappe     catppuccin_latte      catppuccin_macchiato  catppuccin_mocha
 
-4 of 343 registered themes.
+4 of 345 registered themes.
 
 active: gruvbox_dark (session)
 themes dir: /home/you/.config/tuios/themes
@@ -215,13 +233,84 @@ one to act on.
 To write a theme, put `<id>.json` in the themes dir `list-themes` reported (keys
 `fg`, `bg`, `cursor`, `black` through `white` and `bright_black` through
 `bright_white`; it is `purple`, not `magenta`). It is selectable at once. A file
-that does not parse is listed under `problems`. To convert a kitty, ghostty,
-alacritty or wezterm scheme rather than transcribe it:
+that does not parse is listed under `problems`. To change a few colours of a
+theme, name it as `base` and write only the changes:
+
+```json
+{"id": "nord_warm", "base": "nord", "chrome": {"accent": "yellow"}}
+```
+
+`chrome` also takes nested roles for one piece each: `border` (`unfocused`,
+`copy`, `multifocus`), `rule`, `status` (`attention`, `busy`), `dots`
+(`close`, `minimize`, `zoom`), `dock.ground` and `rail.ground`. A config key
+such as `dock_background` wins over the theme. `border.copy` and
+`status.attention` also colour the focused pane's border in copy mode and
+while its agent waits.
+
+The running clients read a theme file again when it is saved. `tuios theme
+reload` asks every client on the machine to read the files now, and to ask
+its terminal for its colours again.
+
+`[dock.tabs]` `attention_fg`, `bell_marker` and `activity_marker` mark a
+workspace out of view whose pane waits for a person, rang the bell or printed.
+
+`appearance.border_focused_gradient = "#33ccff #00ff99"` draws the focused
+border as a static gradient, in the direction `border_gradient_angle` gives
+(degrees, default 45).
+
+`appearance.theme_light` names the theme for a light terminal, and `theme` is
+then the dark one. The local client switches when the terminal does.
+
+`theme = "none"` keeps the terminal's own colours and builds the dialogs'
+greys from the terminal's background, for a terminal themed elsewhere.
+
+The theme editor (palette: Edit theme, or `ctrl+e` in the theme picker) edits
+a theme on a side sheet with a live preview, and `ctrl+s` saves the sparse
+file. It is for a person: an agent writes the file.
+
+`tuios theme export ID` prints a theme as a file with only what differs from
+its built-in base (`--full` for every colour, `--format base16` for a base16
+scheme). `tuios theme share ID` prints the same file as one
+`tuios-theme:v1:` line.
+
+To convert a kitty, ghostty, alacritty or wezterm scheme rather than
+transcribe it:
 
 ```sh
 tuios import-theme ~/.config/kitty/current-theme.conf --name mine
 tuios set-config appearance.theme mine
 ```
+
+On Omarchy an empty `appearance.theme` uses the Omarchy theme, and
+`list-themes` reports it on an `omarchy:` line. `omarchy` asks for it
+explicitly, `none` keeps the terminal's colours, and `omarchy/NAME` is one
+installed Omarchy theme, fixed.
+
+### Colour values
+
+Every colour key takes one vocabulary: the backgrounds, the border colours,
+`scrollbar.tint`, `[appearance.selection]`, the dock's `fg` and `bg`,
+`[dock.tabs]`, the agent row `fg`, and a theme's `chrome` object.
+
+- Hex: `#7dcfff` or `#7cf`. The same colour on every theme.
+- ANSI number: `0` to `255`. `0` to `15` are the sixteen slots.
+- Slot name: `red`, `bright_magenta`, `fg`, `bg`. `purple` is `magenta`.
+- Role name: `accent`, `accent_bright`, `success`, `warning`, `error`, `info`,
+  `surface`, `canvas`, `panel`, `card`. `text`, `dim` and `muted` are the
+  text inks. You can read them, but a theme cannot set them.
+- CharmTone name: `charple`, `guac`.
+
+Prefer a slot or a role name to hex. It follows a theme change, and at 16
+colours it is the terminal's own slot:
+
+```sh
+tuios set-config appearance.border_focused_color accent
+tuios set-config appearance.selection.bg bright_black
+```
+
+A key's own words win: `off` and `theme` for a background, and `quiet`,
+`border` and `muted` for `scrollbar.tint`. A bad value is ignored, and
+`set-config` refuses it with the forms it takes.
 
 ### Shape: glyph sets
 
@@ -251,12 +340,18 @@ tuios set-config appearance.window_title_format "{index}: {title}"
 
 `dim_unfocused` (0 to 90) quiets the content of unfocused panes. It reaches only
 cells a program coloured itself unless a theme is set.
+`appearance.dim_foreground = false` keeps the text of an unfocused pane at full
+strength and dims only its background.
 
 `appearance.modal_dim` (0 to 90, default 30) darkens the screen behind an open
 panel such as the command palette; 0 turns it off. `appearance.motion` is
 `none`, `basic` (window slides and the copy sweep) or `full` (the default: also the panel
 fade-in and the shimmer on a working agent's rail row). The old
 `animations_enabled` still works and maps `false` to `none`.
+
+`appearance.theme_transition` is `none` (the default), `circle` (the new theme
+grows from the middle of the screen) or `fade`. `theme_transition_duration` is
+in milliseconds, 100 to 2000, default 450. Motion `none` turns it off.
 
 **Record the old values first.** There is no preview and no undo:
 
@@ -299,7 +394,7 @@ tuios set-config appearance.sidebar.background ''             # follow backgroun
 A cell with no background of its own is transparent, so the person's terminal
 shows through. The background options paint it instead: `off` paints nothing,
 `theme` paints the theme's background and gives default-coloured text the
-theme's foreground, and `#RRGGBB` paints that colour. `appearance.background`
+theme's foreground, and a colour paints that colour. `appearance.background`
 (default `off`) covers every surface; `pane_background`,
 `desktop_background` (gaps, the space around panes, an empty workspace),
 `window_chrome_background` (borders, title bars, shared-border lines),
@@ -329,6 +424,10 @@ refresh  = "event:after-agent-state"
 on-click = "tuios list-windows"
 ```
 
+The built-in `session` component shows `session workspace:pane`. `[dock.session]`
+sets `format` (`{session}`, `{workspace}`, `{pane}`); it and `[dock.custom.NAME]`
+take `fg`, `bg` (any colour value), `bold`, `cap_left` and `cap_right`.
+
 ```sh
 tuios refresh-dock agents
 tuios list-dock-components --json | jq '.components[] | select(.name=="custom/agents")'
@@ -347,7 +446,9 @@ A hook runs a shell command on an event, with `TUIOS_*` variables carrying the
 facts. The daemon runs `after-new-window`, `after-close-window`,
 `after-focus-change`, `after-workspace-switch`, `after-agent-state` and
 `after-command-finished`, so they fire with nobody attached. `after-attach`,
-`after-detach`, `after-resize` and `after-layout-change` run in the client.
+`after-detach`, `after-resize`, `after-layout-change` and `after-theme-change`
+run in the client. `after-theme-change` gets `TUIOS_THEME`, `TUIOS_THEME_BG`
+and `TUIOS_THEME_LIGHT`.
 
 ```toml
 [hooks]
@@ -390,6 +491,11 @@ leader, every binding table, `explain`, `free` and `unbind` read all spellings
 as one key. `explain` and `doctor` show the spelling tuios matches, for example
 `opt+f12 (tuios reads it as alt+f12)`.
 
+In `[keybindings.terminal_mode]`, `middle` is the middle mouse button and can
+take a modifier, such as `ctrl+middle`. By default, `shift+pgup` and
+`shift+pgdown` scroll a pane page and `middle` pastes the host clipboard. A
+program that uses the mouse gets a plain middle press.
+
 On a layout for a non-Latin script, bindings match the physical key. A key that
 types `ш` on a Ukrainian layout runs the binding on `i`, the US key at the same
 position, unless `ш` has a binding of its own. This needs Ghostty, kitty,
@@ -402,9 +508,11 @@ A shifted digit has US aliases: `opt+shift+7` also matches `opt+&`. A binding
 written for the key itself wins over an alias, and `explain` lists an alias
 match as `on a US layout`. Set `keybindings.keyboard_layout = "other"` to turn
 the aliases off on AZERTY and other layouts. On macOS a character that Option
-composed runs the Option binding it stands for on a US
-layout. Set `keybindings.option_glyphs = "type"` to send it to the pane
-instead.
+composed runs the Option binding it stands for when the terminal also
+reports Alt. With no modifier, the default `option_glyphs = "auto"` runs the
+binding on a US or ABC Mac layout and sends the character to the pane on
+other layouts. A `keyboard_layout` you set overrides the Mac layout. Set
+`"alt"`, `"bind"` or `"type"` to choose yourself.
 
 ```sh
 tuios keybinds unbind close_window w   # one key off one action
@@ -415,6 +523,52 @@ Both write an empty list on an action that runs out of keys. In config.toml an
 action set to `[]` stays empty, while an action left out is filled from the
 defaults. `free` cannot take the leader key or the keys the input path reads
 directly.
+
+### Keys of tmux, screen or zellij
+
+```sh
+tuios keybinds preset tmux        # c n p l 0-9 on workspaces, % " o ; z on panes
+tuios keybinds preset screen      # leader ctrl+a; ctrl+a ctrl+a is the last workspace
+tuios keybinds preset zellij      # leader ctrl+g, then p t s o for the modes
+tuios keybinds cheatsheet tmux    # same keys, moved keys, keys tuios does not have
+```
+
+A tmux window is a tuios workspace. A tmux pane is a tuios window. The preset
+changes only the leader, the keys after the leader and terminal-mode keys. The
+tuios keys it moved are under `ctrl+b ctrl+t`, on the key they had. Bindings in
+config.toml win over the preset. A binding that still holds the tuios default
+gives way. `leader_key = "ctrl+b"` gives way only in a file that also holds
+such a default. `tuios keybinds doctor` lists
+each preset key that a binding in config.toml takes.
+
+### Repeat after the leader
+
+tmux `bind -r` is built in. After the resize, focus, scroll and workspace-step
+actions, the leader stays armed for `appearance.prefix_repeat_time` (500 ms).
+Press the same key again to repeat the action. `keybindings.repeat` replaces
+the list of actions that repeat. Leave a letter key's action out of it, so the
+letter typed next reaches the shell:
+
+```toml
+[keybindings]
+repeat = ["resize_pane_up_5", "resize_pane_down_5"]
+
+[keybindings.prefix_mode]
+resize_pane_up_5 = ["alt+up"]   # ctrl+b alt+up alt+up alt+up
+resize_pane_down_5 = ["alt+down"]
+next_workspace = ["n"]          # runs once
+```
+
+### tmux keys with no default
+
+`last_workspace` (tmux `l`), `break_pane` (`!`), `last_session` (`L`) and
+`send_prefix` (screen `C-a a`) have no default key. Bind them:
+
+```toml
+[keybindings.prefix_mode]
+last_workspace = ["l"]
+break_pane = ["!"]
+```
 
 ### Copy mode for a tmux user
 

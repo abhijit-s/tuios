@@ -22,6 +22,9 @@ type liveAppearanceCase struct {
 	// changesFrame is true when the value changes what is drawn, so a frame
 	// equal to the one before means the set did not land.
 	changesFrame bool
+	// shows is text the frame must carry after the set, when the change is
+	// one a frame merely differing would not prove.
+	shows string
 }
 
 // liveAppearanceCases are the options the v0.8.0 release notes and the replies
@@ -33,6 +36,15 @@ var liveAppearanceCases = []liveAppearanceCase{
 	{path: "appearance.border_style", value: "hidden", restore: "rounded", changesFrame: true},
 	{path: "appearance.border_style", value: "thick", restore: "rounded", changesFrame: true},
 	{path: "appearance.window_title_position", value: "hidden", restore: "top", changesFrame: true},
+	{path: "appearance.window_title_style", value: "plain", restore: "pill", changesFrame: true},
+	{path: "appearance.window_title_align", value: "center", restore: "auto", changesFrame: true},
+	// The attached session's name on the rail, in the pill caps.
+	{path: "appearance.sidebar.row_style", value: "pill", restore: "bar", changesFrame: true, shows: "\ue0b6home\ue0b4"},
+	{path: "appearance.sidebar.row_style", value: "marker", restore: "bar", changesFrame: true, shows: "›· home"},
+	// The sessions header in the pill caps, and behind its icon.
+	{path: "appearance.sidebar.header_style", value: "pill", restore: "auto", changesFrame: true, shows: "\ue0b6sessions\ue0b4"},
+	{path: "appearance.sidebar.header_style", value: "icon", restore: "auto", changesFrame: true, shows: "\ueea8 sessions"},
+	{path: "appearance.sidebar.density", value: "roomy", restore: "normal", changesFrame: true},
 	{path: "appearance.shared_borders", value: "true", restore: "false", changesFrame: true},
 	{path: "appearance.motion", value: "none", restore: "full"},
 	{path: "appearance.glyphs", value: "unicode", restore: "default", changesFrame: true},
@@ -76,6 +88,9 @@ func TestLiveAppearanceKeepsTheScreen(t *testing.T) {
 				t.Fatalf("%s=%s changed nothing on screen\n%s", c.path, c.value, after)
 			}
 			waitPanesDrawn(t, term, c.noDock, "after "+c.path+"="+c.value)
+			if c.shows != "" && !strings.Contains(after, c.shows) {
+				t.Fatalf("%s=%s: the frame does not show %q\n%s", c.path, c.value, c.shows, after)
+			}
 			saveArtifact(t, term, artifactDir(t), "set")
 
 			setLive(t, base, c.path, c.restore)

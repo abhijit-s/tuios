@@ -5,8 +5,11 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
+	"time"
 
+	"github.com/Gaurav-Gosain/tuios/internal/config"
 	"github.com/Gaurav-Gosain/tuios/internal/theme"
 )
 
@@ -115,6 +118,12 @@ func runListThemes(sessionName, themeName, filter string, jsonOutput bool) error
 		ThemesDir string       `json:"themes_dir"`
 		Problems  []string     `json:"problems"`
 		Palette   themePalette `json:"palette"`
+		Omarchy   *struct {
+			Installed bool   `json:"installed"`
+			Dir       string `json:"dir"`
+			Theme     string `json:"theme"`
+			Followed  bool   `json:"followed"`
+		} `json:"omarchy"`
 	}
 	if err := json.Unmarshal(raw, &res); err != nil {
 		return fmt.Errorf("failed to parse response: %w", err)
@@ -130,11 +139,27 @@ func runListThemes(sessionName, themeName, filter string, jsonOutput bool) error
 	if themeName == "" || filter != "" {
 		printThemeList(w, res.Themes, res.Matched, res.Total, res.Truncated)
 	}
-	fmt.Fprintf(w, "\nactive: %s", orNone(res.Active))
+	active := orNone(res.Active)
+	if res.Active == "" && res.Omarchy != nil && res.Omarchy.Followed {
+		active = "omarchy"
+	}
+	fmt.Fprintf(w, "\nactive: %s", active)
 	if res.Source != "" {
 		fmt.Fprintf(w, " (%s)", res.Source)
 	}
 	fmt.Fprintf(w, "\nthemes dir: %s\n", res.ThemesDir)
+	if o := res.Omarchy; o != nil {
+		switch {
+		case !o.Installed:
+			fmt.Fprintln(w, "omarchy: not installed on this machine. tuios uses the colours of your terminal.")
+		case o.Followed:
+			fmt.Fprintf(w, "omarchy: %s, from %s. tuios follows it.\n", o.Theme, o.Dir)
+		case res.Active == "none":
+			fmt.Fprintf(w, "omarchy: %s, from %s. tuios does not follow it, because the theme is none.\n", o.Theme, o.Dir)
+		default:
+			fmt.Fprintf(w, "omarchy: %s, from %s. tuios does not follow it, because a theme is set.\n", o.Theme, o.Dir)
+		}
+	}
 	for _, p := range res.Problems {
 		fmt.Fprintf(w, "problem: %s\n", p)
 	}
@@ -201,4 +226,59 @@ func printThemePalette(w io.Writer, p themePalette) {
 			len(p.Illegible), strings.Join(p.Illegible, ", "))
 		fmt.Fprintln(w, "tuios adjusts a border drawn in one of them so it stays visible. Text printed in one stays as the theme wrote it.")
 	}
+}
+
+// runThemeReload reads the theme and glyph files again in every tuios client
+// on this machine. Each client's config watcher follows the stamp file in the
+// config directory, so writing it reaches clients of every kind, the ssh and
+// web servers' included, with no protocol of its own. The stamp is left in
+// place and written with the time: kqueue (macOS, the BSDs) sees a new file
+// only by listing the directory, and one removed at once is gone before the
+// listing. The files are read here too, so the command can say which ones fail.
+func runThemeReload(jsonOutput bool) error {
+	loaded, problems := theme.ReloadCustomThemes()
+	path, err := config.GetConfigPath()
+	if err != nil {
+		return err
+	}
+	stamp := filepath.Join(filepath.Dir(path), config.ThemeReloadStamp)
+	if err := os.WriteFile(stamp, []byte(time.Now().Format(time.RFC3339Nano)), 0o600); err != nil {
+		return fmt.Errorf("ask the clients to reload: %w", err)
+	}
+
+	if jsonOutput {
+		out, err := json.MarshalIndent(map[string]any{"themes": loaded, "problems": problems}, "", "  ")
+		if err != nil {
+			return err
+		}
+		fmt.Println(string(out))
+		return nil
+	}
+	fmt.Printf("Read %d theme files. Every tuios client on this machine reloads them.\n", len(loaded))
+	for _, p := range problems {
+		fmt.Println("problem: " + p)
+	}
+	return nil
+}
+
+// runThemeExport prints a theme as a theme file or a base16 scheme.
+func runThemeExport(id, format string, full bool) error {
+	var out []byte
+	var err error
+	switch format {
+	case "", "tuios":
+		out, err = theme.ExportTheme(id, full)
+	case "base16":
+		if full {
+			return fmt.Errorf("--full is for the tuios format. A base16 scheme always has all its colours")
+		}
+		out, err = theme.ExportBase16(id)
+	default:
+		return fmt.Errorf("unknown format %q. Use tuios or base16", format)
+	}
+	if err != nil {
+		return err
+	}
+	_, err = os.Stdout.Write(out)
+	return err
 }

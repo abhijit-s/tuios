@@ -4,19 +4,17 @@ import (
 	"image/color"
 
 	"github.com/Gaurav-Gosain/tuios/internal/theme"
-	"github.com/Gaurav-Gosain/tuios/internal/vt"
+	"tuios.dev/vt"
 )
 
 // applyTheme sets the active theme's colors on an emulator, or clears them to
-// the terminal defaults when theming is disabled.
+// the terminal defaults when theming is disabled or the depth is 16 colours.
+//
+// The colours are the theme's at the depth the frame is drawn at (see
+// theme.EmulatorColors), so a change of depth has to apply them again.
 func applyTheme(t vt.Terminal) {
-	if theme.IsEnabled() {
-		t.SetThemeColors(
-			theme.TerminalFg(),
-			theme.TerminalBg(),
-			theme.TerminalCursor(),
-			theme.GetANSIPalette(),
-		)
+	if fg, bg, cur, pal, ok := theme.EmulatorColors(); ok {
+		t.SetThemeColors(fg, bg, cur, pal)
 	} else {
 		t.SetThemeColors(nil, nil, nil, [16]color.Color{})
 	}
@@ -40,8 +38,7 @@ func (w *Window) SetReportColors(fg, bg color.Color, pal *[16]color.Color, key s
 	}
 	w.ioMu.Lock()
 	if w.Terminal != nil {
-		w.Terminal.SetReportColors(fg, bg)
-		w.Terminal.SetReportPalette(slots)
+		w.Terminal.SetReportColors(fg, bg, slots)
 	}
 	w.ioMu.Unlock()
 }

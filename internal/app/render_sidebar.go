@@ -88,11 +88,10 @@ const (
 	// index in the WindowIndex field, which is the only integer a row hit has;
 	// nothing in this section points at a window, so the field is free.
 	sidebarRowFileEntry
-	// sidebarRowHostSession is one session on another machine, under an up
-	// host. Activating it opens that session in a local pane over ssh. It
-	// carries the host name in SessionID and the remote session name in
-	// WindowID. A session under a host that is not up is drawn but is not a
-	// target, so it never gets this kind.
+	// sidebarRowHostSession is one session on another machine. Activating it
+	// opens that session in this client over the link, and on a host that is
+	// not up it asks for the link first (host_open.go). It carries the host
+	// name in SessionID and the remote session name in WindowID.
 	sidebarRowHostSession
 	// sidebarRowHostNew is the "+" on an up host's header. Activating it
 	// creates a session on that machine and opens it. It carries the host name
@@ -109,7 +108,9 @@ const (
 	// sidebarRowRepo is a repository's group header in the sessions section,
 	// over the worktree sessions of that repository. Activating it folds the
 	// group shut or opens it again. It carries the repository name in
-	// SessionID, which is what the folded set is keyed by. See
+	// SessionID, which is what the folded set is keyed by, and the space it is
+	// drawn in in WindowID: a repository whose sessions are in several spaces
+	// has a header in each, and the cursor tells them apart by that. See
 	// sidebar_worktrees.go.
 	sidebarRowRepo
 	// sidebarRowHost is a machine's group header in the sessions section, over
@@ -296,9 +297,9 @@ func sidebarVariant(w int) int {
 func agentGlyphColor(state string, pal overlay.Palette) color.Color {
 	switch state {
 	case "working":
-		return pal.Info
+		return pal.Busy
 	case "needs_input":
-		return pal.Warning
+		return pal.Attention
 	case "idle":
 		return pal.FgMute
 	case "done":
@@ -308,7 +309,7 @@ func agentGlyphColor(state string, pal overlay.Palette) color.Color {
 	case string(agentStateWaiting):
 		// The working ink, without the shimmer: work goes on, and nothing
 		// about it moves on screen, so no motion clock starts.
-		return pal.Info
+		return pal.Busy
 	default:
 		return pal.FgMute
 	}
@@ -372,8 +373,16 @@ func railFocusTint(tint color.Color, pal overlay.Palette) color.Color {
 // of the caller's choosing: the focused pane's gutter burns the accent the user
 // gave that pane, so the row wears exactly one identity bar instead of an
 // accent chip beside a focus mark. tint nil falls back to the rail accent.
+//
+// appearance.sidebar.row_style picks the current mark: the marker glyph, or
+// the bar. underline and pill mark the name instead, but only on the rows that
+// draw the name for it (the session and terminal rows, see railCurrentName and
+// sidebarGutterNameMarked). Every other caller still needs a mark here, or a
+// focused pane on a compact rail and a folded machine header would show none.
 func sidebarGutterTinted(current bool, state string, tint, bg color.Color, pal overlay.Palette, s *config.Settings) string {
 	switch {
+	case current && s.GetRailRowStyle() == config.RailRowMarker:
+		return sidebarStyle(bg, railFocusTint(tint, pal)).Bold(true).Render(s.GetRailMarker())
 	case current:
 		return sidebarStyle(bg, railFocusTint(tint, pal)).Render(s.GetRailFocusMark())
 	case sidebarAttention(state):
@@ -381,6 +390,49 @@ func sidebarGutterTinted(current bool, state string, tint, bg color.Color, pal o
 	default:
 		return sidebarStyle(bg, nil).Render(" ")
 	}
+}
+
+// sidebarGutterNameMarked is the gutter of a current row whose name the
+// underline or pill row style marks: the severity mark of a row that wants a
+// human, else blank, so the row wears one mark and not two.
+func sidebarGutterNameMarked(state string, bg color.Color, pal overlay.Palette, s *config.Settings) string {
+	if sidebarAttention(state) {
+		return sidebarStyle(bg, sidebarSeverityColor(state, pal)).Render(s.GetRailAttentionMark())
+	}
+	return sidebarStyle(bg, nil).Render(" ")
+}
+
+// railNameMarked reports whether the row style marks the current row's name
+// rather than its gutter, and the cells it adds to the name: the two caps of
+// a pill.
+func railNameMarked(s *config.Settings) (marked bool, extra int) {
+	switch s.GetRailRowStyle() {
+	case config.RailRowUnderline:
+		return true, 0
+	case config.RailRowPill:
+		return true, lipgloss.Width(s.GetWindowPillLeft()) + lipgloss.Width(s.GetWindowPillRight())
+	}
+	return false, 0
+}
+
+// railNameMarks reports whether the row style marks the current row's name.
+func railNameMarks(s *config.Settings) bool {
+	marked, _ := railNameMarked(s)
+	return marked
+}
+
+// railCurrentName draws the current row's name for the underline and pill
+// row styles: underlined in the row's colour, or on a fill of that colour
+// with the pill caps and an ink measured against it. text is the name as it
+// fits the row, without the caps.
+func railCurrentName(text string, tint, bg color.Color, pal overlay.Palette, s *config.Settings) string {
+	ink := railFocusTint(tint, pal)
+	if s.GetRailRowStyle() == config.RailRowUnderline {
+		return sidebarStyle(bg, ink).Underline(true).Render(text)
+	}
+	caps := sidebarStyle(bg, ink)
+	fill := lipgloss.NewStyle().Background(ink).Foreground(overlay.ContrastText(ink))
+	return caps.Render(s.GetWindowPillLeft()) + fill.Render(text) + caps.Render(s.GetWindowPillRight())
 }
 
 // agentElapsedBucket is the minute the stamp currently reads as, for the render
@@ -782,15 +834,43 @@ func sidebarHeaderRightRoom(cw, labelW int) int {
 // s carries appearance.sidebar.header_case: with headings on, the label is bold
 // and uppercase and a rule runs to right. Passing nil settings keeps the blank
 // gap, which is what the callers that put their own controls in that gap want.
+//
+// appearance.sidebar.header_style draws the label on a quiet fill (pill), or
+// with the section's icon in front of it (icon), and decides the rule: auto
+// draws it with headings on, plain never, rule always. See
+// sidebarHeaderDecorW for the cells the fill or the icon adds.
 func sidebarHeaderRowRuled(label, right string, cw int, pal overlay.Palette, s *config.Settings) string {
 	headings := s.GetRailHeaderCase() == config.RailHeaderUppercase
+	style := s.GetRailHeaderStyle()
+	section := label
 	labelStyle := sidebarStyle(nil, pal.FgMute)
 	if headings {
 		labelStyle = sidebarStyle(nil, pal.FgDim).Bold(true)
 		label = strings.ToUpper(label)
 	}
-	row := sidebarStyle(nil, nil).Render(" ") +
-		labelStyle.Render(overlay.Truncate(label, max(cw-2, 1)))
+	ruled := headings
+	switch style {
+	case config.RailHeaderPlain, config.RailHeaderPill, config.RailHeaderIcon:
+		ruled = false
+	case config.RailHeaderRule:
+		ruled = true
+	}
+	decorW := sidebarHeaderDecorW(section, s)
+	text := overlay.Truncate(label, max(cw-2-decorW, 1))
+	shown := labelStyle.Render(text)
+	switch style {
+	case config.RailHeaderPill:
+		ground := pal.FgMute
+		caps := sidebarStyle(nil, ground)
+		fill := lipgloss.NewStyle().Background(ground).Foreground(overlay.ContrastText(ground)).Bold(headings)
+		shown = caps.Render(s.GetWindowPillLeft()) + fill.Render(text) + caps.Render(s.GetWindowPillRight())
+	case config.RailHeaderIcon:
+		if icon := s.GetRailSectionIcon(section); icon != "" {
+			shown = sidebarStyle(nil, pal.AccentBright).Render(icon) + sidebarStyle(nil, nil).Render(" ") + shown
+		}
+	}
+	headings = ruled
+	row := sidebarStyle(nil, nil).Render(" ") + shown
 	lw := lipgloss.Width(row)
 	rw := lipgloss.Width(right)
 	if rw > 0 {
@@ -838,7 +918,23 @@ func sidebarHeaderCutFront(right string, rw, room int) string {
 
 // sidebarHeaderLabelW is the columns a section's label occupies, its leading
 // inset included. A header's controls refuse to draw over it.
-func sidebarHeaderLabelW(label string) int { return 1 + lipgloss.Width(label) }
+func sidebarHeaderLabelW(label string, s *config.Settings) int {
+	return 1 + lipgloss.Width(label) + sidebarHeaderDecorW(label, s)
+}
+
+// sidebarHeaderDecorW is the cells header_style adds to a section's label:
+// the pill's two caps, or the icon and the space after it.
+func sidebarHeaderDecorW(section string, s *config.Settings) int {
+	switch s.GetRailHeaderStyle() {
+	case config.RailHeaderPill:
+		return lipgloss.Width(s.GetWindowPillLeft()) + lipgloss.Width(s.GetWindowPillRight())
+	case config.RailHeaderIcon:
+		if icon := s.GetRailSectionIcon(section); icon != "" {
+			return lipgloss.Width(icon) + 1
+		}
+	}
+	return 0
+}
 
 // sidebarTokenSpan is one clickable token inside a header row, in
 // content-relative columns. Several share a line, so the header hit-tests per
@@ -1193,6 +1289,10 @@ func sidebarNameAvailIn(cw, rightW, indent int) int {
 // hit geometry of every row into m.SidebarHits for the mouse handlers.
 func (m *OS) renderSidebar() *lipgloss.Layer {
 	panel, w := m.sidebarPanel()
+	if docked, ok := m.sidebarSessionPanel(m.legacySidebarEdge(), w); ok {
+		panel = docked
+		m.SidebarHits = m.SidebarHits[:0]
+	}
 	if panel == "" {
 		return nil
 	}
@@ -1233,6 +1333,10 @@ func (m *OS) renderSecondarySidebar() *lipgloss.Layer {
 	m.sidebarDrawingEdge = edge
 	m.sidebarDrawingWidth = w
 	panel, _ := m.sidebarPanel()
+	if docked, ok := m.sidebarSessionPanel(edge, w); ok {
+		panel = docked
+		m.SidebarHits = m.SidebarHits[:0]
+	}
 	m.secondarySidebarCache = m.sidebarCache
 	m.sidebarCache = primaryCache
 	m.Settings.SidebarSections = primarySections
@@ -1427,7 +1531,8 @@ func (m *OS) sidebarPanelLinesForTree(tree sessiontree.Tree) ([]string, int) {
 	// terminal rows but not with no panes.
 	emptyPeek := peeking && len(terminals) == 0
 	// A peek is a request to see that session's panes, so it lists them all.
-	if !peeking && sidebarCompactAgents(w, height, len(agents), &m.Settings) {
+	compactAgents := sidebarCompactAgents(w, height, len(agents), &m.Settings)
+	if !peeking && compactAgents {
 		terminals = sidebarTerminalsWithoutAgents(terminals, allAgents)
 	}
 
@@ -1439,6 +1544,35 @@ func (m *OS) sidebarPanelLinesForTree(tree sessiontree.Tree) ([]string, int) {
 	}
 	if emptyPeek {
 		nT = 1
+	}
+	// The layout: which sections are stacked, in what order, and the share each
+	// may claim. A section with no rows is dropped whole, header included, so an
+	// empty section costs the rail nothing rather than costing it a label over a
+	// gap.
+	plans := sidebarLayoutPlans(&m.Settings)
+	// With the terminals section above the sessions one, a peek keeps the height
+	// the section has at rest. The pointer that asked for it is on a session
+	// row, and a peek that resized the section moved that row out from under the
+	// pointer, which peeked a different session, which resized it again: the
+	// list jumped for as long as the hand swept it. So the budget is laid out
+	// for the attached session's rows, and the peeked list is fitted into the
+	// lines that buys, padded when it is shorter and cut to a "+N" when it is
+	// longer. With the terminals section below the sessions one, its height
+	// cannot move the row under the pointer, so a peek is budgeted for its own
+	// rows and shows as many of them as the rail has room for. peekRows is the
+	// peeked list's own count, which the windowing below uses once the budget
+	// is settled. An attached session with no rows of its own holds nothing:
+	// there is no section to hold, and a peek that could not show anything
+	// would not be one.
+	peekRows := nT
+	if peeking && sidebarLayoutStacksAbove(plans, sidebarSectionTerminals, sidebarSectionSessions) {
+		resting := m.sidebarTerminals(sessions, m.sidebarCurrentSessionID())
+		if compactAgents {
+			resting = sidebarTerminalsWithoutAgents(resting, allAgents)
+		}
+		if len(resting) > 0 {
+			nT = len(resting)
+		}
 	}
 	// Membership is the layout's, and only the layout's. A section the user has
 	// taken out of appearance.sidebar.sections has no rows here, so it costs no
@@ -1463,11 +1597,6 @@ func (m *OS) sidebarPanelLinesForTree(tree sessiontree.Tree) ([]string, int) {
 		footerLines, footerZones, footerH = nil, nil, 0
 	}
 
-	// The layout: which sections are stacked, in what order, and the share each
-	// may claim. A section with no rows is dropped whole, header included, so an
-	// empty section costs the rail nothing rather than costing it a label over a
-	// gap.
-	plans := sidebarLayoutPlans(&m.Settings)
 	gitRows := m.gitRows()
 	// A section with no rows is dropped, header and all, which is right for a
 	// section that has nothing to say and wrong for this one. A person who put
@@ -1538,6 +1667,9 @@ func (m *OS) sidebarPanelLinesForTree(tree sessiontree.Tree) ([]string, int) {
 		drawn++
 		chrome++
 		if p.Section == pinned {
+			chrome++
+		} else if m.Settings.RailRoomy && drawn > 1 {
+			// density = roomy: a blank row in front of the header.
 			chrome++
 		}
 	}
@@ -1618,6 +1750,7 @@ func (m *OS) sidebarPanelLinesForTree(tree sessiontree.Tree) ([]string, int) {
 		place[s] = sectionPlace{header: -1}
 	}
 	line := 0
+	placed := 0
 	// The last section placed above the current entry, so a spacer's lines can
 	// be given to its band. Empty space draws nothing and so has no band of its
 	// own, and a gap that belonged to no section would be a gap the wheel does
@@ -1639,6 +1772,7 @@ func (m *OS) sidebarPanelLinesForTree(tree sessiontree.Tree) ([]string, int) {
 			continue
 		}
 		y0 := line
+		placed++
 		if p.Section == pinned {
 			// The slack belongs to the band of the section above, so a wheel over
 			// the empty middle of the rail scrolls that one. The single blank
@@ -1646,6 +1780,10 @@ func (m *OS) sidebarPanelLinesForTree(tree sessiontree.Tree) ([]string, int) {
 			// keeps the gap between the two bands from belonging to neither.
 			line += slack
 			y0 = line
+			line++
+		} else if m.Settings.RailRoomy && placed > 1 {
+			// The roomy blank belongs to this section's band, as the pinned
+			// block's floating line does.
 			line++
 		}
 		place[p.Section] = sectionPlace{header: line, top: line + 1, lines: budget[i], y0: y0, y1: line + 1 + budget[i]}
@@ -1681,6 +1819,15 @@ func (m *OS) sidebarPanelLinesForTree(tree sessiontree.Tree) ([]string, int) {
 	// Keyboard cursor auto-scroll, per section: a cursor past a section's fold
 	// scrolls that section the way a wheel would, and never disturbs the others.
 	scroll := m.sidebarScrollOffsets()
+	// The budget is settled, so a peek's own list takes over the section's rows
+	// from here: the windowing cuts it to the held lines. It windows from the
+	// top on an offset of its own, so a peek neither inherits the attached
+	// session's scroll nor leaves its clamp on it.
+	if peeking && rowsIn[sidebarSectionTerminals] > 0 {
+		rowsIn[sidebarSectionTerminals] = peekRows
+		peekScroll := 0
+		scroll[sidebarSectionTerminals] = &peekScroll
+	}
 	// A section's fold is in rows and its budget is in lines. Everything below
 	// scrolls and windows against this rather than against the line count, which
 	// were the same number until an agent row took two of them.
@@ -1716,8 +1863,9 @@ func (m *OS) sidebarPanelLinesForTree(tree sessiontree.Tree) ([]string, int) {
 	// The scroll thumb of every section with rows out of view, drawn in the
 	// edge rule's own cell beside the section's rows. It takes no column from
 	// the rows, and it cannot read as a second border, since it is the border.
-	// A section that fits draws the plain rule. A peek is windowed like the
-	// section it is drawn in, so it gets a thumb too. A section with rows to
+	// A section that fits draws the plain rule. A peek gets a thumb too, from
+	// the start its own offset windowed above, the one its rows and its "+N"
+	// were cut by, never the attached session's. A section with rows to
 	// hide has one-line rows (see the tall test above), so capRows is its
 	// lines.
 	var thumb string
@@ -1847,7 +1995,7 @@ func (m *OS) sidebarPanelLinesForTree(tree sessiontree.Tree) ([]string, int) {
 		// its own control and the section header none: two "+" for one
 		// machine would be one more than the rail can explain.
 		if canCreate && len(m.SidebarHostIDs) == 0 {
-			if tok, span, ok := sidebarHeaderAdd(sidebarRowNewSession, cw, sidebarHeaderLabelW(label),
+			if tok, span, ok := sidebarHeaderAdd(sidebarRowNewSession, cw, sidebarHeaderLabelW(label, &m.Settings),
 				pal, headerHoverX[sidebarSectionSessions], isCursor(sidebarRowNewSession, "", ""), &m.Settings, nil); ok {
 				add = tok
 				recordToken(span, "")
@@ -1871,11 +2019,21 @@ func (m *OS) sidebarPanelLinesForTree(tree sessiontree.Tree) ([]string, int) {
 		for i := range count[sidebarSectionSessions] {
 			idx := start[sidebarSectionSessions] + i
 			s := sessionRows[idx]
+			if s.Kind == sessiontree.KindSpace {
+				// A space's heading. It names the rows under it and is not a
+				// row to act on, so it records no hit and no nav row: the
+				// pointer and the cursor pass over it.
+				lines = append(lines, compose(m.sidebarSpaceRow(s, cw, pal)))
+				continue
+			}
 			if s.Kind == sessiontree.KindRepo {
 				// A repository's group header. It is a nav row like any other,
-				// and activating it folds the group.
-				st := m.railRowState(idx == hoverRow[sidebarSectionSessions], isCursor(sidebarRowRepo, s.ID, ""))
-				recordHit(sidebarRowRepo, s.ID, "", -1, 1)
+				// and activating it folds the group. The space it is drawn in
+				// rides in the window slot, because a repository whose
+				// sessions are in two spaces has a header in each, and the
+				// cursor has to tell them apart.
+				st := m.railRowState(idx == hoverRow[sidebarSectionSessions], isCursor(sidebarRowRepo, s.ID, s.Space))
+				recordHit(sidebarRowRepo, s.ID, s.Space, -1, 1)
 				lines = append(lines, compose(st.mark(pal, m.sidebarRepoRow(s, cw, pal, st))))
 				continue
 			}
@@ -1900,7 +2058,7 @@ func (m *OS) sidebarPanelLinesForTree(tree sessiontree.Tree) ([]string, int) {
 		// coexist with a pointer on this header, so the two never compete for the
 		// same cells in practice; the arithmetic holds either way.
 		termAdd, termSpan, hasTermAdd := sidebarHeaderAdd(sidebarRowNewWindow, cw,
-			sidebarHeaderLabelW("terminals"), pal, headerHoverX[sidebarSectionTerminals],
+			sidebarHeaderLabelW("terminals", &m.Settings), pal, headerHoverX[sidebarSectionTerminals],
 			isCursor(sidebarRowNewWindow, shown, ""), &m.Settings, nil)
 		right := termAdd
 		if peeking {
@@ -1921,7 +2079,7 @@ func (m *OS) sidebarPanelLinesForTree(tree sessiontree.Tree) ([]string, int) {
 			// label, the gap after it, the inset, and the control with the
 			// blank in front of it. Half the rail, which this used to take,
 			// ignored the label and on a narrow rail ran the name into it.
-			room := sidebarHeaderRightRoom(cw, sidebarHeaderLabelW("terminals"))
+			room := sidebarHeaderRightRoom(cw, sidebarHeaderLabelW("terminals", &m.Settings))
 			if hasTermAdd {
 				room -= lipgloss.Width(sidebarAddGlyph(&m.Settings)) + 1
 			}
@@ -1939,12 +2097,24 @@ func (m *OS) sidebarPanelLinesForTree(tree sessiontree.Tree) ([]string, int) {
 			recordToken(termSpan, shown)
 		}
 		lines = append(lines, compose(sidebarHeaderRowRuled("terminals", right, cw, pal, &m.Settings)))
+		// A peek shorter than the section it is held in fills the rest with
+		// blank lines, so whatever is below it stays where it was.
+		end := len(lines) + place[sidebarSectionTerminals].lines
+		if peeking {
+			defer func() {
+				for len(lines) < end {
+					lines = append(lines, blank)
+				}
+			}()
+		}
 		if emptyPeek {
-			hint := "no terminals"
-			lines = append(lines, compose(sidebarFit(
-				sidebarStyle(nil, nil).Render(" ")+sidebarQuietDot(nil, pal, &m.Settings)+
-					sidebarStyle(nil, nil).Render(" ")+
-					sidebarStyle(nil, pal.FgMute).Render(overlay.Truncate(hint, sidebarNameAvail(cw, 0))), cw, nil)))
+			if count[sidebarSectionTerminals] > 0 {
+				hint := "no terminals"
+				lines = append(lines, compose(sidebarFit(
+					sidebarStyle(nil, nil).Render(" ")+sidebarQuietDot(nil, pal, &m.Settings)+
+						sidebarStyle(nil, nil).Render(" ")+
+						sidebarStyle(nil, pal.FgMute).Render(overlay.Truncate(hint, sidebarNameAvail(cw, 0))), cw, nil)))
+			}
 			return
 		}
 		for i := range count[sidebarSectionTerminals] {
@@ -2037,7 +2207,7 @@ func (m *OS) sidebarPanelLinesForTree(tree sessiontree.Tree) ([]string, int) {
 		// The count is the Inbox's while it is connected, narrowed to this
 		// session when the filter is, and over the rows the section lists
 		// otherwise. See sidebarHeaderCounts.
-		controls, tokens := m.sidebarAgentsControls(cw, sidebarHeaderLabelW("agents"), pal,
+		controls, tokens := m.sidebarAgentsControls(cw, sidebarHeaderLabelW("agents", &m.Settings), pal,
 			headerHoverX[sidebarSectionAgents], m.sidebarHeaderCounts(parents))
 		for _, tk := range tokens {
 			recordToken(tk, "")
@@ -2120,6 +2290,7 @@ func (m *OS) sidebarPanelLinesForTree(tree sessiontree.Tree) ([]string, int) {
 		sidebarSectionGit:       drawGit,
 		sidebarSectionCustom:    drawCustom,
 	}
+	drawnAt := 0
 	for i, p := range plans {
 		if p.Spacer {
 			for range budget[i] {
@@ -2129,6 +2300,10 @@ func (m *OS) sidebarPanelLinesForTree(tree sessiontree.Tree) ([]string, int) {
 		}
 		if planRows[i] == 0 {
 			continue
+		}
+		drawnAt++
+		if p.Section != pinned && m.Settings.RailRoomy && drawnAt > 1 {
+			lines = append(lines, blank)
 		}
 		if p.Section == pinned {
 			for range slack {
@@ -2358,9 +2533,17 @@ func sidebarTerminalsWithoutAgents(terminals []sidebarTerminalEntry, agents []si
 // others from the cached listing, so agents elsewhere surface here marked
 // Foreign.
 func (m *OS) sidebarAgents(sessions []sessiontree.Node) []sidebarAgentEntry {
-	// With the agent features off the section has no rows, so the rail
-	// drops it, header and all. See agents_off.go.
-	if !m.agentsOn() || !sidebarLayoutHas(sidebarSectionAgents, &m.Settings) {
+	if !sidebarLayoutHas(sidebarSectionAgents, &m.Settings) {
+		return nil
+	}
+	return m.agentEntries(sessions)
+}
+
+// agentEntries is every pane running an agent, across every session, for the
+// rail's agents section and the Inbox's agents view alike. With the agent
+// features off there are none. See agents_off.go.
+func (m *OS) agentEntries(sessions []sessiontree.Node) []sidebarAgentEntry {
+	if !m.agentsOn() {
 		return nil
 	}
 	var agents []sidebarAgentEntry
@@ -2415,13 +2598,13 @@ func (m *OS) sidebarCursorIndex(target sidebarNavRow, sessions []sessiontree.Nod
 	switch target.Kind {
 	case sidebarRowSession:
 		for i, s := range sessions {
-			if s.Kind != sessiontree.KindRepo && s.ID == target.SessionID {
+			if s.Kind == sessiontree.KindSession && s.ID == target.SessionID {
 				return sidebarSectionSessions, i, true
 			}
 		}
 	case sidebarRowRepo:
 		for i, s := range sessions {
-			if s.Kind == sessiontree.KindRepo && s.ID == target.SessionID {
+			if s.Kind == sessiontree.KindRepo && s.ID == target.SessionID && s.Space == target.WindowID {
 				return sidebarSectionSessions, i, true
 			}
 		}
@@ -2683,7 +2866,7 @@ func (m *OS) sidebarSessionRow(node sessiontree.Node, sessionIdx, variant, cw in
 	// selection.
 	fg := pal.Fg
 	title := printableTitle(node.Title)
-	indent := m.sidebarRowIndent()
+	indent := m.sidebarNodeIndent(node)
 	// A worktree session is named by its branch under its repository's row,
 	// behind the mark that says whether the group goes on below it. The branch
 	// is the whole label there, so nothing rides after it.
@@ -2722,17 +2905,28 @@ func (m *OS) sidebarSessionRow(node sessiontree.Node, sessionIdx, variant, cw in
 			Render(strconv.Itoa(sessionIdx) + " ")
 		markW = len(strconv.Itoa(sessionIdx)) + 1
 	}
-	keep, avail := railRowFitInto(s.keep, titleW, railNameKeep(titleW), s.tokens, sidebarNameAvailIn(cw, 0, indent)-markW)
+	nameMarked, capsW := railNameMarked(&m.Settings)
+	nameMarked = nameMarked && node.IsCurrent
+	if !nameMarked {
+		capsW = 0
+	}
+	keep, avail := railRowFitInto(s.keep, titleW, railNameKeep(titleW), s.tokens, sidebarNameAvailIn(cw, 0, indent)-markW-capsW)
 	s.keep = keep
 	branch := ""
 	if keep[0] {
 		branch = sidebarStyle(rowBg, nil).Render(" ") + sidebarStyle(rowBg, pal.FgMute).Render(b)
 	}
 	right := sidebarJoinFigures(figures[:], keep[1:], sidebarStyle(rowBg, pal.FgMute))
-	name := mark + sidebarStyle(rowBg, fg).Bold(sidebarAttention(node.AgentState)).
-		Render(m.sidebarMarquee("s:"+node.ID, title, max(avail, 1), st.Cursor)) + branch
+	shown := m.sidebarMarquee("s:"+node.ID, title, max(avail, 1), st.Cursor)
+	name := mark + sidebarStyle(rowBg, fg).Bold(sidebarAttention(node.AgentState)).Render(shown) + branch
+	if nameMarked {
+		name = mark + railCurrentName(shown, tint, rowBg, pal, &m.Settings) + branch
+	}
 
 	gutter := sidebarGutterTinted(node.IsCurrent, node.AgentState, tint, rowBg, pal, &m.Settings)
+	if nameMarked {
+		gutter = sidebarGutterNameMarked(node.AgentState, rowBg, pal, &m.Settings)
+	}
 	if tint != nil && stated && !node.IsCurrent && !sidebarAttention(node.AgentState) {
 		gutter = sidebarStyle(rowBg, tint).Render(accentMark())
 	}
@@ -2749,6 +2943,20 @@ func (m *OS) sidebarSessionRow(node sessiontree.Node, sessionIdx, variant, cw in
 // A peeked row is a photograph: uniformly dim, no focus mark, no unread
 // emphasis. Severity gutters and state glyph colours stay, because they are
 // what the user peeked to see.
+// terminalRowTint is the identity colour a pane row's focus mark burns: the
+// pane's own accent when it has one, else its session's.
+func (m *OS) terminalRowTint(e sidebarTerminalEntry, rowBg color.Color) color.Color {
+	tint := m.sessionTint(e.SessionID, m.rowGround(rowBg))
+	accent, ok := m.WindowAccent(e.WindowID)
+	if preview, previewing := m.accentPreview(AccentTargetWindow, e.WindowID); previewing {
+		accent, ok = preview, true
+	}
+	if ok {
+		tint = accent.Color()
+	}
+	return tint
+}
+
 func (m *OS) sidebarTerminalRow(e sidebarTerminalEntry, cw int, pal overlay.Palette, st sidebarRowState, peeked bool) string {
 	rowBg := sidebarRowBg(st, pal)
 
@@ -2775,6 +2983,8 @@ func (m *OS) sidebarTerminalRow(e sidebarTerminalEntry, cw int, pal overlay.Pale
 			tint = accent.Color()
 		}
 		switch {
+		case e.Focused && railNameMarks(&m.Settings):
+			gutter = sidebarGutterNameMarked(e.State, rowBg, pal, &m.Settings)
 		case e.Focused:
 			gutter = sidebarGutterTinted(true, e.State, tint, rowBg, pal, &m.Settings)
 		case accented && !sidebarAttention(e.State):
@@ -2820,8 +3030,16 @@ func (m *OS) sidebarTerminalRow(e sidebarTerminalEntry, cw int, pal overlay.Pale
 		fg = pal.Fg
 	}
 
-	name := sidebarStyle(rowBg, fg).Bold(sidebarAttention(e.State)).
-		Render(m.sidebarMarquee("t:"+e.WindowID, title, sidebarNameAvail(cw, rightW), st.lit()))
+	nameMarked, capsW := railNameMarked(&m.Settings)
+	nameMarked = nameMarked && e.Focused && !peeked
+	if !nameMarked {
+		capsW = 0
+	}
+	shown := m.sidebarMarquee("t:"+e.WindowID, title, max(sidebarNameAvail(cw, rightW)-capsW, 1), st.lit())
+	name := sidebarStyle(rowBg, fg).Bold(sidebarAttention(e.State)).Render(shown)
+	if nameMarked {
+		name = railCurrentName(shown, m.terminalRowTint(e, rowBg), rowBg, pal, &m.Settings)
+	}
 	return sidebarComposeRow(gutter, sidebarGlyph(e.State, e.DoneSeen, e.Subagents, rowBg, pal, &m.Settings), name, right, cw, rowBg)
 }
 

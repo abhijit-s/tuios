@@ -10,6 +10,7 @@ This document provides a complete reference for TUIOS command-line interface.
 - [Commands](#commands)
   - [Root Command](#root-command)
   - [Theming](#theming)
+    - [Looks: tuios look](#looks-tuios-look)
   - [Agent Skill](#agent-skill)
   - [Daemon Mode (Session Persistence)](#daemon-mode-session-persistence)
   - [Remote Control Commands](#remote-control-commands)
@@ -151,7 +152,7 @@ tuios --standalone
 - `--debug`: Enable debug logging
 - `--server <name>`: Use the daemon named `<name>`. It has its own socket and saved sessions. See [Running a separate daemon](SESSIONS.md#running-a-separate-daemon)
 - `--cpuprofile <file>`: Write CPU profile to file
-- `--pprof <addr>`: Serve /debug/pprof profiles on this address for live profiling, such as `:6060`. With no host, the server listens on 127.0.0.1 only. The profiles have no password. Name `0.0.0.0` only on a network you trust. Delta profiles (`?seconds=` on heap and the like) are not served. Take two and compare them with `go tool pprof -diff_base`
+- `--pprof <addr>`: Serve /debug/pprof profiles on this address for live profiling, such as `:6060`. With no host, the server listens on 127.0.0.1 only. The profiles have no password. Name `0.0.0.0` only on a network you trust. Delta profiles (`?seconds=` on heap and the like) are not served. Take two and compare them with `go tool pprof -diff_base`. With `start-server`, the daemon that the command starts serves the profiles
 - `-h, --help`: Show help for tuios
 - `-v, --version`: Show version information
 
@@ -195,6 +196,8 @@ tuios --list-themes
 With no theme set, tuios uses the terminal's own colors.
 
 **Popular themes include:**
+- `charmtone`: Charm's CharmTone colours on a dark ground, with a Charple accent
+- `charmtone-light`: CharmTone on a light ground
 - `tokyonight`: A clean, dark theme with vibrant colors
 - `dracula`: Dark theme with purple accent
 - `nord`: An arctic, north-bluish color palette
@@ -254,6 +257,52 @@ alias tuios='tuios --theme nord'
 exec tuios --theme dracula "$@"
 ```
 
+### Looks: `tuios look`
+
+A look is a small TOML file that sets how tuios looks: theme, glyph set,
+borders, gaps, dock and rail style. The [gallery](https://tuios.dev/gallery)
+shares looks. [docs/THEMES.md](THEMES.md#looks) describes the file.
+
+```bash
+# Apply a look from the gallery. Each look there shows this command with its id.
+tuios look apply tuios.dev/r/<id>
+
+# Apply a look from an https URL or from a file
+tuios look apply https://example.com/my.look.toml
+tuios look apply ./my.look.toml
+
+# Show the look in use
+tuios look show
+
+# Remove the look and the theme it installed
+tuios look remove
+
+# List the keys a look can set
+tuios look keys
+tuios look keys --json
+```
+
+`tuios look apply <source>`:
+
+- The source is a gallery id (`tuios.dev/r/ID` or `ID`), an https URL, or a
+  local file. tuios downloads only over https.
+- tuios shows the changes and asks before it writes. Use `--yes` to skip the
+  question. A run with no terminal needs `--yes`.
+- tuios writes the look to `config.d/look.toml`. It does not change
+  `config.toml`.
+- A theme or glyph set in the look goes into the themes or glyphs folder. Its
+  name starts with `look-`.
+- A running tuios reloads the config. You do not restart.
+- A look can set only look keys. tuios leaves out every other key and names
+  it. A value that is not correct stops the look.
+- `config.toml` wins over `config.d`. tuios names each key that `config.toml`
+  sets, because the look does not change that key.
+- A new look replaces the look in use.
+- A config folder that tuios cannot write stops the command.
+
+`tuios look remove` deletes `config.d/look.toml` and the theme and glyph set
+that the look installed. Use `--yes` to skip the question.
+
 ---
 
 ## Agent Skill
@@ -284,12 +333,19 @@ The text ships inside the binary as `skills/tuios/SKILL.md` and the other
 files in `skills/tuios/`, so it always describes the TUIOS that printed it.
 Nothing is fetched and no daemon is needed. `tuios --skill=TOPIC` works too.
 
+To make an agent harness load the skill, run `tuios integration install`. It
+writes a short `SKILL.md` that tells the agent to run `tuios --skill`, so the
+text the agent reads always matches the TUIOS you have installed. Claude Code
+gets it in `~/.claude/skills/tuios/`. Codex, opencode and Pi get it in
+`~/.agents/skills/tuios/`. TUIOS leaves a `SKILL.md` alone when it did not write it, when you changed it, or when it is a symlink.
+
 **Examples:**
 ```bash
-# Install the core where an agent harness looks for skills. The core tells
-# the agent to run tuios --skill TOPIC for the rest.
-mkdir -p ~/.claude/skills/tuios
-tuios --skill > ~/.claude/skills/tuios/SKILL.md
+# Install the hooks and the skill for Claude Code
+tuios integration install claude-code
+
+# Do not copy the whole text into a skill file. The copy goes out of date
+# when you update TUIOS.
 ```
 
 ---
@@ -318,12 +374,15 @@ tuios new [session-name] [flags]
 - `--global`: Create a global session, which holds panes from more than one machine
 - `--hold`: After a failure, wait for enter before the command exits
 - `--cwd <dir>`: Directory the session's windows start in. The default is the current directory
+- `--space <name>`: File the session under a space, a named group of related sessions. It follows the session name rules and is at most 64 bytes
 - The appearance flags of the root command (`tuios new --help` lists them)
 
 The session's windows start in the directory where you run `tuios new`.
 `--cwd` names a different directory. The directory applies to the first
 window, and to each later window that has no pane to take a directory from.
 `--cwd` does not work with `--host`.
+
+`--space` files the session under the space as it is made, so `tuios ls` and the sidebar list it with the space's other sessions. It does not work with `--host`, and with `--global` it is refused: a global session cannot be in a space. See [`tuios set-session-space`](#tuios-set-session-space).
 
 **Examples:**
 ```bash
@@ -332,6 +391,7 @@ tuios new mysession            # Create session named "mysession"
 tuios new api --cwd ~/dev/api  # Create a session whose windows start in ~/dev/api
 tuios new work --theme dracula # Create session with Dracula theme
 tuios new ci --detach          # Create a headless session and return
+tuios new api --space payments # Create a session in the space payments
 tuios new --host build         # Create a session on the host build and attach it
 tuios new deploy --global      # Create a global session
 ```
@@ -499,6 +559,8 @@ Shows a table with:
 │ dev           │ 2       │ attached │ 1 day ago     │ just now        │
 ╰───────────────┴─────────┴──────────┴───────────────┴─────────────────╯
 ```
+
+When any session is in a space, the listing is one table per space, in name order, each under the space's name, and the sessions in no space follow last with no heading. With no session in a space it is the one table above. The saved listing groups the same way, by the space each saved session was in. `tuios ls --all-hosts` groups each host's sessions under that host's line, by the spaces on that host, so a space of the same name on two hosts is two groups. A host whose daemon predates spaces sends no space, and its sessions list as in none. `tuios ls --json` stays one flat list, with `space` on each row that has one, saved rows included, and `tuios ls --all-hosts --json` carries `space` on each session row the same way.
 
 `tuios ls --json` prints one object per session. Two fields say where the session's focused pane is:
 
@@ -1032,6 +1094,96 @@ save and loses any state written since the last periodic save.
 When no daemon is running, the command reports that and removes a stale socket
 if one is present. It exits 0 in that case.
 
+`--restart` tells the attached clients that a new daemon follows, so they wait
+for it and attach again. Without it the clients quit at once.
+`tuios restart-server` passes it.
+
+### `tuios restart-server`
+
+Stop the daemon and start it again with the newest tuios installed. Use it
+after an update: the daemon runs the build it started with until it stops.
+
+**Usage:**
+```bash
+tuios restart-server             # show what stops, ask, then restart
+tuios restart-server --dry-run   # show what stops, and change nothing
+tuios restart-server --yes       # restart without a question
+tuios restart-server --last      # show the steps of the last restart
+```
+
+The command first says what a restart does:
+
+```
+Daemon now      0.10.0
+After restart   0.10.2   (from ~/.local/bin/tuios)
+
+These stop:
+  nvim in "edit" (session work)
+  claude in "agent" (session work)
+Only shells in notes.
+
+These come back:
+  Each session, with its layout, its pane history and new shells.
+  claude-code in "agent" (session work) can resume.
+The Inbox offers to resume each one.
+Restart the daemon? [y/N]
+```
+
+Then it stops the daemon, starts the new one and waits until it answers:
+
+```
+Stopping the daemon...
+Starting the daemon 0.10.2...
+The daemon restarted on 0.10.2.
+These sessions came back: work, notes.
+```
+
+- The new daemon runs the newer of two binaries: the tuios at the path of
+  this command, which an update replaces, and the `tuios` on PATH, which an
+  install in the Nix store, mise, asdf or Linuxbrew moves. `--version`
+  decides. When the version after the restart is the daemon's own, the plan
+  says "This restart starts the same version."
+- The stop is `kill-server`, so every session is saved first. The new daemon
+  restores every saved session before it answers.
+- The stop and the start run in a process of their own, in a session of its
+  own and deaf to SIGHUP. So a restart run in a pane of the daemon it stops
+  finishes. Each step goes to `restart.log` beside the daemon log, and
+  `--last` shows it.
+- One restart runs at a time. A second one refuses while the first runs.
+- `daemon.resume_agents` says what the new daemon does with the agent
+  conversations: `ask` puts a Resume item in the Inbox, `auto` resumes them,
+  and `off` leaves them to `tuios resume-agent`.
+- The command asks in every state but a stopped daemon, a daemon that did
+  not answer included. With no terminal to ask on, it refuses unless `--yes`
+  is given. `--json` needs `--yes`. Nothing is changed when it refuses.
+- When the daemon is not running, the command starts it.
+
+The app runs this command from the command palette ("Restart the daemon"),
+from the version notice, from the Daemon tab of the settings and from the
+rail's menu for this machine. It then starts again in the same session.
+Other attached clients wait up to 15 seconds for the new daemon and attach
+to their session again. See
+[KEYBINDINGS.md](KEYBINDINGS.md#restart-the-daemon).
+
+`--expect DIGEST` refuses the restart unless the plan has that digest. The
+app passes the digest of the plan the person agreed to, so a program that
+started since makes the restart refuse: "What a restart stops changed after
+you agreed to it." Nothing is changed.
+
+`--json` writes one JSON object per line: `plan`, then `stopping`,
+`starting` and `done`. The `plan` object holds `binary`, `version`, `daemon`
+(with each session's `busy` panes and its `resume` agents) and
+`resume_mode`. The `done` object holds `restarted`, `after`, `back` and
+`missing`. A failed step sets `error` and `fix`, and the command exits 1.
+
+| Error | Next step |
+| --- | --- |
+| "The daemon did not stop. It still runs version X." | Run `tuios kill-server` to see why. |
+| "The daemon did not start." | Run `tuios start-server` to see why. The sessions come back when the daemon starts. |
+| "The daemon started and did not answer." | Run `tuios ls` to check it, or `tuios logs`. |
+| "Another restart of the daemon is running." | Wait for it to end. `tuios restart-server --last` shows its steps. |
+| "The restart stopped before it finished." | Run `tuios restart-server --last`, then `tuios ls`. |
+
 ### `tuios daemon`
 
 Run the daemon in the foreground (for debugging).
@@ -1274,6 +1426,9 @@ command that has flags of its own, or tuios reads them as its own flags:
 - `--grants <grant>[,<grant>...]`: What the window's process may do through tuios: `read`, `write`, `fan`, `respond`, `admin`, or `none` (default: `[agents.permissions]`). See [`tuios pane-grants`](#tuios-pane-grants)
 - `--json`: Output result as JSON
 - `--print-id`: Print only the new window's full id
+- `--keep-open`: Keep the window after its program exits. The window shows a line with the exit status under the last output
+- `--wait`: Wait for the program to exit, print nothing, and exit with its status. A program that a signal stopped gives 128 plus the signal number
+- `--timeout <ms>`: With `--wait`: milliseconds to wait before failing (default: no limit)
 
 **Output:**
 The 8-character window id and the window's name, separated by two spaces:
@@ -1294,6 +1449,10 @@ tuios new-window
 tuios new-window build
 tuios send-text -w build 'go build ./...
 '
+
+# Run the tests beside you, and read the output if they fail
+tuios new-window tests --no-focus --keep-open --wait -- go test ./... ||
+  tuios capture-pane -w tests --scrollback
 
 # Capture the new window's id for scripting
 id=$(tuios new-window build --print-id)
@@ -1521,8 +1680,9 @@ tuios close-workspace [flags] [workspace]
 
 Scratch panes stay open. To close a scratch group, name its scratch workspace.
 A pane that runs this command needs the `admin` grant. The
-`close_workspace` action does the same from the keyboard. See
-[KEYBINDINGS.md](KEYBINDINGS.md#close-every-pane-on-a-workspace).
+`close_workspace` action does the same from the keyboard, and the `Close` row of
+a workspace tab's right-click menu in the dock does it for that tab's workspace.
+See [KEYBINDINGS.md](KEYBINDINGS.md#close-every-pane-on-a-workspace).
 
 **Examples:**
 ```bash
@@ -1701,21 +1861,33 @@ name alone. Some of them:
 | `dock_mode_icon_window` | text, `""` or `default` | Icon in the mode pill in window mode. An empty value shows no icon. `default` uses the icon of the glyph set |
 | `dock_mode_icon_terminal` | text, `""` or `default` | Icon in the mode pill in terminal mode |
 | `dock_mode_icon_tiling` | text, `""` or `default` | Icon in the mode pill while tiling is on |
+| `dock_prefix_indicator` | `pill`, `badge` | Where the dock shows an armed leader key (default `pill`) |
+| `theme_light` | a theme id, or empty | The theme while the terminal is light. `theme` is then the dark theme (default empty) |
+| `border_focused_gradient` | two or more colours, or empty | Colours the focused pane's border blends through (default empty) |
+| `border_gradient_angle` | `0` to `359` | Direction of the gradient in degrees (default `45`) |
+| `window_title_style` | `pill`, `tab`, `plain` | Shape of a pane's title (default `pill`) |
+| `window_title_align` | `auto`, `left`, `center`, `right` | Place of a pane's title on its row (default `auto`) |
+| `sidebar.row_style` | `bar`, `marker`, `underline`, `pill` | How the rail marks the row you are on (default `bar`) |
+| `sidebar.header_style` | `auto`, `plain`, `rule`, `pill`, `icon` | How a rail section header is drawn (default `auto`) |
+| `sidebar.density` | `normal`, `roomy` | Space between the rail's sections (default `normal`) |
 | `border_style` | `rounded`, `normal`, `thick`, `double`, `block`, `outer-half-block`, `inner-half-block`, `ascii`, `hidden`, `glyphs` | Border style |
 | `motion` | `none`, `basic`, `full` | How much moves: `basic` keeps window slides and the copy sweep, `full` (the default) adds the overlay fade-in and the working-agent shimmer |
+| `theme_transition` | `none`, `circle`, `fade` | How a theme change shows: `circle` grows the new theme from the middle of the screen, `fade` changes all cells at the same time (default `none`) |
+| `theme_transition_duration` | `100` to `2000` | Milliseconds a theme transition takes (default `450`) |
 | `dim_unfocused` | `0` to `90` | Percent the content of a pane you are not in is dimmed (default `0`, off) |
+| `dim_foreground` | `true`, `false` | Let `dim_unfocused` dim the text of a pane you are not in as well as its background (default `true`). `false` keeps the text at full strength and dims only the background |
 | `dim_multifocus` | `true`, `false` | Dim the panes in the multifocus set like other panes you are not in (default `false`) |
 | `modal_dim` | `0` to `90` | Percent the screen behind a modal panel is dimmed (default `30`, `0` is off). On a light ground the screen fades toward its own background instead of darkening |
 | `animations_enabled` | `true`, `false` | Deprecated on/off switch: `false` sets `motion` to `none`, `true` to `full` |
 | `hide_window_buttons` | `true`, `false` | Hide window buttons |
 | `window_button_style` | `pill`, `dots` | How the window controls are drawn. On the left, the pill order is close, zoom, minimize, so close sits at the outer corner |
 | `window_button_position` | `right`, `left` | Which end of the title bar they sit on |
-| `background` | `off`, `theme`, `#RRGGBB` | Background painted on every surface not set on its own: panes, desktop, window chrome, dock and rail (default `off`) |
-| `pane_background` | `off`, `theme`, `#RRGGBB`, or empty | Background behind pane content where the program left the default; empty follows `background` |
-| `desktop_background` | `off`, `theme`, `#RRGGBB`, or empty | Background behind and between panes; empty follows `background` |
-| `window_chrome_background` | `off`, `theme`, `#RRGGBB`, or empty | Background under pane borders and title bars, which keep their own ink; empty follows `background` |
-| `dock_background` | `off`, `theme`, `#RRGGBB`, or empty | Background under the dock; empty follows `background` |
-| `appearance.sidebar.background` | `off`, `theme`, `#RRGGBB`, or empty | Background under the rail; empty follows `background` |
+| `background` | `off`, `theme`, a colour | Background painted on every surface not set on its own: panes, desktop, window chrome, dock and rail (default `off`) |
+| `pane_background` | `off`, `theme`, a colour, or empty | Background behind pane content where the program left the default; empty follows `background` |
+| `desktop_background` | `off`, `theme`, a colour, or empty | Background behind and between panes; empty follows `background` |
+| `window_chrome_background` | `off`, `theme`, a colour, or empty | Background under pane borders and title bars, which keep their own ink; empty follows `background` |
+| `dock_background` | `off`, `theme`, a colour, or empty | Background under the dock; empty follows `background` |
+| `appearance.sidebar.background` | `off`, `theme`, a colour, or empty | Background under the rail; empty follows `background` |
 | `hints.all_panes` | `true`, `false` | The hints key puts labels on all panes on the workspace, not only on the focused pane (default `false`) |
 | `scratch.width` | cells (`100`) or percent (`80%`) | Width of the scratch terminal that `Ctrl+B g` shows (default `80%`) |
 | `scratch.height` | cells (`30`) or percent (`80%`) | Height of the scratch terminal (default `80%`) |
@@ -2013,7 +2185,7 @@ Approvals
 Finished
     3h  #9     work/review  all tests pass
 
-2 waiting. Open the Inbox with the prefix key then i, or jump to the oldest with the prefix key then o.
+2 waiting. Open the agents view with the prefix key then i, or jump to the oldest with the prefix key then o.
 ```
 
 ### `tuios peek-prompt`
@@ -2099,7 +2271,9 @@ question in the Inbox; it holds the messages behind it until the agent next
 works or you drop it, and the next message is then typed at the next rest.
 
 A pane holds at most `[agents.queue] max` messages (8 by default) of at most
-16 KiB each. The queue lives in the daemon's memory, so a daemon restart drops
+16 KiB each. A reply from the Inbox with a long paste can carry more, as a
+file the daemon writes when it types the reply (see `queue-prompt` in
+[protocol.md](protocol.md#the-delivery-queue)). The queue lives in the daemon's memory, so a daemon restart drops
 it, and so do the pane closing and the agent leaving the pane. From inside a
 pane the message is checked like `send-text` when it is queued, and against
 the pane's grants again when it is typed. See
@@ -2623,7 +2797,7 @@ tuios commands from them still reach the session. Attach and kill-session by
 the old name fail and name the new one. The rename also clears a label set
 with `tuios set-session-name`. The name of a running or saved session is
 refused. A daemon older than this command answers that it does not know it.
-Run `tuios kill-server` and start tuios again.
+Run `tuios restart-server`.
 
 With one argument, the session is the one given by `-s`, or else the session
 of the pane you run it in.
@@ -2697,6 +2871,32 @@ tuios set-session-accent -s work cyan
 
 # Clear the accent
 tuios set-session-accent
+```
+
+### `tuios set-session-space`
+
+File a session under a space, a named group of related sessions that `tuios ls` and the sidebar list together, under the space's name. A space is only a label on its sessions: it exists while at least one session is in it, and it survives a daemon restart with them. Pass no space to take the session out of any.
+
+Surrounding whitespace is trimmed. A space name then follows the session name rules (no slash, backslash or control character) and is at most 64 bytes. A global session cannot be in a space.
+
+**Usage:**
+```bash
+tuios set-session-space [space] [flags]
+```
+
+**Flags:**
+- `-s, --session <name>`: Target session (default: most recently active)
+
+**Examples:**
+```bash
+# File the current session under the space payments
+tuios set-session-space payments
+
+# File a specific session
+tuios set-session-space -s work payments
+
+# Take the session out of any space
+tuios set-session-space
 ```
 
 ### `tuios set-workspace-name`
@@ -3157,8 +3357,11 @@ the command says so and points at `tuios new-window`.
 `custom_name` is present only on a window that was given a name, `cwd` only
 when the shell has reported its directory, and `host` only when the window's
 process runs on another machine. `agent_message` and `agent_state_at` appear
-once a pane has reported an agent state. The daemon answers this from its own
-state, so the shape is the same whether or not a client is attached.
+once a pane has reported an agent state. `agent_resumable` names the harness
+of a pane whose agent conversation a daemon restart would offer back, and is
+absent on every other pane. `tuios restart-server` reads it. The daemon answers
+this from its own state, so the shape is the same whether or not a client is
+attached.
 
 ### `tuios get-window`
 
@@ -3371,6 +3574,13 @@ tuios capture-pane [flags]
 - `--last-command`: Capture only what the last finished command printed, as
   plain text, read between the shell's OSC 133 marks. Fails with
   `no_shell_integration` when no command has finished under them.
+- `--unwrap`: Join the rows that the pane wrapped because a line was longer
+  than the pane. Each line then comes back as the program wrote it, so a
+  search finds a long path or URL. A row that ends with a newline stays a line.
+- `--trim`: Drop the blank lines at the end of the capture.
+
+A daemon older than this tuios refuses `--unwrap` and `--trim`. The command
+then says to run `tuios restart-server`.
 
 A `--ansi` capture without `--resolved` keeps the guest's SGR indices (e.g.
 `\x1b[31m`); the consumer resolves them against its own palette. `--resolved`
@@ -3478,6 +3688,25 @@ tuios screenshot --theme catppuccin_mocha
 tuios screenshot --json
 ```
 
+`tuios screenshot` draws no images. The daemon does not keep the pictures
+that programs show with the kitty graphics protocol or with sixel, so the
+image cells are blank. To include the images, take the capture in the TUI:
+press the leader then `C`, or run the `Screenshot` command.
+
+A capture in the TUI draws the images that the client shows:
+
+- A kitty image, a kitty image in Unicode placeholder cells, and a sixel image
+  are drawn at their cells.
+- A pane scrolled into its history shows the images on its screen.
+- `png`, `svg` and `html` draw images. `ansi` and `txt` do not.
+- One capture decodes at most about 25 megapixels of images. An image past
+  that limit is not drawn.
+- A kitty image that a program streams as a temporary file or as shared
+  memory is drawn only if it is not a stream of frames.
+- A client keeps at most 8 MiB of kitty images for captures. When it needs
+  more, it drops the images that are not on the screen first, then the
+  oldest. A dropped image is not drawn.
+
 Region and full screen captures are not CLI commands. They need a viewport and
 composed chrome, which only an attached client has: press the leader then `C`
 in the TUI and drag, or press `f`.
@@ -3505,7 +3734,7 @@ Some commands also answer to a short name: `attach` to `a`, `new` to `n`,
 | Command | What it does |
 |---------|--------------|
 | `tuios focus-window [window]` | Move the focus to a pane, by name, id, `--relative next` or `--direction left` |
-| `tuios move-window <workspace>` | Move a window to another workspace (`--follow` goes with it) |
+| `tuios move-window [workspace]` | Move a window to another workspace (`--follow` goes with it). `--to-session NAME` moves it to another session, and its program keeps running |
 | `tuios select-workspace <workspace>` | Show a workspace |
 | `tuios list-workspaces` | List the workspaces in a session and how many windows each holds |
 | `tuios set-window` | Rename a window (`--name`), minimize it (`--minimize`) or restore it (`--restore`) |
@@ -3533,7 +3762,7 @@ Some commands also answer to a short name: `attach` to `a`, `new` to `n`,
 | `tuios agent-proto --protocol P -- <agent>` | The pane program of `start-agent --protocol`: run an agent headless over ACP or the Codex app-server and show it as a transcript. See [above](#tuios-agent-proto) |
 | `tuios explain-agent-detect` | Show what the agent detector sees in a pane |
 | `tuios explain-agent-screen` | Show what a harness's screen and title rules make of a pane: the tail, each rule's region and the text it read there, why each refusal refused (strings, patterns, nested groups), the title and last OSC 9;4 progress report, and which manifest file is in force |
-| `tuios integration install [harness...]` | Write tuios's managed hook entries or plugin into a harness's configuration: claude-code, codex, copilot, cursor-agent, gemini-cli, opencode, kilo, amp, kimi, pi, omp and qwen report state; antigravity, crush, devin, droid, grok, hermes and qoder report the session id only (`--all` for every harness that has run here, `--command` for a tuios not on PATH). `--mcp` also registers `tuios mcp` as an MCP server named tuios with claude-code, codex, gemini-cli and opencode, without the tools that type into panes. `--mcp-write` registers it with `--write`. `--statusline` points Claude Code's status line at `tuios agent-statusline`, which feeds the model, context use and cost to the rail; a status line of your own is never replaced, and `--then CMD` (which implies `--statusline`) chains to it. See [Agent state](AGENT_STATE.md#harness-integrations) |
+| `tuios integration install [harness...]` | Write tuios's managed hook entries or plugin into a harness's configuration: claude-code, codex, copilot, cursor-agent, gemini-cli, opencode, kilo, amp, kimi, pi, omp and qwen report state; antigravity, crush, devin, droid, grok, hermes and qoder report the session id only (`--all` for every harness that has run here, `--command` for a tuios not on PATH). `--mcp` also registers `tuios mcp` as an MCP server named tuios with claude-code, codex, gemini-cli and opencode, without the tools that type into panes. `--mcp-write` registers it with `--write`. `--statusline` points Claude Code's status line at `tuios agent-statusline`, which feeds the model, context use and cost to the rail; a status line of your own is never replaced, and `--then CMD` (which implies `--statusline`) chains to it. For claude-code, codex, opencode and pi it also writes a short tuios skill that tells the agent to run `tuios --skill`; a tuios skill you wrote, changed or linked is left alone, and `--no-skill` writes none. See [Agent state](AGENT_STATE.md#harness-integrations) |
 | `tuios integration uninstall [harness...]` | Remove the hook entries tuios wrote, the MCP server entry it wrote and the Claude Code status line it wrote (putting back the command it chained to), and nothing else |
 | `tuios integration status [harness...]` | Say whether each integration is installed and current, and whether it reports state or the session id, for the four harnesses with an MCP registration whether `tuios mcp` is registered, and for Claude Code whether the status line feed is installed (`--json`, with `reports`, `mcp` and `status_line`) |
 | `tuios mcp` | Serve tuios to an agent harness as an MCP server over stdio. By default it cannot type into a pane, and it is held to the session of the pane it runs in. Its default tools still set your own agent state and meta and send and read mail. `--write` adds the tools that type into panes. `--scope all` reaches every session. See [tuios mcp](#tuios-mcp) |
@@ -3599,6 +3828,11 @@ there.
 | `tuios get-config <path>` | Read a configuration option from a running session. `-s` names the session. `--json` adds the source: `session`, `config` or `default` |
 | `tuios list-themes [theme]` | List the themes, and describe one. `--filter TEXT` lists only the ids that contain it, such as `gruvbox` |
 | `tuios import-theme <file>` | Convert a terminal colour scheme into a tuios theme |
+| `tuios theme reload` | Read the theme and glyph files again in every tuios client on this machine, and ask each terminal for its colours again. Clients also read the files when a file in the themes or glyphs directory changes |
+| `tuios theme export <theme>` | Print a theme as a theme file, with only the colours that are different from its built-in base. `--full` writes all the colours. `--format base16` writes a base16 scheme |
+| `tuios theme share <theme>` | Print a theme as one line that starts with `tuios-theme:v1:`, to paste in a message |
+| `tuios keybinds preset [name]` | Show or set the keybind preset (`tuios`, `tmux`, `screen`, `zellij`). `list` shows every preset, `show NAME` prints its file |
+| `tuios keybinds cheatsheet [preset]` | Show the keys a preset keeps, the tuios keys it moved, and what it does not have. `--json` |
 | `tuios list-glyphs [set]` | List the glyph sets, and describe one |
 | `tuios logs` | View daemon logs |
 
@@ -4371,6 +4605,71 @@ if [ "$COUNT" -ge 2 ]; then
     echo "command ran"
 fi
 ```
+
+---
+
+### `tuios mermaid`
+
+Draw the Mermaid diagrams of a file in the terminal, or save them as SVG or PNG.
+
+**Usage:**
+```bash
+tuios mermaid FILE [--format svg|png|kitty|text] [-o FILE] [--diagram N] [--theme NAME]
+```
+
+FILE is a Mermaid source (`.mmd`), a Markdown file, or `-` for standard input.
+A Markdown file gives each of its `mermaid` code blocks.
+
+| Output | When |
+|--------|------|
+| `kitty` | The terminal shows kitty graphics: kitty itself, or tuios on such a terminal. The picture fits the terminal |
+| `text` | Any other terminal. Box-drawing characters draw the diagram, and the labels are text |
+| `svg` | The output is not a terminal |
+
+`text` draws flowcharts and sequence diagrams. Another type, or a drawing too
+wide for the terminal, is written as its source.
+
+`-o FILE` saves to a file, as SVG or PNG from its extension. With more than one
+diagram, the files get `-2`, `-3` and so on. `--scale` sets the pixels per SVG
+unit of a PNG, 2 by default. `--cols` and `--rows` set the size in cells.
+
+The colours come from your tuios theme, held to contrast floors against the
+terminal background. `--theme NAME`, or `theme` in `[mermaid]`, picks another
+theme:
+
+| Theme | From |
+|-------|------|
+| `tuios` | Your tuios theme. This is the default |
+| `pele` | pele's own colours |
+| `flexoki`, `flexoki-dark` | The pele.run site, light and dark |
+| `nord`, `everforest`, `gruvbox`, `rose-pine` | pele's launch video |
+| `catppuccin-mocha`, `catppuccin-latte`, `tokyo-night`, `dracula`, `solarized-light`, `kanagawa` | Those terminal themes |
+
+Text in a theme colour that lands on a fill the diagram sets itself changes to
+the theme's text or background colour, where that reads better.
+
+**Live view:**
+```bash
+tuios mermaid FILE --watch [--split]
+tuios mermaid [FILE] --demo [--loop]
+```
+
+`--watch` fills the terminal with the diagram and draws it again each time the
+file is saved. In a terminal with kitty graphics the diagram moves to its new
+layout: boxes slide and grow, new parts fade in, removed parts fade out. In
+other terminals the text drawing is drawn again. `--split` shows the source
+beside the diagram, or above it on a tall terminal. `--motion` sets the length
+of a motion, 260ms by default.
+
+`--demo` types a diagram one character at a time, for a recording. With FILE it
+types that diagram line by line, or the diagrams of a Markdown file one after
+the other. Without FILE it types a built-in flowchart. `--loop` starts again
+two seconds after the end. Press `r` to start again and `q` to quit.
+
+The live view sends no frames and uses no CPU while nothing moves.
+tuios.dev/sketch draws the diagrams. It is a Go port of pele
+and draws flowcharts, sequence diagrams, state diagrams, class diagrams, ER diagrams, pie charts, mindmaps and gantt charts now. A diagram of another type gives
+an error and its source. The command exits 1 when a diagram cannot be drawn.
 
 ---
 
@@ -5150,9 +5449,8 @@ A file that does not match is discarded, nothing is installed, and the old
 binary is untouched.
 
 **The running daemon** keeps the old build. Sessions you have open go on
-working. To move them to the new build, detach, run `tuios kill-server`, then
-start tuios again. Panes are restored; the programs that were running in them
-are not.
+working. To move them to the new build, run `tuios restart-server`. Panes
+are restored; the programs that were running in them are not.
 
 Set `GITHUB_TOKEN` or `GH_TOKEN` to raise the release lookup's rate limit. It is
 never required and no token is created for you.
@@ -5682,7 +5980,7 @@ Most likely cause: TUIOS was upgraded while the daemon kept running, so the old 
 Fix: run 'tuios kill-server', then run this command again.
 ```
 
-Run `tuios kill-server`. This ends every program running in your panes. Each
+Run `tuios restart-server`. It lists what stops and asks first. A restart ends every program running in your panes. Each
 session's layout, window names and working directories are saved before the
 daemon exits and come back when it next starts, each pane with a new shell;
 `tuios resurrect` lists what is restorable.

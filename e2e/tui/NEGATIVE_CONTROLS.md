@@ -7,6 +7,38 @@ below. Two of them are **not** caught here; that is written down rather than
 papered over, because a suite whose real coverage is unknown is worse than no
 suite.
 
+## Sidebar-created worktrees apply startup tiling
+
+`TestRailRightClickMakesAWorktree` drives the repository row's real right-click
+menu and worktree dialog. It checks the newly named session, not the session
+left behind: its tiling flag, configured layout mode, first pane's height,
+and a second daemon-created pane joining the layout without overlap. BSP,
+master-stack and scrolling are covered; an explicit `startup.tiled = false`
+case must remain floating.
+
+Before adding the `applyStartupToUnarranged` call to `handleWorktreeCreated`,
+the BSP case was run against a binary built from `50972f48`. It failed with
+`custom is "floating" with 1 windows, want "tiling" from [startup] tiled`.
+With the call wired in, all four cases pass, including three repeated runs.
+The related worktree-refusal, session-switcher create, and fresh/detached
+startup-tiling tests pass too.
+
+Repeat with `TUIOS_E2E=1 TUIOS_E2E_BIN=/path/to/tuios go test -count=1
+-run '^TestRailRightClickMakesAWorktree$' -v .` from `e2e/tui`. Setting
+`TUIOS_E2E_FRAMES` to an existing directory saves plain and styled frames
+of the created session and its two tiled panes for each layout.
+
+## PR #626: a rail must not resize a shared session
+
+`TestSidebarSessionDoesNotShrinkAnotherViewer` attaches a 120x40 ordinary
+client to `side`, then displays `side` in a 36-column rail beside `center`.
+It checks both the daemon's settled size and live rail output. Before the
+sizing fix this failed `120x40 -> 36x33 (smallest)`; with passive viewers
+excluded from size ownership and rail PTY resize removed it passes. The
+historical rail-only resize and shell-row normalization controls below record
+the original feature contract; their assertions were changed in this review
+to preserve the shared PTY and display the guest's real leading blank rows.
+
 ## Two rules for every control
 
 Three green suites hid three real defects in one week. All three had a negative
@@ -70,6 +102,79 @@ the branch it passed. The run is recorded in
 `/tmp/tuios-pr600-click-negative.log`; the passing test saves a styled and
 plain settled screen in `$TUIOS_E2E_FRAMES/TestDualRailClickSwitchesSession/`
 (or the default system-temp artifacts directory).
+
+## Session-backed sidebar rails
+
+`TestSidebarSessionUsesPaneTitles` failed against PR #626's prior binary
+(`/tmp/tuios-rail-title-negative.log`): the first pane on each rail displayed
+`side-left` or `side-right` instead of its own renamed title. With ordinary
+pane chrome restored and `WindowState.CustomName` hydrated, the test confirms
+both rails and a second stacked pane show their own titles, live renames
+update, a title click focuses that exact pane, and close/minimize/zoom dots
+act only on its rail (`/tmp/tuios-session-title-buttons.log`). The PNG artifact
+records four ordinary pane titles, including two stacked left panes.
+
+`TestSidebarSessionDoesNotRunHiddenCustomCommand` fails on the combined
+foundation/session build before suppressing ordinary custom components behind
+an assigned daemon pane: the legacy-edge command created its marker despite
+its section being replaced (`/tmp/tuios-session-hidden-custom-negative.log`).
+After the fix, a separate marker on each edge stays absent while both session
+panes are visible (`/tmp/tuios-session-hidden-custom-two-edges.log`).
+
+On 2026-10-09 `TestSidebarSessionConnectsWhenCreatedLater` was run against
+`/tmp/tuios-session-stability`, built before the retry was added. The rail
+showed `attach failed` for an assigned session that did not yet exist. After
+creating the session and sending `LATE-SIDE-READY` to its pane, the test timed
+out without showing the marker: `/tmp/tuios-session-late-before.log`. The fix
+wires a two-second retry from the failed attach into session reconciliation;
+with it, the same test passed, then passed again after deleting and recreating
+the assigned session (`/tmp/tuios-session-recreate.log`). The successful
+connection, live pane output and renewed connection form the positive halves:
+this test cannot pass by merely hiding the attach error. The full selected
+`TestSidebar|TestDualRail|TestRail` real-client suite passed afterward
+(`/tmp/tuios-session-stability-broad.log`).
+
+On 2026-10-09 `TestSidebarSessionDownwardSplit` ran against the prior
+single-pane candidate (`/tmp/tuios-session-stability`): after focusing the
+left rail and pressing `Ctrl+B` then `-`, `side-left` still had one pane after
+10 seconds (`/tmp/tuios-session-split-negative.log`). With the split action
+routed to that daemon session and all visible pane streams stacked, the test
+passed: two different shell outputs remain on screen in top-to-bottom order,
+each clicked pane receives only its own input, and each guest gets half the
+rail's PTY height (`/tmp/tuios-stack-four.log`). A second control removed the
+focus update after daemon next/previous navigation: the header changed but
+keyboard input still went to the old pane
+(`/tmp/tuios-session-stack-focus-before.log`). The focused pane's captured
+command now passes in `TestSidebarSessionViewsAreIndependent`, alongside both
+pane outputs (`/tmp/tuios-session-stack-focus-after.log`).
+
+On 2026-10-09 `TestSidebarSessionFrameAlignsWithCenter` ran against
+`/tmp/tuios-session-aligned` with a separate one-row label above each rail
+pane. Both daemon sessions appeared, but their top borders began one row
+below the viewport's top row, so the test timed out
+(`/tmp/tuios-rail-frame-negative.log`). Moving each label into its first
+pane's title bar, without changing guest content, made the test pass and
+showed both framed rails beginning on the top row while preserving a
+pre-attach shell line (`/tmp/tuios-rail-frame-history.log`). The selected
+real-client sidebar/dual-rail/rail suite also passed
+(`/tmp/tuios-rail-frame-broad.log`). The earlier experimental automatic
+shell redraw was removed: it cleared shell content but did not address the
+extra rail header row shown in the user's screenshot.
+
+The remaining guest-content difference was tested separately on 2026-10-09.
+`TestSidebarSessionGuestTopAlignment` deliberately leaves two leading empty
+rows in the side daemon PTY and one in the center. Against the prior
+`/tmp/tuios-session-frame` build, the daemon captures remained correct but
+the visible text began on different pane-relative rows
+(`/tmp/tuios-guest-align-negative.log`). The display-only normalization
+passes the same test without changing the daemon capture, and additionally
+checks that the focused cursor follows the text, a tracked mouse click
+reaches the guest's original row, and an alternate-screen program is not
+shifted (`/tmp/tuios-display-cursor-mouse-alt.log`). The separate suspected
+redundant-resize control, `TestSidebarSessionReattachDoesNotResizeUnchangedPTY`,
+already passed on the old build (`/tmp/tuios-rail-reattach-negative.log`):
+reattach resize was not the cause, and no daemon PTY resize behavior was
+changed for this fix.
 
 ## Paste buffers (#514)
 
@@ -238,12 +343,12 @@ a working negative control look like a broken one for half an hour.
 | The daemon sync stops splitting the focused pane | n/a, injected, cuts the call site | drop the `m.insertSyncedWindow(created[0], focusBefore)` call from `adoptSyncedWindows` in `internal/app/session.go` | `TestBSPNewWindowSplitsTheFocusedPane`, all six cases ("the new pane is not inside the focused pane's old box") | **caught** |
 | A daemon session drops the preselection on its way to the sync | n/a, injected, cuts the call site | make the `m.PreselectionDir` branch in the daemon half of `AddWindowIn` in `internal/app/os_window.go` unreachable | `TestBSPNewWindowSplitsTheFocusedPane`, the four preselect cases ("the new pane is not left of the focused pane", and above, below, right of); the two cases with no preselection pass, which is their positive half | **caught** |
 | The standalone TUI stops splitting the focused pane | n/a, injected, cuts the call site | drop `targetID = fw.ID` from `AddWindowToBSPTree` in `internal/app/tiling_bsp.go` | `TestBSPNewWindowSplitsTheFocusedPaneStandalone`, all three cases; the daemon test passes, since that path does not run there | **caught** |
-| An `a=T` carrying `U=1` (ntcharts/picture, `kitten icat --unicode-placeholder`) was treated as a real placement: rows reserved, which scrolled the guest's screen every frame, and the image placed at the cursor | whole change | stash the five hunks in `internal/app/kitty_passthrough_forward.go`, `kitty_file_medium.go`, `kitty_passthrough.go`, `kitty_passthrough_lifecycle.go` and `internal/vt/utf8.go` | `TestKittyVirtualPlacementLeavesThePaneToTheGuest/b64`, `/file`, `/daemon-b64` ("39 placements were drawn at a cursor position", "the guest's PLACEHOLDER-HEADER is gone from the pane"), `TestKittyPlaceholderSplitAcrossWritesNamesTheHostImage`, `TestKittyPlaceholdersPrintedBeforeTheImageNameIt` | **caught** (3 of 3 transports run; `/shm` skips without `/dev/shm`) |
+| An `a=T` carrying `U=1` (ntcharts/picture, `kitten icat --unicode-placeholder`) was treated as a real placement: rows reserved, which scrolled the guest's screen every frame, and the image placed at the cursor | whole change | stash the five hunks in `internal/app/kitty_passthrough_forward.go`, `kitty_file_medium.go`, `kitty_passthrough.go`, `kitty_passthrough_lifecycle.go` and `vt/utf8.go` | `TestKittyVirtualPlacementLeavesThePaneToTheGuest/b64`, `/file`, `/daemon-b64` ("39 placements were drawn at a cursor position", "the guest's PLACEHOLDER-HEADER is gone from the pane"), `TestKittyPlaceholderSplitAcrossWritesNamesTheHostImage`, `TestKittyPlaceholdersPrintedBeforeTheImageNameIt` | **caught** (3 of 3 transports run; `/shm` skips without `/dev/shm`) |
 | The same, the row reservation alone | n/a, injected, cuts the call site | drop the `if cmd.Virtual { break }` from the `TransmitPlace` case of `ForwardCommand` | `/file` ("PLACEHOLDER-HEADER is gone"); `/b64` passes, and that is correct: a chunked transmission's last chunk arrives as `a=t` and never reaches that branch | **caught** |
 | The same, the chunked direct path alone | n/a, injected, cuts the call site | drop the `pending.AndPlace && pending.Virtual` block from `forwardTransmit` | `/b64`, `/daemon-b64` ("no virtual placement reached the host", "39 placements were drawn at a cursor position"), and the split and early tests through the lost text | **caught** |
 | The same, the file and shared-memory path alone | n/a, injected, cuts the call site | drop the `andPlace && cmd.Virtual` block from `forwardFileTransmit` | `/file` ("40 placements of image 1 were positioned by tuios") | **caught** |
 | The same, over ssh: a reused id went out as a self-placed `a=T` at the cursor | n/a, injected, cuts the call site | drop the `andPlace && cmd.Virtual` block from `forwardFileTransmitInline` | unit `TestKittyVirtualPlacementOverSSHIsNeverSelfPlaced` ("3 frames sent 1 transmissions and 0 virtual placements") | **caught in `internal/app`** |
-| A placeholder cell split across two PTY reads was re-drawn with the guest's image id | n/a, injected, cuts the call site | drop the `rewriteKittyPlaceholder` call from `extendOpenGrapheme` in `internal/vt/utf8.go` | `TestKittyPlaceholderSplitAcrossWritesNamesTheHostImage` ("241 placeholder cells reached the host naming image 7"); every transport of the placement test too, with a cell or two each, which is where the pty's own read boundaries fell | **caught** |
+| A placeholder cell split across two PTY reads was re-drawn with the guest's image id | n/a, injected, cuts the call site | drop the `rewriteKittyPlaceholder` call from `extendOpenGrapheme` in `vt/utf8.go` | `TestKittyPlaceholderSplitAcrossWritesNamesTheHostImage` ("241 placeholder cells reached the host naming image 7"); every transport of the placement test too, with a cell or two each, which is where the pty's own read boundaries fell | **caught** |
 | Placeholder cells printed before the image was transmitted kept the guest's id | n/a, injected, cuts the call site | the translator in `setupKittyPassthrough` calls `HostImageID` instead of `HostImageIDForPlaceholder` | `TestKittyPlaceholdersPrintedBeforeTheImageNameIt` ("cells by id: map[7:4012]") | **caught**, and it is the positive control on the row above: with the id allocated on demand the split test still passes, so the two hunks are tested apart |
 | A daemon state broadcast flipped a streamed pane back to the normal screen, and the passthrough deleted the alternate-screen image | n/a, injected, cuts the call site | `updateWindowFromState` in `internal/app/session.go` calls `w.SetAltScreen(ws.IsAltScreen)` for every window again, without the `SubscribedPTYs` check (the tree before the fix) | `TestKittyAltScreenImageSurvivesStateSync` ("a daemon state broadcast took the image down: a=d a=d,d=i,i=1,q=2") | **caught** |
 | A reused shared memory frame waited for the render loop: an `a=t` on arrival and an `a=p` on the next pass | n/a, injected, cuts the call site | drop the `streamFrameFitsPlacement` branch from `forwardFileTransmit` in `internal/app/kitty_passthrough_forward.go` (the tree before the fix) | `TestKittySharedMemoryStreamIsWrittenAtOnce` ("only 0 frames went out at once as a=T") | **caught** |
@@ -252,7 +357,7 @@ a working negative control look like a broken one for half an hour.
 | The daemon deleted any regular file in `/dev/shm` a pane named, whatever its size, so printed text could remove another program's segment | n/a, injected, cuts the call site | put back the bare `info.Mode().IsRegular()` test in place of `vt.KittyMediumIsFrame` in `releaseUnreadKittyMedium`, `internal/session/kitty_medium.go` | `TestKittySharedMemoryFramesAreReleased/daemon-unwatched-wrong-size` ("40 of 40 objects of the wrong size were deleted") | **caught**; `/daemon-unwatched` still passes, its positive half: the same path deletes frames of the right size |
 | The client deleted an object of another size after it read the frame inline | n/a, injected, cuts the call site | drop the `vt.KittyMediumIsFrame` test from `releaseKittyMedium` in `internal/app/kitty_medium_release.go` | Unit `TestKittyMediumReleaseChecksTheFrame/wrong-size` ("tuios deleted an object whose size is not the frame's") | **caught**; `/right-size` passes, its positive half |
 | The client deleted the object a pane named while graphics were off, a frame it never looked at | n/a, injected, cuts the call site | put back a `kittyMediumPath` and `releaseKittyMedium` call in the `!kp.enabled` branch of `ForwardCommand` in `internal/app/kitty_passthrough_forward.go` | Unit `TestKittyMediumReleaseChecksTheFrame/graphics-off` ("tuios deleted an object while graphics are off") | **caught** |
-| The frame check ignored the owner or the size | n/a, injected | make `kittyOwnedByMe` always true, or drop the size compare, in `vt.KittyMediumIsFrame` (`internal/vt/kitty_medium_release.go`) | Unit `TestKittyMediumIsFrame/another_user` ("a frame owned by another user passed"); without the size compare, the four wrong-size cases fail | **caught**. A file owned by another user takes root to make, so the test plays another user through the `kittyUID` seam |
+| The frame check ignored the owner or the size | n/a, injected | make `kittyOwnedByMe` always true, or drop the size compare, in `vt.KittyMediumIsFrame` (`vt/kitty_medium_release.go`) | Unit `TestKittyMediumIsFrame/another_user` ("a frame owned by another user passed"); without the size compare, the four wrong-size cases fail | **caught**. A file owned by another user takes root to make, so the test plays another user through the `kittyUID` seam |
 | An `a=t` followed by one `a=p` with no cell count never showed: the refresh pass deleted the placement in the flush that sent it | n/a, injected, cuts the call site | `forwardPlace` in `internal/app/kitty_passthrough_forward.go` back to sizing the record with `kp.calculateImageCells(cmd)` instead of `kp.placeCells(cmd, pixelW, pixelH)` (the tree before the fix) | `TestKittyPlaceAfterTransmitShows/b64`, `/shm`, `/daemon-b64` ("the image was placed 1 times, then taken down by `a=d,d=i,i=1,q=2` and never placed again") | **caught** (3 of 3) |
 | The same for a PNG: `a=t,f=100` names no `s=` or `v=`, so the `a=p` after it still had no size and was deleted | n/a, injected | `pngSize` in `internal/app/kitty_passthrough_forward.go` returns `0, 0, false` at the top | `TestKittyPlaceAfterTransmitShows/png`, `/pngz`, `/daemon-png` ("the image was placed 1 times, then taken down by `a=d,d=i,i=1,q=2` and never placed again"); `/b64`, `/shm`, `/daemon-b64` pass, which is correct: they state `s=` and `v=` | **caught** (3 of 3) |
 | The same, a PNG sent with `o=z` alone | n/a, injected | skip the `zlibbed` branch of `pngSize` | `TestKittyPlaceAfterTransmitShows/pngz` (same message); `/png` and `/daemon-png` pass | **caught** |
@@ -346,9 +451,9 @@ a working negative control look like a broken one for half an hour.
 | A client push carrying agent fields kept them over the daemon's, so a stale snapshot could put an old agent state back; the foreground command, shell pid, directory and machine were taken from the push the same way whenever it named one | n/a, the build before the fix | `retainDaemonExclusive` in `internal/session/state_merge.go` as it was. No E2E test reaches this: the TUI never sends these fields, so only a raw socket client could | the unit cases in `TestAClientSyncKeepsTheDaemonsWindowFields` ("a stale agent state in the push", "a stale foreground command, pid and directory in the push") and `TestTheMachineIsCarriedByWindow` ("named differently") all fail | **caught** (unit) |
 | Teardown: a process that is still running passes the teardown check | n/a, injected into the fixture | the check is tuitest's own again, from 8db5fa3 on (pinned at 8912ebb), which counts a process in X as exited: every terminal starts through `tuitest.StartT`, and the `closeTerm` workaround that re-read its survivor list is gone. Rerun against `StartT` alone: a throwaway test starts `/bin/sh` with a child that calls `setsid` and takes root as its real uid through a setuid bit, so its owner cannot signal it. Linux container (golang:1.26), test run as an unprivileged user | "tuitest: ptyproc: 1 process(es) survived teardown: [2552]" on 8db5fa3 and "[2663]" on 8912ebb, and the test fails. Its positive half, the same shell with an ordinary `sleep` child, passes. The earlier run of this control against `closeTerm` failed `TestFocusAltArrowsPixelHostAddNoLine` the same way ("survived teardown: [1586465]"), and its positive half, 2000 teardowns under fork load with a process caught in X twice and passed, is what 8db5fa3 moved into tuitest | **caught** |
 | The rail learned about another session's agent from the 3 second listing poll while the dock said it at once | n/a, injected | `foreignAgentRefreshCmd` in `internal/app/inbox.go` returns nil | `TestRailMarksAForeignAgentWhenTheDockDoes` ("the rail did not mark e2e-ask-a within 1.2s of its agent asking"), 3 of 3 runs | **caught** |
-| A straight box-drawing line in a capture was two arms meeting mid-cell, so every row of a border had a notch | n/a, the build before the fix | `drawArms` in `internal/shot/boxdraw.go` without the one-rect case for two equal arms on one axis | `TestScreenshotDrawsAStraightBorderWithoutNotches` ("the stroke at x=8 loses ink at y=16: 417 against 556") | **caught** |
+| A straight box-drawing line in a capture was two arms meeting mid-cell, so every row of a border had a notch | n/a, the build before the fix | `drawArms` in `shot/boxdraw.go` without the one-rect case for two equal arms on one axis | `TestScreenshotDrawsAStraightBorderWithoutNotches` ("the stroke at x=8 loses ink at y=16: 417 against 556") | **caught** |
 | On a light theme the rail and the dock wrote the dark ramp's near-white inks on the theme's near-white ground | n/a, injected | `GroundUI` in `internal/theme/ui.go` returns `UI()` unchanged | `TestLightThemeRailAndDockAreReadable` (session names and the dock notice at 1.09:1 against a 4.5:1 floor) | **caught** |
-| An Inbox that opened empty and then filled kept the empty state's top, so the full list sat on the bottom edge | n/a, injected | `overlayAnchorY` in `internal/app/overlay_hit.go` returns the held top whenever the screen height is unchanged | `TestInboxThatFillsAfterOpeningIsCentred` ("13 rows above it and 1 below") | **caught** |
+| An Inbox that opened empty and then filled kept the empty state's top, so the full list sat on the bottom edge | n/a, injected | `overlayAnchorY` in `internal/app/overlay_hit.go` returns the held top whenever the screen height is unchanged | `TestInboxThatFillsAfterOpeningIsCentred` ("13 rows above it and 1 below") | **caught**. Retired with the panel: the agents view fills the screen and has no anchor |
 | The review footer kept a margin on its left only, so a key strip that fitted to the cell ran into the frame | n/a, injected | `reviewHints` in `internal/app/render_review.go` fits against `width-1` | `TestReviewFooterKeepsItsRightMargin` (footer ends "esc close│") | **caught** |
 | The review's "too narrow for two columns" line stayed over the unified view it had recommended | n/a, injected | the `statusID` reset in `ReviewToggleSplit` disabled | `TestReviewNarrowSplitNoticeGoesWithTheSplit` (still on screen 2s after the second s) | **caught** |
 | A panel wider than the panes' columns covered all of the rail but a column or two, leaving fragments of its rows down the panel's edge | n/a, injected | `panelCenterX` in `internal/app/overlay_hit.go` centres on the screen alone | `TestAPanelWiderThanThePanesCoversTheWholeRail` (row 2 ends in the rail's ground) | **caught** |
@@ -356,7 +461,7 @@ a working negative control look like a broken one for half an hour.
 | The which-key list was cut to the screen's rows and ran up over a dock at the top | n/a, injected | the list measured from the top of the screen in `internal/app/render_overlays.go` | `TestWhichKeySitsBesideTheRail` ("the which-key title is on row 1, over the dock") | **caught** |
 | A panel taller than the rows under a dock at the top was fitted to the whole screen and ran up over the dock | n/a, injected | `panelRoomHeight` returns the screen's rows and `overlayOrigin` places from row 0 | `TestATallPanelStaysUnderTheDock` (the settings page covered the dock's pills) | **caught** |
 | A session made by a command with no terminal (a script, CI, an agent) gave every pane TERM=dumb, so `clear` did nothing and full-screen programs ran without cursor movement | n/a, the build before the fix | `sendHello` in `internal/session/client.go` without the case that names no TERM when detection answers dumb and stdout is not a terminal | `TestSessionMadeWithoutATerminalGivesItsPanesARealTerm` ("gave its pane \"TERM=dumb COLORTERM=truecolor\"") on macOS; in an ubuntu:24.04 container with TERM=dumb, as on a GitHub runner, `TestScreenshotDrawsAStraightBorderWithoutNotches` also fails ("the stroke at x=8 runs from 5 to 9": the typed command stayed on row 0), which is how CI found it | **caught** |
-| Every box-drawing rule and border in a capture had a faint brighter nub beside it at each cell boundary, because each cell overdrew half a pixel into its neighbours and the overlap drew the stroke's anti-aliased edge twice | n/a, the build before the fix | `internal/shot/boxdraw.go`, `png.go` and `svg.go` as of b0ab22a1, with `rect` bleeding past every cell edge it touches | `TestScreenshotDrawsAHorizontalRuleWithoutNubs` ("row y=15 of the rule is not one colour: 439 at x=16 against 378 at its start (x=0)") | **caught** |
+| Every box-drawing rule and border in a capture had a faint brighter nub beside it at each cell boundary, because each cell overdrew half a pixel into its neighbours and the overlap drew the stroke's anti-aliased edge twice | n/a, the build before the fix | `shot/boxdraw.go`, `png.go` and `svg.go` as of b0ab22a1, with `rect` bleeding past every cell edge it touches | `TestScreenshotDrawsAHorizontalRuleWithoutNubs` ("row y=15 of the rule is not one colour: 439 at x=16 against 378 at its start (x=0)") | **caught** |
 | The chrome was drawn in truecolor and stepped down a colour at a time: panels and the selected row navy (17) at 256 colours, and at 16 a blue (4) ground and panels with no edge | whole change | build `origin/main` (c2a16426) and point `TUIOS_E2E_BIN` at it | `TestChromeAtEveryColourDepth` dark-16, light-16 ("ground index 4"), dark-256, light-256 ("ground index 17"); the two truecolor runs pass on both builds, which is their positive half | **caught** |
 | The same, with the depth cut at its wiring | n/a, injected | `theme.SetColorProfile` no longer calls `overlay.SetDepth` | `TestChromeAtEveryColourDepth` 16 and 256 runs, dark and light ("ground index 17" / "ground index 4"); truecolor passes | **caught** |
 | At 16 colours the command palette's selected row has no ground and nothing in its place | n/a, injected | `renderCommandPalette` appends `paletteRow(...)` without `pal.Row` | `TestChromeAtEveryColourDepth` dark-16 and light-16 ("selected row cell (16,16) is not reverse video"); 256 and truecolor pass | **caught** |
@@ -479,6 +584,7 @@ a working negative control look like a broken one for half an hour.
 | `pane resize` never reaches the client that owns the layout | n/a, injected, cuts the wiring | rename `case "resize_window":` in `internal/app/update.go` | `TestHerdrFrontResize` ("pane resize --direction left exited 1") | **caught** |
 | A read-only pane moves a border | n/a, injected | the `herdrAdmit(cs, "set-layout", ...)` check in `herdrPaneResize` passes every caller | `TestHerdrFrontResize` ("pane resize from a read-only pane: exit 0") | **caught** |
 | `pane move` unanswered | n/a, injected, cuts the wiring | drop `pane.move` from `herdrMethods` | `TestHerdrFrontReloadMoveRename` ("pane move --new-tab exited 1") | **caught** |
+| A herdr plugin's command, outside every pane, could not report for a pane (clauth, herdr-mirror) | n/a, the base build | `herdr_compat.go` as on main, where `herdrPane` refuses a caller in no pane | `TestHerdrSocketAPI` ("pane.report_agent: forbidden: the caller runs in no pane of this tuios") | **caught** |
 | Workspace metadata is taken and never shown | n/a, injected, cuts the call site | `Tokens: nil` in place of `d.herdrWorkspaceMeta.tokens(...)` in `addHerdrSession` | `TestHerdrFrontReloadMoveRename` ("the workspace's topic token is <nil>") | **caught** |
 | An older `seq` overwrites a workspace token | n/a, injected | the seq check in `herdrWorkspaceReportMetadata` never drops a report | `TestHerdrFrontReloadMoveRename` ("the workspace's topic token is older") | **caught** |
 | `terminal title set` never reaches the client | n/a, injected, cuts the wiring | rename `case "set_client_title":` in `internal/app/update.go` | `TestHerdrFrontReloadMoveRename` ("terminal title set exited 1") | **caught** |
@@ -488,25 +594,25 @@ a working negative control look like a broken one for half an hour.
 | `herdr session list` answered `unsupported`, so herdr-projects found no socket | n/a, injected, cuts the wiring | drop `"session": parseSession` from `groups` in `internal/herdrcli/parse.go` | `TestHerdrFrontReloadMoveRename` ("session list --json exited 2") | **caught** |
 | `server agent-manifests` answered `unsupported` | n/a, injected, cuts the wiring | drop `server.agent_manifests` from `herdrMethods` | `TestHerdrFrontReloadMoveRename` ("server agent-manifests exited 1") | **caught** |
 | The front answered a bad agent kind and an unknown option with exit 1 instead of herdr's 2 (review finding 5) | n/a, injected | skip the `herdrAgentKind` check in `agentStart` and the `launchOptions` check in `Parse` | `TestHerdrFrontStartsAnAgentAndShowsAWorkspace` ("agent start --kind nope: exit 1", "herdr --foo: exit 1") | **caught** |
-| A shorter pane cut the rows below the cursor off the bottom of the screen | n/a, cuts the call site | restore `internal/vt/screen.go` and `internal/vt/emulator.go` from the merge base, which drops the `shrinkRows` call in `Screen.Resize` | `TestScrollbackResizeShorterKeepsRowsBelowCursor` ("a row below the cursor is gone from history and screen"); vt cases in `TestConform_ResizeRows` fail the same way | **caught** |
+| A shorter pane cut the rows below the cursor off the bottom of the screen | n/a, cuts the call site | restore `vt/screen.go` and `vt/emulator.go` from the merge base, which drops the `shrinkRows` call in `Screen.Resize` | `TestScrollbackResizeShorterKeepsRowsBelowCursor` ("a row below the cursor is gone from history and screen"); vt cases in `TestConform_ResizeRows` fail the same way | **caught** |
 | A shorter pane under an alternate screen cut the main screen's prompt and the rows above it | the same | the same build | `TestScrollbackResizeUnderAltScreenKeepsMainRows` ("witness lines [11 ... 30] are gone from the daemon") | **caught** |
 | A restored pane put saved history rows wider than the saved screen onto the screen, which cut them | n/a, cuts the call site | drop the `rowExtent` loop from `restoreHistory` in `internal/session/scrollback_persist.go` | `TestScrollbackResizeRestartKeepsWideHistory` ("23 lines were whole in the daemon's history before the restart and are cut after it") | **caught** |
 | capture-pane with history after a run of resizes | n/a, never broken | the two builds above | none, and that is correct: `TestScrollbackResizeCaptureCountsMatch` passes on all three, because it guards capture behaviour that already worked | **guard, not a control** |
 | A narrowing resize cut the screen's rows at the new width, so widening again could not bring the tail back | n/a, cuts the call site | `reflowMain := false && ...` in `vt.Emulator.Resize` | `TestScrollbackResizeNarrowKeepsScreenLine` ("the daemon lost the tail of a screen line"), `TestScrollbackResizeDragKeepsClientInStepWithDaemon` ("panes whose line is whole: daemon 2, client 1"); vt `TestConform_Reflow`, `TestResizeConservesText` and the marks, remap and prompt tests fail the same way | **caught** |
 | A divider drag costs the daemon one emulator resize per pane | n/a, never broken | the build above | none, and that is correct: `TestScrollbackResizeDragResizesDaemonOnce` passes on both, because it guards a cost that already held | **guard, not a control** |
 | A drag reflowed the client at every step while the daemon resized once, so around a parked cursor the two laid lines out apart | n/a, cuts the call site | `ResizeVisual` in `internal/terminal/window_geometry.go` resizes the emulator again when the stream owns the size | `TestScrollbackResizeDragAgreesWithTheDaemonAroundAParkedCursor/ends_where_it_started` ("the client and the daemon show different lines after the drag"). Its `ends_narrower` half passes on that build: the daemon's resize at the end lines the two up again | **caught** |
-| An open prompt's row was cut at a narrower width, and a drag that ended where it started never got a repaint | n/a, injected | the build above, and `frozenTail` replaced by nil in `internal/vt/reflow.go` | `TestScrollbackResizeDragKeepsATypedCommand` ("1 of 2 panes show the whole typed command"); vt `TestReflowKeepsAnOpenPromptRowWhole` fails the same way | **caught** |
+| An open prompt's row was cut at a narrower width, and a drag that ended where it started never got a repaint | n/a, injected | the build above, and `frozenTail` replaced by nil in `vt/reflow.go` | `TestScrollbackResizeDragKeepsATypedCommand` ("1 of 2 panes show the whole typed command"); vt `TestReflowKeepsAnOpenPromptRowWhole` fails the same way | **caught** |
 | A lone OSC 133 A froze the command output under it, and the freeze cut it | n/a, injected | a lone A opens the prompt in `vt.Emulator.reflowMain`, and `frozenTail` replaced by nil | `TestScrollbackResizeKeepsOutputUnderALoneA` ("output under a lone OSC 133 A lost its tail"). With tails kept and only the lone-A rule put back, nothing is lost and the E2E test passes; vt `TestReflowLeavesAMarkedPromptToTheShell` ("lone A") pins the rule | **caught** |
 | The padding flag did not travel in a snapshot or in saved history | n/a, cuts the call site | drop `RestorePads` from `ApplyTerminalState`, or drop `ScrollbackPads` from `historyRows.state` | `TestSnapshotCarriesPadding`, `TestSavedHistoryCarriesPadding` in `internal/session` ("client and daemon differ after widening") | **caught in `internal/session`** |
-| A shell's repaint of a frozen prompt row through the ASCII fast path kept the row's tail, so widening showed text from before the repaint | n/a, cuts the call site | drop `dropTail` from the narrow-run branch of the print path in `internal/vt/utf8.go` | vt `TestReflowOpenPromptRepaintDropsTheTail` | **caught in `internal/vt`** |
-| The cursor on a frozen prompt row came back at the narrow width's last column | n/a, injected | `s.wideCol = false && ...` in `Screen.reflow` | vt `TestReflowCursorOnAnOpenPromptComesBack` (Z at 29, not 34), `TestResizeConservesText` ("the cursor moved off its text") | **caught in `internal/vt`** |
+| A shell's repaint of a frozen prompt row through the ASCII fast path kept the row's tail, so widening showed text from before the repaint | n/a, cuts the call site | drop `dropTail` from the narrow-run branch of the print path in `vt/utf8.go` | vt `TestReflowOpenPromptRepaintDropsTheTail` | **caught in `vt`** |
+| The cursor on a frozen prompt row came back at the narrow width's last column | n/a, injected | `s.wideCol = false && ...` in `Screen.reflow` | vt `TestReflowCursorOnAnOpenPromptComesBack` (Z at 29, not 34), `TestResizeConservesText` ("the cursor moved off its text") | **caught in `vt`** |
 | A history saved while a prompt was frozen narrower lost the row's tail | n/a, cuts the call site | `captureHistoryRows` without the `MainRowTail` lookup | `TestSavedHistoryKeepsAFrozenPromptsTail` in `internal/session` | **caught in `internal/session`** |
 | A session switched to latest started from the client that attached last, once clients stopped reporting input under other policies | n/a, cuts the call site | the policy change case in `reportActivity` (`internal/app/update.go`) made unreachable | `TestWindowSizeSwitchToLatestStartsFromInput` ("after the switch to latest the session is 80x24, want the big client's 200x50") | **caught** |
 | A client that knew its session was smallest kept that policy after a switch into a latest session, and reported no input | the attach reply policy and the reset on switch | build the PR head before this fix (`origin/refactor/simplify-app` at `bc2f0601`) and point `TUIOS_E2E_BIN` at it | `TestWindowSizeSwitchIntoLatestReportsInput` ("after input in the small client, which moved into ws: the session is 200x50 under latest, want 80x24") | **caught** |
 | The client that attached second never learned smallest, so it reported every key | the same build | the same | `TestWindowSizeSmallestSendsNoActivity` ("under smallest the daemon received 5 activity reports, want 0"); positive half in the same fixture: 6 reports once the policy is latest | **caught** |
 | A quiet folder refresh rebuilt the rail twice, even with nothing changed, and ran up to ten times a second | whole change | keep the `rail=` count in `internal/app/tick_stats.go` and `sidebar_cache.go`, put the rest of `internal/app` back to the parent commit, and point `TUIOS_E2E_BIN` at that build | `TestRailFilesRefreshIsPaced/rename` (58 rebuilds, budget 25) and `/swap` (71 rebuilds, budget 12); with the change, 17 and 5. Positive half: `/rename` waits for the last name on the rail | **caught** (2 of 2 run) |
-| The daemon parses only the control keys of a graphics command and stopped answering EINVAL to a payload that is not base64 | n/a, injected | drop the `kittyPayloadErrorOwed` decode from the header-only branch of `parseKittyCommand` in `internal/vt/kitty_parser.go` | `TestKittyPayloadErrorReplies/daemon` (the `i=41;EINVAL` reply read "0 times, want once", the same for the query `i=42`, which got `OK`); `/standalone` passes, which is its positive half: the client decodes every payload. Unit `FuzzKittyHeader` fails on its seeds | **caught**. Removing `terminal.SetKittyHeaderOnly(true)` from `internal/session/session.go` is not caught, and that is correct: it changes CPU, not replies. `TestKittyHeaderLeavesThePayloadAlone` holds the parse to no payload copy |
-| The header-only parse left `FilePath` empty for `t=s` and `t=t`, so the daemon had no name to delete and, with the shared memory cleanup (#341), every unread frame stayed in `/dev/shm` | n/a, injected, cuts the call site | make the `kittyHeaderNamesObject` case in the header-only branch of `parseKittyCommand` in `internal/vt/kitty_parser.go` never match | Unit `TestKittyHeaderNamesTheObject` (`t=s` and `t=t` named "", want the name); `t=d` and `t=f` stay unnamed, its positive half. On a local merge with #341, `TestKittySharedMemoryFramesAreReleased/daemon-unwatched` read "40 frames: 0 forwarded, 40 still in /dev/shm", and 0 with the fix | **caught** |
+| The daemon parses only the control keys of a graphics command and stopped answering EINVAL to a payload that is not base64 | n/a, injected | drop the `kittyPayloadErrorOwed` decode from the header-only branch of `parseKittyCommand` in `vt/kitty_parser.go` | `TestKittyPayloadErrorReplies/daemon` (the `i=41;EINVAL` reply read "0 times, want once", the same for the query `i=42`, which got `OK`); `/standalone` passes, which is its positive half: the client decodes every payload. Unit `FuzzKittyHeader` fails on its seeds | **caught**. Removing `terminal.SetKittyHeaderOnly(true)` from `internal/session/session.go` is not caught, and that is correct: it changes CPU, not replies. `TestKittyHeaderLeavesThePayloadAlone` holds the parse to no payload copy |
+| The header-only parse left `FilePath` empty for `t=s` and `t=t`, so the daemon had no name to delete and, with the shared memory cleanup (#341), every unread frame stayed in `/dev/shm` | n/a, injected, cuts the call site | make the `kittyHeaderNamesObject` case in the header-only branch of `parseKittyCommand` in `vt/kitty_parser.go` never match | Unit `TestKittyHeaderNamesTheObject` (`t=s` and `t=t` named "", want the name); `t=d` and `t=f` stay unnamed, its positive half. On a local merge with #341, `TestKittySharedMemoryFramesAreReleased/daemon-unwatched` read "40 frames: 0 forwarded, 40 still in /dev/shm", and 0 with the fix | **caught** |
 | A pane in SGR-pixel mode (1016) was told the cell centre, never the pixel under the pointer | the call that asks the host for 1016 | in `internal/app/update.go`, replace `m.hostPixelMouseCmd(msg)` with `tea.Cmd(nil)` | `TestSGRPixelMouseCarriesTheHostPixel/standalone` and `/daemon` ("tuios never turned on SGR-pixel reports in its terminal") | **caught** (2 of 2 run) |
 | The same, with 1016 on in the host but the pixel not passed to the pane | the pixel argument at the forwarding call | in `internal/input/mouse.go`, pass `vt.MousePixel{}` in place of `o.PointerPixelIn(...)` | `TestSGRPixelMouseCarriesTheHostPixel/standalone` and `/daemon` ("the pane never got the report PX35;474;308."; it got the cell centre) | **caught** (2 of 2 run) |
 | The host stayed in 1016 after the pane turned it off, so later cell reports were read as pixels | the request that turns 1016 off | in `internal/app/host_pixel_mouse.go`, return nil in place of `tea.Raw(hostPixelMouseOff)` | `TestSGRPixelMouseCarriesTheHostPixel/standalone` and `/daemon` ("tuios never turned off SGR-pixel reports in its terminal"). This is the negative half: cell reports reach the pane unchanged once 1016 is off | **caught** (2 of 2 run) |
@@ -518,11 +624,11 @@ a working negative control look like a broken one for half an hour.
 | A kitty stand-in killed by a signal left its object in `/dev/shm`, one per run of a shared memory test | n/a, cuts the call site | remove the `t.Cleanup` registration in `standInShmPrefix` (`ptylog_test.go`) | `TestKittyStandInShmRemovedAfterTest` ("1 shared memory objects stayed in /dev/shm after the test"). Positive half: the subtest asserts the object is still there after SIGKILL ends the stand-in | **caught** |
 | `TestKittyStandInShmRemovedAfterTest` looked for the object once, right after the stand-in reported its geometry. The stand-in creates the object after that report, so the test failed when it looked first (main, run 37220244828) | n/a, injected | in `e2e/tui/frameloop/main.go`, sleep one second between `report` and `allocate`; run the test as it was | `TestKittyStandInShmRemovedAfterTest` ("the stand-in made no object with prefix"), the same message as CI. With the condition wait: passes with the delay, and 10 of 10 without it | **caught** |
 | A pane that asked for releases got a press with no release while the host sent none (no protocol, or the moment before the host switched flags), so a compositor in the pane held the key and its client repeated it | whole change, then the call site | build `origin/main` (`4e689aa1`); then drop the `rawInput = append(rawInput, releaseNow...)` line in `internal/input/keyboard_terminal.go` | `TestPaneGetsReleaseTheHostCannotSend` ("the pane received `\x1b[120u`", the press alone) both times; positive half `TestPaneGetsRepeatAsRepeat`, where the host sends the release and the pane gets exactly one | **caught** |
-| A held key's repeats reached the pane as more presses of a key that was down | whole change, then the call site | `origin/main`; then drop the `field += ":2"` line in `kittyModField`, `internal/vt/kitty_keyboard.go` | `TestPaneGetsRepeatAsRepeat` (the pane received `\x1b[97u` three times) both times | **caught** |
-| The lock modifiers were dropped for a pane that asked for every key, so a compositor in it could not learn that Num Lock was on | whole change, then the gate | `origin/main`; then make the report-all-keys gate in `kittyModParamFor` always return early | `TestPaneGetsLockState` both times; the negative half (no lock bits under disambiguate) is the `internal/vt` case `up, numlock on, has no lock bits` | **caught** |
+| A held key's repeats reached the pane as more presses of a key that was down | whole change, then the call site | `origin/main`; then drop the `field += ":2"` line in `kittyModField`, `vt/kitty_keyboard.go` | `TestPaneGetsRepeatAsRepeat` (the pane received `\x1b[97u` three times) both times | **caught** |
+| The lock modifiers were dropped for a pane that asked for every key, so a compositor in it could not learn that Num Lock was on | whole change, then the gate | `origin/main`; then make the report-all-keys gate in `kittyModParamFor` always return early | `TestPaneGetsLockState` both times; the negative half (no lock bits under disambiguate) is the `vt` case `up, numlock on, has no lock bits` | **caught** |
 | A multifocus peer got the focused pane's bytes, so a shell peer got kitty releases as text ("1:3u: command not found") | the call site | send `rawInput` to each peer instead of `paneKeyBytes(host, w, o, false)` in `internal/input/keyboard_terminal.go`; also the build before the change | `TestMultifocusPeerGetsItsOwnEncoding` (the shell never printed PEER-42) both times | **caught** |
 | The leader pressed twice sent a press with no release | the call site | drop the release from the `paneKeyBytes` result in `forwardKeyToFocusedWindow`; also the build before the change | `TestLeaderTwiceGetsItsRelease` (the pane received the press alone) both times | **caught** |
-| Enter, Tab and Backspace got CSI u and a release under event types without report-all-keys | the gate | remove the `isKittyLegacyTextKey` checks in `internal/vt/kitty_keyboard.go`; also the build before the change | `TestNoReleaseForEnterWithoutAllKeys`; unit `TestEncoderMatchesKitty` (49 and 13 mismatches against kitty's encoder) | **caught** |
+| Enter, Tab and Backspace got CSI u and a release under event types without report-all-keys | the gate | remove the `isKittyLegacyTextKey` checks in `vt/kitty_keyboard.go`; also the build before the change | `TestNoReleaseForEnterWithoutAllKeys`; unit `TestEncoderMatchesKitty` (49 and 13 mismatches against kitty's encoder) | **caught** |
 | A release left out the alternate keys | the call site | drop the `kittyAlternateKeys` call in `EncodeKeyReleaseCSIu` | unit `TestEncoderMatchesKitty` (13 mismatches) | **caught** |
 | Shift+Up and Shift+Down never reached a full-screen program or a mouse pane | whole change | the build before the change | `TestShiftUpReachesAFullScreenProgram`, `TestShiftUpReachesAMousePane` (the pane received nothing); positive half `TestShiftUpScrollsTheShell` passes on both | **caught** |
 | `agent-statusline` panicked with SIGSEGV when the daemon could not be dialed (issue #374): the dial closure returned a typed-nil `*VerbClient` and the deferred close called `Close` on it | whole change | build `origin/main` (`3f8df65b`) and point `TUIOS_E2E_BIN` at it | `TestStatusLineWithADeadDaemonStillRenders`, all four cases (missing and stale socket, with and without a named pane): "exit status 2", "panic: runtime error: invalid memory address or nil pointer dereference" | **caught** (4 of 4 run). Three layers each stop the crash on their own: the closures return an untyped nil, `reportStatusLine` assigns the client only after a good dial, and `Close` is safe on a nil receiver |
@@ -607,9 +713,9 @@ a working negative control look like a broken one for half an hour.
 | The terminfo lookup never finds an entry, so every pane gets the fallback | n/a, injected | `PaneTerm` in `internal/guestenv/terminfo.go` skips `hasTerminfo` and returns `FallbackTerm` | `TestPaneTermNeedsATerminfoEntry/host` ("TERM=screen-256color gave its pane TERM=xterm-256color"), `/home` ("TERM=tuios-e2e-home-term gave its pane TERM=xterm-256color"); `/absent` passes | **caught**, and it is the positive control on the row above |
 | The daemon answered the kitty graphics query OK on a host that draws no kitty graphics, so the guest drew nothing instead of its text fallback | n/a, cuts the call site | drop the `kittyAdvertised` gate at the top of `kittyQueryResponse` in `internal/session/kitty_query.go` | `TestKittyQueryFollowsTheHostTerminal/daemon/plain-host` ("a host without kitty graphics, and the pane was answered as if it had them"); the standalone runs and `/daemon/kitty-host` pass | **caught** |
 | Nothing records that an attached client draws kitty graphics | n/a, cuts the call site | drop `session.SetKittyAdvertised(kittyImages)` from `refreshTreeOps` in `internal/session/daemon_handlers.go` | `TestKittyQueryFollowsTheHostTerminal/daemon/kitty-host` ("a host that draws kitty graphics, and the pane was not told OK"); `/daemon/plain-host` passes | **caught**, and it is the positive control on the row above |
-| DECRQM reported set for a mode the emulator does not implement, after the guest set it (`?1005`, `?1015`, `?3`, `?45`, `?9999`, ANSI 2) | n/a, cuts the call site | make the `modeRecognised` test in `handleMode` (`internal/vt/csi_mode.go`) unreachable | unit `TestConform_DECRQM` (six "set first" cases), `TestConform_ModesThisEmulatorIgnores` and `TestConform_CSIParameters` (the `unhandled` check) | **caught in `internal/vt`** |
-| DECRQM ?2027 answered 1 or 2, though widths are always measured by grapheme cluster | n/a, injected | `?2027` back to `ansi.ModeSet` in `defaultModes` (`internal/vt/mode.go`) | unit `TestConform_DECRQM` (the three grapheme clustering cases) | **caught in `internal/vt`** |
-| DA1 claimed 132 columns, selective erase, national and technical character sets and user windows | n/a, injected | `DeviceAttributes` in `internal/vt/sixel_report.go` back to `62;1;6;9;15;18;22` | unit `TestConform_DeviceAttributes` ("claims attribute 1 that this emulator does not implement", and 6, 9, 15, 18) | **caught in `internal/vt`** |
+| DECRQM reported set for a mode the emulator does not implement, after the guest set it (`?1005`, `?1015`, `?3`, `?45`, `?9999`, ANSI 2) | n/a, cuts the call site | make the `modeRecognised` test in `handleMode` (`vt/csi_mode.go`) unreachable | unit `TestConform_DECRQM` (six "set first" cases), `TestConform_ModesThisEmulatorIgnores` and `TestConform_CSIParameters` (the `unhandled` check) | **caught in `vt`** |
+| DECRQM ?2027 answered 1 or 2, though widths are always measured by grapheme cluster | n/a, injected | `?2027` back to `ansi.ModeSet` in `defaultModes` (`vt/mode.go`) | unit `TestConform_DECRQM` (the three grapheme clustering cases) | **caught in `vt`** |
+| DA1 claimed 132 columns, selective erase, national and technical character sets and user windows | n/a, injected | `DeviceAttributes` in `vt/sixel_report.go` back to `62;1;6;9;15;18;22` | unit `TestConform_DeviceAttributes` ("claims attribute 1 that this emulator does not implement", and 6, 9, 15, 18) | **caught in `vt`** |
 | During a restore a failed subscribe's `MsgError` answered the next pane's state request, because the client matched replies by type | n/a, cuts the call site | the welcome in `handshake` (`internal/session/tuiclient.go`) stores `false` into `c.requestIDs` instead of `welcome.RequestIDs` | unit `TestSubscribeErrorDoesNotAnswerAStateRequest` ("round 0: the state request for pane B was answered with \"get terminal state failed: PTY pane-a-gone not found\""), `TestRequestIDsAcrossPeerVintages/new_client,_new_daemon`; its plain-refusal positive half passes | **caught in `internal/session`** |
 | A reply that came after its request timed out answered the next request, so pane B's screen was painted into pane C | n/a, injected | `routeReply` ignores `msg.ReqID` and `accept`, and `sendAndWaitMatching` registers by type only, which is the client before this change | unit `TestLateReplyIsNotTakenByTheNextRequest` ("pane C was given the state of pane B (width 6)"), `TestRequestIDsAcrossPeerVintages/new_client,_old_daemon` ("the client took the state of another pane"), and the row above's test | **caught in `internal/session`** |
 | The daemon answers a tagged state request with an untagged error | n/a, cuts the call site | the PTY-not-found refusal in `handleGetTerminalState` (`internal/session/daemon_handlers.go`) back to `d.sendError` | unit `TestSubscribeErrorDoesNotAnswerAStateRequest` and `TestRequestIDsAcrossPeerVintages/new_client,_new_daemon` (both "timeout waiting for response" after 30 s) | **caught in `internal/session`** |
@@ -804,7 +910,7 @@ switch, and against this branch with one call site cut at a time.
 | Typing into a pane the caller opened | `typingRefusal`: the `offTypingAllowed` term cut | `TestAgentsOffTmuxShimTypesIntoItsOwnPane` (the shim's send-keys is refused) | **caught** |
 | The switch is the person's | `verbSetOption`: the pane check made `if false` | `TestAgentsSwitchIsThePersons` (the pane's set-config exits 0) | **caught** |
 | This machine's switch on a call to another | `VerbClient.CallWithTimeout`: the `HostCallGuard` check made `if false` | `TestAgentsOffHereRefusesACallToAnotherMachine` (list-agents on build:far succeeds) | **caught** |
-| Agent keys in the help | `HelpCategories`: the `withoutAgentHelp` call cut | `TestAgentsOffShowsNoAgentRow/off` (the help search finds "Open the Inbox on its mail") | **caught** |
+| Agent keys in the help | `HelpCategories`: the `withoutAgentHelp` call cut | `TestAgentsOffShowsNoAgentRow/off` (the help search finds "Open the agents view on the mail for you") | **caught** |
 | Another machine's agent marks | `withHostGroups`: the `clearAgentMarks` call cut | `TestAgentsOffHidesAnotherMachinesAgentMarks` (the mark stays on build's row) | **caught** |
 | get-config reads the switch | `verbGetOption`: the `agents.enabled` branch cut | `TestAgentsOffGetConfigSaysOff` (prints `true` with source `default` while every agent verb is refused) | **caught** |
 
@@ -886,12 +992,12 @@ kitty steps for modifyOtherKeys, and the main-screen step for the kitty flags.
 
 | Fix | Cut | Tests that fail | Verdict |
 | --- | --- | --- | --- |
-| Mouse reports in the X10, UTF-8 (1005) and urxvt (1015) forms | `mouseReport.encode` in `internal/vt/mouse_encode.go`: every non-SGR encoding sent through the old `ansi.MouseX10` call | `TestPaneMouseReportEncoding/standalone` and `/daemon`: the x10 step reads column 101 as UTF-8 and column 231 as BEL, the utf8 and urxvt steps read the X10 form. The sgr step passes | **caught** (2 of 2 run) |
+| Mouse reports in the X10, UTF-8 (1005) and urxvt (1015) forms | `mouseReport.encode` in `vt/mouse_encode.go`: every non-SGR encoding sent through the old `ansi.MouseX10` call | `TestPaneMouseReportEncoding/standalone` and `/daemon`: the x10 step reads column 101 as UTF-8 and column 231 as BEL, the utf8 and urxvt steps read the X10 form. The sgr step passes | **caught** (2 of 2 run) |
 | modifyOtherKeys reaching the pane | `paneKeyBytes` in `internal/input/pane_key.go`: the `EncodeModifyOtherKeys` call cut | `TestPaneModifyOtherKeys/standalone` and `/daemon`: the level1 and level2 steps read the legacy bytes. The plain and kitty steps pass | **caught** (2 of 2 run) |
-| A kitty flag stack for each screen | `setAltScreenMode` in `internal/vt/csi_mode.go`: the `SetAltScreen` call cut | `TestPaneKittyFlagsPerScreen/standalone` and `/daemon`: the alt step reads `CSI 97 ; 5 u`. The main step passes | **caught** (2 of 2 run) |
+| A kitty flag stack for each screen | `setAltScreenMode` in `vt/csi_mode.go`: the `SetAltScreen` call cut | `TestPaneKittyFlagsPerScreen/standalone` and `/daemon`: the alt step reads `CSI 97 ; 5 u`. The main step passes | **caught** (2 of 2 run) |
 | modifyOtherKeys turned off while the pane is hidden | `ApplyTerminalState` in `internal/session/session.go`: the `ModifyOtherKeysKnown` term cut, so only a level above 0 is restored | `TestPaneModifyOtherKeysOffWhileHidden`: the pane reads `CSI 27 ; 5 ; 97 ~`, want `0x01`. `TestPaneKittyMainStackAcrossAttach` passes | **caught** (1 of 1 run) |
 | The main screen's kitty stack across an attach under the alternate screen | `ApplyTerminalState` in `internal/session/session.go`: the `RestoreKittyKeyboardMainStack` call cut | `TestPaneKittyMainStackAcrossAttach`: the pane reads `0x01`, want `CSI 97 ; 5 u`. `TestPaneModifyOtherKeysOffWhileHidden` passes | **caught** (1 of 1 run) |
-| The 1005 form writes a button of 128 or more (back, forward) as UTF-8, as xterm does | `mouseReport.encode` in `internal/vt/mouse_encode.go`: the button written as one raw byte again | unit `TestConform_MouseEncoding` ("UTF-8 form, the back button is UTF-8" and "forward with ctrl"). The X10 back button case passes, its positive half | **caught in `internal/vt`** |
+| The 1005 form writes a button of 128 or more (back, forward) as UTF-8, as xterm does | `mouseReport.encode` in `vt/mouse_encode.go`: the button written as one raw byte again | unit `TestConform_MouseEncoding` ("UTF-8 form, the back button is UTF-8" and "forward with ctrl"). The X10 back button case passes, its positive half | **caught in `vt`** |
 
 ## Turn checkpoints and undo
 
@@ -930,7 +1036,7 @@ for the history save are unit tests in `internal/input` and
 | Search columns counted in runes | whole change: build the tree before it and point `TUIOS_E2E_BIN` at it | `TestCopyModeSearchColumnInScrollback` ("needle-cm: the copy cursor is at row 10 column 40, want the match's column 36"); the `needle-ascii` half passes | **caught** |
 | A search key decoded every history line | whole change, same build | unit `TestCopyModeSearchKeyBudget` ("one search key allocated 258.1 MB, the budget is 4 MB") | **caught in `internal/input`** |
 | A history save decoded its rows under the pane's lock | whole change, same build | unit `TestHistoryCaptureBudget` ("the capture allocated 24.7 MB under the pane's lock, the budget is 4 MB") | **caught in `internal/session`** |
-| The line cache bounded by its line count only | whole change, same build | unit `TestScrollbackCacheIsBounded` ("cache holds 102400 decoded cells after a walk of a 400-column ring, want at most 65536") | **caught in `internal/vt`** |
+| The line cache bounded by its line count only | whole change, same build | unit `TestScrollbackCacheIsBounded` ("cache holds 102400 decoded cells after a walk of a 400-column ring, want at most 65536") | **caught in `vt`** |
 
 ## Push notifications for the Inbox, `[notify]`
 
@@ -1214,6 +1320,10 @@ cutting one call site from the tree the tests were written against.
 | A recording drops actions | the Action branch of `Recorder.RecordAction` made to return | `TestTapeRecordingReplaysActions` (the saved tape has no `Action open_settings`) | **caught** |
 | An exported layout that does not parse | the tree before the `GenerateTapeScript` fix | `TestLayoutExportValidates` (`Type command expects a string, got IDENTIFIER` at the command line) | **caught** |
 | SnapFullscreen snaps to a quarter | the tree before the `SnapByDirection` fix | `TestTapeSnapFullscreenFillsTheScreen` (the window is 60x19 of 120x40) | **caught** |
+| No leader menu while a tape sleeps | `stepScript` in `internal/app/update.go` followed by `return m, nil` while the tape holds, as before the fix | `TestTapeExecKeepsTimeAndDrawsTheLeaderMenu` ("the which-key menu never opened"), 1 of 1 run | **caught** |
+| A final Sleep not waited for | the Sleep check in `stepScript` made to skip a finished player | `TestTapeExecKeepsTimeAndDrawsTheLeaderMenu` ("tape exec returned after 3.09s"), 1 of 1 run | **caught** |
+| Both, the tree before the fix | origin/main at 841190970 | `TestTapeExecKeepsTimeAndDrawsTheLeaderMenu` (both messages, exec returned after 3.08s), 2 of 2 runs | **caught** |
+| A last WaitFor not waited for | `stepScript` with the finished check before the holds, as at a9d67d153 | `TestTapeExecStopsAtTheFailedLine` ("tape exec succeeded on a tape that ends in a WaitFor that cannot hold"), 1 of 1 run | **caught** |
 
 `TestExampleTapeRuns` plays `examples/actions_and_waits.tape` and has no
 control of its own: it fails on any of the first two cuts, since the example
@@ -1245,6 +1355,12 @@ person enables it.
 | The plugin rows in the palette | `rebuildPaletteItems`: the `pluginPaletteItems` call cut | `TestHerdrPluginPalette` ("the palette never listed the plugin action") | **caught** |
 | A plugin that is off has no palette row | `pluginPaletteItems`: `!e.Runnable()` made `e.Plugin == nil` | `TestHerdrPluginPalette` ("the palette offers an action of a plugin that is off") | **caught** |
 | The grant check on the plugin log | `herdrPluginLogList`: the admin check never refuses | `TestHerdrPluginActions` ("plugin log from a read-only pane: exit 0" with the action's output) | **caught** |
+| A command key of type `plugin_action` | `RunCommandBinding`: the `runPluginActionKey` call cut | `TestHerdrPluginPalette` (run-1.env never holds the key's run) | **caught** |
+| A manifest that starts with a UTF-8 byte order mark | `Parse`: the `bytes.TrimPrefix` call cut | `TestHerdrPluginTrustAndHooks` (actions listed as `plugin_manifest_parse_failed`) | **caught** |
+| `env` on `tab.create` and `pane.split` | `verbNewWindow`: `Env: env` cut from the window options | `TestHerdrSocketAPI` (the new pane never shows env-from-tab) | **caught** |
+| `env` on `workspace.create` | `verbNewSession`: `Env: env` cut from the window options | `TestHerdrSocketAPI` (the new pane never shows env-from-workspace) | **caught** |
+| The warning for a `plugin_action` key that no plugin has | `validateCommands`: the `validatePluginActionKeys` call cut | `TestHerdrPluginPalette` (never shows "1 config problem") | **caught** |
+| A bare action id prefers the enabled plugin | `FindAction`: the enabled-only return cut | `TestHerdrPluginPalette` (run-1.env never holds the key's run: the id is ambiguous) | **caught** |
 
 ## send-keys in the pane's keyboard mode
 
@@ -2036,6 +2152,31 @@ and the custom-format case shows the name inside its brackets.
 | A narrow dock with the cap off draws no pill at all | `planDockWorkspaceStrip`: the `count == 0` fallback replaced by `addOnlyStrip` | `TestDockWorkspaceLabelCapAndFormats/uncapped_narrow` ("the narrow dock draws no pill at all for the long workspace") | **caught** |
 | Minimized names take a live message's room | `shortenDockItemNames`: the budget search replaced by the earlier even split, which subtracts each entry's padding and never counts the label's own " 1: " around the name | `TestDockWorkspaceLabelCapAndFormats/live_message_keeps_its_columns` ("the live message never drew in full on the dock row"): at 140 columns the drawn entries run wider than the room the pass was given, and the message is cut to `Window…  more` | **caught** |
 
+## Flat workspace tabs (`[dock.tabs]`)
+
+`dock_tabs_style_test.go` runs the real binary with `[dock.tabs] style = "flat"`.
+`TestDockTabsFlatStyle` has the positive half in its `pill` and `show_add`
+cases, where the `+` tab and the caps are on the row. `TestDockTabsFlatStripTwoWorkspaces`
+has it in the unzoomed, inactive-tab and lone-workspace assertions.
+`TestDockTabsFlatColourFallbacks` has it in its `unset` case, which shows the
+fill the bad values fall back to. `TestDockTabsConfigWarnings` has it in
+`valid`. There are no unit tests for the slice: the config parse, the
+`number_glyphs` index and the warnings are all read off the running dock.
+
+| Control | How | Tests that fail | Verdict |
+| --- | --- | --- | --- |
+| The flat strip keeps the `+` tab | `buildDockWorkspaceTabs`: ` && (!flat \|\| style.ShowAdd)` removed | `TestDockTabsFlatStyle/flat` ("flat: \"+\" tab on the dock row = true, want false"), `TestDockTabsFlatStripTwoWorkspaces` ("a lone flat tab drew a separator or a \"+\"") | **caught** |
+| A lone workspace draws no flat tab | `buildDockWorkspaceTabs`: ` && (!flat \|\| len(tabs) == 0)` removed | `TestDockTabsFlatStyle` (all three cases: "the dock never drew the {icon} tab") | **caught** |
+| Flat tabs draw as pills | `dockTab`: the `t.Flat()` branch disabled | `TestDockTabsFlatStyle/flat`, `/show_add` ("flat tab drawn with caps"), `TestDockTabsFlatStripTwoWorkspaces` ("the strip never joined the tabs with the separator") | **caught** |
+| Hit rects ignore the separator's width | `dockTabGap` returns `dockWorkspacePillGap` | `TestDockTabsFlatStripTwoWorkspaces` ("a click on the second flat tab did not switch to workspace 2"); the click is on the tab's last column, because a click mid-label still lands inside the shifted rect | **caught** |
+| The zoom marker lands on every tab | `workspaceTabText`: `n == m.dockWorkspace() &&` removed | `TestDockTabsFlatStripTwoWorkspaces` ("the zoom marker is on a tab that is not current: ... 1ZM~A  \|  2ZM~2") | **caught** |
+| The zoom marker never prints | `workspaceTabText`: `zoom = tabs.ZoomMarker` blanked | `TestDockTabsFlatStripTwoWorkspaces` ("the zoomed workspace's tab never took the zoom marker") | **caught** |
+| `number_glyphs` entry 0 is workspace 0 | `DockTabsConfig.Icon`: indexes `n`, not `n-1` | `TestDockTabsFlatStyle` ("the dock never drew the {icon} tab", all three cases), `TestDockTabsFlatStripTwoWorkspaces` ("the strip never joined the tabs with the separator") | **caught** |
+| An unset active colour leaves the current tab unmarked | `flatWorkspaceTab`: the accent ground (`bg = pal.Accent`) removed | `TestDockTabsFlatColourFallbacks`, every case ("the current tab is not marked: fg {Kind:1 Index:231 ...} bg {Kind:0 ...}") | **caught** |
+| A bad colour is handed to lipgloss | `tabColor`: `config.IsHexColor(s)` replaced by `s == ""` | `TestDockTabsFlatColourFallbacks` bad cases ("the current tab is not marked: fg {Kind:0 ...} bg {Kind:1 Index:63 ...}" and the same with fg set) | **caught** |
+| A bad colour raises no warning | `validateDock`: the `validateDockColors(result, "dock.tabs", ...)` call removed | `TestDockTabsConfigWarnings/bad` ("a bad style and a bad colour were not both reported: ... waiting for text \"2 config problems\"") | **caught** |
+| A bad style raises no warning | `validateDock`: the style check disabled | `TestDockTabsConfigWarnings/bad` (same line) | **caught** |
+
 ## A new window ignores the OSC 7 folder on Windows (#491)
 
 `TestNewWindowInheritsTheOSC7Folder` in `inherit_cwd_osc7_test.go` starts the
@@ -2223,7 +2364,7 @@ Textual.
 | No pixel fallback in the winsize | `pixelsOr`: the pixel size passed through as given | `TestDetachedPaneReportsAPixelSize` (TIOCGWINSZ is 0x0 pixels) | **caught** |
 | No pixels at spawn | `SpawnTTY`: the first `SetWinsize` cut | `TestDetachedPaneReportsAPixelSize` (TIOCGWINSZ is 0x0 pixels) | **caught** |
 | libghostty-vt has no size callback | ghostty build, `WithSizeReport` returns false | `TestPaneReportsItsPixelSize` (both: no 2048, 14 or 16 answer), `TestDetachedPaneReportsAPixelSize` | **caught** |
-| A new cell size is not sent to a 2048 guest | `Emulator.SetCellSize`: the report cut | none end to end: the attach also resizes the pane, and that report carries the new cell. `TestConform_PixelSizeReports` in `internal/vt` catches it | **unit only** |
+| A new cell size is not sent to a 2048 guest | `Emulator.SetCellSize`: the report cut | none end to end: the attach also resizes the pane, and that report carries the new cell. `TestConform_PixelSizeReports` in `vt` catches it | **unit only** |
 
 `TestGhosttyDiffPixelSizeReports` (`-tags ghostty`) compares the two backends'
 answers to 14, 16, 18 and 2048, with and without a host cell, and after a new
@@ -2727,7 +2868,7 @@ Each lands one event inside an attach through the `attachSnapshotTaken` hook.
 A pane's sixel image on a host with neither sixel nor kitty graphics, such as
 the Linux console under kmscon, used to show as a box with "image" in it. It is
 now drawn as block glyphs, one glyph with two colours per image cell
-(`appearance.image_symbols`, `internal/mosaic`). The pane is told it can draw
+(`appearance.image_symbols`, `shot/mosaic`). The pane is told it can draw
 sixel, so programs send the picture.
 
 `TestImageSymbolsOnAHostWithoutGraphics` draws a generated picture (sky, sun,
@@ -2989,6 +3130,17 @@ The chrome flake did not show on this machine. A hook that always misses its
 deadline (`--timeout 1ns`) gives the CI failure exactly:
 `chrome_looks_test.go:211: inbox never drew`.
 
+## Alternate screen released by the cleanup sweep
+
+`TestAltScreenReleasedBySweep` starts two daemons with `--pprof`, one with `TUIOS_CLEANUP_SECONDS=1` and one with 3600. Each gets six panes at 200x60 that enter the alternate screen, fill it with `seq` and leave it. After three seconds the daemon that sweeps must hold less heap than the other by at least half a 200x60 screen of cells per pane (3937 KiB in all). It released 8560 KiB, 1426 KiB a pane. Both daemons then resize every pane to 180 columns and run a program that draws CORNER in the bottom right corner of the alternate screen and waits. After a sweep has run while the program is on the alternate screen, each pane must capture byte for byte as on the daemon that kept the grid and hold nothing but CORNER at the end of row 60. Once the program exits, the shell's screen must match too.
+
+The controls were run on 2026-10-15 on the branch perf/release-alt-screen.
+
+| Control | How | Tests that fail | Verdict |
+| --- | --- | --- | --- |
+| No release in the sweep | `cleanupLoop`: the `d.releaseAltScreens()` call cut | `TestAltScreenReleasedBySweep`: "the sweep released 0 KiB of heap across 6 panes, want at least 3937 KiB" (17296 KiB with and without a sweep) | **caught** |
+| A release while the alternate screen is shown | `ReleaseAltScreen`: the return when `e.scr` is the alternate screen cut | `TestAltScreenReleasedBySweep`: "after the sweep, a full-screen program drew pane 0 differently from a daemon that kept the grid": the swept pane is blank where the kept one shows CORNER | **caught** |
+
 ## Frame memory and the connection cap
 
 `TestDaemonBoundsStalledFrames` opens 32 connections. Each one announces a
@@ -3043,6 +3195,35 @@ least one of them:
 - The body allocated whole from the header.
 - No short limit.
 - No cap in `admitConnection`.
+
+## Reflow scratch released by the cleanup sweep
+
+`TestReflowScratchReleasedBySweep` starts two daemons with `--pprof`, one with `TUIOS_CLEANUP_SECONDS=1` and one with 3600. Each gets four panes at 200x60 holding one 108 KB line, and each pane is resized 190, 200, 190 columns wide. After three seconds the daemon that sweeps must hold less heap than the other by at least half a 190x60 screen of cells per pane (2493 KiB in all). It released 46200 KiB, 11550 KiB a pane: the spare block and the decoded history rows of a line that wraps through 240 rows of history. A resize to 150 columns must then lay every pane out byte for byte as the daemon that kept its buffers does, the rows of the line 150 columns wide and reading back as the end of the line.
+
+The controls were run on 2026-10-15 on the branch perf/release-reflow-scratch.
+
+| Control | How | Tests that fail | Verdict |
+| --- | --- | --- | --- |
+| No release in the sweep | `cleanupLoop`: the `d.releaseReflowScratch()` call cut | `TestReflowScratchReleasedBySweep`: "the sweep released 56 KiB of heap across 4 panes, want at least 2493 KiB" (80864 KiB without a sweep, 80808 KiB with one) | **caught** |
+| A release that drops the screen too | `ReleaseReflowScratch`: also sets the main screen's grid to a new empty one | `TestReflowScratchReleasedBySweep`: "after the sweep, a resize to 150 columns laid pane 0 out differently from a daemon that kept its buffers": the swept pane shows numbers from 18167, the kept one from 18567 | **caught** |
+| A release outside the terminal lock | `releaseReflowScratch`: the `terminalMu` lock and unlock cut, binary built with `-race`, `GORACE=log_path=...` | the test passes, and the race detector reports a data race between the sweep and `Screen.reflow` (`reflow.go:468`). With the lock it reports none in the same run | **caught** (by the race detector, not by the test) |
+
+## Client emulator buffers released by the maintenance tick
+
+`TestClientReleasesEmulatorScratch` starts two daemons with `--pprof` and `TUIOS_CLEANUP_SECONDS=3600`, and attaches one client to each with `--pprof`: one client with `TUIOS_CLEANUP_SECONDS=1`, the other with 3600. Each client opens four tiled panes in a 240x72 terminal, every pane prints one 108 KB line, and the terminal is resized 220, 240, 220 columns wide. After three seconds the client that releases must hold less heap than the other by at least half a 120x36 pane of cells per pane (945 KiB in all). It released 15568 KiB, 3892 KiB a pane. Every pane then runs a full-screen program and exits, and after three more seconds the gap must grow by half that again (472 KiB). It grew by 1440 KiB, 360 KiB a pane: one alternate screen grid. A resize back to 240 columns must then draw byte for byte, styles included, as the client that kept its buffers. So must a program that draws CORNER at the bottom right, waits two seconds on the alternate screen while a release runs, and draws AGAIN at the top left, and the shell's screen once it exits.
+
+The controls were run on 2026-10-16 on macOS on the branch perf/client-release-scratch. Each control is a text replacement on the branch, built to its own binary, with the file restored after the build.
+
+| Control | How | Tests that fail | Verdict |
+| --- | --- | --- | --- |
+| No release on the tick | `handleMsg`: the `m.releaseEmulatorScratch(time.Time(msg))` call cut from the `TickerMsg` case | `TestClientReleasesEmulatorScratch`: "the client released -416 KiB of reflow scratch across 4 panes, want at least 945 KiB". The build before the change (`upstream/main` at `ce82a422`) fails the same way, with 208 KiB | **caught** |
+| No alternate screen release | `TryReleaseEmulatorScratch`: the `ReleaseAltScreen` call cut | `TestClientReleasesEmulatorScratch`: "the client released 16 KiB of alternate screen across 4 panes, want at least 945 KiB". Run again on Linux with the bar halved: "the client released -248 KiB of alternate screen across 4 panes, want at least 472 KiB" | **caught** |
+| A release while the alternate screen is shown | `ReleaseAltScreen` (`vt/emulator.go`): the check for the alternate screen being shown cut | `TestClientReleasesEmulatorScratch`: "with a full-screen program on the alternate screen, the client that released drew row 14 differently from a client that kept its buffers": the release blanked CORNER, and AGAIN drew over a blank screen | **caught** |
+| A release that drops the screen too | `ReleaseReflowScratch` (`vt/reflow.go`): also clears the main screen's rows | `TestClientReleasesEmulatorScratch`: "the releasing client never showed ALT2DONE in every pane". The client's output writer panics on the next line ("slice bounds out of range [:53] with capacity 0" in `rotateWholeScreenUp`) | **caught** |
+| A release outside the I/O lock | `TryReleaseEmulatorScratch`: the `ioMu.TryLock` and `Unlock` cut, binary built with `-race`, `GORACE=log_path=...` | the test passes, and the race detector reports a data race between `ReleaseAltScreen` on the UI goroutine and `setAltScreenMode` in the window's output writer. With the lock, the same run on a `-race` binary reports none | **caught** (by the race detector, not by the test) |
+| The positive half | this branch | none | **guard** |
+
+The first version of the test drew CORNER and then waited. With the alternate screen check cut it passed: the client draws a pane again only when the pane changes, so the screen kept the frame drawn before the release. The second write, AGAIN, is what makes the client draw the pane from the emulator after the release.
 
 ## A Mac config.toml on Linux, and keys tuios cannot read (issue #556)
 
@@ -3148,8 +3329,11 @@ terminal writes for the key: WezTerm with a composing right Option key,
 Terminal.app with Option on "Normal", iTerm2 with Esc+ on US and on French
 AZERTY, and Kitty protocol reports for AZERTY and for a composing Option key.
 `TUIOS_E2E_PLATFORM=darwin` puts tuios on its macOS defaults and its macOS key
-paths. The default is `option_glyphs = "bind"`, the behaviour Terminal.app
-and iTerm2 users already had, and `"type"` is the opt-in for #566. Every test
+paths. The default was `option_glyphs = "bind"` when these controls ran. Since
+#746 the default is `"auto"`, which reads the Mac's keyboard layout.
+`TUIOS_E2E_MAC_INPUT_SOURCE` fakes that layout. The other tests that send a
+bare composed character set `"bind"` themselves. `"type"` is the opt-in for
+#566. Every test
 that says a key does nothing also presses a key that does something, in the
 same session. Each control below cut one piece of wiring, built a binary, and
 ran the named test against it, on 2026-10-08 on branch
@@ -3158,8 +3342,11 @@ ran the named test against it, on 2026-10-08 on branch
 | Control: what was cut | Test | Where it failed |
 | --- | --- | --- |
 | `bindingKeys` asks for a composed character's chord as a plain key, not in the Option-glyph tier | `TestComposedOptionCharacterReachesThePane` | the shell never prints `x2•¡y` |
-| `expandInto` skips the `OptionGlyphKey` claim | `TestNormalOptionCharacterSwitchesWorkspaceByDefault` | the default config leaves the session on workspace 1 for `£`, want 3 |
+| `expandInto` skips the `OptionGlyphKey` claim | `TestNormalOptionCharacterSwitchesWorkspaceByDefault` (now `TestBareOptionCharacterFollowsTheMacLayout`) | the default config of the time leaves the session on workspace 1 for `£`, want 3 |
 | `bindingKeys` never asks for the US-layout tier | `TestEscPlusOptionChordsOnAUSLayout` | ESC # leaves the session on workspace 1, want 3 |
+| `expandInto` skips the `BareOptionGlyphKey` claim (2026-10-15, #746) | `TestBareOptionCharacterFollowsTheMacLayout/US` | `e2e-opt-normal-us is on workspace 1, want 3` |
+| `lookupKey` answers from the bare tier whatever the Mac layout is (2026-10-15, #746) | `TestBareOptionCharacterFollowsTheMacLayout/British` | the typed `£` never reaches the shell as `x2£y` |
+| `NewOS` does not start the layout detection (2026-10-15, #746) | `TestBareOptionCharacterFollowsTheMacLayout/US` | `e2e-opt-normal-us is on workspace 1, want 3`: the first `£` arrives before any answer and goes to the pane |
 | `expandInto` ignores `keyboard_layout = "other"` | `TestAzertyEscPlusWithLayoutOther` | ESC & moves the pane to workspace 7 |
 | `expandInto` claims a US alias as a plain key | `TestOwnBindingBeatsTheUSAlias` | ESC & moves the pane to workspace 7, want workspace 2 |
 | `bindingKeys` asks for the US-layout tier without `KeyFitsUSLayout` | `TestAzertyKittyReportsPickTheRightWorkspace` | AZERTY Option and the 1 key moves the pane to workspace 7 |
@@ -3875,7 +4062,7 @@ Each one builds `cmd/tuios` with one piece of wiring cut and runs
 | The `subagent_rows = "count"` check in `sidebarAgentChildren` | "subagent_rows = count still draws rows" | **caught** |
 
 The design named `◐` for the waiting mark. The frames drawn by
-`internal/shot`, with the Go Mono it embeds, showed it as a missing glyph.
+`shot`, with the Go Mono it embeds, showed it as a missing glyph.
 The mark is `◊`, which Go Mono and Menlo both have. Kiro and Qwen Code also
 put `◐` in their window titles as a spinner.
 ## Subagent rail styles
@@ -4322,7 +4509,7 @@ when the short path is the same file. The macOS controls:
 `reattach_snapshot_state_test.go` has one test, `TestReattachCarriesSnapshotState`,
 and the snapshot fields it covers have wire and conformance tests in
 `internal/session/snapshot_complete_wire_test.go`, `ghostty_wire_test.go` and
-`internal/vt/conform_snapshot_state_test.go`. On 2026-10-10 each control below
+`vt/conform_snapshot_state_test.go`. On 2026-10-10 each control below
 cut one line, built a binary or ran the named package, and the same tests
 passed on the branch build. The end-to-end test passed five runs in a row on
 the branch build.
@@ -4393,7 +4580,7 @@ all.
 
 The control was run on 2026-10-11 on branch `fix/nvim-erase-background`. It
 builds `cmd/tuios` with the ED 2 case of `eraseDisplay` in
-`internal/vt/csi_screen.go` back on `e.scr.Clear()`, the call it made before
+`vt/csi_screen.go` back on `e.scr.Clear()`, the call it made before
 the fix.
 
 | Control: what was cut | Where it failed | Verdict |
@@ -4866,6 +5053,22 @@ before it types, and fails when the dock names the spotlight.
 Not covered here: the divider clip in `clipScratchSplits`. The suite pins
 the looks from before v0.8.0, so the panes keep their own borders and no
 divider is drawn.
+
+### The fill and the split race
+
+Run on 2026-10-16 on branch `fix/scratch-zoom-fill-race`. The test sent the
+first split right after it typed the `@` fill. When the split came first,
+`tput` read the half-width pane: the fill was 1484 cells, not 3024, and left
+no history. The zoom then kept it at the top of the widened pane, above the
+rows the camera shows, and "no pane shows beside the zoomed one" failed. It
+failed in 1 of 90 local runs, and in 3 of 148 runs on two loaded cores. The
+test now waits for each fill to show before it splits: 0 of 120 runs on two
+loaded cores.
+
+| Control | Build | Tests that fail | Verdict |
+| --- | --- | --- | --- |
+| `sleep 0.5;` before the `@` fill, so the split always wins | the test before the fix | standalone, 5 of 5: no pane shows beside the zoomed one | **caught** (the race, forced) |
+| The same delay | this branch | none, 5 of 5 runs | **guard** |
 ## The rail's worktree dialog
 
 `TestRailRightClickMakesAWorktree` opens the dialog from a repository's group
@@ -5067,6 +5270,29 @@ Run on 2026-10-14 on macOS on branch `pr/verb-session-term`, from upstream `main
 | The retry in `VerbClient.handshake` cut (`false &&` in its condition) | mutant of this branch | `TestVerbCommandsReachAnOlderDaemon` ("tuios ls against an older daemon failed: ... Could not open a control connection to the TUIOS daemon: verb hello has no parameter term (invalid_params).") | **caught** |
 | The positive half | this branch | none: `ls` and `call new-session` reach the older daemon, the session is listed, and its pane reads that daemon's fallback `TERM=xterm-256color` | **guard** |
 
+## An attached tuios new gives its session the caller's terminal
+
+Run on 2026-10-15 on Linux on branch `fix-attach-term`, from upstream `main` (`f1257b28d`). The test is `TestAttachedNewGivesItsPaneTheCallersTerm` in `verb_hello_term_test.go`. The daemon is started by `start-server` with no TERM, and the TUI runs `tuios new` with `TERM=screen-256color COLORTERM=truecolor`. Each control cuts one wire from the fixed build, builds it, and runs the test.
+
+| Control | Build | Tests that fail | Verdict |
+| --- | --- | --- | --- |
+| `runDaemonSessionOn` does not call `client.UseCallerTerm()` | mutant of this branch | `TestAttachedNewGivesItsPaneTheCallersTerm` ("gave its pane \"TERM=xterm-256color COLORTERM=truecolor\", want \"TERM=screen-256color COLORTERM=truecolor\"") | **caught** |
+| `TUIClient.handshake` sends an empty `Term` | mutant of this branch | the same, with the same message | **caught** |
+| The positive half | this branch | none: the pane reads `TERM=screen-256color COLORTERM=truecolor`, and `TestVerbNewSessionGivesItsPaneTheCallersTerm` still passes | **guard** |
+`TestStartAgentGivesItsSessionTheCallersTerm` in the same file covers `start-agent`, which makes the session it names when there is none. Run on 2026-10-15 on macOS on branch `fix/start-agent-term`, from upstream `main` (`5eeb9464`). The agent is a script that prints its `TERM` and `COLORTERM`, then reports itself idle with `tuios set-agent-state` so `start-agent` sees it ready. The caller runs with `TERM=screen-256color COLORTERM=truecolor`.
+
+| Control | Build | Tests that fail | Verdict |
+| --- | --- | --- | --- |
+| `verbStartAgent` creates its session with `&SessionConfig{}` (upstream `main`'s line) | mutant of this branch | `TestStartAgentGivesItsSessionTheCallersTerm` ("an agent start-agent started in a session it made, from a caller with a real terminal, got \"TERM=xterm-256color COLORTERM=truecolor\", want \"TERM=screen-256color COLORTERM=truecolor\"") | **caught** |
+| The positive half | this branch | none: the agent reads `TERM=screen-256color COLORTERM=truecolor`, and `TestVerbNewSessionGivesItsPaneTheCallersTerm` still passes through the shared `callerSessionConfig` | **guard** |
+
+`TestWorktreeNewGivesItsSessionTheCallersTerm` in the same file covers `new-worktree`, and through the same `createWorktreeSession` also `fan`. Run on 2026-10-15 on macOS on branch `fix/worktree-term`. The caller runs `tuios worktree new` with `TERM=screen-256color COLORTERM=truecolor`.
+
+| Control | Build | Tests that fail | Verdict |
+| --- | --- | --- | --- |
+| `createWorktreeSession` creates its session with `&SessionConfig{}` (upstream `main`'s line) | mutant of this branch | `TestWorktreeNewGivesItsSessionTheCallersTerm` ("the session tuios worktree new made, from a caller with a real terminal, gave its pane \"TERM=xterm-256color COLORTERM=truecolor\", want \"TERM=screen-256color COLORTERM=truecolor\"") | **caught** |
+| The positive half | this branch | none: the worktree session's shell reads `TERM=screen-256color COLORTERM=truecolor`, and the fan tests still pass | **guard** |
+
 ## A hello's TERM and COLORTERM are checked before a pane gets them
 
 Run on 2026-10-14 on macOS on branch `pr700-review`, the review round of `pr/verb-session-term`. The test is `TestHelloDropsAnUnsafeTerm` in `verb_hello_term_check_test.go`. The daemon has a terminfo folder of its own with `screen-256color`'s entry under a 64 byte name and a 65 byte one, so `PaneTerm` keeps either and only the bound tells them apart. Five verb hellos are sent raw over the socket, each followed by `new-session` on the same connection, and two binary hellos are sent by `tuios new -d` with the value in `TERM`. Each control cuts one wire from the fixed build, builds it, and runs the test.
@@ -5214,3 +5440,2030 @@ name is now `vt`, and `internal/terminal` sets `tuios` at startup.
 | --- | --- | --- | --- |
 | `internal/terminal/vt_name.go` removed, so nothing sets the name | mutant of this branch | both subtests: `XTVERSION answered "vt dev", want tuios and the version` | **caught** |
 | The positive half | this branch | none: standalone and daemon panes answer `tuios dev` | **guard** |
+## The GUI bridge: layout ops, actions, keys and sizes
+
+`gui_bridge_test.go` runs a real `tuios gui-bridge` against a real daemon and
+speaks its frame protocol. Each layout test checks the bridge's own state, a
+second client that attaches afterwards and reads the tree from the daemon,
+and for swap and move a terminal client whose screen shows each pane's marker
+inside the rectangle the bridge gives the pane. Set `TUIOS_E2E_FRAMES` to keep
+the terminal frames and a JSON transcript of every command, result and the
+last state.
+
+On 2026-10-08 each control below was built from `83d95938` with one cut, and
+the named tests were run against it. Each cut is the wiring, not the function
+under it: a `case` in the dispatch, a call site, or a field in the export.
+The unbroken binary passed all eleven tests on the same day. The rows for
+the prefix actions, the command keys and the git read were run on the
+commits that added them.
+
+| Wiring cut | How | Tests that fail | Verdict |
+| --- | --- | --- | --- |
+| The `swap`, `move`, `move-root` and `float-geometry` ops | drop their `case` lines from `runLayout` in `internal/guibridge/layout.go` | `TestGUIBridgeSwap`, `TestGUIBridgeMove`, `TestGUIBridgeMoveRoot`, `TestGUIBridgeFloatGeometry`, each on its own op ("layout op \"swap\" is not known") | **caught** (4 of 4) |
+| The `set-ratio` and `toggle-float` ops | drop their `case` lines from `runLayout` | `TestGUIBridgeSetRatio`, `TestGUIBridgeToggleFloat`, each on its own op | **caught** (2 of 2) |
+| The `equalize` op | drop its `case` from `runLayout` | `TestGUIBridgeEqualize` ("layout op \"equalize\" is not known") | **caught** |
+| Insert-beside and insert-at-root in the tiler | `MovePaneBeside` and `MovePaneToRoot` in `internal/app/gui_layout.go` skip the `tree.MoveWindow` and `tree.MoveWindowToRoot` calls | `TestGUIBridgeMove` ("cannot move beside itself"), `TestGUIBridgeMoveRoot` ("is the only tiled pane") | **caught** (2 of 2) |
+| The `action` command | rename its `case` in `model.handle` in `internal/guibridge/bridge.go` | `TestGUIBridgeAction` (no result for `new_window` within 10 s) | **caught** |
+| The prefix actions on the allow list | drop `workspace_prefix_switch_` and `prefix_split_horizontal` from the lists in `internal/guibridge/actions.go` | `TestGUIBridgeAction` ("\"workspace_prefix_switch_2\" is not an action") | **caught** |
+| The user's command keys through `action` | drop the `config.CommandActionPrefix` check from `checkAction` | `TestGUIBridgeKeybinds` ("\"command:say-hi\" is not an action the bridge runs") | **caught** |
+| The git read's answer coming back to the model | drop the `p.Send(gitReadMsg{...})` in `model.git` | `TestGUIBridgeGitBranch` (never shows the branch) | **caught** |
+| The keybinds event again after a config reload | drop the `sendKeybinds` call from `model.Update` | `TestGUIBridgeKeybinds` ("keybinds event 2 never came (saw 1)") | **caught** |
+| The `gui` scope | drop the `ScopeGUI` entry from `Scopes` in `internal/config/keybind_scopes.go` | `TestGUIBridgeKeybinds` ("the gui scope's default chords are missing", "the list rows have no gui scope") | **caught** |
+| `session_size` and the session name in the state | drop the `SessionSize` field from `export`, and keep the name the bridge attached with | `TestGUIBridgeSessionSize` (never shows the session at the bridge's width), `TestGUIBridgeSessionName` (still "first" after `next_session`) | **caught** (2 of 2) |
+| Leaf names from the forward map | revert `a7afa9b1` | `TestGUIBridgeSetRatio`, `TestGUIBridgeMove` (the second client's tree names no leaf) | **caught**, and the tests found this bug |
+
+On 2026-10-08 three more tests came with the smallest-pane rule and the
+bridge's zoom. One control build carried all three cuts below, and each test
+failed on its own assertion. The unbroken binary passed all three, and every
+`TestGUIBridge` test, on the same day.
+
+| Wiring cut | How | Tests that fail | Verdict |
+| --- | --- | --- | --- |
+| The refusal of a split that leaves a pane under 20 x 5 | `CanSplit` in `internal/layout/bsp.go` reports true for every pane in the tree | `TestGUIBridgeSplitRefusesSmallPanes` ("split_vertical on a 40-cell pane: ok=true") | **caught** |
+| The divider bounds that take in the current line | `lineBounds` returns the minimum bounds alone | `TestGUIBridgeSetRatioUnderMinimum` ("one cell up from 15 came back as 0.41, want 0.33") | **caught** |
+| The bridge's full zoom | drop `o.FullZoom = true` from `newModel` in `internal/guibridge/bridge.go` | `TestGUIBridgeZoomKeepsHiddenPanes` ("hidden pane B was resized by the zoom (it printed SIG41)", and C) | **caught** |
+
+The tests do not cover the `viewport` field with a session larger than the
+bridge, because the daemon's default `window_size = smallest` never makes one.
+`TestGUIBridgeSessionSize` asserts only that `viewport` stays unset while the
+session is the smaller.
+
+## The GUI bridge: the verb proxy, the Inbox and alerts
+
+`gui_bridge_inbox_test.go` runs a real `tuios gui-bridge` against a real
+daemon, with agents made of shell scripts in real panes. It checks the verb
+proxy and its nonce, the `attention`, `notify` and `detached` events, and
+that a process in a pane cannot answer an agent's prompt: not with
+`tuios respond`, and not through a bridge it starts itself. Set
+`TUIOS_E2E_FRAMES` to keep a JSON transcript of every verb and its result.
+
+On 2026-10-08 each control below was built from the commit that added the
+tests with one cut, and the named tests were run against it. The unbroken
+binary passed all three tests on the same day.
+
+| Wiring cut | How | Tests that fail | Verdict |
+| --- | --- | --- | --- |
+| The bridge's nonce on a person verb | drop `params["human_nonce"] = nonce` from `verbParams` in `internal/guibridge/verb.go` | `TestGUIBridgeVerbAnswersOnlyFromTheRenderer` ("respond through the renderer pipe failed: not_human") | **caught** |
+| The `attention` event | drop the `m.exportAttention()` call from `model.Update` | `TestGUIBridgeAttentionCarriesARiskyApproval` (never sends the held approval) | **caught** |
+| Marking the renderer's own reply | drop the `m.os.NoteInboxReplied(id)` call from the `verb` case in `model.handle` | `TestGUIBridgeAttentionCarriesARiskyApproval` ("cleaner was answered from another client") | **caught** |
+| The `notify` event | drop the `m.exportNotify()` call from `model.Update` | `TestGUIBridgeNotifyAndDetached` (never sends the error's alert) | **caught** |
+| The `detached` event | drop the `out.JSON(Event{Type: "detached"...})` after `program.Run` in `Run` | `TestGUIBridgeNotifyAndDetached` (the bridge closed while waiting for it) | **caught** |
+
+A bridge started inside a pane gets no attach nonce from the daemon, so its
+proxy refuses a person verb before it sends it. No control cuts that refusal:
+it is the daemon's, and the daemon's own tests cover it. The test checks only
+that the result is `not_human` and that the agent got no key.
+
+## The GUI bridge: palette, sessions, settings, stacks and the rest (wave 3b)
+
+`gui_bridge_wave3b_test.go` runs a real `tuios gui-bridge` against a real
+daemon. It checks the palette and launcher events, the in-place session
+switch and the restore of a saved session, the options and the theme kept
+in the config file, the typing group, stacks (also on a terminal client's
+screen), the scrolling strip, picture in picture, the scratch box, saved
+layouts and the window kind (also on a terminal client's screen, and across
+a restart of the daemon).
+
+On 2026-10-08 each control below was built from `72664c2e` with one cut, and
+the named test was run against it. Each cut is the wiring: a `case` in the
+dispatch, a call site, or a field in the export. The unbroken binary passed
+all eleven tests, and every other `TestGUIBridge` test, on the same day.
+
+| Wiring cut | How | Test that fails | Verdict |
+| --- | --- | --- | --- |
+| The `palette` command | rename its `case` in `model.handle` in `internal/guibridge/bridge.go` | `TestGUIBridgePaletteRows` (no result for the palette command within 10 s) | **caught** |
+| The `palette` event | drop the `m.sendPalette()` call from `model.Update` | `TestGUIBridgePaletteRows` (never sends the palette event) | **caught** |
+| The in-place switch | `switchSession` in `internal/guibridge/session.go` returns before `m.os.SwitchToSession` | `TestGUIBridgeSwitchSessionInPlace` (never shows session other) | **caught** |
+| The restore before a switch | drop the `resurrect` call from `switchSession` | `TestGUIBridgeRestoreSavedSession` (session keep comes back with no panes) | **caught** |
+| Saved sessions in the fleet | drop `Saved: savedSessions()` from `readFleet` in `internal/guibridge/fleet.go` | `TestGUIBridgeRestoreSavedSession` (never lists keep) | **caught** |
+| The `option` command's write | answer the `option` case without calling `writeOption` | `TestGUIBridgeOptionsAndTheme` (gap 0 in the options event and in the file, the unknown path accepted) | **caught** |
+| The theme's persist | drop the `writeOption("appearance.theme", ...)` call from the `theme` case | `TestGUIBridgeOptionsAndTheme` (the config does not keep the theme) | **caught** |
+| The `launcher` event | drop the `sendLauncher` call after a scan in `model.Update` | `TestGUIBridgeLauncher` (never sends the launcher event) | **caught** |
+| The `launch` command | rename its `case` in `model.handle` | `TestGUIBridgeLauncher` (no result within 10 s) | **caught** |
+| The `group` command | rename its `case` in `model.handle` | `TestGUIBridgeGroup` (no result within 10 s) | **caught** |
+| The group in the state | drop `st.Multifocus = ids` from `export` | `TestGUIBridgeGroup` (never shows panes A and C in the group) | **caught** |
+| The `stack` op | rename its `case` in `runLayout` in `internal/guibridge/layout.go` | `TestGUIBridgeStack` ("layout op \"stack\" is not known") | **caught** |
+| The rows a stack's open pane gives up | the `stackRows` adjustment in `ApplyBSPLayout` in `internal/app/tiling_bsp.go` never applies | `TestGUIBridgeStack` (bravo keeps the whole leaf; the terminal client shows no title row) | **caught** |
+| The terminal client's title rows | drop `layers = append(layers, m.renderStackRows()...)` from `internal/app/render.go` | `TestGUIBridgeStack` (the terminal client shows no title row) | **caught** |
+| The strip's own coordinates | `ScrollStrip` in `internal/app/gui_export.go` leaves out `sl.ViewportX` | `TestGUIBridgeScrollStrip` (the first column starts at -147) | **caught** |
+| The pinned pane in the state | drop `st.PiP = ...` from `export` | `TestGUIBridgePiPAndScratch` (never shows pane A pinned) | **caught** |
+| The workspace a scratch box shows over | drop `st.ScratchOver = o.ScratchOver()` from `export` | `TestGUIBridgePiPAndScratch` (over workspace 0) | **caught** |
+| The `layouts` command | rename its `case` in `model.handle` | `TestGUIBridgeSavedLayouts` (never lists the layout) | **caught** |
+| The window kind from `new-window` | drop `Kind: p.Kind` from `verbNewWindow` in `internal/session/verb_handlers.go` | `TestGUIBridgeWindowKind` (the window is a terminal) | **caught** |
+| The placeholder of a view window | drop the `PlaceholderCommand` default in `AddDaemonWindowWith` | `TestGUIBridgeWindowKind` (the terminal client shows no placeholder line) | **caught** |
+| The kind across a restart | drop the `sess.markRestoredViews(views)` call in `internal/session/daemon_resurrect.go` | `TestGUIBridgeWindowKind` (after a restart the window is a terminal) | **caught** |
+
+The run log is kept outside the repository:
+`~/.cache/agent-tmp/proof/v2/wave3b/e2e/negative-controls.txt`.
+
+## A link rides the ssh master a person opened
+
+`TestLinkRidesTheSharedSSHMaster` gives the hub daemon one host, `build`,
+reached through an ssh stand-in that records every argv it runs. With a
+folder `$XDG_RUNTIME_DIR/tuios/cm` of mode 0700, the link's ssh and the ssh
+of `tuios hosts test` must carry `ControlMaster=no` and
+`ControlPath=<folder>/%C`, and the link must still come up. With no folder,
+and with a folder of mode 0777, neither ssh may name the folder.
+
+Each control below was run on 2026-10-08 on branch
+`feat/link-shares-gui-ssh-master`. The log is
+`~/.cache/agent-tmp/proof/v2/wave4/e2e/negative-controls-master.txt`.
+
+| Control | How | Tests that fail | Verdict |
+| --- | --- | --- | --- |
+| A host with no path gets no sharing options | `sharingOptions`: `return reuseOptions()` replaced by `return nil` | `TestLinkRidesTheSharedSSHMaster/a_master_folder_of_the_user's_own` (the link's ssh names no master) | **caught** |
+| A folder others can write is trusted | `reuseOptions`: the mode check cut | `TestLinkRidesTheSharedSSHMaster/a_master_folder_others_can_write` (the link's ssh names the folder) | **caught** |
+| The link may open a master of its own | `reuseOptions`: `ControlMaster=auto` in place of `no` | `TestLinkRidesTheSharedSSHMaster/a_master_folder_of_the_user's_own` (`ControlMaster=no` missing) | **caught** |
+
+## The GUI bridge, wave 4: reopen, kept emulators and machines
+
+`e2e/tui/gui_bridge_wave4_test.go` has seven tests:
+
+- `TestGUIBridgeAttachesByIDThenLastUsed` makes `alpha` and then `zeta`. A
+  bridge with no session named must attach `zeta`, the newer one, while
+  `alpha` is listed first. After a terminal client types in `alpha`, the
+  bridge must attach `alpha`. `--session-id` must find `zeta` after a rename
+  to `omega`, and an unknown id must fall back to the session used last.
+- `TestGUIBridgeResumesKeptEmulators` notes the renderer's stream position
+  of a pane (the last `seq` event plus the OUTPUT bytes after it) and stops
+  the bridge. A bridge started with that position must send a kept `seq`
+  event and no snapshot. After the pane prints while no bridge runs, the
+  next bridge must send the missed echo as output, no snapshot, and not the
+  echo before it. Positions with another daemon pid, and positions the ring
+  has moved past (30000 lines printed), must get a snapshot.
+- `TestGUIBridgeKilledLeavesTheSession` kills the bridge with SIGKILL. The
+  session must stay, and with a newer session made, `--session-id` must lead
+  back to it.
+- `TestGUIBridgeOnAHostAndItsLink` gives the hub one host, `build`, through
+  the ssh stand-in. The `hosts` event must list `build` as up and good with a
+  round trip over 0 and its session `far`. A bridge with `--host build
+  --session far` must attach `far` on `build`, echo through the far shell,
+  and leave this machine's daemon without `far`.
+- `TestGUIBridgeHostStallAndRecovery` stops the far machine's stdio-proxy
+  with SIGSTOP right after a probe and asks for a probe (`probe-host`), as
+  the renderer does after a key. The `hosts` event must say `stalled`, with
+  `silent_since`, within 7.5 s. After SIGCONT it must say `good` within 2 s,
+  with a round trip under 1000 ms.
+- `TestGUIBridgeSnapshotCarriesTheRenderersHistory` prints 2500 rows, then
+  starts a bridge with no `--scrollback` and one with `--scrollback 3000`.
+  Only the second snapshot may hold row 100.
+- `TestGUIBridgeKeepsItsChromeAcrossAReload` writes a config file that puts
+  the dock at the top while a bridge shows one pane. After the reload the
+  pane must still start at row 0 and fill all 30 rows.
+
+Each control below was run on 2026-10-08 on branch `exp/gpui-bridge`. The log
+is `~/.cache/agent-tmp/proof/v2/wave4/e2e/negative-controls-bridge.txt`.
+
+| Control | How | Tests that fail | Verdict |
+| --- | --- | --- | --- |
+| The first session listed, as before | `pickSession`: the first listed when no name is given | `TestGUIBridgeAttachesByIDThenLastUsed` (attached `alpha`, want `zeta`) | **caught** |
+| The snapshot is always sent | `tap.keep`: `kept` forced false | `TestGUIBridgeResumesKeptEmulators` (a current emulator was not kept) | **caught** |
+| No seq events and no keeping | `tap.Snapshot`: the call to `keep` cut | `TestGUIBridgeResumesKeptEmulators` (no seq event) | **caught** |
+| A kept emulator is not caught up | `subscribeToPTY`: the resume position not used | `TestGUIBridgeResumesKeptEmulators` (the missed output never came) | **caught** |
+| Positions from another daemon are trusted | `Run`: the daemon pid check cut | `TestGUIBridgeResumesKeptEmulators` (no snapshot for another daemon's positions) | **caught** |
+| No round trip is measured | `watchHosts`: the prober not started | `TestGUIBridgeOnAHostAndItsLink` (`rtt_ms` 0, no sessions) | **caught** |
+| `--host` attaches this machine | `Run`: always `ConnectWithCapabilities` | `TestGUIBridgeOnAHostAndItsLink` | **caught** |
+| The session id is ignored | `pickSession`: the id loop cut | `TestGUIBridgeAttachesByIDThenLastUsed` (attached `alpha`, want `omega`), `TestGUIBridgeKilledLeavesTheSession` (attached `other`, want `crash`) | **caught** |
+| A probe is not sent when the renderer asks | `handle`: `probe-host` does nothing | `TestGUIBridgeHostStallAndRecovery` (still good 7.5 s after the far proxy stopped) | **caught** |
+| A stalled probe counts in the round trip | `prober.run`: every probe is a sample | `TestGUIBridgeHostStallAndRecovery` (slow, 659 ms, 2 s after the far proxy answered again) | **caught** |
+| The bridge asks for the daemon's default history | `Run`: `--scrollback` not passed to the model | `TestGUIBridgeSnapshotCarriesTheRenderersHistory` (row 100 of 2500 missing with `--scrollback 3000`) | **caught** |
+| The reloaded config is put in force as the file says | `newModel`: `ReloadFilter` not set | `TestGUIBridgeKeepsItsChromeAcrossAReload` (the pane at row 2, 28 rows high, after the file put the dock at the top) | **caught** |
+
+All 40 tests that match `TestGUIBridge|TestLinkRidesTheSharedSSHMaster|TestAttachOnAHost`
+pass on the branch.
+
+## The GUI bridge keeps the renderer's focus and its keys, and names a host that needs a sign-in
+
+`TestGUIBridgeKeepsTheRenderersFocus` makes three panes, focuses the first
+through the bridge, kills the bridge and attaches a new one by session id.
+The new bridge must attach with the focus on the first pane.
+`TestGUIBridgeHostThatNeedsASignIn` gives the daemon one host whose ssh
+stand-in fails with ssh's own words. "Permission denied (publickey)" must be
+`signin` in the hosts event, and "Connection refused" must stay `down`.
+`TestGUIBridgeTypesAfterTheLinkComesBack` attaches a bridge on `build`, kills
+the far stdio-proxy so the link drops and comes back, and types until a key
+reaches the far shell. One must within 40 s.
+
+Each control below was run on 2026-10-08 on branch `exp/gpui-bridge`. The log
+is `~/.cache/agent-tmp/proof/v2/wave4/review/negative-controls-bridge.txt`.
+
+| Control | How | Tests that fail | Verdict |
+| --- | --- | --- | --- |
+| The focus stays in the bridge's model | `focus` command: the `SyncStateToDaemon` call cut | `TestGUIBridgeKeepsTheRenderersFocus` (the new bridge attached on another pane) | **caught** |
+| ssh's words are not read | `linkHealth`: the `needsSignIn` branch turned off | `TestGUIBridgeHostThatNeedsASignIn/permission_denied` (`down`, want `signin`) | **caught** |
+| Input goes to the first daemon client | `model.Update`: the store of the client in force cut | `TestGUIBridgeTypesAfterTheLinkComesBack` (no key reached the far shell for 40 s) | **caught** |
+
+All 43 tests that match `TestGUIBridge|TestLinkRidesTheSharedSSHMaster|TestAttachOnAHost`
+pass on the branch (`~/.cache/agent-tmp/proof/v2/wave4/review/bridge-suite.txt`).
+
+## The GUI bridge on main: stacks under a stale push, the viewport, and typing under latest
+
+Main defaults `window_size` to `latest`, and its session view is on for a
+session smaller than the client too. Three things in the bridge did not hold
+there. `TestGUIBridgeStack` failed in three of four runs: a stack edit pushed
+just after another change came back with the collapsed member open. The
+bridge sent a viewport for a session smaller than the renderer. And typing in
+the renderer never made the GUI the latest client.
+
+`TestGUIBridgeSessionSize` now sets `window_size = "smallest"`, the policy it
+is about. `TestGUIBridgeInputTakesTheSession` is the default: a terminal
+client that attaches last takes the session's size, the bridge sends no
+viewport while the session is smaller than it, and typing through the bridge
+takes the size back while the terminal client shows a part.
+`TestReconcileStaleKeepsAStackEditsMinimized` in `internal/session` is the
+deterministic half of the stack race: the stale merge of a stack, a
+stack-open and an unstack, and a pane in no stack.
+
+Each control below was run on 2026-10-12 on branch `feat/gui-bridge`, rebased
+on main. The log is `~/.cache/agent-tmp/gui-port/proof/`.
+
+| Control | How | Tests that fail | Verdict |
+| --- | --- | --- | --- |
+| The stale merge takes the daemon's flag for a stack member | `reconcileStale`: the stack condition made `true` | `TestGUIBridgeStack` (2 of 4 runs: charlie's title row not in bravo's columns), `TestReconcileStaleKeepsAStackEditsMinimized` (all three stack cases) | **caught** |
+| Any session view is a crop | `CurrentSessionView`: the `ViewCropped` check cut | `TestGUIBridgeSessionSize`, `TestGUIBridgeInputTakesTheSession` (viewport set for a smaller session) | **caught** |
+| Renderer input is not activity | `readCommands`: the `reportInput` call cut | `TestGUIBridgeInputTakesTheSession` (the session stayed at the terminal client's size) | **caught** |
+
+All 44 tests that match `TestGUIBridge|TestLinkRidesTheSharedSSHMaster|TestAttachOnAHost`
+pass on the branch.
+
+## The GUI bridge after review: idle cost, host polling, one snapshot encoder, a bounded queue
+
+- `TestGUIBridgeIdleCostsLittle` (`gui_bridge_idle_test.go`) leaves a
+  bridge on two idle shells with no hosts for 10 s. The bridge must take at
+  most 30 CPU ticks, and the daemon must read at most 8 times more than in
+  10 s with the bridge stopped (no more with the fixes). A host added from the command line must then reach the renderer.
+- `TestSnapshotVTRebuildsThePane` (`internal/session`) is the conformance
+  corpus of the one snapshot encoder, now used by stream-pane and the bridge.
+  `TestGUIBridgeSnapshotCarriesTabsAndTitle` checks that a pane's snapshot
+  through the bridge sets its tab stops and title.
+- `TestGUIBridgeResyncsARendererThatFellBehind` stops reading the bridge for
+  15 s while a pane prints about 30 MB, with a 1 MiB queue. The renderer must
+  get a fresh snapshot and the flood's last line, and the bridge must not
+  grow by more than 24 MB.
+
+Each control below was run on 2026-10-13 on branch `feat/gui-bridge`. The
+log is `~/.cache/agent-tmp/gui-port/proof/nc-bridge-review.txt`.
+
+| Control | How | Tests that fail | Verdict |
+| --- | --- | --- | --- |
+| The palette key printed from the config | `model.Update`: `fmt.Sprint(m.keysFrom)` back in the key | `TestGUIBridgeIdleCostsLittle` (89 ticks in 10 s) | **caught** |
+| list-hosts read every second with no hosts | `watchHosts`: the timer armed always | `TestGUIBridgeIdleCostsLittle` (20 reads more than with the bridge stopped, rerun 2026-10-14) | **caught** |
+| No tab stops and no title in the encoder | `snapshotVT`: both blocks skipped | `TestSnapshotVTRebuildsThePane/tabs` and `/title`, `TestGUIBridgeSnapshotCarriesTabsAndTitle` | **caught** |
+| The kitty base entry pushed | `kittyStack`: every entry pushed | `TestSnapshotVTRebuildsThePane` (every case: stack `[0 0]`, want `[0]`) | **caught** |
+| An unbounded queue | `frameWriter.push`: the bound made false | `TestGUIBridgeResyncsARendererThatFellBehind` (no fresh snapshot) | **caught** |
+| Output dropped and never resynced | `frameWriter.run`: `onResync` not called | `TestGUIBridgeResyncsARendererThatFellBehind` (no fresh snapshot) | **caught** |
+
+## The GUI bridge says the renderer draws pictures
+
+`TestGUIBridgeAnswersGraphicsQueries` (`gui_bridge_graphics_test.go`) runs a
+python probe in a pane through the bridge. It sends a kitty graphics query
+and DA1 with the tty raw. The kitty query must be answered OK and DA1 must
+list sixel (4).
+
+The control was run on 2026-10-13 on branch `feat/gui-bridge`. The log is
+`~/.cache/agent-tmp/gui-port/proof/nc-graphics.txt`.
+
+| Control | How | Tests that fail | Verdict |
+| --- | --- | --- | --- |
+| The hello carries the model's own capabilities | `Run`: the line that sets kitty, sixel and animation on the hello cut | `TestGUIBridgeAnswersGraphicsQueries` (no kitty answer, no sixel in DA1) | **caught** |
+
+## The renderer resyncs one pane on request
+
+`TestGUIBridgeResyncsOnePaneOnRequest` floods one of two panes and sends
+`{"cmd":"resync","id":PTY}` for it. That pane must get a fresh snapshot and
+then the line after the flood. The other pane must get no snapshot. A
+renderer that never sends the command sees no change.
+
+The control was run on 2026-10-14 on branch `feat/gui-bridge`. The log is
+`~/.cache/agent-tmp/gui-port/proof/nc-resync-one.txt`.
+
+| Control | How | Tests that fail | Verdict |
+| --- | --- | --- | --- |
+| The resync command does nothing | `model.handle`: the `ResyncPaneStream` call cut | `TestGUIBridgeResyncsOnePaneOnRequest` (no fresh snapshot of the flooding pane) | **caught** |
+## File previews on the read rules, and the bridge's verb on a host (replaces #597)
+
+Main has the transfer engine (#620) and `tuios cp` (#636), with the drops,
+copies and file verbs of #597. What #597 had beyond them is `file-preview`,
+which main took out while nothing called it, and the bridge's half: a verb
+with `host`, and the host of a pane held for another machine. The preview now
+keeps the rules `file-read` keeps.
+
+The tests are in `file_preview_test.go` and `gui_bridge_files_test.go`.
+
+- `TestFilePreviewOnAHost` previews on build a 3000 px PNG (1200 x 800 back,
+  smaller than the file), a table as text, a PDF page through `pdftoppm` and
+  `pdfinfo`, and a film frame and length through `ffmpeg` and `ffprobe`. The
+  tools read the open file as `/dev/fd/3`.
+- `TestFilePreviewKeepsToTheReadRules` asks build for a dummy key in `~/.ssh`,
+  the key through a symlink and through a hard link in the receive folder, and
+  `~/.ssh` itself. Each must be `forbidden`, and the marker must not come back.
+  The positive half previews an ordinary file in the same folder.
+- `TestFilePreviewNeedsTheFilesCapability` gives the hub only `list`. A listing
+  goes through and a preview is `forbidden`.
+- `TestFilePreviewOfAPipeADeviceAndAHugePicture` previews a named pipe and
+  `/dev/zero` within 5 s, and four previews of a 400 KB PNG of 10000 x 10000
+  pixels keep the daemon under 512 MB. An ordinary picture still previews.
+- `TestGUIBridgeVerbOnAHost` lists a folder through the bridge with `host`
+  build, and the home folder in the answer says build's daemon answered. It
+  previews a file there, copies it here, waits for a window that says `host`
+  build, and is refused `respond` with a host.
+
+Each control below was run on 2026-10-12 on branch `feat/gui-files`. The log
+is `~/.cache/agent-tmp/gui-port/proof/nc-files.txt`.
+
+| Control | How | Tests that fail | Verdict |
+| --- | --- | --- | --- |
+| No link read rules | `verbFilePreview`: `openRegular` in place of `checkLinkRead` and `openLinkRead` | `TestFilePreviewKeepsToTheReadRules` (all four paths answered, the dummy key came back) | **caught** |
+| A preview needs only list | `verbCapabilities`: `file-preview` moved to `list` | `TestFilePreviewNeedsTheFilesCapability` (the secret came back as text) | **caught** |
+| The tools are not handed the open file | `previewTool`: `ExtraFiles` not set | `TestFilePreviewOnAHost` (no PDF page, no page count, no frame, no length) | **caught** |
+| A preview is not scaled | `previewImage`: `fit(img, maxPx)` cut | `TestFilePreviewOnAHost` (3000 x 2000, want 1200 x 800) | **caught** |
+| No decode cap | `previewImage`: the decoded size check made false | `TestFilePreviewOfAPipeADeviceAndAHugePicture` (daemon peak 1807 MB) | **caught** |
+| The bridge ignores host | `runVerb`: the `verbDialHost` branch made false | `TestGUIBridgeVerbOnAHost` (the listing's home is this machine's) | **caught** |
+| The nonce goes to the host | `runVerb`: the person-verb refusal made false | `TestGUIBridgeVerbOnAHost` (build answered forbidden, not this machine's refusal) | **caught** |
+| No host on a window | the state export: `Host: w.Host` cut | `TestGUIBridgeVerbOnAHost` (no window says build) | **caught** |
+
+### file-preview after review: the decode cap and the film containers
+
+`TestFilePreviewHoldsItsDecodeCap` previews a baseline JPEG that fits (scaled
+here to 1200 x 800), a 9000 x 7000 progressive JPEG (sent as it is, the
+daemon under 300 MB), a grey 9000 x 7000 baseline JPEG (scaled here to 1600,
+the daemon under 300 MB) and a WebP (sent as it is).
+`TestFilePreviewOpensOnlyFilmContainers` previews an MPEG transport stream
+named .mp4, which must get no frame and no length.
+
+Each control below was run on 2026-10-13 on branch `feat/gui-files`. The log
+is `~/.cache/agent-tmp/gui-port/proof/nc-preview-review.txt`.
+
+| Control | How | Tests that fail | Verdict |
+| --- | --- | --- | --- |
+| The decoder's coefficients not counted | `decodeCost`: the progressive term cut | `TestFilePreviewHoldsItsDecodeCap` (353 MB for the progressive JPEG, 421 MB after the grey one) | **caught** |
+| The CatmullRom scale | `fit`: `draw.CatmullRom` in place of `ApproxBiLinear` | `TestFilePreviewHoldsItsDecodeCap` (542 MB scaling the grey JPEG) | **caught** |
+| No ffmpeg whitelists | `previewVideo`, `videoDuration`: the whitelist flags cut | `TestFilePreviewOpensOnlyFilmContainers` (a frame of 6460 bytes, 2000 ms) | **caught** |
+## The bridge's output path (replaces #598)
+
+An output frame is now queued as two entries, its head and the daemon's own
+payload, under one hold of the lock, and the model's emulator of each pane
+drops its history, which the renderer keeps. `TestGUIBridgeFloodArrivesWhole`
+(`gui_bridge_output_test.go`) runs `seq 1 100000` in a pane through the
+bridge. Every line must arrive in order with nothing between, and a title set
+after the flood must reach the state.
+
+Each control below was run on 2026-10-12 on branch
+`perf/gui-bridge-output-cost`. The log is
+`~/.cache/agent-tmp/gui-port/proof/nc-perf.txt`.
+
+| Control | How | Tests that fail | Verdict |
+| --- | --- | --- | --- |
+| The body is lost | `frameWriter.push`: the second entry not queued | `TestGUIBridgeFloodArrivesWhole` (no output reached the renderer) | **caught** |
+| The body goes before its head | `frameWriter.push`: the two entries swapped | `TestGUIBridgeFloodArrivesWhole` (the last line of seq never arrived) | **caught** |
+
+## Staging by hunk and by line (review-stage)
+
+`review_stage_test.go` has one test, `TestReviewStageByHunkAndLine`. It runs
+review-diff with `index` and review-stage through a real gui-bridge against a
+real daemon, on a scratch repository. On 2026-10-09 each control below was
+built into a binary and the test was run against it. Each control failed
+where shown. The same test passed on the branch build.
+
+| Control: what was cut | Where it failed |
+| --- | --- |
+| `SelectionPatch` keeps every unselected added line (the patch builder) | after staging the line `new b`, `git diff --cached` also holds `+new a` |
+| `reviewStageChange` ignores `lines` and takes the whole hunk (the call site) | after staging the line `new b`, `git diff --cached` also holds `+new a` |
+| `reviewStageUndo` skips the check that the index still holds `after` | the undo after `git add` answers ok instead of `index_changed` |
+
+`TestReviewDiffHighlight` in the same file checks review-diff's `highlight`.
+On 2026-10-09 its control was built into a binary and the test was run
+against it. It failed where shown, and passed on the branch build.
+
+| Control: what was cut | Where it failed |
+| --- | --- |
+| The `reviewHighlight` call in the review-diff handler | both `func` lines have no `hl` keyword span and no `changed` range |
+
+### review-stage on main: the nonce scope (replaces #605)
+
+Main binds a nonce to the session of the act: a presence made for one
+session proves the person for that session only. review-stage checks the
+nonce against the session of the pane it stages in, as review-note does.
+`TestReviewStageKeepsToTheNonceScope` stages with a presence for `rs` in a
+pane of `rs`, and is refused as `not_human` in a pane of `other`.
+
+The control was run on 2026-10-12 on branch `feat/gui-review-stage`. The log
+is `~/.cache/agent-tmp/gui-port/proof/nc-review.txt`.
+
+| Control | How | Tests that fail | Verdict |
+| --- | --- | --- | --- |
+| The nonce is checked for no session | `verbReviewStage`: `reviewAuthorOf` given `""` in place of `sess.ID` | `TestReviewStageKeepsToTheNonceScope` (the presence for `rs` could not stage in `rs`) | **caught** |
+## Finding text, command history, ports and started_by
+
+`find_ports_tree_test.go` has one test, `TestFindPortsAndStartedBy`. It runs
+search-panes, command-history, list-ports and list-windows against a real
+daemon, with a bash that marks its commands with OSC 133. On 2026-10-11 each
+control below was built into a binary and the test was run against it. Each
+control failed where shown. The same test passed on the branch build.
+
+| Control: what was cut | Where it failed |
+| --- | --- |
+| `paneLines` skips the history rows | search for `findme-` finds 2 matches, not 3: the first marker is in the history |
+| `verbCommandHistory` keeps every run of a command | the command run twice is listed twice |
+| `walkProcTree` reads no children, only each pane's own process | list-ports never lists python's port: python runs under `sh -c` |
+| `noteStartedBy` records nothing | the child window's `started_by` is nil in list-windows and list-agents |
+
+On main (replaces #632), the `noteStartedBy` control was run again on
+2026-10-12 on branch `feat/gui-search-ports-tree`, after the merge with
+main's start folders in `retainDaemonExclusive`. It failed where shown above
+(the child's `started_by` is nil in list-windows and list-agents). The log is
+`~/.cache/agent-tmp/gui-port/proof/nc-find.txt`.
+
+### search-panes after review: the budget holds
+
+`TestSearchPanesKeepsToItsBudget` searches four panes of 150,000 history
+lines each for text none of them holds. The median of five searches must be
+under 500 ms (50 ms a pane), and the answer must say truncated. With the fix
+it was 202 ms.
+
+The control was run on 2026-10-13 on branch `feat/gui-search-ports-tree`. The
+log is `~/.cache/agent-tmp/gui-port/proof/nc-search.txt`.
+
+| Control | How | Tests that fail | Verdict |
+| --- | --- | --- | --- |
+| The whole history copied under the lock before the budget is read | `verb_find.go` as it was before the fix (`paneLines`) | `TestSearchPanesKeepsToItsBudget` (2.39 s median, 1.29 to 2.56 s) | **caught** |
+## Move a window to another session
+
+Run on 2026-10-12 on branch `feat/move-window-session`. `TestMoveWindowToSession`
+moves a pane that prints its pid from session alpha to beta with the verb,
+types into it there, and moves it back with the CLI. A real client is
+attached to each session. Each control cuts one call site and rebuilds.
+
+| Control | Build | Where the test fails | Verdict |
+| --- | --- | --- | --- |
+| The PTY is not put in the destination's PTY map (`s.ptys[pty.ID] = pty` cut from `Session.adoptWindow`) | mutant of this branch | "in session beta never showed MOVED-PANE-MARK": capture-pane answers `pty_not_found`, though beta lists the window | **caught** |
+| The `to_session` branch cut from `verbMoveWindow` | mutant of this branch | "a move to the window's own session = invalid_params ... want same_session" | **caught** |
+| The `followMovedWindow` call cut from `admitVerb` | mutant of this branch | "a report naming the old session did not reach the moved pane" | **caught** |
+| `joinPane` in the tmux shim as on `origin/main` (a join across sessions refused) | mutant of this branch | `TestTmuxShimJoinPaneAcrossSessions`: join-pane exits 1 with "tuios moves a pane only within its session" | **caught** |
+| The client's move notice cut (`windowMoveNotice` in the `StateSyncMsg` case of `internal/app/update.go` never taken) | mutant of this branch | "the source client's notice: showed \"Window closed\" and never \"Moved mover to the session beta.\"" | **caught** |
+| The move not recorded in the source's state (`recordWindowMove` cut from `Session.releaseWindow`) | mutant of this branch | the same: the source client shows "Window closed (1 remaining)" | **caught** |
+| The move not recorded in the destination's state (`recordWindowMove` cut from `Session.adoptWindow`) | mutant of this branch | "the destination client's notice: showed \"Window created\" and never \"Moved mover here from the session alpha.\"" | **caught** |
+| The pane not sized again on arrival (`pty.setNoClients` cut from `Session.adoptWindow`) | mutant of this branch | `TestMoveWindowSessionViewerSize`: "after the move the pane kept the viewer's size: the pane is \"45 150\"" | **caught** |
+| A lease renewal reads the clients of the session the stream opened in (`ps.sess.tuiClients` in `paneStream.setLease`) | mutant of this branch | `TestMoveWindowSessionViewerSize`: "after the viewer renewed its lease: the pane is \"45 150\"" | **caught** |
+| A moved pane found only through a source that still resolves (`!from.hasName(session)` cut from `followMovedWindow`) | mutant of this branch | `TestMoveWindowSessionHookAfterSourceKilled`: "the hook did not reach the pane after alpha was killed: the pane's agent state is \"none\", want \"working\"" | **caught** |
+| The positive half | this branch | none: the source client draws the pane before the move and not after, the destination client draws its old output and the answer typed after the move, with the same pid, and the refusals are `same_session` and `session_not_found`. For both moves the source client shows "Moved mover to the session ..." and the destination client "Moved mover here from the session ...", with no "Window closed" or "Window created" before it | **guard** |
+
+The passing run writes `TestMoveWindowToSession.json` (every call and reply)
+and the screens of both clients to `$TUIOS_E2E_FRAMES`, with the screen that
+showed each move notice as `TestMoveWindowToSession-*-notice-*.txt`. Run it with
+`TUIOS_E2E=1 TUIOS_E2E_BIN=/tmp/tuios TUIOS_E2E_FRAMES=/tmp/frames go test -count=1 -run '^TestMoveWindowToSession$' .`
+
+Run on 2026-10-13, the same table, for two more tests.
+`TestMoveWindowSessionViewerSize` holds a pane at a pane-view viewer's 150 by
+45 in alpha, which no client shows, and moves it to beta, shown by an 80 by 24
+client. The pane must fit the client before the viewer's next lease renewal
+and after it. `TestMoveWindowSessionHookAfterSourceKilled` moves a shell from
+alpha to beta, kills alpha, and runs the real `tuios agent-hook claude-code`
+in the pane, then `tuios set-agent-state` after a new session took the name
+alpha. Both reports must land on the pane in beta. On this branch both pass:
+the pane is 20 by 38 after the move and after the renewal, and the states are
+`working` then `needs_input`. Each writes its calls to `$TUIOS_E2E_FRAMES`.
+
+## Rail peek holds the terminals height
+
+Run on 2026-10-14 on macOS on branch `pr/rail-peek-hold`, from upstream `main` (`2b6578f8`). The test is `TestRailPeekHoldsTheTerminalsHeight` in `rail_peek_hold_test.go`, with the section order `terminals,spacer:5,agents,spacer:5,sessions,spacer:5,git,files`. The attached session `pk-main` has three panes, `pk-few` one and `pk-many` six. The pointer hovers the session rows in the order main, few, many, few, main, many, and after every hover every session row and every header must be on the row it held at rest. A build of upstream `main` itself fails it with the same message as the first two controls. Each control cuts one wire from the fixed build, builds it, and runs the test.
+
+| Control | Build | Tests that fail | Verdict |
+| --- | --- | --- | --- |
+| None: upstream `main` | `2b6578f8` | `TestRailPeekHoldsTheTerminalsHeight` ("hovering pk-few moved pk-main from row 7 to row 5") | **caught** |
+| The hold: the budget counts the peeked session's rows (`if false && len(resting) > 0` in `sidebarPanelLinesForTree`) | mutant of this branch | the same, with the same message | **caught** |
+| The padding: the held lines a shorter peek leaves are not filled (`for false && len(lines) < end` in `drawTerminals`) | mutant of this branch | the same, with the same message | **caught** |
+| The peek's own list never takes over the section's rows (`if false && peeking && rowsIn[...] > 0`) | mutant of this branch | the same test ("hovering pk-few: the terminals header naming it is false, want true": the peek never draws) | **caught** |
+| The positive half | this branch | none: every hover names the session on the terminals header, `pk-few` draws one pane and two blank lines, `pk-many` ends the section in `+4`, and leaving the rail ends the peek | **guard** |
+
+The hold applies only when the layout stacks the terminals section above the sessions section (`sidebarLayoutStacksAbove` in `sidebarPanelLinesForTree`). Below the sessions, as in the default order `sessions:25,terminals,files:25,agents:34`, the section's height cannot move the row under the pointer, and holding it only hid the peek: attached to a one-pane session, a peek of a six-pane one drew just `… +6`. `TestRailPeekOnTheDefaultOrderListsEveryPane` attaches to `pk-one` (one pane) on the default order, hovers `pk-six` (panes `six0` to `six5`), and expects the six lines under the terminals header to name the six panes in order, none ending in `+N`. Run on 2026-10-14 on macOS on branch `pr699-review`: upstream `main` (`e2ca77df`) with the rail scrollbar change and the peek hold cherry-picked on top. Each control cuts one wire from the fixed build, builds it, restores the source, and runs `TestRailPeekHoldsTheTerminalsHeight`, `TestRailPeekOnTheDefaultOrderListsEveryPane` and `TestRailScrollbarOnAPeek`.
+
+| Control | Build | Tests that fail | Verdict |
+| --- | --- | --- | --- |
+| The order check: the hold in every layout (`if peeking {` for `if peeking && sidebarLayoutStacksAbove(...) {`) | mutant of this branch | `TestRailPeekOnTheDefaultOrderListsEveryPane` ("the peek's line 0 is \"… +6\", want six0") | **caught** |
+| The hold: never held (`if false && peeking && sidebarLayoutStacksAbove(...) {`) | mutant of this branch | `TestRailPeekHoldsTheTerminalsHeight` ("hovering pk-few moved pk-main from row 7 to row 5") | **caught** |
+| The positive half | this branch | none | **guard** |
+
+`TestRailScrollbarOnAPeek` passes under both controls: its layout puts sessions above terminals, and the attached and peeked sessions both have fourteen panes, so held or not the peek is budgeted the same six lines.
+
+## Rail scrollbar on a peek
+
+Run on 2026-10-14 on macOS on branch `pr/rail-peek-hold-on-scrollbar`: the rail scrollbar change (`f1262902`) with the peek hold (`42f4c587`) on top. The peek hold windows a peek from the top of the peeked list on an offset of its own, and the scrollbar change's `TestRailScrollbarOnAPeek` expected the peek windowed at the attached session's offset, so on the combined tree it failed with "the terminals section's thumb is \"top\", want \"bottom\"" while the renderer drew one consistent window: the list's first five rows, `… +9`, and the thumb on lines 0 to 2. The renderer needs no change: the thumb reads the same `start` the windowing computed from the peek's own offset. Its layout, `sessions,terminals:20`, puts sessions above terminals, so once the hold applies only to terminals above sessions this peek is not held; its window is the same, since the attached and peeked sessions both have fourteen panes. The test now asserts that window: the attached list is wheeled to its bottom, the pointer peeks `other` (14 panes on 6 lines), and the peek must draw `peek-first`, `peek0` to `peek3`, end in `+9`, and carry the thumb at the top, on ten more frames after it first does; leaving the rail must bring the attached list back at its bottom. Each control cuts one wire from the combined build, builds it, restores the source, and runs `TestRailScrollbarOnAPeek` and `TestRailPeekHoldsTheTerminalsHeight`.
+
+| Control | Build | Tests that fail | Verdict |
+| --- | --- | --- | --- |
+| The peek inherits the attached offset (`scroll[sidebarSectionTerminals] = &peekScroll` dropped in `sidebarPanelLinesForTree`) | mutant of this branch | `TestRailScrollbarOnAPeek` ("line 0 is \"peek7\", want peek-first") | **caught** |
+| The thumb computed from the attached offset while the rows keep the peek's (`sidebarScrollThumb` fed `sidebarWindowSection(m.SidebarScrollT, ...)` for a peeked terminals section) | mutant of this branch | `TestRailScrollbarOnAPeek` ("the thumb is \"thumb on lines 3 to 5 of 6, +N on the last line true\" beside the list's first rows, want \"top\"") | **caught** |
+| The thumb skipped while the terminals section shows a peek | mutant of this branch | `TestRailScrollbarOnAPeek` ("the thumb is \"no thumb\" beside the list's first rows, want \"top\"") | **caught** |
+| No peek hold: the scrollbar change alone | `f1262902` | `TestRailScrollbarOnAPeek` ("line 0 is \"peek7\", want peek-first") and `TestRailPeekHoldsTheTerminalsHeight` ("hovering pk-few moved pk-main from row 7 to row 5") | **caught** |
+| The positive half | this branch | none | **guard** |
+
+### The drop preview under a tree that changes mid-drag
+
+Run on 2026-10-15 on macOS on branch `fix/drop-zone-stale-land-2`, from upstream `main` (cfc254fb), so with the drop preview drawn as a pane frame (#705). The test is `TestTheDropZoneFollowsTheTreeUnderAHeldDrag`: C is held on A's left edge while A shares its slot with a fourth pane D, D is closed from the CLI, and the preview is checked once with the pointer held still and once after a one-cell motion that stays on the same edge. The fixed build passes both. Each control is a build of the branch with one thing cut, run against the branch's test.
+
+| Control: what was cut | Test that fails | Verdict |
+| --- | --- | --- |
+| The whole fix (upstream `main`: the landing rectangle cached on the target and the edge only) | `TestTheDropZoneFollowsTheTreeUnderAHeldDrag/held-still` and `/after-a-motion`, both with "outline cell (0,28) of the landing rectangle {... X:0 Y:0 Width:30 Height:38} is "│" in {Kind:2 ... R:250 G:170 B:170}, want the border glyph "│" in the outline's ink {Kind:2 ... R:145 G:141 B:255}": the frame stayed on the half-height rectangle from before D closed, so row 28 kept the pane border's own ink, and kept it after the motion too | **caught** |
+| The `refreshDropZone` call in `ApplyBSPLayout` | The same two rows, with the same message | **caught** |
+## The navigator OSC reaches tuios through the emulator's private hook
+
+The emulator no longer knows OSC 7777. It hands any OSC number it does not
+interpret to `vt.Callbacks.PrivateOSC`, and `internal/terminal` reads the
+navigator's focus and state requests from there.
+`TestNvimNavigationOSCNeedsForwardedKey` now has its positive half: after the
+pane says it is active, a forwarded focus key reaches the pane, and the pane's
+focus request moves focus. Before this change no test failed when the hook was
+cut, because the two navigator tests only asserted that focus stays.
+
+The controls were run on 2026-10-15 on branch `refactor/vt-private-osc`.
+
+| Control | How | Tests that fail | Verdict |
+| --- | --- | --- | --- |
+| The hook is not wired | `internal/terminal/window.go`: the `PrivateOSC` callback matches OSC 7778, not 7777 | `TestNvimNavigationOSCNeedsForwardedKey` (the focus key never reached the active pane) | **caught** |
+| The focus request is dropped | `handleNvimNavigatorOSC`: the `nav(direction)` call cut | `TestNvimNavigationOSCNeedsForwardedKey` (focus stayed after a forwarded key and the pane's focus request) | **caught** |
+| A body without its number reaches the hook | `privateOSCNumber`: the prefix check cut | `TestPrivateOSC` and `TestGhosttyPrivateOSC` in `internal/vt` (no number, empty body) | **caught in `internal/vt`** |
+| ghostty passes the numbers it interprets to the hook | `GhosttyTerminal.handleOSC`: the `privateOSCNumber` check cut | `TestGhosttyPrivateOSC` (OSC 2, 7, 8, 9, 777 and a wrapped number) | **caught in `internal/vt`** |
+## The snapshot reads across builds after it moved to internal/vt/snapshot
+| A body without its number reaches the hook | `privateOSCNumber`: the prefix check cut | `TestPrivateOSC` and `TestGhosttyPrivateOSC` in `vt` (no number, empty body) | **caught in `vt`** |
+| ghostty passes the numbers it interprets to the hook | `GhosttyTerminal.handleOSC`: the `privateOSCNumber` check cut | `TestGhosttyPrivateOSC` (OSC 2, 7, 8, 9, 777 and a wrapped number) | **caught in `vt`** |
+
+## The snapshot reads across builds after it moved to vt/snapshot
+## The snapshot reads across builds after it moved to vt/snapshot
+
+`TerminalState` and its capture, apply, pack, replay and history code moved
+from `internal/session` to `vt/snapshot`. `internal/session` keeps
+aliases. Two e2e tests now take a second build:
+
+- `TestMixedVersionsReshapeOneTree`: the second client attaches after the
+  first printed a bold italic line, so it reads that line from the daemon's
+  snapshot. Run with v0.9.3 as the second client of a new daemon, as the
+  daemon and first client of a new second client, and as both clients of a
+  new daemon. All pass.
+- `TestRestoredPaneShowsItsHistoryAboveTheDivider`: `TUIOS_E2E_HISTORY_WRITER`
+  names the build that saves the history. v0.9.3 writing and the new build
+  reading passes, and the other way round passes.
+
+The controls were run on 2026-10-15 on branch `refactor/vt-snapshot-package`.
+
+| Control | How | Tests that fail | Verdict |
+| --- | --- | --- | --- |
+| The client does not apply the snapshot | `ApplyTerminalState`: the `snapshot.Apply` call cut, on the second client | `TestMixedVersionsReshapeOneTree` (the second client does not show the pane's snapshot) | **caught** |
+| The new build cannot read an older history file | `historyVersion` bumped by one in the reading build, v0.9.3 writing | `TestRestoredPaneShowsItsHistoryAboveTheDivider` (the restored pane does not show its history) | **caught** |
+| gob registers the moved type under its new name | `gob.Register(TerminalState{})` in place of `gob.RegisterName("github.com/Gaurav-Gosain/tuios/internal/session.TerminalState", ...)` | `TestTerminalStateKeepsItsGobName` in `internal/session` (the value is not sent under the old name). The e2e tests do not catch it: no path sends a `TerminalState` inside an interface today, so the name never crosses the wire there | **caught in `internal/session`** |
+
+### Configurable terminal page scroll and middle paste
+
+Run on 2026-10-11 on branch `keybindings`. The control ran the new E2E tests
+against a binary built from main at `377bc074`, before the actions, defaults and
+middle-button input route existed. Each requested behavior is an independent
+subtest, so an early page-scroll failure cannot hide a paste failure.
+
+| Control | Tests that fail | Verdict |
+| --- | --- | --- |
+| The main binary, with no terminal page-scroll actions | `TestDefaultPageAndMiddleBindings/page-scroll` and `TestPageAndMiddleBindingsCanBeChanged/page-scroll` (the viewport moved 0 lines and the shell received the raw PageUp sequence) | **caught** |
+| The main binary, with no configurable middle-button route | `TestDefaultPageAndMiddleBindings/middle-paste` and `TestPageAndMiddleBindingsCanBeChanged/middle-paste` (both timed out; the remapped config also reported `middle` as a config problem) | **caught** |
+
+Run again on 2026-10-15 after the review changes. Each control cuts one call
+site in the branch and runs the three tests above. A pane with a mouse mode
+gets a plain middle press, and a press the binding takes keeps its release.
+
+| Control | Tests that fail | Verdict |
+| --- | --- | --- |
+| The press call cut: `handleTerminalMouseBinding` in `handleMouseClick` (`internal/input/mouse_click.go`) | both `middle-paste` subtests (they time out), and `TestMousePaneKeepsPageKeysAndMiddleButton` (the pane receives the ctrl+middle press) | **caught** |
+| The release call cut: `terminalMouseBindingConsumesRelease` in `handleMouseRelease` (`internal/input/mouse_release.go`) | `TestMousePaneKeepsPageKeysAndMiddleButton` (the pane receives the ctrl+middle release without its press) | **caught** |
+| The release decided by where it lands, as before the review, with the mouse-mode check kept at the press | `TestMousePaneKeepsPageKeysAndMiddleButton` (the pane receives a plain middle press and no release) | **caught** |
+| The mouse-mode check cut from `handleTerminalMouseBinding` | `TestMousePaneKeepsPageKeysAndMiddleButton` (the pane receives no middle press) | **caught** |
+| The `shift+pgup` default removed from `terminal_scroll_page_up` | `TestDefaultPageAndMiddleBindings/page-scroll` | **caught** |
+## A pane in a themed daemon session reports the theme's colours
+
+`TestThemedDaemonPaneReportsTheTheme` attaches to a daemon session with
+`theme = "dracula"`, behind the light stand-in host, and asks a pane for
+OSC 11, OSC 10 and OSC 4 slot 1.
+
+The controls were run on 2026-10-15 on branch `fix/daemon-theme-osc-report`.
+
+| Control | How | Tests that fail | Verdict |
+| --- | --- | --- | --- |
+| A themed client pushes no colours | `paneReportNow`: the themed branch cut, which is `main` before the fix | `TestThemedDaemonPaneReportsTheTheme` (OSC 11 answered `rgb:0000/0000/0000`, OSC 10 `rgb:ffff/ffff/ffff`, OSC 4;1 `rgb:8080/0000/0000`) | **caught** |
+
+## The Omarchy theme is followed while tuios runs
+
+`TestOmarchyThemeSwitchIsFollowed` attaches to a daemon session with no theme
+set and Tokyo Night applied under the test's HOME, then switches Omarchy to
+Catppuccin Latte the way `omarchy-theme-set` does. It passes with the swap
+helper and with the real script (`TUIOS_E2E_OMARCHY_SRC` at
+basecamp/omarchy 246f33a).
+
+The controls were run on 2026-10-15 on branch `feat/omarchy-follow`.
+
+| Control | How | Tests that fail | Verdict |
+| --- | --- | --- | --- |
+| The watcher hub is not started | `Init`: the `startOmarchyFollow` command dropped | `TestOmarchyThemeSwitchIsFollowed` (no light report, OSC 11 still `rgb:1a1a/1b1b/2626`, the frame keeps its colour) | **caught** |
+| No mode 2031 report is sent | `Emulator.SetReportColors`: the report write cut | `TestOmarchyThemeSwitchIsFollowed` (the program that turned on mode 2031 was not told light) | **caught** |
+## Spaces as a session label
+
+Run on 2026-10-14 on macOS on branch `feat/spaces-label`, from upstream `main` (`e2ca77df`). The tests are in `space_label_test.go`: `TestNewSpaceFilesTheSession`, `TestSetSessionSpaceSetsAndClears`, `TestAGlobalSessionIsInNoSpace`, `TestSpaceSurvivesTheDaemon`, `TestLsGroupsSessionsBySpace` and `TestLsWithoutSpacesIsUnchanged`. The last compares this build's `tuios ls` with a build of upstream `main` (`TUIOS_E2E_BASELINE_BIN`), each listing its own daemon's sessions made by the same steps, styled bytes and all; it is skipped without that build. The fixed build passes all six. Each control cuts one wire from the fixed build, builds it, and runs the six tests with the baseline build set.
+
+| Control | Build | Tests that fail | Verdict |
+| --- | --- | --- | --- |
+| `SessionState.Space` tagged `json:"-"` (the space never reaches the state file) | mutant of this branch | `TestSpaceSurvivesTheDaemon` ("after a restart, the sessions and their spaces are map[e2e-loose: e2e-made: e2e-spaced: e2e-trigger:]") | **caught** |
+| The restore creating the session without `Space: state.Space` | mutant of this branch | `TestSpaceSurvivesTheDaemon` (the same line) | **caught** |
+| `spaceName` without the `strings.TrimSpace` | mutant of this branch | `TestSetSessionSpaceSetsAndClears` ("set-session-space did not trim \"  billing\\t\" to billing") | **caught** |
+| `spaceName` without the `ValidateSessionName` call | mutant of this branch | `TestNewSpaceFilesTheSession` ("tuios new --space bad/name succeeded"), `TestSetSessionSpaceSetsAndClears` ("set-session-space took the space name \"bad/name\"") | **caught** |
+| `spaceName` without the 64-byte cap | mutant of this branch | `TestNewSpaceFilesTheSession` ("took a 65-byte space name"), `TestSetSessionSpaceSetsAndClears` | **caught** |
+| The global-session refusal in `verbSetSessionSpace` | mutant of this branch | `TestAGlobalSessionIsInNoSpace` ("Session e2e-g is in space s.") | **caught** |
+| The `--global` refusal cut from `tuios new --space` | mutant of this branch | `TestNewSpaceFilesTheSession`, `TestAGlobalSessionIsInNoSpace` ("tuios new --global --space was not refused with \"a global session cannot be in a space\"") | **caught** |
+| `verbNewSession` not copying the hello's `Term` into the session config (rebased on `f1257b28`) | mutant of this branch | `TestNewSpaceFilesTheSession` ("an attached tuios new --space gave its pane \"TERM=xterm-256color COLORTERM=truecolor\", want the caller's \"TERM=screen-256color COLORTERM=truecolor\""): the check is on the attached `e2e-live` | **caught** |
+| `runNewSessionInSpace` without the `checkTerminal` call before `new-session` (rebased on `f1257b28`) | mutant of this branch | `TestNewSpaceFilesTheSession` ("after an attached tuios new --space with no terminal, the sessions and their spaces are map[e2e-api:payments e2e-loose: e2e-notty:payments]") | **caught** |
+| `set-session-space` passes `""` instead of `-s` | mutant of this branch | `TestSetSessionSpaceSetsAndClears` ("map[e2e-other:payments e2e-work:]"), `TestAGlobalSessionIsInNoSpace`, `TestSpaceSurvivesTheDaemon` | **caught** |
+| `set-session-space` takes exactly one argument (no clearing form) | mutant of this branch | `TestSetSessionSpaceSetsAndClears` ("accepts 1 arg(s), received 0"), `TestAGlobalSessionIsInNoSpace` | **caught** |
+| `verbSetSessionSpace` never calls `SetSpace` | mutant of this branch | `TestSetSessionSpaceSetsAndClears`, `TestAGlobalSessionIsInNoSpace`, `TestSpaceSurvivesTheDaemon` ("before a restart, ... e2e-spaced:") | **caught** |
+| `verbNewSession` creates the session with `&SessionConfig{}` (the space dropped) | mutant of this branch | `TestNewSpaceFilesTheSession`, `TestSetSessionSpaceSetsAndClears`, `TestSpaceSurvivesTheDaemon`, `TestLsGroupsSessionsBySpace` | **caught** |
+| `incoming.Space = canonical.Space` left out of `retainDaemonExclusive` | mutant of this branch | `TestNewSpaceFilesTheSession` ("after an attached tuios new --space, ... e2e-live:"): the attached client's first state sync carries no space and cleared it | **caught** |
+| `Session.Info` lists no `space` | mutant of this branch | all five tests that read the listing | **caught** |
+| `renderSpaceGroups` draws a `No space` heading over the sessions in no space, always | mutant of this branch | `TestLsGroupsSessionsBySpace` ("with no session in a space, ls is not one table with no heading"), `TestLsWithoutSpacesIsUnchanged` | **caught** |
+| `renderSpaceGroups` draws a `No space` heading only when some session is in a space | mutant of this branch | `TestLsGroupsSessionsBySpace` ("the sessions in no space have a heading \"No space\"") | **caught** |
+| `renderSpaceGroups` draws no heading over a space | mutant of this branch | `TestLsGroupsSessionsBySpace` ("block 0 is headed \"╭─...\", want \"alpha\"") | **caught** |
+| `renderSpaceGroups` draws the sessions in no space first | mutant of this branch | `TestLsGroupsSessionsBySpace` (the same line) | **caught** |
+| The positive half | this branch | none: each refusal sits beside a set that succeeds in the same fixture (`e2e-a` filed beside the global `e2e-g`, `e2e-work` filed before and after the refused names), and the grouped `ls` is saved as `ls-grouped.txt` | **guard** |
+
+Each mutant is a text replacement on a `git archive` of the branch, so the checkout under test is never edited. Not covered here: the verb's `scopeDeny` and `LinkAllowWrite` entries. Those are held by `internal/session`: with the `verbScopes` entry cut, `conn_scope_test.go` ("has no entry in verbScopes") and `pane_grants_test.go` fail, and with the `verbCapabilities` entry cut, `link_policy_test.go` ("has no entry in verbCapabilities") fails. A daemon from before spaces given `tuios new --space` refuses the call with "verb new-session has no parameter space", because the verbs refuse a parameter they do not know.
+## A silent link is found, and the rail still opens its sessions
+
+Run on 2026-10-15 on Linux on branch `fix-host-wake-reconnect`, from upstream `main` (`f1257b28d`). The test is `TestASilentLinkIsFoundAndTheRailStillOpensItsSessions` in `host_reconnect_test.go`. It stops the far `tuios stdio-proxy` with SIGSTOP, so the pipe stays open and carries nothing. The first half clicks a rail session on that link and gives it 18 seconds. The second half leaves an attached session idle on a frozen link with the rail closed and gives the heartbeat 40 seconds. On the fixed build the click opens the session after 7.3 seconds, the idle link is found after 26 seconds, and it is back after 29. Each control cuts one wire from the fixed build, builds it, and runs the test.
+
+| Control | Build | Tests that fail | Verdict |
+| --- | --- | --- | --- |
+| `attempt` does not start `heartbeat` | mutant of this branch | the click half ("the session on a frozen host never opened after a click") | **caught** |
+| `openRemoteSession` does not send `retry-host` | mutant of this branch | the same, with the same message | **caught** |
+| `retry` on a link that is up wakes the dial wait instead of the heartbeat | mutant of this branch | the same, with the same message | **caught** |
+| `heartbeatMisses` raised to 1000, so only a sleep or a retry ends a link | mutant of this branch | the idle half ("nothing found an idle frozen link in 40 seconds"); the click half passes | **caught** |
+| `SwitchToSession` does not cancel the waiting click (review round) | mutant of this branch | the replaced click ("the click the person replaced pulled them off the session they chose after it") | **caught** |
+| The `DaemonDisconnectedMsg` handler does not keep the panes for a reconnect a waiting click put off (second review round) | mutant of this branch | the drop under a click ("tuios exited with code 1 after the attached link dropped while a click waited") | **caught** |
+| The same handler does not arm the exit listener again | mutant of this branch | none. The second drop is not heard, and the click lands anyway, so this test cannot see it. It is why the first version of the drop-under-click half passed on a build that still quit: the drop it waited for never reached the client | **not caught** |
+| The positive half | this branch | none | **guard** |
+
+## Centered dock components during notifications
+
+`TestDockCenterStaysPutDuringNotifications` drives real clients at 80, 120 and
+180 columns with a custom clock on top and the built-in clock at the bottom.
+It toggles tiling to show and dismiss popups, then raises long notifications
+beside one and two named minimized panes. It clicks each cut message to read
+its end and restores a minimized pane by clicking its entry. Frames before,
+during and after the popups are saved through `TUIOS_E2E_FRAMES`; set
+`TUIOS_E2E_SHOTS` too for PNGs.
+
+Run on macOS arm64 against upstream `main` at `998c70af`, with real PTYs.
+The mutants cut the indicated layout wiring from the fixed build; they do not
+change the test or replace the renderer with a test double.
+
+| Control | Failure at 80 columns | Fixed build |
+| --- | --- | --- |
+| Unmodified main | custom clock moves from column 38 to 29 for `Tiling off`, and to 28 for `Tiling on` (physical center is 34); built-in clock moves from 41 to 32 and 31 (physical center is 37) | all six width/clock cases pass |
+| Cut the `layout.CustomCenter > 0` item-budget branch in `CalculateDockLayout`, keeping screen centering | `popup resized the center contents and moved the clock from 20 to 32` | named entries keep their width across the popup |
+| Cut the `layout.CenterRightReserve = notifChromeWidth + 1` assignment | `the popup has no gap before its cap`: the second minimized pill touches `▊`, and the block loses trailing columns at the session strip | the mark, opening gap and click-to-read remain usable |
+
+The positive halves are in the same fixtures: both tiling notices must draw,
+the long messages must open in full, dismissing them must keep the clock in
+place, and the minimized entry must restore its pane. The original v0.9.2
+report also fails: 80/120/180-column clocks move from 24/44/74 to 27/47/77
+between the startup notice and the tiling notice.
+
+```sh
+TUIOS_E2E=1 TUIOS_E2E_BIN=/path/to/tuios TUIOS_E2E_FRAMES=/path/to/frames \
+  go test -run '^TestDockCenterStaysPutDuringNotifications$' -count=1 .
+```
+
+## dim_foreground: dim_unfocused leaves a pane's text alone when asked
+
+Run on 2026-10-15 on macOS on branch `feat/dim-foreground`. The test is `TestDimForeground` in `dim_foreground_test.go`. It boots a tiled `catppuccin_mocha` session with `dim_unfocused = 60` and truecolour, prints a marker with its own foreground and background in two panes, and reads the marker's cell in the unfocused pane against the focused one. A 256-colour host snaps colours to palette entries, so the fixture asks for truecolour. Each control cuts one wire from the fixed build, builds it, and runs the test.
+
+| Control | Build | Tests that fail | Verdict |
+| --- | --- | --- | --- |
+| `renderTerminal`: `dimText = m.Settings.DimForeground` cut (`dimText = true`) | mutant of this branch | `TestDimForeground/off` ("dim_foreground = false: the unfocused text is {Kind:2 Index:0 R:110 G:134 B:160}, want the focused text's {Kind:2 Index:0 R:220 G:220 B:220}") | **caught** |
+| `ApplyAppearanceConfig`: `DimForeground` not read from the config (`s.DimForeground = true`) | mutant of this branch | `TestDimForeground/off` ("dim_foreground = false: the unfocused text is {Kind:2 Index:0 R:110 G:134 B:160}, want the focused text's {Kind:2 Index:0 R:220 G:220 B:220}") | **caught** |
+| The positive half | this branch | none: with the option unset the unfocused text and background both differ from the focused pane's (`TestDimForeground/default`), and with `dim_foreground = false` the background still does | **guard** |
+
+## Actions for a tmux-style keymap
+
+Run on 2026-10-15 on macOS on branch `feat/tmux-style-actions`. The e2e tests are `TestTmuxStyleActionsRunWhenBound`, `TestNewWorkspaceSkipsTheEmptyWorkspaceOnScreen` (`tmux_style_actions_test.go`), `TestMarkAndJoinPane`, `TestJoinMarkedPaneFromAnotherWorkspace`, `TestMarkedPaneShowsABadge`, `TestMoveWorkspaceAndSendPane` (`tmux_style_panes_test.go`) and `TestToggleMouseTurnsHostReportingOffAndOn` (`tmux_style_mouse_test.go`). Two unit tests stay in `internal/app/prefix_tree_test.go` for what the e2e cannot see: which tree holds a pane after a join from another workspace, and the per-workspace names and tree that a workspace move swaps. Each control cuts one wire, builds, and runs the named test.
+
+| Control | Tests that fail | Verdict |
+| --- | --- | --- |
+| `d.Register("new_workspace", handleNewWorkspace)` cut | `TestTmuxStyleActionsRunWhenBound` ("tmuxish is on workspace 1, want 2") | **caught** |
+| `d.Register("cycle_layout", ...)` cut | `TestTmuxStyleActionsRunWhenBound` ("tmuxish has layout mode \"bsp\", want \"master-stack\"") | **caught** |
+| `i != m.dockWorkspace() &&` cut from `nextFreeWorkspace` | `TestNewWorkspaceSkipsTheEmptyWorkspaceOnScreen` ("skipper is on workspace 2, want 3") | **caught** |
+| `d.Register("mark_pane", ...)` cut | `TestMarkAndJoinPane` ("mark_pane showed no notification: ... waiting for text \"Pane marked\"") | **caught** |
+| `m.setMarkedPane(w.ID)` cut from `MarkPane` | `TestMarkAndJoinPane` ("ASSERTION: c should end up left of a, beside it: pane ... is {... X:60 Y:19 ...}"), `TestMarkedPaneShowsABadge` ("ASSERTION: b marked: want 1 \"[marked]\" on the screen, have 0") | **caught** |
+| `d.Register("join_marked_"+name, ...)` registered under another name | `TestMarkAndJoinPane` (same "c should end up left of a" assertion) | **caught** |
+| `m.setMarkedPane("")` cut from the join | `TestMarkAndJoinPane` ("ASSERTION: the join takes the mark off c: want 0 \"[marked]\" on the screen, have 1") | **caught** |
+| the `markedPaneBadge` append cut from `windowBorderRows` | `TestMarkedPaneShowsABadge` ("ASSERTION: b marked: want 1 \"[marked]\" on the screen, have 0") | **caught** |
+| the `InvalidateCache` loop cut from `setMarkedPane` | `TestMarkedPaneShowsABadge` (same: the cached layer keeps the old title bar) | **caught** |
+| `m.MoveWindowToWorkspace(markedIdx, ...)` cut from `JoinMarkedPane` | `TestJoinMarkedPaneFromAnotherWorkspace` ("ASSERTION: b joins right of a on workspace 1: pane ... is {... Workspace:2 ...}") | **caught** |
+| `old.RemoveWindow(markedInt)` cut from `JoinMarkedPane` | e2e: not caught, since the stale entry in the old workspace's tree changes nothing on screen. Unit: `TestJoinMarkedPaneBringsAPaneFromAnotherWorkspace` ("d is still in workspace 2's tree") | **caught by the unit test only** |
+| `InsertWindowWithPreselection` cut from `JoinMarkedPane` | `TestJoinMarkedPaneBringsAPaneFromAnotherWorkspace` ("d (y=19) is not below a (y=0 h=38)") | **caught** |
+| `m.MoveWindowToWorkspace(markedIdx, ...)` replaced by setting `marked.Workspace` by hand | none: the retile and the layout save it adds change nothing the tests read, because `JoinMarkedPane` retiles again itself | **not caught** |
+| `d.Register("move_workspace_right", ...)` cut | `TestMoveWorkspaceAndSendPane` ("workspace 1 swapped with 2 takes its pane along: pane ... is {... Workspace:1 ...}") | **caught** |
+| `MoveWindowToWorkspace` cut from the `send_to_workspace_N` handler | `TestMoveWorkspaceAndSendPane` ("send_to_workspace_3 moves the pane to 3: pane ... is {... Workspace:2 ...}") | **caught** |
+| `swapWorkspaceKeys(m.WorkspaceNames, ...)` cut from `swapPerWorkspaceState` | `TestMoveWorkspaceBySwapsAndFollows` ("names are map[1:code 2:logs], want the two swapped") | **caught** |
+| `swapWorkspaceKeys(m.WorkspaceTrees, ...)` cut from `swapPerWorkspaceState` | `TestMoveWorkspaceBySwapsAndFollows` ("workspace 1's tree did not move with its panes") | **caught** |
+| the `if m.MouseOff {` block cut from `View()` | `TestToggleMouseTurnsHostReportingOffAndOn` ("toggle_mouse never turned mouse reports off: \"\\x1b[?1003l\" not written within 10s") | **caught** |
+| `d.Register("toggle_mouse", ...)` cut | `TestToggleMouseTurnsHostReportingOffAndOn` (same) | **caught** |
+| `m.MouseOff = !m.MouseOff` cut from `ToggleMouse` | `TestToggleMouseTurnsHostReportingOffAndOn` (same) | **caught** |
+| The positive halves | none: the bsp and workspace 1 reads before any key; c starting right of a and a join with no mark moving nothing; no badge before any mark, and exact badge counts; b really on workspace 2 before the cross-workspace join; `\x1b[?1003h` seen at start and again after the second toggle | **guard** |
+
+## The session dock component and dock cell styles
+
+Three tests drive the real binary and read the colours, the bold flag and the
+cap glyphs off the screen's cells.
+
+- `TestDockCellStyleAndSessionComponent`: a `session` cell on the right, styled
+  by `[dock.session]`, and two custom cells on the left, one with a light
+  background and no foreground, one unstyled. The unstyled cell is the positive
+  half of the style checks: the colour comes from the style and is not on every
+  cell.
+- `TestDockCellBadColoursKeepTheDocksGround`: a custom cell whose `bg` and `fg`
+  are not `#rrggbb`, against an unstyled one. Its positive half is that the
+  unstyled cell is on a real, non-default ground. It is a separate test because
+  the two config warnings it causes take the right-hand end of the bar for about
+  eight seconds, and the session cell would wait for them.
+- `TestDockSessionDefaultFormat`: the default text, with the session's empty
+  name trimmed, and the bare dock's `1:1` readout counted once, which is also
+  the check that `session` is in no default list.
+
+Each control cuts a call site in `internal/app/dock_components.go` or
+`internal/config/dock.go`.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| The session cell never drew | n/a, injected, cuts the call site | drop `text = m.dockSessionText()` from `dockCustomCell` | `TestDockCellStyleAndSessionComponent` ("the session and custom cells never all drew"), `TestDockSessionDefaultFormat` ("the session cell never drew \"< 1:1 >\"") | **caught** |
+| The session cell was left out of the right-hand cells | n/a, injected, cuts the gate | drop `|| name == config.DockComponentSession` from `dockCellComponent` | both tests above, same messages. The left side draws any cell through `dockCustomCell`, so it is the right-hand cell that catches this | **caught** |
+| `[dock.session]`'s style was never read | n/a, injected, cuts the call site | `dockCellStyle` returns the empty style for the session | `TestDockCellStyleAndSessionComponent` ("session cell is fg … bg … bold false, want …", "session caps are \" \" and \" \", want \"<\" and \">\""), `TestDockSessionDefaultFormat` | **caught** |
+| A bad background drew on no background | n/a, injected | `renderDockCell` tests `st.Bg != ""` instead of `config.IsHexColor(st.Bg)` | `TestDockCellBadColoursKeepTheDocksGround` ("a cell with bad colours is fg … bg {Kind:0 …}, want the dock's own fg … bg {Kind:2 … R:45 G:44 B:54}", "has cap \"}\" in {Kind:0 …}") | **caught** |
+| A bad foreground drew in no colour | n/a, injected | the same for `st.Fg` | `TestDockCellBadColoursKeepTheDocksGround` ("a cell with bad colours is fg {Kind:0 …} bg …, want the dock's own fg {Kind:2 … R:191 G:188 B:200} …") | **caught** |
+| With a custom background and no foreground the ink was measured against the Panel, not the cell | n/a, injected | `theme.Readable(pal.FgDim, pal.Panel)` in `renderDockCell` | `TestDockCellStyleAndSessionComponent` ("a cell with a custom bg and no fg has ink … on {… R:245 G:245 B:245}, 1.71:1, under the 4.5:1 floor") | **caught** |
+| The format's workspace placeholder was not filled | n/a, injected | `FormatDockSession` replaces `{window}` instead of `{workspace}` | `TestDockCellStyleAndSessionComponent` ("the session and custom cells never all drew"), `TestDockSessionDefaultFormat` | **caught** |
+| The empty session name left a space at the start | n/a, injected | `FormatDockSession` without `strings.TrimSpace` | `TestDockSessionDefaultFormat` ("the session cell never drew \"< 1:1 >\"") | **caught** |
+| The default format lost the workspace | n/a, injected | `DefaultDockSessionFormat` is `"{session} {pane}"` | `TestDockSessionDefaultFormat` ("the session cell never drew \"< 1:1 >\"") | **caught** |
+| `session` was in a default list | n/a, injected | add `DockComponentSession` to `defaultDockRight` | `TestDockSessionDefaultFormat` ("a bare dock should carry the workspace readout once and no session cell"), `TestDockDefaultListsDrawTheSameBar` ("the default lists draw a different bar") | **caught** |
+
+| Bold was ignored | n/a, injected | drop `.Bold(st.Bold)` from the styled body | `TestDockCellStyleAndSessionComponent` ("session cell is fg … bg … bold false, want … bold") | **caught** |
+| The foreground was ignored | n/a, injected | drop the `lipgloss.Color(st.Fg)` assignment | `TestDockCellStyleAndSessionComponent` ("session cell is fg {… R:67 G:66 B:74} … want fg {… R:39 G:46 B:51} …") | **caught** |
+| The left cap was not drawn | n/a, injected | drop `body = caps.Render(st.CapLeft) + body` | `TestDockCellStyleAndSessionComponent` ("session caps are \" \" and \">\", want \"<\" and \">\"") | **caught** |
+| The right cap was not drawn | n/a, injected | drop `body += caps.Render(st.CapRight)` | `TestDockCellStyleAndSessionComponent` ("session caps are \"<\" and \" \", want …", "styled custom cell's cap is \" \" in … want \")\" …") | **caught** |
+| `[dock.custom.NAME]`'s style was never read | n/a, injected, cuts the call site | `dockCellStyle` drops the `custom/` branch | `TestDockCellStyleAndSessionComponent` ("styled custom cell has bg {… R:45 G:44 B:54}, want {… R:245 G:245 B:245}") | **caught** |
+
+Parsing, the embedded style round trip and the colour warnings are not on the
+screen, so they stay unit tests in `internal/config/dock_style_test.go`:
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| A custom cell's bad colour drew no warning | n/a, injected, cuts the call site | drop the `validateDockColors(result, "dock.custom."+name, …)` line | `TestValidateDockCellColors` ("warnings … do not name dock.custom.x.bg"); the valid `custom.y` is the positive half | **caught** |
+| The session's bad colour drew no warning | n/a, injected, cuts the call site | drop the `validateDockColors(result, "dock.session", …)` call | `TestValidateDockCellColors` ("warnings … do not name dock.session.fg") | **caught** |
+| The embedded style was read from a nested table | n/a, injected | rename the `cap_right` tag | `TestDockCellStyleTablesRoundTrip` ("[dock.session] read as {… CapRight:} …", "round trip lost the style:") | **caught** |
+
+## Space headings in the rail
+
+Run on 2026-10-16 on macOS on branch `feat/spaces-sidebar`, from upstream `main` (`ce82a422`). The tests are in `space_rail_test.go`: `TestSpaceRailHeadings`, `TestSpaceRailHeadingsFollowTheLabel`, `TestSpaceRailHeadingsSurviveTheDaemon` and `TestSpaceRailCursorPassesASplitRepository`. The fixed build passes all four. Each control cuts one wire from the fixed build, builds it, and runs the tests named in its row.
+
+| Control | Build | Tests that fail | Verdict |
+| --- | --- | --- | --- |
+| `sidebarGroupedRows` calls `GroupByRepo` alone (no space grouping) | mutant of this branch | all four, the first with "the rail never showed the alpha and beta headings with every session" | **caught** |
+| `adoptSessionLabels` does not copy `state.Space` (the attached session's space never reaches its row) | mutant of this branch | `TestSpaceRailHeadingsFollowTheLabel` ("the rail never showed e2e-here, the attached session, under a work heading"), `TestSpaceRailHeadingsSurviveTheDaemon` ("the rail never showed e2e-spaced under an ops heading after the restart") | **caught** |
+| `listingsAgree` does not compare `Space` (a refresh that moves only a space leaves the cache generation, so the rail keeps its old rows) | mutant of this branch | `TestSpaceRailHeadingsFollowTheLabel` ("the rail never showed e2e-here and e2e-there under the work heading"). This was a real miss in the first version of the branch | **caught** |
+| A repository header's nav row without the space it is drawn in (`isCursor` and `recordHit` given `""`) | mutant of this branch | `TestSpaceRailCursorPassesASplitRepository` ("no client shows session repo-feat-two"): the cursor snaps back to the first header | **caught** |
+| A space's heading drawn as a session row (the `KindSpace` case skipped) | mutant of this branch | `TestSpaceRailHeadings` ("the alpha heading has no rule after its name, so it reads as one more session") | **caught** |
+| A space's heading recorded as a nav row | mutant of this branch | `TestSpaceRailHeadings` ("no client shows session e2e-b1"): one j stops on the beta heading | **caught** |
+| `sidebarSignature` without `m.SessionSpace` | mutant of this branch | none. The attached session's row still moves, at the next listing refresh (at most 3 seconds with the rail open), because the listing carries the attached session's space too. The fold makes the move land on the state push rather than on that refresh, which a test cannot tell from a slow refresh without timing it | **not caught** |
+| The positive half | this branch | none: the rail with no space is checked flat before the first space is set, and every screen is saved under the test's artifact directory | **guard** |
+
+Each mutant is a text replacement in the branch's checkout, built to a separate binary and put back before the next. Not covered here: a global session and the other machines' rows, which `GroupBySpace` leaves out of every space. A global session cannot be in a space (#708 refuses it), and the federation snapshot carries no space, so no fixture can put either under a heading.
+## Spaces in the saved and --all-hosts listings
+
+Run on 2026-10-16 on macOS on branch `feat/ls-space-groups`, from upstream `main` (`ce82a422`). The tests are in `space_listings_test.go`: `TestSavedLsGroupsSessionsBySpace`, `TestAllHostsLsGroupsEachHostBySpace` and `TestSpacelessListingsAreUnchanged`. The last compares this build's saved listing and `tuios ls --all-hosts` with a build of upstream `main` (`TUIOS_E2E_BASELINE_BIN`), each build listing its own daemons' sessions made by the same steps, styled bytes and all once the isolation root is named alike; it is skipped without that build. `TestAllHostsLsGroupsEachHostBySpace` has a second daemon reached through the ssh stand-in of `host_attach_test.go`. The fixed build passes all three, and the two `tuios ls` tests of "Spaces as a session label" with them. Each control cuts one wire from the fixed build, builds it, and runs the five tests with the baseline build set.
+
+| Control | Build | Tests that fail | Verdict |
+| --- | --- | --- | --- |
+| The fix removed | upstream `main` as `TUIOS_E2E_BIN` | `TestSavedLsGroupsSessionsBySpace` ("in the saved listing block 0 is headed \"╭─...\", want \"alpha\""), `TestAllHostsLsGroupsEachHostBySpace` ("the local host's listing has 1 blocks, want at least the 2 tables") | **caught** |
+| `ListResurrectableInfos` does not read `state.Space` | mutant of this branch | `TestSavedLsGroupsSessionsBySpace` (the same line) | **caught** |
+| `listSavedSessions` files every saved row under no space | mutant of this branch | `TestSavedLsGroupsSessionsBySpace` (the same line) | **caught** |
+| The saved `ls --json` row without `Space: info.Space` | mutant of this branch | `TestSavedLsGroupsSessionsBySpace` ("the saved ls --json has the sessions and spaces map[e2e-alpha-1: e2e-alpha-2: e2e-loose: e2e-zulu:], want ...") | **caught** |
+| `localSessionRows` without `Space: s.Space` | mutant of this branch | `TestAllHostsLsGroupsEachHostBySpace` ("the local host's listing has 1 blocks, want at least the 2 tables") | **caught** |
+| `remoteSessionRow.Space` tagged `json:"-"` | mutant of this branch | `TestAllHostsLsGroupsEachHostBySpace` (the same line) | **caught** |
+| `decodeHostSessions` clears the far host's spaces, local rows untouched | mutant of this branch | `TestAllHostsLsGroupsEachHostBySpace` ("the build host's listing has 2 blocks, want at least the 3 tables") | **caught** |
+| `runListSessionsAllHosts` files every row under no space | mutant of this branch | `TestAllHostsLsGroupsEachHostBySpace` ("the local host's listing has 1 blocks") | **caught** |
+| The CLI's `hostSessionsEntry` row decodes no `space` | mutant of this branch | `TestAllHostsLsGroupsEachHostBySpace` (the same line) | **caught** |
+| `renderSpaceGroups` draws a `No space` heading over the sessions in no space | mutant of this branch | all five: `TestSavedLsGroupsSessionsBySpace` and `TestAllHostsLsGroupsEachHostBySpace` ("the sessions in no space have a heading \"No space\""), `TestSpacelessListingsAreUnchanged` ("ls --all-hosts differs from the baseline build's"), and both `tuios ls` tests | **caught** |
+| `runListSessionsAllHosts` prints a blank line after each host's line | mutant of this branch | `TestSpacelessListingsAreUnchanged` ("with no session in a space, ls --all-hosts differs from the baseline build's") | **caught** |
+| The positive half | this branch | none: the grouped listings are saved as `ls-saved-grouped.txt` and `ls-all-hosts-grouped.txt`, and the four spaceless listings beside them | **guard** |
+
+Each mutant is a text replacement on a `git archive` of the branch, so the checkout under test is never edited. The far host's rows carry a space only when its daemon sends one in its `list-sessions` answer; a daemon from before spaces sends none, and this suite has no such build on the far side, so that case is held by the field being `omitempty` and not by a test.
+## Pause focus follows mouse while a key is held (#750)
+
+`appearance.focus_follows_mouse_pause` is one condition on the hover focus in
+`internal/input/mouse_motion.go`. It is covered by table rows in
+`TestFocusFollowsMouse` (`internal/input/mouse_native_test.go`), not by a new
+end-to-end test. Each row sends motion reports over the other pane. The rows
+where the key is released, or where another key or no key is set, are the
+positive half: focus moves.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| The held key never paused hover focus | n/a, injected, cuts the gate | drop `!focusFollowsMousePaused(...)` from the hover focus condition | `pause: ctrl held keeps focus, release resumes`, `pause: ctrl held in terminal mode keeps focus`, `pause: alt held keeps focus, release resumes` ("step 0 (mod 4): focus = 1, want 0") | **caught** |
+| The config key never reached the settings | n/a, injected | `ApplyAppearanceConfig` sets `FocusFollowsMousePause = ""` for ctrl and alt | the same three rows, same message | **caught** |
+| `alt` read the Ctrl bit | n/a, injected | `focusFollowsMousePaused` tests `tea.ModCtrl` for `alt` | `pause: alt held keeps focus, release resumes` ("step 0 (mod 2): focus = 1, want 0"), `pause: alt key ignores ctrl` ("step 0 (mod 4): focus = 0, want 1") | **caught** |
+## The idle window: ticks, frame ticker wakes and context switches
+
+`TestIdleCostStaysLow` opens three idle shells and reads the client's counters
+with SIGUSR1 at both ends of a 10 s idle window: the maintenance ticks, the
+ticks that ran the full scans, the frame ticker wakes, and on Linux the
+client's voluntary context switches from `/proc/<pid>/task/*/status`. It runs
+twice, with the clock off and with the clock on. The clock-on window must
+write at least 100 bytes, which is the positive half: the clock's frames go
+out.
+
+The controls were run on 2026-10-16 on Linux on the branch
+perf/quiet-dock-frames. Each control is a text replacement, built to its own
+binary, with the file restored after the build.
+
+| Control | How | Tests that fail | Verdict |
+| --- | --- | --- | --- |
+| A clock frame wakes the frame ticker | `handleMsg`, `case dockComponentMsg`: `m.quietFrame = changed` cut | `TestIdleCostStaysLow/clock_on`: "woke the frame ticker 10 times (budget 1)". It also made 2706 context switches against 1441 with the line | **caught** |
+| The positive half | this branch | none: clock off 0 B, 100 ticks, 0 wakes. Clock on 435 B, 100 ticks, 0 wakes | **guard** |
+
+### The frame ticker stops at idle
+
+The branch perf/stop-frame-ticker stops Bubble Tea's frame ticker where it
+dropped it to `IdleFPS`. The clock-off window now also has a pane on a hidden
+workspace set the clipboard (`osc52_write = "on"`) while the client is idle,
+and the OSC 52 write must reach the terminal within 1 s of the pane making it.
+That is the positive half: a write Bubble Tea queues outside the view still
+goes out with the ticker stopped. Run on 2026-10-16 on Linux.
+
+| Control | How | Tests that fail | Verdict |
+| --- | --- | --- | --- |
+| The idle switch never runs | `handleMsg`, `case TickerMsg`: `m.idleFrameTicker(time.Time(msg))` cut | `TestIdleCostStaysLow`: "made 3606 context switches (budget 1500)" with the clock off, 3919 with it on | **caught** |
+| The ticker drops to `IdleFPS` instead of stopping | `idleFrameTicker`: `setProgramFPS(fr.program, config.IdleFPS)` in place of `ticker.Stop()` | none. Over 3 runs it made 1049 to 1160 context switches with the clock off and 1298 to 1362 with it on, against 816 to 895 and 928 to 989. A budget between the two would fail on a slower machine. The deadline tick (next section) lowers the floor enough to catch it | **not caught** |
+| No flush while the ticker is stopped | `Update`: `\|\| m.flushWhileIdle(msg)` cut | none. The hidden pane's output drew a frame anyway (the counters showed 4 renders and a ticker wake around the write), and the running ticker carried the clipboard write at 3.06 s | **not caught** |
+| The positive half | this branch | none: the clipboard write reached the terminal 3.05 s after the command `sleep 3; printf ...` was typed | **guard** |
+
+`TestKickFlushWritesTheFrame` (`internal/app`) is the in-process check of the
+mechanism: with the ticker stopped at 100 frames a second, nothing is written
+in 200 ms, and one value on the channel writes the frame.
+
+### The maintenance tick runs only when a job is due
+
+The branch perf/deadline-tick arms the maintenance tick for the next job that
+is due (`nextWake`), and arms none when nothing is. `TestIdleCostStaysLow` now
+allows 2 ticks and 400 voluntary context switches in its 10 s window, with the
+clock off and on. On the branch it saw 0 ticks, 59 and 152 context switches,
+and the clipboard write reached the terminal 3.16 s after the command was
+typed. Run on 2026-10-16 on Linux.
+
+| Control | How | Tests that fail | Verdict |
+| --- | --- | --- | --- |
+| The idle tick is re-armed | `handleMsg`, `case TickerMsg`: the idle gate returns `m.armTick(tickPollPeriod)` instead of nil | `TestIdleCostStaysLow`: "handled 100 maintenance ticks (budget 2)", and 707 and 822 context switches (budget 400). Unit `TestIdleTickSkipsScans`: "an idle client has a tick due" | **caught** |
+| The frame ticker drops to `IdleFPS` instead of stopping | `idleFrameTicker`: `setProgramFPS(fr.program, config.IdleFPS)` in place of `ticker.Stop()` | `TestIdleCostStaysLow`: 574 and 728 context switches (budget 400). This is the control the section above could not catch | **caught** |
+| The positive half | this branch | none | **guard** |
+
+A scratch build also ran the old idle gate every 100 ms beside the deadline
+tick, and logged any work the gate found that no armed tick covered for three
+looks in a row. It ran the whole suite, 7 shards
+and 1256 tests. Every hit was one of two kinds. A sticky error message on the
+dock, which has nothing to wait for and arms no tick. Or a pane's output that
+its own `PTYDataMsg` was carrying: a run with more detail showed a compose for
+pane output within 3 ms of each hit, and each hit cleared within 400 ms. The
+build failed six tests: four nested-client tests whose expected text wrapped
+on the audit binary's longer path, and the two idle budgets the audit's own
+10 Hz wakeups break. `TestCopiesReadAtLowColour` also failed once in that run
+and passes on the branch binary. The run also found that the stats line had
+grown a field after `motion=`, which `TestFullMotionWithoutAgentsStaysIdle`
+read as a suffix. The test now parses the line by name.
+
+#### A frame that wakes the frame ticker after the tick was armed
+
+View wakes the frame ticker (`noteFrame`) after Update has asked `nextWake`.
+A message that found the ticker stopped and composed a frame left it running
+at the frame rate with no tick armed to stop it, until some later message
+armed one. With the git section on, its reading every 2 s woke the ticker
+again as the tick for the next reading stopped it, so it ran all the time:
+about 320 context switches a second on a throwaway daemon, more than before
+the branch. The flush after such a frame now arms the idle switch
+(`frameIdleTickCmd`). The subtest `one late output` of `TestIdleCostStaysLow`
+has a pane write once inside the window. On the fixed build it saw 1 tick, 1
+ticker wake and 312 to 333 context switches (budget 800). Run on 2026-10-16
+on Linux.
+
+| Control | How | Tests that fail | Verdict |
+| --- | --- | --- | --- |
+| No tick armed after View wakes the ticker | `Update`, `case flushMsg`: return nil in place of `m.frameIdleTickCmd()` (the branch before the fix) | `TestIdleCostStaysLow/one_late_output`: "made 2708 context switches (budget 800)", with 0 ticks: the ticker ran from the output to the end of the window | **caught** |
+| The positive half | the fixed branch | none | **guard** |
+
+### An equal frame, and the buffer release, on the deadline tick
+
+Two fixes on the branch perf/deadline-tick after #762 landed. A frame equal
+to the last one no longer wakes the frame ticker. And #762's release of the
+panes' spare emulator buffers, which ran from the idle tick this branch
+removes, runs once after a frame changed and is then not armed again until
+the next one. A new `TestIdleCostStaysLow/git_section` runs a daemon client
+with the rail's git section, whose reading every 2 s composes a frame equal
+to the last. On the branch it saw 5 ticks, 0 frame ticker wakes and 260 to
+300 context switches in 10 s. Run on 2026-10-16 on Linux.
+
+| Control | How | Tests that fail | Verdict |
+| --- | --- | --- | --- |
+| An equal frame wakes the frame ticker | `View`: `if composed && !m.quietFrame` back to `if !m.quietFrame` | `TestIdleCostStaysLow/git_section`: "handled 10 maintenance ticks (budget 8)", "woke the frame ticker 5 times (budget 1)", "made 1186 context switches (budget 600)" | **caught** |
+| The release is never armed | `nextWake`: the `emulatorReleaseDue` deadline never added | `TestClientReleasesEmulatorScratch`: "the client released 96 KiB of reflow scratch across 4 panes, want at least 945 KiB". With the deadline it released 15824 KiB, then 1184 KiB of alternate screen | **caught** |
+| The positive half | this branch | none: the other `TestIdleCostStaysLow` windows still see 0 ticks, so the release does not keep an idle client awake | **guard** |
+## One colour parser: names and roles in the dock
+
+`TestDockCellStyleAndSessionComponent` has a `named` cell with
+`bg = "bright_magenta"` and `fg = "accent"`. `TestDockTabsConfigWarnings/valid`
+writes a `[dock.tabs]` colour in each form: hex, a slot name, a role and an
+ANSI number. Both were run against a build of the parent commit, which reads
+only `#rrggbb`.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| A slot name drew on the dock's own ground | the whole parser | a build of the parent commit | `TestDockCellStyleAndSessionComponent` ("a cell with bg = \"bright_magenta\" is on {Kind:2 … R:45 G:44 B:54}, want slot 13") | **caught** |
+| A role name drew in the dim ink | the whole parser | the same build | `TestDockCellStyleAndSessionComponent` ("a cell with fg = \"accent\" is in {Kind:2 … R:191 G:188 B:200}, want the dock's accent {Kind:2 … R:107 G:80 B:255}") | **caught** |
+| A valid name was reported as a config problem | the whole parser | the same build | `TestDockTabsConfigWarnings/valid` ("a valid [dock.tabs] was reported as a config problem", the dock reads "3 config problems") | **caught** |
+
+`TestDockCellBadColoursKeepTheDocksGround` and `TestDockTabsConfigWarnings/bad`
+wrote `fg = "red"` and `active_bg = "green"` as their bad colours. Both are
+slot names now, so they write `rouge` and `lime`.
+
+## Theme files reload on save
+
+`TestAnEditedThemeFileRepaints` selects a theme file, saves it again with a
+different red the way an editor saves, and prints a new SGR 31 probe until the
+host is given the new red.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| A saved theme file needed a restart | the themes watch | a build of the parent commit (theme base, no watch) | `TestAnEditedThemeFileRepaints` ("the theme's red reached the host as {Kind:2 … R:255 G:0 B:0}, want #00ff00") | **caught** |
+## last_workspace, break_pane, last_session, send_prefix
+
+`TestTmuxStyleActionsRunWhenBound` gains `last_workspace` (back and forth) and
+`break_pane` (the pane leaves workspace 1 for an empty workspace, and the view
+follows). `TestSendPrefixAndLastSession` presses `send_prefix` into `cat -v`
+and reads `^B`, then switches sessions and presses `last_session`.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| last_workspace ran nothing | the actions | a build of main | `TestTmuxStyleActionsRunWhenBound` ("tmuxish is on workspace 2, want 1") | **caught** |
+| send_prefix ran nothing | the actions | a build of main | `TestSendPrefixAndLastSession` ("send_prefix did not reach the pane as ^B") | **caught** |
+| break_pane ran nothing | its `d.Register` | renamed the registration | `TestTmuxStyleActionsRunWhenBound` ("break_pane moves the pane off workspace 1: … Workspace:1") | **caught** |
+| last_session ran nothing | its `d.Register` | renamed the registration | `TestSendPrefixAndLastSession` ("no client shows session first") | **caught** |
+
+## The tmux keybind preset
+
+`TestTmuxPresetDrivesWorkspaces` sets `keybindings.preset = "tmux"` and drives
+`ctrl+b c c p n 1 l` on a real daemon, reading the session's workspace after
+each. It then presses `ctrl+b p p` in terminal mode and expects one switch,
+and opens the tuios menu with `ctrl+b ctrl+t m`.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| The preset was not applied | the preset mechanism | a build of the parent commit (#795) | `TestTmuxPresetDrivesWorkspaces` ("tmuxkeys is on workspace 1, want 2" after `ctrl+b c`) | **caught** |
+| A typed p after ctrl+b p switched again | the preset's `repeat` list | removed it from `presets/tmux.toml` | `TestTmuxPresetDrivesWorkspaces` ("tmuxkeys is on workspace 1, want 2" after `ctrl+b p p`) | **caught** |
+
+## The screen and zellij presets
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| ctrl+a ctrl+a sent ^A under screen | the screen preset's `leader_twice` | set `leader_twice = "send"` in the test config | `TestScreenPresetLeaderTwiceAndSend` ("screenkeys is on workspace 2, want 1") | **caught** |
+| The zellij mode keys did nothing | the preset mechanism | a build of the parent commit (#800 without screen and zellij) | `TestZellijPresetOpensModes` ("ctrl+g t did not open the menu") | **caught** |
+| zellij p r renamed the window instead of splitting right | the preset's `[window_prefix]` | removed it from `presets/zellij.toml` | `TestZellijPresetOpensModes` ("daemon never reported 2 windows with settled geometry") | **caught** |
+| keybinds list said ctrl+g t r for the zellij split, which opens the workspace menu | `ScopesFor` | a build of 18f5625c0, before it | `TestZellijPresetOpensModes` ("keybinds list does not show split_vertical on ctrl+g p r") | **caught** |
+
+## The keybind preset picker and the welcome offer
+
+`TestWelcomeSuggestsThePresetAndWaits` puts a tmux.conf with `set -g prefix
+C-a` in the test's HOME, reads the welcome offer, checks config.toml has no
+preset, then presses `U` and Enter and reads the preset and the leader back
+from config.toml.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| No offer on the welcome screen | the picker and the offer | a build of the parent commit (#801) | `TestWelcomeSuggestsThePresetAndWaits` ("the welcome screen did not offer the tmux keys") | **caught** |
+## start-server hands --pprof to the daemon
+
+`TestStartServerPassesPprofToTheDaemon` runs `tuios --pprof ADDR start-server` against a scratch daemon and, once start-server has returned, reads the heap profile from ADDR. start-server spawns `tuios daemon` detached and exits, so only the daemon can be answering.
+
+The control was run on 2026-10-16 on the branch fix/start-server-pprof.
+
+| Control | How | Tests that fail | Verdict |
+| --- | --- | --- | --- |
+| The flag not handed on | a build of main at 8a69099b, where `startDaemonBackground` runs `daemon` with no flags | `TestStartServerPassesPprofToTheDaemon`: "the daemon start-server started never served /debug/pprof on 127.0.0.1:59545: … connect: connection refused" | **caught** |
+## Panes do not inherit the agent tool call that started the daemon
+
+`TestPanesDoNotInheritTheAgentThatStartedTheDaemon` starts the daemon with
+`tuios new --detach` from the environment of an agent's tool call: `TERM=dumb`,
+`NO_COLOR=1`, `CLICOLOR=0`, `FORCE_COLOR=0`, Codex's `CODEX_THREAD_ID`,
+`CODEX_CI` and `CODEX_SHELL`, and Claude Code's `CLAUDECODE` and
+`CLAUDE_CODE_SESSION_ID`. The pane's shell prints each of them, and each must
+be unset. A Codex hook is then run in the pane by the binary's absolute path:
+its `SessionStart` must be sent, and the pane's agent state must read `idle`.
+The pane's text and both hook decisions are saved under `artifactDir`.
+
+Run on macOS arm64 against upstream `main` at `b676cc47`, with real PTYs. The
+new names are entries in `hostMultiplexerVars`, so the wiring is the daemon's
+call to the filter; the mutant cuts that call and leaves the list and the test
+alone.
+
+| Control | Failure | Fixed build |
+| --- | --- | --- |
+| Unmodified main | `the pane inherited NO_COLOR=[1] CLICOLOR=[0] FORCE_COLOR=[0] CODEX_THREAD_ID=[outer-thread] CODEX_CI=[1] CODEX_SHELL=[1] CLAUDECODE=[1] CLAUDE_CODE_SESSION_ID=[outer-session]`; the hook skipped the pane's Codex as `nested Codex session`, and the agent state stayed `none` | every variable reads unset, and the state reads `idle` |
+| Cut the filter at the daemon's call site, `env := guestenv.WithoutHostMultiplexer(os.Environ())` in `buildEnvFor` replaced by `os.Environ()` | the same three failures | as above |
+
+The positive halves are in the same fixture. The command that starts the
+daemon also passes `CODEX_HOME`, `CLAUDE_CONFIG_DIR` and an ordinary variable,
+and the pane must have the test's value of each, so the removed ones do not
+read unset because the pane lost its environment. The same hook run with
+`CODEX_THREAD_ID` set in the pane, a Codex really nested in another, must still
+be skipped as a nested session; it is, in every control and in the fixed build.
+
+```sh
+TUIOS_E2E=1 TUIOS_E2E_BIN=/path/to/tuios \
+  go test -run '^TestPanesDoNotInheritTheAgentThatStartedTheDaemon$' -count=1 .
+```
+## Close a workspace from its dock tab
+
+`e2e/tui/workspace_tab_close_test.go` drives the `Close` row of a workspace
+tab's right-click menu, and `close_workspace` reached without a menu, against
+real daemons. Workspace 1 (`homews`) holds one pane and workspace 2 (`farws`)
+holds two (one in the last three tests), and the client stays on workspace 1, so
+the question, the toll line and the daemon's `list-windows` each tell the two
+apart.
+
+- `TestWorkspaceTabCloseClosesThatTabsWorkspace`: the `farws` tab's `Close`
+  names workspace 2 and counts its two panes. `Cancel`, the default row, closes
+  nothing. Confirming closes workspace 2's panes, keeps workspace 1's, and the
+  session still shows workspace 1.
+- `TestWorkspaceTabCloseOnTheCurrentTab`: the `homews` tab's `Close` closes
+  workspace 1 and keeps workspace 2. It is the positive half for the current
+  workspace.
+- `TestCloseWorkspaceFromThePaletteClosesTheCurrentOne`: a tab menu opened on
+  `farws` and dismissed leaves no target behind, and the palette row closes
+  workspace 1.
+- `TestCloseWorkspaceFromAKeyClosesTheCurrentOne`: `close_workspace = ["alt+x"]`
+  in `[keybindings.prefix_mode]`, and `Ctrl+B Alt+X` closes workspace 1 through
+  the same dialog.
+
+Every test runs on one pane that fills the screen, which the fullscreen fast
+path draws without the compositor. That path skipped every overlay it did not
+list, and the close confirmation was not on the list: the dialog opened, took
+the keyboard and drew nothing. The fifth control is that fix.
+
+Each control is a separate build that cuts one line, run against the four tests
+on 2026-10-16.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| The row acted on the workspace in view, not the tab's | n/a, injected, cuts the call site | `OpenWorkspaceClose` uses `m.CurrentWorkspace` and drops `TakeMenuWorkspace()` | `TestWorkspaceTabCloseClosesThatTabsWorkspace` ("the confirmation did not ask \"Close every pane on workspace 2 (farws)?\"") | **caught** |
+| The row was not added | n/a, injected, cuts the call site | drop `separator(), closeItem` from `workspacePillMenu` | `TestWorkspaceTabCloseClosesThatTabsWorkspace` ("the farws tab: context menu never showed [Switch to Rename Close]"), `TestWorkspaceTabCloseOnTheCurrentTab` ("the homews tab: …"), `TestCloseWorkspaceFromThePaletteClosesTheCurrentOne` ("the farws tab: context menu never showed [Switch to Close]") | **caught** |
+| The dialog counted the workspace in view | n/a, injected | `renderSessionClose` counts `m.workspaceToll(m.CurrentWorkspace)` | `TestWorkspaceTabCloseClosesThatTabsWorkspace` ("the dialog does not count workspace 2's two panes") | **caught** |
+| The confirm closed the workspace in view | n/a, injected | `SessionCloseActivate` calls `CloseWorkspacePanes(m.CurrentWorkspace)` | `TestWorkspaceTabCloseClosesThatTabsWorkspace` ("closing workspace 2 from its tab: workspace 2 has 2 panes, want 0") | **caught** |
+| The close confirmation was not drawn over a lone fullscreen pane | yes, cuts the gate | drop `m.ShowSessionClose ||` from `fullscreenFastWindow` | `TestWorkspaceTabCloseClosesThatTabsWorkspace`, `TestWorkspaceTabCloseOnTheCurrentTab` ("the confirmation did not ask …"), `TestCloseWorkspaceFromThePaletteClosesTheCurrentOne` ("\"Close workspace\" never produced \"Close every pane on workspace 1 (homews)?\"") | **caught** |
+
+`TestCloseWorkspaceFromAKeyClosesTheCurrentOne` passes under every control. Under
+the fast-path control the dialog still drew after `Ctrl+B Alt+X`, so this test
+does not cover the fast path. It guards the key path, which none of the controls
+touches.
+## The reply composer keeps a paste whole
+
+`TestRichRowReplyAndRecap` pastes 42 lines into the Inbox reply. The paste
+must show as one block, `[Pasted text #1 · 42 lines]`. The pane is a recorder
+that keeps every byte it reads. It must read the typed words and all 42 lines
+in one bracketed paste, then one Enter. The same test passes on the branch,
+which is the positive half of both rows.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| A paste into the reply was flattened onto one line | the composer's paste path | `pasteTakenByOverlay` calls `InboxReplyType(strings.Join(strings.Fields(content), " "))` again | `TestRichRowReplyAndRecap` ("waiting for the paste as one block: … timed out") | **caught** |
+| The block's label was sent in place of its text | n/a, injected | `Model.Text` writes `c.block.label` | `TestRichRowReplyAndRecap` ("the pane read \"\x1b[200~echo r9c1e [Pasted text #1 · 42 lines]\x1b[201~\r\"") | **caught** |
+## A large paste in a reply goes as a file
+
+`TestReplyWithALargePasteGoesAsAFile` pastes 2,048 lines, about 100 KiB, into
+the Inbox reply. The recorder must read the typed words and a label that names
+a file, and never the paste. The file must hold every byte of the paste, with
+mode 0600, in the paste folder. `TestRichRowReplyAndRecap` still reads its
+42 lines in their place, since that reply is under 12 KiB. Both pass on the
+branch.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| A large paste was typed into the pane | the file path of `composeQueued` | every part typed in its place (`if true`) | `TestReplyWithALargePasteGoesAsAFile` ("the pane never read \"lines]\x1b[201~\r\"; it read \"\x1b[200~echo b1g9 big paste line 0001 …") | **caught** |
+## An image in a reply goes as a file
+
+`TestReplyWithAnImageGoesAsAFile` pastes the path of a PNG into the Inbox
+reply, as a terminal pastes a dropped file, with its space escaped. The draft
+must show `[Image #1 · 64×48 png]`. The agent is Claude Code, which takes an
+image as a path in a paste of its own. The recorder must read the words in
+one paste, the path alone in the next, then one Enter, and the file must hold
+the image's bytes in the paste folder. It passes on the branch.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| A pasted image path stayed text | the image read in `inboxReplyPasteCmd` | every paste taken as text (`if ok \|\| !ok`) | `TestReplyWithAnImageGoesAsAFile` ("waiting for the image as one block: … timed out") | **caught** |
+## A reply for an agent on a host goes over the link
+
+`TestReplyToAnAgentOnAHost` starts this machine's daemon linked to alpha
+through the fake ssh, and runs a recorder as an agent in a pane on alpha. It
+sends `queue-prompt` with `host` to this machine's daemon, with a 100 KiB
+paste. alpha's queue must list the entry as the link's. When the agent rests,
+the recorder must read the words and a label that names a file in alpha's
+runtime folder, and the file must hold the paste. It passes on the branch.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| A reply with host was not passed on | the forward in `verbQueuePrompt` | `if false && p.Host != ""` | `TestReplyToAnAgentOnAHost` ("queue-prompt with host: exit status 1 … session_not_found") | **caught** |
+| A small paste to a host whose link has no files was refused | the retry as text in `queuePromptToHost` | `if false && ok && far.Code == ErrVerbForbidden` | `TestReplyToAnAgentOnAHost` ("queue-prompt with host to a link without files: exit status 1") | **caught** |
+
+## Panels over a lone fullscreen pane
+
+`e2e/tui/fast_path_overlays_test.go` opens panels over one pane that fills the
+screen, which the fullscreen fast path draws without the compositor. That path
+skipped every overlay its gate did not list, and six panels the mouse routing
+knows (`eachOverlayGate` in `internal/app/overlay_hit.go`) were not on it: the
+Copies panel, the glyph picker, the dock and section editors, the copy dialog
+and the worktree prompt. Each opened, took every key and drew nothing. The gate
+now asks `AnyOverlayOpen`, which reads that list.
+
+- `TestPanelsDrawOverALoneFullscreenPane`, one subtest per panel: the Copies
+  panel from `Ctrl+B u`, and the glyph picker, dock editor and section editor
+  from their Settings rows. Settings turns the fast path off on its own, so the
+  test clicks it to the front and clicks the pane beside it, which dismisses the
+  front panel and leaves the picker alone. Each subtest checks the pane's border
+  spans the screen first, waits for text only the panel draws, closes it with
+  Esc and has the shell compute `BACK-42`.
+- `TestDropDialogDrawsOverALoneFullscreenPane`: the copy dialog. A file's path
+  is pasted into the only pane, which runs on `build` and is tiled to fill the
+  screen. The question whether to send it has to be drawn, and after Esc the
+  far shell computes `FARBACK-42`.
+
+The worktree prompt has no test: it opens from the rail's menu, and the rail
+takes the fast path away while it is shown.
+
+The first control is upstream at `72c1c367` with this test file, which is the
+gate before the fix. The other five keep the fix and drop one kind from what
+the gate asks: `m.AnyOverlayOpen()` becomes a copy of it that skips that kind,
+so mouse routing still knows the panel and only the gate does not. Run on
+2026-10-17.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| Six panels were not drawn over a lone fullscreen pane | yes, the whole fix | build upstream `72c1c367` | `TestPanelsDrawOverALoneFullscreenPane/copies` ("the copies is not drawn … \"No copies.\""), `/glyph_picker` ("\"↑↓ preview\""), `/dock_editor` ("\"Dock layout\""), `/section_editor` ("\"Rail sections\""), `TestDropDialogDrawsOverALoneFullscreenPane` ("the drop question is not drawn …") | **caught** |
+| The Copies panel was not drawn | yes, cuts the gate | the gate skips `transfers` | `TestPanelsDrawOverALoneFullscreenPane/copies` only | **caught** |
+| The glyph picker was not drawn | yes, cuts the gate | the gate skips `glyphpicker` | `TestPanelsDrawOverALoneFullscreenPane/glyph_picker` only | **caught** |
+| The dock editor was not drawn | yes, cuts the gate | the gate skips `dockeditor` | `TestPanelsDrawOverALoneFullscreenPane/dock_editor` only | **caught** |
+| The section editor was not drawn | yes, cuts the gate | the gate skips `sectioneditor` | `TestPanelsDrawOverALoneFullscreenPane/section_editor` only | **caught** |
+| The copy dialog was not drawn | yes, cuts the gate | the gate skips `copydialog` | `TestDropDialogDrawsOverALoneFullscreenPane` only | **caught** |
+
+A first try at the per-panel controls cut the whole gate while the panel was
+open (`m.AnyOverlayOpen() && !m.ShowGlyphPicker`). That also hid Settings under
+the glyph picker and the editors, and those subtests failed early on "\"Settings\"
+is not on screen" rather than on the assertion. The controls above skip only the
+one kind.
+
+## The armed leader on the mode pill
+
+`TestDockModeIconsFollowTheConfig/prefix` presses the leader and reads the dock:
+by default the mode pill shows the keyboard icon on a new ground and no PREFIX
+badge is drawn. With `dock_prefix_indicator = "badge"` the pill keeps its icon
+and the badge comes back. `TestOverlayLayouts/*-16` now requires the pill, not
+the badge, on a slot ground, and still sweeps the screen for light ink on a
+light slot.
+
+Run on 2026-10-16.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| The pill did not show the armed leader | yes | `case false && m.prefixOnPill():` in `buildDockLeftText` | `TestDockModeIconsFollowTheConfig/prefix` ("pill: the armed leader never showed where asked") | **caught** |
+| The pill took light ink on slot 3 at 16 colours | yes | `ModeInfo.Color` back to a hex string, read with `lipgloss.Color` | `TestOverlayLayouts/dark-120x40-16`, `TestOverlayLayouts/light-120x40-16` ("\"\\uf11c\" at (2,0) is slot 15 on slot 3: light ink on a light ground") | **caught** |
+
+## Theme export and share
+
+`TestThemeExportWritesOnlyTheChanges` writes `ember` (base `dracula`) and
+`ember2` (base `ember`), then requires `tuios theme export ember2` to hold the
+base `dracula` and only the changed colours and chrome. The file loads as the
+same theme under another id, `tuios theme share` holds the same file, and the
+base16 scheme maps the background and the chrome.
+
+Run on 2026-10-16.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| The export wrote every colour | yes | `if full || true` in `exportDoc` | `TestThemeExportWritesOnlyTheChanges` ("the export of ember2 is ...") | **caught** |
+| The export did not follow a base that is a file | yes | the loop in `builtinAnchor` skips the files | `TestThemeExportWritesOnlyTheChanges` ("the export of ember2 is ...") | **caught** |
+
+## Chrome roles for one piece of chrome
+
+`TestThemeChromeRolesPaint` loads a theme with `chrome.border.unfocused`,
+`chrome.rule` and `chrome.dock.ground` in colours no shipped theme draws, and
+reads them off the frame: the unfocused border, the dock's rule and the dock's
+row. Then `dock_background = "off"` in the config must win over the theme.
+
+Run on 2026-10-16.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| The unfocused border ignored the theme | yes | `&& false` on the `RoleBorderUnfocused` check in `BorderUnfocusedOn` | `TestThemeChromeRolesPaint` ("the theme's border.unfocused, rule and dock.ground never painted") | **caught** |
+| The dock ignored the theme's ground | yes | `themeGround` always returns the config's setting | `TestThemeChromeRolesPaint` (same message) | **caught** |
+| The rule ignored the theme | yes | `&& false` on the `RoleRule` check in `RailRuleOn` | `TestThemeChromeRolesPaint` (same message) | **caught** |
+
+## Theme none follows the terminal's background
+
+`TestThemeNoneMatchesTheTerminal` runs tuios under hostterm with a dark green
+background. With `theme = "none"` the command palette's ground must be green.
+With an empty theme it must not be: the default stays the constant ramp.
+
+Run on 2026-10-16.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| The local client did not tell the chrome its ground | yes | `&& false` on the `theme.SetHostGround` call in `setHostBg` | `TestThemeNoneMatchesTheTerminal/none` ("the palette's ground is {... R:58 G:57 B:67}, want green true") | **caught** |
+
+## A light and a dark theme
+
+`TestThemePairFollowsTheTerminal` sets `theme = "nord"` and
+`theme_light = "catppuccin_latte"` under hostterm, which starts light and
+switches to dark on SIGUSR1. A pane's red must be latte's, then nord's after
+the switch. A pick in the theme picker must ask d, l or b, and `l` must write
+only `theme_light`.
+
+Run on 2026-10-16.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| The client did not follow the terminal's scheme | yes | `followSchemeTheme` returns at once | `TestThemePairFollowsTheTerminal` ("light: a pane's red reached the host as #bf6169, want #d20f38") | **caught** |
+| The picker wrote theme without asking | yes | `ThemePickerApplySelection` skips the pair question | `TestThemePairFollowsTheTerminal` ("the picker never asked which theme") | **caught** |
+| A --theme flag lost to theme_light on a light terminal | yes | the `FlagTheme` check removed from `followSchemeTheme` | `TestThemePairFollowsTheTerminal` (the flag run: a pane's red reached the host as dracula's #ff5555), run on 2026-10-17 | **caught** |
+
+## The focused border by state
+
+`TestThemeChromeRolesPaint` now also enters copy mode on the focused pane and
+requires its border in the theme's `border.copy`.
+
+Run on 2026-10-16.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| The focused border ignored the state colours | yes | `focusedStateBorder` always returns nil | `TestThemeChromeRolesPaint` ("the focused pane in copy mode never took the theme's border.copy") | **caught** |
+
+## The focused border gradient
+
+`TestBorderGradientSteps` sets `border_focused_gradient = "#ff0000 #0000ff"`
+at angle 0 and requires the focused border's top row to step through three to
+eight colours from red to blue, on a floating pane and then on a tiled one.
+
+Run on 2026-10-16.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| The gradient was never drawn | yes | `gradientOn` always returns false | `TestBorderGradientSteps` ("floating: the focused border never stepped through the gradient: 1 steps") | **caught** |
+
+## Window title style and place
+
+`TestLiveAppearanceKeepsTheScreen` gains `window_title_style=plain` and
+`window_title_align=center`. Each must change the frame, keep the panes drawn,
+and restore the frame when set back.
+
+Run on 2026-10-17.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| plain drew the pill | yes | the `plain` case in `windowTitleBadge` never matches | `TestLiveAppearanceKeepsTheScreen/window_title_style=plain` ("changed nothing on screen") | **caught** |
+| The title ignored its place | yes | `layoutBorderRow` never calls `alignedBorderRow` | `TestLiveAppearanceKeepsTheScreen/window_title_align=center` ("changed nothing on screen") | **caught** |
+
+## The theme editor
+
+`TestThemeEditorEditsAndSaves` opens the editor from the palette on nord,
+types `#ff0000` for the unfocused border, and requires the colour on the pane
+without focus at once. `ctrl+s` must write `themes/nord.json` with only the
+base and that field, and esc must close the editor.
+
+`TestThemeFileWritersHonourConfigReadOnly` (internal/server) holds every theme
+file writer to a read of `ConfigReadOnly`.
+
+Run on 2026-10-17.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| The editor did not preview | yes | `themeEditorChanged` skips `Draft.Preview` | `TestThemeEditorEditsAndSaves` ("the typed border colour never showed on the pane without focus") | **caught** |
+| A served client could save | yes | the `ConfigReadOnly` check cut from `ThemeEditorSave` | `TestThemeFileWritersHonourConfigReadOnly` ("ThemeEditorSave ... never reads ConfigReadOnly") | **caught** |
+
+## The theme editor's Quick tab and contrast fix
+
+`TestThemeEditorQuickAndFix` starts a new theme from nord with `ctrl+o` in the
+picker. The editor must open on the Quick tab. An accent of `#330000` must
+show `!` and "Press f to fix contrast.", `f` must clear both, and the saved
+accent must still be red.
+
+Run on 2026-10-17.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| f did not change the colour | yes | `ThemeEditorFix` sets the colour it already had | `TestThemeEditorQuickAndFix` ("f did not fix the accent's contrast") | **caught** |
+
+## The rail's row style
+
+`TestLiveAppearanceKeepsTheScreen` gains `sidebar.row_style=pill` and
+`sidebar.row_style=marker`. Each must change the frame, show the session name
+in the pill caps or behind the marker, and restore on set back.
+
+Run on 2026-10-17.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| pill did not mark the name | yes | `nameMarked` forced false in `sidebarSessionRow` | `.../sidebar.row_style=pill` ("the frame does not show \"\ue0b6home\ue0b4\"") | **caught** |
+| marker did not draw its glyph | yes | the marker case in `sidebarGutterTinted` never matches | `.../sidebar.row_style=marker` ("the frame does not show \"›· home\"") | **caught** |
+
+## The rail's header style
+
+`TestLiveAppearanceKeepsTheScreen` gains `sidebar.header_style=pill` and
+`sidebar.header_style=icon`. Each must show the sessions header in the pill
+caps or behind its icon, and restore on set back.
+
+Run on 2026-10-17.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| The header ignored its style | yes | the style switch in `sidebarHeaderRowRuled` never matches | `.../sidebar.header_style=pill` and `=icon` ("the frame does not show ...") | **caught** |
+
+## The rail's section spacing
+
+`TestLiveAppearanceKeepsTheScreen` gains `sidebar.density=roomy`, which must
+change the frame, keep the panes and restore on set back.
+
+Run on 2026-10-17.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| roomy did nothing | yes | `RailRoomy` never set | `.../sidebar.density=roomy` ("changed nothing on screen") | **caught** |
+
+## Workspace tab marks
+
+`TestDockTabsFlatStripTwoWorkspaces` now also rings the bell and prints on
+workspace 1 while workspace 2 is in view, and requires `1~A!#` on the strip,
+then no marks after a click back to workspace 1. `TestDockTabAttentionInk`
+sets `needs_input` on a pane of workspace 1 and requires tab 1 in
+`attention_fg`.
+
+Run on 2026-10-17.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| No mark was kept | yes | `noteWorkspaceMark` always returns false | `TestDockTabsFlatStripTwoWorkspaces` ("a bell and output on workspace 1 never marked its tab") | **caught** |
+| The tab ignored attention | yes | `dockTab` never takes the attention ink | `TestDockTabAttentionInk` ("tab 1 never took attention_fg while its pane waited") | **caught** |
+
+### Over a daemon
+
+`TestDockTabsFlatStripTwoWorkspaces` now attaches to a daemon (`new e2e`). A
+client streams only the panes of the workspace it shows, so before the fix
+the bell and output of workspace 1 never reached it. The daemon now sends
+one `MsgPaneMark` per pane per edge (`internal/session/pane_marks.go`).
+
+Run on 2026-10-17.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| A client never heard of a pane out of view | yes | build of 21f896044, the PR head before the fix | `TestDockTabsFlatStripTwoWorkspaces` ("a bell and output on workspace 1 never marked its tab") | **caught** |
+| The edge never re-armed when a client stopped looking | yes | `rearmPaneMarks` dropped from `handleUnsubscribePTY` | `TestDockTabsFlatStripTwoWorkspaces` (same message) | **caught** |
+| No mark was kept, over a daemon | yes | `noteWorkspaceMark` always returns false | `TestDockTabsFlatStripTwoWorkspaces` (same message) | **caught** |
+
+The fixed build passes `TestDockTabsFlatStripTwoWorkspaces`,
+`TestDockTabAttentionInk`, the other `TestDockTabs*` and `TestIdleCostStaysLow`.
+
+## The ZOOM notice stays after unzoom
+
+`TestZoomToggle` now requires the dock's ZOOM notice after each zoom, and
+requires it gone within two seconds of each unzoom. The notice lives for six
+seconds. Rounds 0 to 2 use `prefix z`, round 3 uses the bare `z` of window
+management mode.
+
+Run on 2026-10-17.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| `prefix z` never cleared the notice | yes | `actions.go` and `prefix_actions.go` as on main | `TestZoomToggle` ("the ZOOM notice stayed after unzooming, round 0") | **caught** |
+| Bare `z` cleared with an empty message, which removes nothing | yes | `handleToggleZoom` back to `ShowNotification("", ...)` | `TestZoomToggle` ("the ZOOM notice stayed after unzooming, round 3") | **caught** |
+## A screenshot shows the pane's kitty image
+
+`TestKittyImageSurvivesCaptureMode` shows a 37x23 gradient PNG with kitty
+graphics in 10 by 5 cells, then takes the window from capture mode. The PNG
+must hold at least 5000 pixels of the image, and their red must rise from left
+to right. It passes on the branch, in the standalone TUI and against a daemon.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| A screenshot showed the blank cells under a kitty image (issue 678) | the decode in `decodeShotPieces` | it returns nil (`if true`) | `TestKittyImageSurvivesCaptureMode/standalone` and `/daemon` ("has 454 pixels of the image, want at least 5000") | **caught** |
+## A cell box from one stated dimension
+
+`e2e/tui/kitty_placement_one_axis_test.go` sends one `a=T` per shape: only
+`c=12`, only `r=4`, both, and neither, on a square and a wide picture, plus one
+`a=t` followed by `a=p` with `c=12` for the shape a guest places later. One
+picture is 512x300, where the aspect lands between two rows, so the rounding is
+pinned and not just the exact divisions.
+`TUIOS_CELL_SIZE` pins the cells at 10x20px. The test reads the cell box out of
+the placement tuios puts on the wire.
+
+The control is the commit before the fix, `c878e4d`, built as the binary the
+suite runs against.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| A placement sized its missing axis from the bitmap's pixels | yes, the whole fix | build `c878e4d` | `.../width_only_keeps_the_aspect` ("12x26 cells, want 12x6"), `.../width_only_on_a_wide_picture` ("12x13 cells, want 12x3"), `.../height_only_keeps_the_aspect` ("52x4 cells, want 16x4"), `.../width_only_rounds_up` ("12x15 cells, want 12x4"), `.../placed_later_keeps_the_aspect` ("12x26 cells, want 12x6") | **caught** |
+
+`both_given` and `neither_given` pass on the broken build as well: the fix does
+not touch their boxes, which is the positive half of the control. Run on
+2026-10-17.
+
+### The source rectangle and guest numbers
+
+kitty fits the missing axis to the aspect of the source rectangle, so the test
+gained a `crop` case: `c=12` over the left half of a 512x512 picture
+(`w=256,h=512`), which wants 12x12. `TestKittyBoxFromHostileSizes` in
+`internal/app/kitty_cells_bounds_test.go` feeds the sizing the numbers a guest
+can write: an `s=` or `v=` past the int range, a negative `c=` or `r=`, and a
+huge one.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| The fitted axis took the whole picture's aspect, not the source rectangle's | yes | build `75b3976` | `.../width_only_keeps_the_crop's_aspect` ("12x6 cells, want 12x12") | **caught** |
+| `s=4611686018427387904` with `c=12` wrapped the divisor to zero and panicked | yes | test run at `75b3976` | `TestKittyBoxFromHostileSizes/s_past_int_range_with_c` ("integer divide by zero") | **caught** |
+
+The crop case fails on `c878e4d` as well ("12x26 cells, want 12x12"). Run on
+2026-10-17.
+
+## A screen capture shows the reply previews and the launcher icons
+
+`TestReplyPreviewInScreenCapture` attaches a reply editor to an agent row on a
+kitty host. It pastes the path of a 320x60 gradient PNG and waits for the
+preview's kitty placement on the host. Then it takes the full screen from
+capture mode. The PNG must hold at least 5000 pixels of the gradient, and
+their red must rise from left to right.
+
+`TestLauncherIconsInScreenCapture` opens the launcher over six apps whose
+icons are a solid (11, 222, 99). It waits until the host holds all six
+placements, then takes the full screen from capture mode. The PNG must hold
+at least 1000 pixels of that colour.
+
+Run on 2026-10-17.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| A screen capture showed blank cells under the reply previews | yes | `screenShotPieces` without the `replyPreview.shotPieces` call | `TestReplyPreviewInScreenCapture` ("has 928 pixels of the image, want at least 5000") | **caught** |
+| A screen capture showed blank cells under the launcher icons | yes | `screenShotPieces` without the `launcherIcons.shotPieces` call | `TestLauncherIconsInScreenCapture` ("has 0 pixels of the icons, want at least 1000") | **caught** |
+
+The fixed build passes both, `TestKittyImageSurvivesCaptureMode`, every
+`TestLauncher*`, every `TestScreenshot*` and `TestRichRowReplyAndRecap`.
+
+## The mail editor has the image previews and the @ list
+
+`TestMailNewMessageFromThePersonReachesTheAgent` opens a new message to an
+agent. Before it types the message, it pastes the path of a 64x48 PNG. The
+strip must show a thumbnail box labelled `#1`, not a line of words. The host
+stream must hold a kitty placement at that box: the label's column, three rows
+above the label. Then it types ` @`, and the list must show
+`e2e-ctrlp/WORKER`. It empties the draft and goes on as before.
+## Another Codex conversation stays off the pane (#852)
+
+`TestCodexSharedServerKeepsAnotherConversationOffThePane` runs two Codex
+conversations through the real `tuios agent-hook codex` from one process, so
+both carry the same harness pid, as they do under one Codex app-server. A
+stand-in `codex` holds the pane's foreground. The test checks, in order:
+
+- The other conversation's approval and prompt leave the pane's state and
+  conversation alone, mid-turn and at rest. Nothing reaches `list-attention`
+  or the dock.
+- Its `SessionStart` after a compaction is refused too.
+- Its `SessionStart` with source `resume` takes the pane over.
+- The pane's own approval then takes the pane back and shows in
+  `list-attention` and the dock.
+- After two `SessionStart`s from two other conversations in a row, the pane's
+  own approval still takes the pane back.
+- The other conversation takes the pane, `/new` in the pane starts a new
+  conversation, and the other conversation's approval takes the pane back.
+  The new conversation's approval must still take the pane and reach
+  `list-attention`.
+- A conversation that never sent a `SessionStart` is refused.
+- After codex exits, a third conversation's prompt is taken.
+
+Run on 2026-10-18.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| The mail draft got no previewer and no @ list | yes | `newMailDraft` without `wireDraft` | `TestMailNewMessageFromThePersonReachesTheAgent` ("the mail draft placed no picture on the thumbnail box") | **caught** |
+| Pictures were placed for the Inbox reply only | yes | `flushReplyPreviewForFrame` with `d.kind == "inbox"` added to its condition | `TestMailNewMessageFromThePersonReachesTheAgent` ("the mail draft placed no picture on the thumbnail box") | **caught** |
+| The mail draft got no @ list | yes | `newMailDraft` with `comp.SetCompleter(nil)` after `wireDraft` | `TestMailNewMessageFromThePersonReachesTheAgent` ("waiting for the @ list of agents") | **caught** |
+
+The fixed build passes it, every other `TestMail*` and `TestAgentMail*`,
+`TestARoutedKeyReplyIsAClaim`, `TestRichRowReplyAndRecap`, every
+`TestReplyWith*`, `TestReplyToAnAgentOnAHost`,
+`TestReplyPreviewInScreenCapture` and every `TestInbox*`.
+| Another conversation's approval took the pane over | yes | `shared_server = false` in the codex manifest | `TestCodexSharedServerKeepsAnotherConversationOffThePane` ("other PermissionRequest mid-turn: the pane is {State:needs_input ... AgentSession:cx-quick}, want state working in conversation cx-pane") | **caught** |
+| The daemon never read the manifest flag | yes | `verbSetAgentState` sets `SharedServer: false` | same test, same message | **caught** |
+| The hook never marked a `SessionStart` | yes | `reportHook` does not send `session_start`, so the guard never arms | same test, same message | **caught** |
+| A takeover hid the pane's own approval | yes | `sessionGuard` without the reclaim from the guard's history | same test ("pane PermissionRequest reclaims: the pane is {State:idle ... AgentSession:cx-quick}, want state needs_input") | **caught** |
+| Two takeovers in a row hid the pane's own approval | yes | `sharedGuardHistory = 1` | same test ("pane PermissionRequest reclaims again: the pane is {State:idle ... AgentSession:cx-third}, want state needs_input") | **caught** |
+| A reclaim dropped the owner it displaced, so `/new` in the pane was locked out | yes | the reclaim pushes the displaced owner only on a `SessionStart` | same test ("new conversation PermissionRequest: the approval did not take the pane: {... AgentSession:cx-quick ...}") | **caught** |
+| The guard outlived codex | yes | the detector's shell sweep disabled | same test ("the guard still held the pane after codex exited") | **caught** |
+| A compaction counted as a new conversation | yes | `translateCodex` sets `SessionStart` for source `compact` | same test ("other SessionStart after a compaction: the pane is {State:idle ... AgentSession:cx-quick}, want state done") | **caught** |
+
+The fixed build passes it, `TestHookIntegrationsReportTheTurn` and
+`TestCodexPaneNotificationsArrive`. The Claude Code `/clear` and `/resume`
+rules keep their tests in `internal/session`
+(`TestSetAgentStateNewSessionInTheSameHarnessTakesOver`,
+`TestSetAgentStateRefusesANestedSession`), which pass unchanged.
+
+## The mode 2031 notice on every theme change
+
+`TestOmarchyThemeSwitchIsFollowed` now switches Omarchy from Tokyo Night to
+Gruvbox, another dark theme, before Catppuccin Latte. The scheme listener in
+the pane turns on mode 2031 and counts the notices for a second after the
+first. After Gruvbox it must get exactly one `CSI ? 997 ; 1 n`, and OSC 11 and
+OSC 4 slot 4 must answer Gruvbox's colours. The fixed build passes it,
+`TestThemedDaemonPaneReportsTheTheme`, `TestHostColorsReachPanesAndChrome` and
+`TestHostColorsSilentTerminal`.
+
+The controls were run on 2026-10-18 on branch `feat/theme-change-997`.
+
+| Control | How | Tests that fail | Verdict |
+| --- | --- | --- | --- |
+| The notice only on a dark and light flip, which is `main` before the change | `Emulator.SetReportColors`: `changed` is a change of `isLightBackground` | `TestOmarchyThemeSwitchIsFollowed` ("after the switch to Gruvbox the program that turned on mode 2031 was not told dark") | **caught** |
+| Two notices for one theme push, one for the pair and one for the sixteen | `Emulator.SetReportColors`: a write for a changed pair and another for a changed palette | `TestOmarchyThemeSwitchIsFollowed` ("the switch to Gruvbox did not send the program exactly one notice"), `TestConform_ColorSchemeNotice` | **caught** |
+| DSR 996 unanswered | the `case 996` in the private DSR handler cut | `TestConform_ColorSchemeDSR` (every case), `TestStatusReportFormPerBackend` (unit tests in `vt/`, not e2e) | **caught** |
+
+After review, two storms were fixed on the same branch. `TestOmarchyThemeSwitchIsFollowed`
+then moves through the theme picker on the way to Dracula: the pane program must
+get no notice while the picker is open, and one dark notice for the pick.
+`TestThemedDaemonPaneReportsTheTheme` attaches a second client with
+`--theme catppuccin_latte` after input at the first: a pane must keep answering
+Dracula's background, and Nord's after the second client picks Nord. Run on
+2026-10-18.
+
+| Control | How | Tests that fail | Verdict |
+| --- | --- | --- | --- |
+| The report follows each previewed theme | `reportedToPanes`: the hold while the picker or editor is open cut | `TestOmarchyThemeSwitchIsFollowed` ("moving through the theme picker sent the program a notice", "picking Dracula did not send the program exactly one notice") | **caught** |
+| Every client's push sets the report colours | the push handler: the `ownsReportColors` check cut | `TestThemedDaemonPaneReportsTheTheme` ("after a second client on Latte attached, a pane's OSC 11 was answered \"rgb:efef/f1f1/f5f5\", want the first client's Dracula \"rgb:1e1e/1f1f/2828\"") | **caught** |
+## The after-theme-change hook
+
+`TestAfterThemeChangeHookFiresOncePerPick` starts on `tokyonight` with an
+`after-theme-change` hook that appends `$TUIOS_EVENT $TUIOS_THEME
+$TUIOS_THEME_BG $TUIOS_THEME_LIGHT` to a file. The file must stay empty after
+startup, hold one line for a Dracula pick typed through the picker, stay at one
+line after a cancelled Latte pick, and hold a second line for a Latte pick,
+with a new background and the light flag `1`. The fixed build passes it and
+the other theme picker and theme editor tests.
+
+The controls were run on 2026-10-18 on branch `feat/after-theme-change-hook`.
+
+| Control | How | Tests that fail | Verdict |
+| --- | --- | --- | --- |
+| The hook fires while the picker shows themes | `noteThemeChange`: the theme picker and editor check cut | `TestAfterThemeChangeHookFiresOncePerPick` ("after one pick the hook ran 2 times, want 1") | **caught** |
+| The hook fires at startup | `noteThemeChange`: the first frame no longer only records | `TestAfterThemeChangeHookFiresOncePerPick` ("the hook fired at startup") | **caught** |
+| Nothing checks for a theme change | `composeFrameOnce`: the `noteThemeChange` call cut | `TestAfterThemeChangeHookFiresOncePerPick` ("after one pick the hook ran 0 times, want 1") | **caught** |
+
+After review, the hook runs only in a local client and takes its light flag
+from `vt.IsLightBackground`, the rule of the mode 2031 notice. The served half
+is a boundary, so it is held by the unit test
+`TestServedClientsDoNotRunTheThemeHook` in `internal/app`: an ssh and a web
+client run no hook for a theme change, and a local client runs it once with
+light `1` for Latte. Run on 2026-10-18.
+
+| Control | How | Tests that fail | Verdict |
+| --- | --- | --- | --- |
+| A served client runs the operator's hook | `noteThemeChange`: the `m.Client != ClientLocal` check cut | `TestServedClientsDoNotRunTheThemeHook` ssh and web rows ("the hook ran 1 times for a theme change in a ssh client, want 0") | **caught** |
+| The light flag uses another rule | `noteThemeChange`: the `vt.IsLightBackground` result inverted | `TestServedClientsDoNotRunTheThemeHook` local row (light "0" for Latte) | **caught** |
+
+## The agents cockpit: grouped fleet and rich rows
+
+`TestCockpitGroupsTheFleet` builds twelve fake agents in four sessions, one
+of them on an approval the hook holds. It opens `ctrl+b i` at 200x55 and
+checks the group order, the approval row's verb and command, that a click
+selects a row and leaves the view open, that `a` answers the approval from
+its card, and that a double-click goes to the pane.
+`TestAgentsViewOpenAddsNoIdleCost` holds two 10 s idle windows over three
+agents at rest, the view closed and then open, and counts the view's own
+ticks and fresh frames.
+
+Run on 2026-10-18.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| The groups come in another order than what each needs from you | n/a, injected | `buildCockpitRows` walks the groups as Working, Needs you, Ready for review, Idle | `TestCockpitGroupsTheFleet` ("\"Working\" is on row 6, not below the group before it (row 24)") | **caught** |
+| A click on a row goes to the pane, the agents view's old rule | n/a, injected | `CockpitClick` treats every click as the second of a double-click | `TestCockpitGroupsTheFleet` ("a click did not put bench-idle in the focus") | **caught** |
+| `a` does not answer the held approval | n/a, injected | `CockpitKey` without `inbox_allow` among the approval actions | `TestCockpitGroupsTheFleet` ("a never answered the held approval") | **caught** |
+| The open view wakes the client while nothing changes | n/a, injected | `inboxAgentsTick` at one second | `TestAgentsViewOpenAddsNoIdleCost` ("10 ticks of the view") | **caught** |
+| A held row's move waits for a message that never comes | `armCockpitHold`, the one timer for a hold | The hold set with no timer armed | `TestAgentsViewOpenAddsNoIdleCost` ("the held row never moved to Working") | **caught** |
+
+The fixed build passes them, every `TestInbox*`, `TestAskHuman*`,
+`TestChromeLooksAndFooters`, `TestEveryOverlayOwnsItsGround` and the other
+tests that open the Inbox (137 tests).
+
+### Marks and cut approvals
+
+`TestCockpitBulkActsOnlyOnSeenMarks` marks the agent that holds the approval,
+checks the mark on its row and the count in the title, folds its group with a
+click on the heading, and presses `3`. `TestCockpitCutApprovalIsNotAnswered`
+holds an approval on a 100x12 screen, where its card cannot show the command
+and where it runs. It checks the card says so inside the body, and that `a`
+and `1` leave the approval held. `TestCockpitApprovalCardOnEveryTab` holds
+an approval at 100x30, steps to the Checkpoints and Live tabs, checks the
+card on each, and answers it with `a` from the Live tab. Run on 2026-10-18.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| A mark is invisible | The mark column in `drawFleetRow` | The mark drawn only when `false` | `TestCockpitBulkActsOnlyOnSeenMarks` ("the mark is not on api-auth's row, or the title does not count it") | **caught** |
+| A bulk key acts on a mark the list does not show | `markedAgents` over `cockpitShownAgents` | `markedAgents` reads the whole agents list | `TestCockpitBulkActsOnlyOnSeenMarks` ("3 did not say no marked agent it can see waits": it rejected the folded agent's approval) | **caught** |
+| A cut command counts as read | The `cut` rule in `drawItemCard` | `noteInboxShown` told the card showed the approval whole, and no cut recorded | `TestCockpitCutApprovalIsNotAnswered` ("a answered an approval whose command was cut: 0 held") | **caught** |
+| The Checkpoints or Live tab hides a held approval's card | The card drawn before the tab's body in `drawFocus` | The card drawn on Thread and Changes only | `TestCockpitApprovalCardOnEveryTab` ("the Checkpoints tab hides the approval's card") | **caught** |
+## The agents cockpit: thread cards
+
+`TestCockpitThreadCards` joins a pane to a Claude Code transcript fixture
+(`testdata/transcript/cockpit-auth.jsonl`: three reads and a search, a todo
+list, an Edit with a structured patch, a failing Bash call) with the real
+hook, and reads it in the cockpit at 200x55 and 100x30.
+
+Run on 2026-10-18.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| The changed words of a diff line are not lit | n/a, injected | `ckDiffCard` passes no changed range to `diffview.Theme.Code` | `TestCockpitThreadCards` ("the changed words of the diff are not lit") | **caught** |
+| The newest todo list folds to its count like the older ones | n/a, injected | `ckPlanCard` called with `whole` false | `TestCockpitThreadCards` ("the thread has no plan card or diff card") | **caught** |
+| A click on a card's header does nothing | n/a, injected | the diff card's header line has no `fold:` hit | `TestCockpitThreadCards` ("a click on the header did not fold the diff") | **caught** |
+| A tool result between two reads breaks the run | n/a, injected | the run stops at a `tool_result` entry | `TestCockpitThreadCards` ("the reads did not fold to one line") | **caught** |
+| The changed words are lit three cells early per tab | `ckCodeOffset`: the word offsets mapped on the raw text | the offsets taken on the text after the tab became four spaces | `TestCockpitThreadCards` ("the cell before the changed words is lit too") | **caught** |
+
+## The agents cockpit: reply area and image view
+
+`TestCockpitReplyAreaAndImageView` opens the reply area by a click, types,
+drops a PNG's path in, opens the image view from the chip, closes it with esc
+and with a click outside the picture, and sends with the Send button. The
+picture is drawn as cells (`TUIOS_KITTY_GRAPHICS=0`), so the test reads it off
+the screen.
+
+Run on 2026-10-18.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| An image chip is not a click target | n/a, injected | the chip's `image:` hit left out of `drawReplyArea` | `TestCockpitReplyAreaAndImageView` ("a click on the chip did not open the image view") | **caught** |
+| A click outside the picture leaves the view up | n/a, injected | `cockpitImageClick` never closes | `TestCockpitReplyAreaAndImageView` ("a click outside the picture did not close the view") | **caught** |
+| The Send button does nothing | n/a, injected | `cockpitAction` has no `send` case | `TestCockpitReplyAreaAndImageView` ("waiting for the closed area after Send") | **caught** |
+
+## The agents cockpit: side column
+
+`TestCockpitSideColumn` puts an agent's pane in a git work tree, ends two
+turns (two checkpoints), joins it to the transcript fixture, and opens the
+agents view at 200x55. The side column must hold the pane's first marker,
+the last turn's file and both checkpoints, and then the marker the pane
+prints while the view is open. `TestCockpitSideTabs` reads the Checkpoints
+and Pane tabs at 100x30.
+
+Run on 2026-10-18.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| The live box does not follow the pane's output | n/a, injected | `cockpitNoteOutput` never marks the live pane | `TestCockpitSideColumn` ("the live box did not follow the pane's output") | **caught** |
+| The checkpoints are not shown | n/a, injected | `applyCheckpoints` drops the list | `TestCockpitSideColumn` ("the side column lacks the live pane, the last turn or the checkpoints") | **caught** |
+
+## #649: the host cursor sits where typing goes
+
+An input method opens its candidate window at the host terminal's cursor,
+hidden or not. `TestHiddenCursorParksAtGuestCursor` has a guest in the right
+of two tiled panes hide its cursor and put it on an empty cell away from the
+text it wrote. The host cursor has to be on that cell, hidden, within the 5
+seconds before the guest shows it. Then the guest shows its cursor and hides
+it again, both without drawing, so no frame is written for either: the host
+cursor has to be on the same cell, visible, then hidden.
+`TestRichRowReplyAndRecap` checks that the host cursor is on the Inbox reply
+editor's caret, hidden, after the person types. Run on 2026-10-18.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| The hidden cursor is left where the frame ended | Parking in `viewCursor` (cursor_park.go) | Returns no cursor when none is shown | `TestHiddenCursorParksAtGuestCursor` ("with the guest cursor hidden: the host cursor is at (102,38)"), `TestRichRowReplyAndRecap` ("in the reply editor: the host cursor is at (80,39)") | **caught** |
+| The renderer shows the parked cursor | The frame hook's handling, `cursorPark.frame` | Passes every frame through unchanged | `TestHiddenCursorParksAtGuestCursor` ("at (90,10) visible=true"), `TestRichRowReplyAndRecap` ("at (17,33) visible=true") | **caught** |
+| A visibility change without a frame never reaches the host | The write in `cursorPark.set` | Not written | `TestHiddenCursorParksAtGuestCursor` ("after the guest hid its cursor again without drawing: ... visible=true") | **caught** |
+| A draft's caret does not take the cursor | The open draft in `imeCaret` (now `draftCaret`) | Branch skipped | `TestRichRowReplyAndRecap` ("in the reply editor: the host cursor is at (80,39)") | **caught** (first version of the fix) |
+
+The exit path, where the frame that leaves the alternate screen must show the
+cursor again, is not checked here. The local client writes its own reset with
+a show after the program ends (`terminal.ResetTerminal`), so the PTY stream
+ends with the cursor shown whether or not the hook did it. The unit test
+`TestParkedFrameWire` (internal/app) checks it on the renderer's real exit
+frame, without and with mode 2026, along with the wire rules: no show in a
+parked frame, the hide written at once when the cursor parks where it is, and
+a show after the move, never before it. Each of those four fails with its part
+of the fix removed.
+
+The fixed build passes both, and every test matching `Cursor`, `PiP`,
+`Inbox`, `Reply`, `Cockpit`, `Sixel`, `Kitty`, `Composer`, `Draft`, `Mail`,
+`Spotlight` and `Zoom` (142 tests). `TestKittyVirtualPlacementLeavesThePaneToTheGuest`
+was left out: under a 6 GB address cap its host recorder runs out of memory,
+on main's build as well.
+
+Two first versions of the pane test passed on a build without the fix. One put
+the hidden cursor on the first cell of the word the guest wrote, where the
+frame had ended by chance. The other waited past the moment the guest showed
+and hid its cursor again on the same cell, which left a build without the fix
+there too. The cursor now goes to a cell no frame writes to, and the first
+wait ends before the guest shows it.
+
+## Agent thread for every harness with a transcript reader
+
+`TestCockpitThreadOtherHarnesses` reads a Codex rollout and a Gemini CLI chat
+in the agent thread. The real hook of each harness names the file. Each thread
+must show the answer, a failed command's output, a diff card with its added
+line, and the harness's error. Run on 2026-10-18.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| The cockpit reads Claude Code transcripts only | The harness set in `threadTranscriptHarness` (inbox_thread.go) | Only `claude-code` | `TestCockpitThreadOtherHarnesses/codex` and `/gemini` ("never showed the answer and the failed command") | **caught** |
+| A Gemini message written again shows twice | The key drop in `dropKeyed` (transcriptview/format.go) | Returns at once | `TestFormatFixtures/gemini-chat.jsonl` (unit). The e2e test passes: the client replaces an entry by its id, so the screen is right | **caught by the unit test only** |
+
+The hostile decoder test was checked the same way: with a tool call's target
+passed out without `Clean`, `TestFormatHostile` fails for every format.
+
+### After review
+
+The hookless search for these formats now gives a file to a pane by the
+session's start against the agent's process start (`viewCandidates`,
+transcript_search.go). `TestViewSearchSiblings` (internal/session) covers
+agents of one harness in one folder, with every file's modification time
+after every agent started. Gemini messages written again keep their first
+place, and a `$rewindTo` after a reader's cursor resets its page
+(`TestGeminiRewrites`, internal/transcriptview). Run on 2026-10-19.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| A file near two agents' starts goes to one of them | The `n != 1` check in `viewCandidates` | `n == 0` | `TestViewSearchSiblings/two_agents_started_together` (B got b, want none) | **caught** |
+| A pane takes a sibling's file | The start window in `viewCandidates` | Every file is every pane's candidate | `TestViewSearchSiblings/each_agent_its_own_session`, `/the_second_agent_has_not_written_yet` | **caught** |
+| A finished tool call moves its message to the end | The first place kept in `decode` | Appended at the record's own place | `TestGeminiRewrites` | **caught** |
+| A rewind leaves gone messages in the reader's thread | The reset in `forward` | Not reset | `TestGeminiRewrites` ("a rewind after the cursor did not reset the page") | **caught** |
+| The cockpit reads Claude Code transcripts only (rerun on the fixed build) | `threadTranscriptHarness` | Only `claude-code` | `TestCockpitThreadOtherHarnesses/codex` and `/gemini` | **caught** |
+
+The e2e test also found a bug in the first version of the Gemini glob
+excludes: `[!l]` is not a negation in Go's `filepath.Match` (it is `[^l]`),
+so every `.jsonl` chat was refused. The hook's `transcript_refused` check in
+the test failed on it.
+The Copilot CLI and Amp cases were added in the next change. Amp's plugin
+reports the thread id and not the file, so the manifest's `session_file`
+names it. Run on 2026-10-18.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| A hook that names only its session joins no file | The `session_file` join in `verbSetAgentState` (verb_handlers.go) | Condition never true | `TestCockpitThreadOtherHarnesses/amp` ("never showed the answer and the failed command") | **caught** |
+
+`TestSessionFileJoin` (internal/session) checks the rules of the session-id
+join after review: a report with no connection (herdr's socket) names no
+file, a session id names a file only when the file exists, and a refused
+report joins nothing. Run on 2026-10-19.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| A herdr client joins any thread by its id | `cs != nil` in the session-id join | Condition dropped | `TestSessionFileJoin` ("a report with no connection joined ...") | **caught** |
+| A session id joins a file that is not there | The `os.Lstat` in `sessionTranscriptPath` | Removed | `TestSessionFileJoin` ("session id \"T-missing\" joined ...") | **caught** |
+| A refused report joins a file | `applied` in the session-id join | Condition dropped | `TestSessionFileJoin` ("a refused report joined ...") | **caught** |
+
+## opencode thread
+
+`TestCockpitThreadOtherHarnesses/opencode` runs a service at 127.0.0.1 that
+answers as opencode 2.0.32 does, writes its service.json, and reports the
+session through the real plugin hook. `TestOpenCodeService`
+(internal/transcriptview) holds the rules of reading that service: the file
+must be this user's and writable by no one else, the address must be
+127.0.0.1, the service must name the file's process, the session id must be
+one, and the password must stay out of every error and page. Run on
+2026-10-19.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| The cockpit does not read opencode | `threadTranscriptHarness` | `opencode` taken out | `TestCockpitThreadOtherHarnesses/opencode` | **caught** |
+| A service.json others can write sends the password where they choose | The mode and owner check in `readServiceFile` | Removed | `TestOpenCodeService/a_file_others_can_write` | **caught** |
+| The password goes to an address other than 127.0.0.1 | The host check in `readServiceFile` and the dial guard | Both removed | `TestOpenCodeService/an_address_other_than_127.0.0.1` | **caught** |
+| A service of this user that is not the file's process is trusted | The pid check against `/api/info` | Never true | `TestOpenCodeService/another_process_on_the_port` | **caught** (the check runs after the password is sent, so it stops only a process of this user; the connection owner check below is what keeps the password from another user) |
+| A reported session id goes into a URL or an argument unchecked | `validOpenCodeSession` | Any id but "" | `TestOpenCodeService/a_session_id_that_is_not_one` | **caught** |
+
+After review (F1, F2): the password goes out only to a port this user is
+shown to hold (`portOwnedByMe`, the uid column of /proc/net/tcp; on other
+systems it is never sent, and the export is read). The export runs only
+when no service is there, under the read's 4 s budget, killed with its
+process group when the budget ends, and one fetch serves a session's reads
+for 2 s. `TestOpenCodeServiceRules` (internal/transcriptview, Linux). Run
+on 2026-10-19.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| The password goes to a port another user holds | `portOwnedByMe` in `openCodeFromService` | Never refuses | `TestOpenCodeServiceRules/a_port_another_user_holds` | **caught** |
+| A slow or failing service starts an opencode process | The `errNoService` gate in `openCodeFetch` | Export on any error | `TestOpenCodeServiceRules/a_service_that_is_there_but_fails` | **caught** |
+| Each event of a streaming session starts a fetch | `openCodeShared` | No sharing | `TestOpenCodeServiceRules/reads_of_one_session_share_a_fetch` | **caught** |
+| A timed-out export leaves its processes running | `killTreeOnCancel` | Not called | `TestOpenCodeServiceRules/an_export_that_runs_too_long` (the read took 30 s) | **caught** |
+
+After re-review (R1 to R4): the owner check moved into the dial. It reads
+the socket table for the server side of the connection itself, after the
+connect and before the first byte, so no gap is left between the check and
+the request (R1). It now runs on macOS (the so_uid of the socket in the
+sysctl net.inet.tcp.pcblist_n) and on Windows (the owning pid in
+GetExtendedTcpTable, which must be the pid in service.json and run as this
+user), where the export ran on every read before (R3). An export is used
+again while opencode's database files are unchanged. A shared fetch is
+finished in a defer (R2). `TestOpenCodeConnOwner` runs against the real
+kernel table of each system: the go-test workflow runs it on Linux, macOS
+and Windows. The parser fixtures under `testdata/pcblist_n` are written by
+`gen.c` from the XNU structs. Run on Linux on 2026-10-19.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| The password goes on a connection whose server side is another user's | `connOwnedByMe` in the dial | Never refuses | `TestOpenCodeConnOwner/no_request_to_a_service_of_another_user` (`err <nil>`), `TestOpenCodeServiceRules/a_port_another_user_holds` (2 requests) | **caught** |
+| The macOS parser reads the uid at the wrong offset | `xsoUID` | 64 changed to 60 | `TestPcblistOwner` (mine.bin and old.bin) | **caught** |
+| A fetch that panics blocks every later read of the session | The defer in `openCodeShared` | Finished after `fetch` returns only | `TestOpenCodeSharedPanic` (blocked) | **caught** |
+| Each read with no service starts an export | `openCodeExportCached` | `openCodeFromExport` called directly | `TestOpenCodeServiceRules/an_export_is_used_again_while_the_database_is_unchanged` (2 exports) | **caught** |
+
+## Answer keys bound to their labels (Kimi Code CLI)
+
+`TestScreenAnswersFromSource` (internal/harness) draws Kimi's approval panel
+as kimi-cli 1.52.0 does, then with the session option left out, then
+reordered. Each approve must press the number its label has, and an approve
+whose label is gone must not be offered. Run on 2026-10-19.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| Approve presses a number whatever option it is | The `option` binding in kimi.toml | `keys = ["1"]` and `keys = ["2"]` | `TestScreenAnswersFromSource/kimi#01`, `/kimi#02` | **caught** |
+| Kimi's `[N] label` options are not read | The bracket form in `optionLine` | Removed | `TestScreenAnswersFromSource/kimi`, `/kimi#01`, `/kimi#02` | **caught** |
+## Cursor Agent thread
+
+`TestCockpitThreadOtherHarnesses/cursor` writes a Cursor Agent transcript
+under the fake home and joins it through the real `tuios agent-hook
+cursor-agent` sessionStart with transcript_path. Run on 2026-10-19.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| The cockpit does not read Cursor Agent | `threadTranscriptHarness` | `cursor-agent` taken out | `TestCockpitThreadOtherHarnesses/cursor` | **caught** |
+
+After review (C1): Cursor's own argument names are read, `target_file`,
+`relative_workspace_path`, `search_term`, and `edit_file`'s `code_edit`,
+which shows as the text it writes. `TestFormatFixtures/cursor-agent.jsonl`
+holds them. Run on 2026-10-19.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| A Cursor read or edit card names no file | `target_file` in `fileOf` | Removed | `TestFormatFixtures/cursor-agent.jsonl` | **caught** |
+| A Cursor edit shows an empty diff | The `code_edit` write in `cursorLine` | Never taken | `TestFormatFixtures/cursor-agent.jsonl` | **caught** |
+### A plain right-click in window mode over a program tracking the mouse
+
+`TestPlainRightClickOpensMenuOverAMouseApp` turns on mouse tracking in a pane, checks that a terminal-mode right-click reaches the program and opens no menu, then checks that a window-mode right-click opens the pane menu and reaches the program as no report. Run on 2026-10-19.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| A window-mode right-click over a program tracking the mouse opens nothing | The menu opening for every sub-threshold right-click in `handleMouseRelease` | The build before the fix, which skipped the menu when the pane's program tracked the mouse | `TestPlainRightClickOpensMenuOverAMouseApp` ("in window-management mode a plain right-click over a program tracking the mouse opened no pane menu") | **caught** |
+
+A first version counted the program's reports while the menu was open and failed on the fixed build: the menu covers the echoed reports. They are counted once the menu is closed.
+
+### A seen done pane of another session in the navigator (issue #902)
+
+`TestNavigatorKeepsADonePaneSeen` finishes an agent in work, opens the
+navigator from home and reads ■ on the logs row, goes to the pane, comes back
+to home, and reads ○ on the row. Each read waits for the load to bring the
+pane's screen into the preview first. Run on 2026-10-19.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| The cached row drops the seen bit | `DoneSeen` in `navigatorSessions` | The field cut from the row | `TestNavigatorKeepsADonePaneSeen` ("the logs row never showed ○ (seen) after the load") | **caught** |
+| The load puts the unread mark back | `keepAgentMarks` in `ApplyNavigatorLoaded` | The call cut | `TestNavigatorKeepsADonePaneSeen` ("the logs row never showed ○ (seen) after the load") | **caught** |
+### A prefix binding on the leader key (issue #866)
+
+`TestLeaderBoundInPrefixRunsItsAction` binds `prefix_new_window` to the
+leader, `ctrl+a`, and presses the leader two times in terminal mode.
+`TestLeaderTwiceSendsTheLeaderToThePane` keeps the default with no such
+binding. Run on 2026-10-19.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| The leader two times sends the leader over a prefix binding | `leaderBoundInPrefix` in `HandleTerminalModeKey` | The check cut | `TestLeaderBoundInPrefixRunsItsAction` ("the leader two times did not run prefix_new_window, bound to ctrl+a") | **caught** |
+## Markdown in the agent thread
+
+`TestCockpitThreadCards` reads an agent message in `cockpit-auth.jsonl` that
+holds strong text, a code span, a list, a Go code block, a table, a task
+list, a quote and a link. `cockpitMarkdown` checks that no markup is left,
+that the strong words are bold, that the code block is highlighted on a
+ground of its own, and that the link is underlined and sent as OSC 8. Run on
+2026-10-19.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| The thread shows an agent's Markdown raw | `ckMarkdown` in `threadCardLines` | The text drawn through `threadWrap`, as before | `TestCockpitThreadCards` ("the Markdown message is not drawn") | **caught** |
+| A link opens nothing | The cell's `Link` in `ckCanvas.text` | Never set | `TestCockpitThreadCards` ("no frame carries the link as OSC 8") | **caught** |
+
+After review (F1, F3, missing controls). `FuzzParse` seeds hold a table one
+column past `maxTableCols` and one past `maxTableCells`, and assert both
+bounds. `TestCockpitThreadOtherHarnesses/gemini` appends a line that writes
+the last Gemini message again with new text while the thread is open.
+`TestCockpitThreadCards` reads a message with an OSC title, an SGR colour
+and a `javascript:` link, and asserts on the raw output. Run on 2026-10-19.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| A table pads short rows to millions of cells | The cell cap in `parseBlocks` | Removed | `FuzzParse/seed#9` ("a table of 64 columns and 70 rows is past the bounds") | **caught** |
+| A table may have thousands of columns | The column cap in `parseBlocks` and `delimiterRow` | Removed | `FuzzParse/seed#8` ("a table of 65 columns and 1 rows is past the bounds") | **caught** |
+| A message written again keeps its old card | `sum` in `ckCardKey` | Left out of the key | `TestCockpitThreadOtherHarnesses/gemini` ("kept the old text of a message written again") | **caught** |
+| A `javascript:` link is sent as OSC 8 | The scheme check in `ckLinkTarget` | Never taken | `TestCockpitThreadCards` ("an escape sequence or a javascript: link in the message reached the host terminal") | **caught** |
+## tuios restart-server
+
+`TestRestartServerMovesTheDaemonToTheNewBuild` starts a daemon of this build
+with a pane that runs `sleep`, and restarts it with a second build stamped
+`e2e-sync-next`. The plan must name the program and both versions, and the
+restart must say the new version and the session that came back.
+`TestRestartOffersToResumeTheConversation` now restarts through
+`restart-server`, whose plan must name the agent that can resume.
+`TestRestartServerFromAPaneLeavesADaemon` runs `restart-server --yes` in a
+pane of the daemon it restarts: the pane's terminal closes under it, and a
+daemon must hold the session again, restored.
+
+The controls were run on 2026-10-18 on branch `feat/restart-server`.
+
+| Control | How | Tests that fail | Verdict |
+| --- | --- | --- | --- |
+| The plan lists no program | `restartplan.Lines`: the line for each busy pane cut | `TestRestartServerMovesTheDaemonToTheNewBuild` ("the plan does not name the program the restart stops") | **caught** |
+| The steps run in the command itself | `runRestartServer`: `runRestart` instead of `runDetachedRestart` | `TestRestartServerFromAPaneLeavesADaemon` ("no daemon holds the session after restart-server ran in its pane") | **caught** |
+| The version after the restart is the old daemon's | `runRestart`: `rep.After` from the plan's daemon, not the new daemon's hello | `TestRestartServerMovesTheDaemonToTheNewBuild` ("the restart does not say \"The daemon restarted on e2e-sync-next.\"") | **caught** |
+| The sessions after the restart are not read | `runRestart`: `rep.Back = nil` | `TestRestartServerMovesTheDaemonToTheNewBuild` ("the restart does not say \"This session came back: e2e-restart.\"") | **caught** |
+| list-windows marks no agent | `verbListWindows`: the `addResumable` call cut | `TestRestartOffersToResumeTheConversation` ("restart-server --dry-run does not list the agent that can resume") | **caught** |
+
+## The restart from the app
+
+`TestRestartTheDaemonFromTheVersionNotice` (in `daemon_persistence_test.go`)
+starts a daemon of this build with a pane that printed history and a pane
+that runs `sleep`. A client of a second build attaches from a path of its own,
+and a third build is renamed onto that path, as an update does. A click on the
+version notice must open the dialog with the program that stops and the three
+versions. The client starts with `--debug new`, and must start again with
+`--debug`. `r` must bring the same client process back, attached to the same
+session, on a daemon of the third build, with both panes, their names and the
+restored history.
+
+The controls were run on 2026-10-18 on branch `feat/restart-daemon-in-app`.
+
+| Control | How | Tests that fail | Verdict |
+| --- | --- | --- | --- |
+| The restart runs the client's old file | `release.NewestInstalled`: `/proc/self/exe` instead of `os.Executable` | `TestRestartTheDaemonFromTheVersionNotice` ("the dialog does not say \"After restart   e2e-sync-next   (from \"") | **caught** |
+| A click on the notice does nothing | `jumpToNotifTarget`: the `DaemonRestart` case cut | `TestRestartTheDaemonFromTheVersionNotice` ("a click on the notice did not open the dialog") | **caught** |
+| The lost connection ends the client | the `DaemonDisconnectedMsg` case: the `noteRestartDisconnect` check cut | `TestRestartTheDaemonFromTheVersionNotice` ("child exited (code 1) before" the success line) | **caught** |
+| The client does not start again | `runDaemonSessionOn`: the `reattachAfterRestart` call cut | `TestRestartTheDaemonFromTheVersionNotice` ("child exited (code 0) before" the success line) | **caught** |
+| The root's flags are not carried | `carriedFlags`: the root's persistent flags not read | `TestRestartTheDaemonFromTheVersionNotice` ("the client started again without its flags", no `--debug=true`) | **caught** |
+| The plan is not checked | `runRestartServer`: the `--expect` check cut | `TestRestartServerMovesTheDaemonToTheNewBuild` ("a restart with another plan's digest was not refused", "the refused restart restarted the daemon anyway") | **caught** |
+
+A second client of the daemon's own build now attaches beside the first. It
+must reattach by itself, in the same process, with both panes and the restore
+divider, and say "The daemon restarted on e2e-sync-next. tuios reattached."
+`TestPlainKillServerEndsClientsAtOnce` stops the daemon with a plain
+kill-server and starts a new one at once: the client must quit within 1 s and
+not reattach. Run on 2026-10-18 on branch `feat/reattach-after-daemon-restart`.
+
+| Control | How | Tests that fail | Verdict |
+| --- | --- | --- | --- |
+| A lost connection ends the client, as before | the `DaemonDisconnectedMsg` case: the `beginDaemonReconnect` call cut | `TestRestartTheDaemonFromTheVersionNotice` ("the second client did not reattach", "the second client quit (code 1)") | **caught** |
+| The client attaches and keeps its old panes | `resumeOnNewDaemon`: the `rebuildForSessionOn` call cut | `TestRestartTheDaemonFromTheVersionNotice` ("the second client did not reattach with the panes") | **caught** |
+| The restart does not say "restart" | `runRestart`: `kill-server` without `--restart` | `TestRestartTheDaemonFromTheVersionNotice` ("the second client quit (code 1) instead of reattaching") | **caught** |
+| The client is deaf to "stop" | `beginDaemonReconnect`: the goodbye check cut | `TestPlainKillServerEndsClientsAtOnce` ("the client did not quit within 1 s of a plain kill-server") | **caught** |
+## The cockpit's spawn sheet
+
+`TestCockpitSpawnSheet` opens the cockpit with `ctrl+b i`, presses `n`, types
+a task and presses `enter`. A fake claude must read the task in a new worktree
+on `agent/lru-cache-safe`. Then the mouse picks This folder and clicks Start,
+and a second fake claude must read its task in the session. Run on 2026-10-19.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| `n` and New agent do not open the sheet | `CockpitNewAgent` opens the sheet | Returns at once | `TestCockpitSpawnSheet` ("waiting for the spawn sheet") | **caught** |
+| The worktree is not on the branch the sheet shows | `name` in the fan call | Left out | `TestCockpitSpawnSheet` ("the sheet never made a worktree on agent/lru-cache-safe") | **caught** |
+
+After review: `TestCockpitSpawnSheet` also checks that esc keeps the draft,
+that a branch the person typed stops following the task, that a base which
+starts with `-` is refused, and that a start the daemon refuses keeps the
+draft. Run on 2026-10-19.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| esc loses the draft | `spawnClose` keeps the sheet as the draft | The draft set to nil | `TestCockpitSpawnSheet` ("the kept draft after esc") | **caught** |
+| A typed branch follows the task again | The `cur != s.branchAuto` check in `spawnFollowTask` | Always false | `TestCockpitSpawnSheet` ("waiting for the typed branch") | **caught** |
+### tuios mermaid --watch and --demo give the terminal back
+
+`TestMermaidLiveGivesTheTerminalBack` runs `tuios mermaid --demo` on a fake terminal with kitty graphics and ends it with q, Ctrl+C, SIGTERM, SIGHUP, a panic in the frame encoder (a build with `-tags mermaidpanic`, which the case makes from source), and SIGTERM while the terminal has stopped reading. Each time termios must equal what it was before the program started, and after the last frame the picture must be deleted, the cursor shown and the alternate screen left. Its positive half is the first kitty frame, which every case waits for. Run on 2026-10-19.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| The terminal stays in raw mode after the view ends | `term.Restore` in the cleanup | Replaced with `_ = orig` | all six cases ("termios after exit is ...") | **caught** |
+| A signal other than SIGINT and SIGTERM leaves raw mode, and a stalled terminal keeps it raw until the blocked write returns | The cleanup that restores termios first, on every signal and panic | The build before the fix (3bdff3a2c) | `/SIGHUP` (exit 129, termios, no reset), `/SIGTERM_while_stalled` (termios while stalled) | **caught** |
+
+The build before the fix has no panic hook, so its `/panic` case times out instead of failing on termios. That case was checked with the `term.Restore` control above. The panic case builds its own binary with `-tags mermaidpanic` from the checkout and ignores `TUIOS_E2E_BIN`, so its control edits the source: with `term.Restore` removed it fails on termios (run again on 2026-10-19 after the hook moved from an environment variable to the build tag).
+
+### tuios mermaid --watch writes no terminal controls from the file
+
+`TestMermaidLiveWritesNoTerminalControls` watches a diagram with `--split` whose labels and source lines hold ESC (as `#27;` and as raw bytes), OSC 2, OSC 52 and BEL, in a kitty terminal and a text one, and a source with a parse error that quotes them. None of `ESC ]2;`, `ESC ]52;` or BEL may reach the terminal, and U+FFFD must show in their place. Its positive half is the source pane, which every case waits for. Run on 2026-10-19.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| The source pane writes the file's controls to the terminal | `mermaid.TermSafe` in `paneText` | Returned the line as it is | `/kitty` and `/text` (OSC 2, OSC 52, BEL), `/parse_error` (BEL) | **caught** |

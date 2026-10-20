@@ -32,43 +32,60 @@ var enabled bool
 // the part that has to be true either way.
 var (
 	borderMu                sync.RWMutex
-	borderFocusedOverride   color.Color
-	borderUnfocusedOverride color.Color
+	borderFocusedOverride   ColorSpec
+	borderUnfocusedOverride ColorSpec
 )
 
-// SetBorderOverrides sets custom border colors from hex strings (e.g. "#89b4fa").
-// An empty string clears the corresponding override and restores the theme color.
-func SetBorderOverrides(focusedHex, unfocusedHex string) {
+// SetBorderOverrides sets the border colours from config values, in any form
+// ParseColor reads. An empty or unparseable value clears that override and
+// restores the theme colour; the config validator has said why.
+func SetBorderOverrides(focused, unfocused string) {
 	borderMu.Lock()
 	defer borderMu.Unlock()
-	if focusedHex != "" {
-		borderFocusedOverride = lipgloss.Color(focusedHex)
-	} else {
-		borderFocusedOverride = nil
-	}
-	if unfocusedHex != "" {
-		borderUnfocusedOverride = lipgloss.Color(unfocusedHex)
-	} else {
-		borderUnfocusedOverride = nil
-	}
+	borderFocusedOverride = SpecOf(focused)
+	borderUnfocusedOverride = SpecOf(unfocused)
 }
 
-// borderOverrides reads the pair under the lock, so a caller cannot see one
-// half of a change.
-func borderOverrides() (focused, unfocused color.Color) {
+// borderOverride reads one override under the lock and resolves it, nil when
+// it is unset. A role or a slot resolves on the theme in force, so an override
+// written as "accent" follows a theme change.
+func borderOverride(focused bool) color.Color {
 	borderMu.RLock()
-	defer borderMu.RUnlock()
-	return borderFocusedOverride, borderUnfocusedOverride
+	c := borderUnfocusedOverride
+	if focused {
+		c = borderFocusedOverride
+	}
+	borderMu.RUnlock()
+	return c.Resolve()
 }
 
-// Initialize sets up the theme registry with the specified theme name.
-// Call this once at application startup.
-// If themeName is empty, theming will be disabled and standard terminal colors will be used.
+// Initialize makes the named theme the active one.
+//
+// "none" disables theming, so the terminal's own colours are used. An empty
+// name follows the applied Omarchy theme on a machine with Omarchy, and
+// disables theming elsewhere. "omarchy" follows Omarchy too, and returns
+// ErrOmarchyNotFound, with theming disabled, on a machine without it.
 func Initialize(themeName string) error {
-	// If no theme specified, disable theming
-	if themeName == "" {
+	// Generation moves only when the theme in force changes, so a config
+	// reload that names the same theme keeps every memo keyed on it.
+	wasEnabled, was := enabled, activeTint()
+	defer func() {
+		if enabled != wasEnabled || activeTint() != was {
+			generation.Add(1)
+		}
+	}()
+	matchHost.Store(themeName == NoneID)
+	switch themeName {
+	case NoneID:
 		enabled = false
 		return nil
+	case "", OmarchyID:
+		err := initOmarchy()
+		enabled = err == nil
+		if themeName == "" {
+			return nil
+		}
+		return err
 	}
 
 	enabled = true
@@ -89,6 +106,15 @@ func Initialize(themeName string) error {
 	}
 
 	return nil
+}
+
+// activeTint is the tint in force, or nil with theming off. It does not
+// build the registry.
+func activeTint() *tint.Tint {
+	if !enabled {
+		return nil
+	}
+	return tint.Current()
 }
 
 // IsEnabled returns true if theming is enabled
@@ -131,6 +157,45 @@ func GetANSIPalette() [16]color.Color {
 		pal[i] = AsColor(c)
 	}
 	return pal
+}
+
+// EmulatorColors is the theme as a pane's emulator is given it, at the depth
+// the frame is drawn at. ok is false when no theme is in force, and at 16
+// colours, where the sixteen are the terminal's own slots and fg and bg its
+// default colours, as slotColor has them.
+//
+// At 256 colours each colour is already the palette entry the chrome would
+// pick (overlay.To256). Left in truecolor, a cell reached the frame writer as
+// RGB and was stepped down by its cube-first rule: nord's #2e3440 ground
+// became the teal 23 and Latte's red the grey 241. Converted here, it is done
+// once per theme or depth change and never per cell.
+//
+// The colours a pane is told in answer to OSC 4, 10 and 11 are not these: a
+// program asking for the palette gets the theme's own values.
+func EmulatorColors() (fg, bg, cur color.Color, pal [16]color.Color, ok bool) {
+	if !IsEnabled() {
+		return nil, nil, nil, pal, false
+	}
+	d := Depth()
+	if d == overlay.Depth16 {
+		return nil, nil, nil, pal, false
+	}
+	fg, bg, cur, pal = TerminalFg(), TerminalBg(), TerminalCursor(), GetANSIPalette()
+	if d == overlay.Depth256 {
+		fg, bg, cur = to256(fg), to256(bg), to256(cur)
+		for i := range pal {
+			pal[i] = to256(pal[i])
+		}
+	}
+	return fg, bg, cur, pal, true
+}
+
+// to256 is overlay.To256 that leaves a nil colour nil.
+func to256(c color.Color) color.Color {
+	if c == nil {
+		return nil
+	}
+	return overlay.To256(c)
 }
 
 // ANSIOrder returns a theme's sixteen ANSI colours in index order, 0 to 15:
@@ -229,12 +294,15 @@ func BorderUnfocused() color.Color { return BorderUnfocusedOn(nil) }
 func BorderUnfocusedOn(hostBg color.Color) color.Color {
 	// A configured colour is returned as chosen: measurement was overridden on
 	// purpose, the same way the scrollbar treats a configured tint.
-	if _, unfocused := borderOverrides(); unfocused != nil {
+	if unfocused := borderOverride(false); unfocused != nil {
 		return unfocused
 	}
 	t := Current()
 	if t == nil {
 		return slotAt16(1, hostBorderInk(lipgloss.Color("#FAAAAA"), hostBg))
+	}
+	if c := chromeFurniture(RoleBorderUnfocused); c != nil {
+		return borderInk(c)
 	}
 	// Light pinkish red: the theme's regular red, which gives a softer, more
 	// muted tone for unfocused windows than bright red.
@@ -247,7 +315,7 @@ func BorderFocusedWindow() color.Color { return BorderFocusedWindowOn(nil) }
 // BorderFocusedWindowOn is BorderFocusedWindow on a known host background.
 // See BorderUnfocusedOn.
 func BorderFocusedWindowOn(hostBg color.Color) color.Color {
-	if focused, _ := borderOverrides(); focused != nil {
+	if focused := borderOverride(true); focused != nil {
 		return focused
 	}
 	t := Current()
@@ -264,7 +332,7 @@ func BorderFocusedTerminal() color.Color { return BorderFocusedTerminalOn(nil) }
 // BorderFocusedTerminalOn is BorderFocusedTerminal on a known host
 // background. See BorderUnfocusedOn.
 func BorderFocusedTerminalOn(hostBg color.Color) color.Color {
-	if focused, _ := borderOverrides(); focused != nil {
+	if focused := borderOverride(true); focused != nil {
 		return focused
 	}
 	t := Current()
@@ -273,6 +341,31 @@ func BorderFocusedTerminalOn(hostBg color.Color) color.Color {
 	}
 	// Light green for terminal mode: use bright green
 	return slotAt16(10, borderInk(chromeOr(func(c *Chrome) color.Color { return c.Success }, t.BrightGreen)))
+}
+
+// BorderFocusedCopy is the focused pane's border while it is in copy mode:
+// the theme's border.copy, or nil when the theme names none. A configured
+// border_focused_color wins, so it is nil then too.
+func BorderFocusedCopy() color.Color {
+	if borderOverride(true) != nil {
+		return nil
+	}
+	if c := chromeFurniture(RoleBorderCopy); c != nil {
+		return borderInk(c)
+	}
+	return nil
+}
+
+// BorderFocusedAttention is the focused pane's border while its agent waits
+// for input: the theme's status.attention, or nil as BorderFocusedCopy.
+func BorderFocusedAttention() color.Color {
+	if borderOverride(true) != nil {
+		return nil
+	}
+	if c := chromeFurniture(RoleAttention); c != nil {
+		return borderInk(c)
+	}
+	return nil
 }
 
 // hostBorderInkMemo keeps the last few answers of hostBorderInk. The border
@@ -326,13 +419,48 @@ func DockColorTerminal() color.Color {
 	return slotAt16(10, chromeOr(func(c *Chrome) color.Color { return c.Success }, t.BrightGreen))
 }
 
-// DockColorCopy returns the dock indicator color for copy mode.
+// DockColorCopy returns the dock indicator color for copy mode: the theme's
+// border.copy, else its warning.
 func DockColorCopy() color.Color {
 	t := Current()
 	if t == nil {
 		return slotAt16(3, lipgloss.Color("#e0af68")) // Soft amber
 	}
+	if c := chromeFurniture(RoleBorderCopy); c != nil {
+		return c
+	}
 	return slotAt16(3, chromeOr(func(c *Chrome) color.Color { return c.Warning }, t.Yellow))
+}
+
+// DockColorMultifocus returns the dock indicator color while several panes
+// take the keys: the theme's border.multifocus, else the copy mode colour.
+func DockColorMultifocus() color.Color {
+	if c := chromeFurniture(RoleBorderMultifocus); c != nil {
+		return c
+	}
+	return DockColorCopy()
+}
+
+// furnitureRole is the colour a config value naming one of the roles after
+// RoleCard draws: what that piece of chrome draws now, theme or not. A ground
+// is the theme's only, nil when it names none.
+func furnitureRole(r Role) color.Color {
+	switch r {
+	case RoleBorderUnfocused:
+		return BorderUnfocused()
+	case RoleBorderCopy:
+		return DockColorCopy()
+	case RoleBorderMultifocus:
+		return BorderMultifocus()
+	case RoleRule:
+		return RailRule()
+	case RoleDotClose, RoleDotMinimize, RoleDotZoom:
+		closeDot, minimise, zoom := WindowDots()
+		return [...]color.Color{closeDot, minimise, zoom}[r-RoleDotClose]
+	case RoleDockGround, RoleRailGround:
+		return chromeFurniture(r)
+	}
+	return nil
 }
 
 // NotificationError returns the color for error notifications.

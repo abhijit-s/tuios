@@ -119,7 +119,7 @@ type CollisionLoser struct {
 // Collisions returns every key claimed more than once inside a single scope.
 func (r *KeybindRegistry) Collisions() []Collision {
 	scopeNames := map[string]Scope{}
-	for _, s := range Scopes(r.config.Keybindings.LeaderKey) {
+	for _, s := range ScopesFor(&r.config.Keybindings) {
 		scopeNames[s.ID] = s
 	}
 
@@ -334,6 +334,8 @@ type KeybindReport struct {
 	// Yielded are new default bindings tuios left off because the key was
 	// already bound to another action in the same table.
 	Yielded []YieldedDefault `json:"yielded_defaults,omitempty"`
+	// Retired are bindings to actions tuios no longer has.
+	Retired []RetiredKeybind `json:"retired,omitempty"`
 }
 
 // AmbiguousBinding is a binding whose key is half of a pair the terminal cannot
@@ -362,6 +364,7 @@ func (r *KeybindRegistry) Report(facts PaneFacts) KeybindReport {
 		},
 		Pane:         facts,
 		Yielded:      r.config.YieldedDefaults,
+		Retired:      r.config.RetiredKeybinds,
 		Observations: facts.Observations(),
 		Bindings:     r.Bindings(),
 		Collisions:   r.Collisions(),
@@ -535,7 +538,7 @@ func (r *KeybindRegistry) KeyProblems() []KeyProblem {
 		if strings.TrimSpace(key) == "" {
 			return
 		}
-		if ok, msg := normalizer.ValidateKey(key); !ok {
+		if ok, msg := normalizer.ValidateSectionKey(section, key); !ok {
 			out = append(out, KeyProblem{
 				Section: section, Action: action, Key: key,
 				Problem: msg, File: "config.toml",

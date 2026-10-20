@@ -53,7 +53,7 @@ func dockStripArrowFg(pal overlay.Palette) color.Color {
 // The label is passed in rather than derived: the tab that carries it also
 // carries the width the hit rectangle was cut to, and the two must be the same
 // string.
-func workspacePill(label string, active, dragged bool, pal overlay.Palette, s *config.Settings) string {
+func workspacePill(label string, active, dragged bool, pal overlay.Palette, s *config.Settings, ink color.Color) string {
 	// A picked-up pill comes up onto Surface, the same step the rail lifts a
 	// dragged row onto, so the gesture reads the same wherever it is made. It is
 	// a ground change and not an ink one, which leaves the accent free to go on
@@ -62,7 +62,11 @@ func workspacePill(label string, active, dragged bool, pal overlay.Palette, s *c
 	if dragged {
 		ground = pal.Surface
 	}
-	body := sidebarStyle(ground, workspacePillFg(active, pal))
+	fg := workspacePillFg(active, pal)
+	if ink != nil {
+		fg = ink
+	}
+	body := sidebarStyle(ground, fg)
 	if active {
 		body = body.Bold(true).Underline(true)
 	}
@@ -86,6 +90,100 @@ func workspacePill(label string, active, dragged bool, pal overlay.Palette, s *c
 	return caps.Render(lc) + pill + caps.Render(rc)
 }
 
+// tabColor is a configured [dock.tabs] colour on the dock's palette, or nil
+// when it is unset or not a colour. lipgloss turns a value it cannot parse
+// into no colour at all, which would paint the terminal's default in the
+// middle of the bar, so a bad value is dropped here, where validateDock has
+// already said it is ignored. A role such as accent is the dock's own.
+func tabColor(s string, pal *overlay.Palette) color.Color {
+	return theme.ConfigColorOn(s, pal)
+}
+
+// flatWorkspaceTab renders one [dock.tabs] style = "flat" tab: the label with a
+// column of padding either side. A colour the table does not set comes from the
+// palette the way the pills' do, so the strip still says where you are with no
+// colours configured: the current tab sits on the accent, as the mode chip
+// does, and the others are FgDim on the bar's own ground. At 16 colours the
+// accent ground is the slot drawn in reverse video, the same thing overlay.Chip
+// does there. A picked-up tab comes up onto Surface, the same lift a dragged
+// pill gets.
+func flatWorkspaceTab(label string, active, dragged bool, t *config.DockTabsConfig, pal overlay.Palette, ink color.Color) string {
+	fg, bg, bold := tabColor(t.InactiveFg, &pal), tabColor(t.InactiveBg, &pal), t.InactiveBold
+	if ink != nil {
+		fg = ink
+	}
+	if active {
+		fg, bg, bold = tabColor(t.ActiveFg, &pal), tabColor(t.ActiveBg, &pal), t.ActiveBold
+	}
+	st := lipgloss.NewStyle()
+	onAccent := false
+	switch {
+	case dragged:
+		bg = pal.Surface
+	case active && bg == nil:
+		onAccent = true
+		// The accent ground is what marks the current tab when nothing else
+		// does, so it is bold with it.
+		bold = true
+		if fg == nil && theme.Depth() == overlay.Depth16 {
+			return st.Bold(true).Foreground(pal.Accent).Reverse(true).Render(" " + label + " ")
+		}
+		bg = pal.Accent
+	}
+	if fg == nil {
+		switch {
+		case !active:
+			fg = theme.Readable(pal.FgDim, groundOr(bg, pal.Canvas))
+		case dragged:
+			fg = theme.Readable(pal.Accent, bg)
+		case onAccent:
+			fg = theme.Readable(pal.PillFg, bg)
+		default:
+			fg = theme.Readable(pal.Fg, bg)
+		}
+	}
+	st = st.Bold(bold).Foreground(fg)
+	if bg != nil {
+		st = st.Background(bg)
+	}
+	return st.Render(" " + label + " ")
+}
+
+// groundOr is c, or fallback when c is unset.
+func groundOr(c, fallback color.Color) color.Color {
+	if c == nil {
+		return fallback
+	}
+	return c
+}
+
+// dockTabGapText is what is drawn between two tabs: the flat style's styled
+// separator, or bare columns.
+func dockTabGapText(t *config.DockTabsConfig, pal overlay.Palette) string {
+	if !t.Flat() || t.Separator == "" {
+		return strings.Repeat(" ", dockWorkspacePillGap)
+	}
+	if fg := tabColor(t.SeparatorFg, &pal); fg != nil {
+		return lipgloss.NewStyle().Foreground(fg).Render(t.Separator)
+	}
+	return t.Separator
+}
+
+// dockTab renders one tab in whichever style [dock.tabs] asks for.
+func (m *OS) dockTab(t *config.DockTabsConfig, label string, active, dragged, attention bool, pal overlay.Palette) string {
+	// A workspace that wants a person takes [dock.tabs] attention_fg as its
+	// ink. Only a tab that is not current is marked: the current one is on
+	// screen already.
+	var ink color.Color
+	if attention && !active {
+		ink = tabColor(t.AttentionFg, &pal)
+	}
+	if t.Flat() {
+		return flatWorkspaceTab(label, active, dragged, t, pal, ink)
+	}
+	return workspacePill(label, active, dragged, pal, &m.Settings, ink)
+}
+
 // renderDockWorkspaceStrip draws the strip starting at column startX and records
 // every pill and arrow it draws into m.dockWorkspaceHits and
 // m.dockWorkspaceArrowHits.
@@ -102,6 +200,7 @@ func (m *OS) renderDockWorkspaceStrip(s dockWorkspaceStrip, startX int) string {
 	}
 
 	pal := m.groundUI()
+	style := m.dockTabs()
 	y := m.GetDockbarContentYPosition()
 	arrow := lipgloss.NewStyle().Foreground(dockStripArrowFg(pal))
 
@@ -127,12 +226,13 @@ func (m *OS) renderDockWorkspaceStrip(s dockWorkspaceStrip, startX int) string {
 	gutter(m.Settings.GetDockWorkspaceMoreLeft(), s.MoreLeft, -1)
 
 	drawn := 0
+	gapText := dockTabGapText(&style, pal)
 	for i, t := range s.Pills {
 		if i > 0 {
-			b.WriteString(strings.Repeat(" ", dockWorkspacePillGap))
-			x, drawn = x+dockWorkspacePillGap, drawn+dockWorkspacePillGap
+			b.WriteString(gapText)
+			x, drawn = x+t.Gap, drawn+t.Gap
 		}
-		b.WriteString(workspacePill(t.Label, t.Active, t.Dragged, pal, &m.Settings))
+		b.WriteString(m.dockTab(&style, t.Label, t.Active, t.Dragged, t.Attention, pal))
 		m.dockWorkspaceHits = append(m.dockWorkspaceHits, dockWorkspaceHit{
 			X0: x, X1: x + t.Width, Y: y, Workspace: t.Workspace,
 		})
@@ -149,10 +249,10 @@ func (m *OS) renderDockWorkspaceStrip(s dockWorkspaceStrip, startX int) string {
 
 	if s.Add != nil {
 		if len(s.Pills) > 0 {
-			b.WriteString(strings.Repeat(" ", dockWorkspacePillGap))
-			x += dockWorkspacePillGap
+			b.WriteString(gapText)
+			x += s.Add.Gap
 		}
-		b.WriteString(workspacePill(s.Add.Label, false, false, pal, &m.Settings))
+		b.WriteString(m.dockTab(&style, s.Add.Label, false, false, false, pal))
 		m.dockWorkspaceHits = append(m.dockWorkspaceHits, dockWorkspaceHit{
 			X0: x, X1: x + s.Add.Width, Y: y, Workspace: 0,
 		})
@@ -181,7 +281,7 @@ func (m *OS) renderDockString() (string, int) {
 	// the dock's only filled element, so it is the only one that has to earn its
 	// contrast: the foreground is picked against whatever colour the mode is,
 	// and bold buys the last of the legibility a saturated fill costs.
-	modeColor := lipgloss.Color(layout.ModeInfo.Color)
+	modeColor := layout.ModeInfo.Color
 	styledModeText := ""
 	if layout.ModeLabel != "" {
 		fill := lipgloss.NewStyle().Background(modeColor).Foreground(theme.ContrastText(modeColor)).Bold(true)
@@ -362,9 +462,19 @@ func (m *OS) renderDockString() (string, int) {
 
 	actualLeftWidth := lipgloss.Width(leftInfo)
 	centerWidth := lipgloss.Width(dockItemsStr.String())
+	// A center with a custom cell (a clock, say) is anchored to the screen, so
+	// a message fits beside it rather than moving it. It clamps only when the
+	// bar itself is crowded. A center of minimized entries alone keeps sitting
+	// in the room the right block leaves, so a message keeps its full width.
+	anchored := centerWidth > 0 && layout.CustomCenter > 0
+	centerX := actualLeftWidth
+	if anchored {
+		centerX = max(actualLeftWidth, min((renderWidth-centerWidth)/2, barWidth-centerWidth-layout.CenterRightReserve))
+	}
+	rightRoom := max(barWidth-centerX-centerWidth, 0)
 	// The right block never takes more room than the left block and the dock
 	// items leave, so the bar as a whole stays inside the screen.
-	rightWidth := max(min(layout.RightWidth, barWidth-actualLeftWidth-centerWidth), 0)
+	rightWidth := min(layout.RightWidth, rightRoom)
 
 	var rightInfo string
 	// notifRule is the run of hairline the message burns down over, drawn into
@@ -377,7 +487,11 @@ func (m *OS) renderDockString() (string, int) {
 	// truncation below would do, and the first thing that would cut is the
 	// block's trailing columns: the gap that keeps the message off the bar's
 	// right-hand end.
-	notif, hasNotif := m.dockNotificationBlock(barWidth, max(barWidth-actualLeftWidth-centerWidth, 0))
+	var notif notifBlock
+	var hasNotif bool
+	if rightRoom > 0 {
+		notif, hasNotif = m.dockNotificationBlock(barWidth, rightRoom)
+	}
 
 	// Where the right block's custom cells landed inside it. Converted to screen
 	// columns below, once the block's own first column is known.
@@ -405,17 +519,11 @@ func (m *OS) renderDockString() (string, int) {
 		rightInfo = truncateToWidth(rightInfo, rightWidth)
 	}
 
-	availableSpace := barWidth - actualLeftWidth - rightWidth - centerWidth
-	leftSpacer := availableSpace / 2
-	rightSpacer := availableSpace - leftSpacer
-
-	if leftSpacer < 0 {
-		leftSpacer = 0
-		rightSpacer = 0
+	if !anchored {
+		centerX = actualLeftWidth + max(barWidth-actualLeftWidth-centerWidth-rightWidth, 0)/2
 	}
-	if rightSpacer < 0 {
-		rightSpacer = 0
-	}
+	leftSpacer := max(centerX-actualLeftWidth, 0)
+	rightSpacer := max(barWidth-centerX-centerWidth-rightWidth, 0)
 
 	// The message block's own columns, taken from the spacers this pass drew
 	// rather than from the bar's right-hand end. The block is the last thing in

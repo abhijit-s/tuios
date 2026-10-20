@@ -1,0 +1,39 @@
+# Keeps the README's contributors grid current. The job redraws the grid with
+# scripts/contributors.sh and, when the README changes, opens or updates a pull
+# request from the chore/contributors branch. It never pushes to main.
+name: contributors
+
+on:
+  schedule:
+    # Mondays, off the hour.
+    - cron: "41 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      BRANCH: chore/contributors
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Redraw the grid
+        run: ./scripts/contributors.sh "${GITHUB_REPOSITORY}" README.md
+
+      - name: Open or update the pull request
+        run: |
+          if git diff --quiet -- README.md; then
+            echo "contributors unchanged"
+            exit 0
+          fi
+          ./scripts/contributors-pr.sh "$BRANCH"

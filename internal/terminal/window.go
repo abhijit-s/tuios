@@ -22,7 +22,7 @@ import (
 	"github.com/Gaurav-Gosain/tuios/internal/debuglog"
 	"github.com/Gaurav-Gosain/tuios/internal/ptyspawn"
 	"github.com/Gaurav-Gosain/tuios/internal/sessiontree"
-	"github.com/Gaurav-Gosain/tuios/internal/vt"
+	"tuios.dev/vt"
 )
 
 // ioMu guards the emulator cell buffer: the PTY reader and the daemon output
@@ -327,6 +327,17 @@ type Window struct {
 	// group's own workspace. It is the session's, like IsPopup. See
 	// session.WindowState.Scratch.
 	IsScratch bool
+	// Stack names the stack the pane is in, empty when it is in none, and
+	// StackIndex is its place in that stack. The stack's members share one
+	// tile: the one that is not minimized has it, and every other shows as a
+	// title row. See app/stack.go.
+	Stack      string
+	StackIndex int
+	// Kind and URI say what draws the pane and what it shows: empty for a
+	// terminal, or "view", "web" or "app" for a pane a native renderer draws
+	// itself. The daemon sets them. See session.WindowState.Kind.
+	Kind string
+	URI  string
 	// ScratchName keys a scratch pane: "scratch" (or empty, from before
 	// names) for the built-in one, the entry's name for a command entry.
 	ScratchName string
@@ -444,6 +455,10 @@ type Window struct {
 	// AgentHarness is the harness id the reporting source named, empty when the
 	// state came from something that named none. Alert sinks pass it on.
 	AgentHarness string
+	// StartedBySession and StartedByWindow name the pane whose call created
+	// this one, as the daemon recorded it. Both are empty when no pane did.
+	StartedBySession string
+	StartedByWindow  string
 	// AgentMeta is what the pane reported about its agent through
 	// set-agent-meta, as the daemon synced it. The rail draws it. Replaced
 	// whole on every sync and never edited in place.
@@ -754,15 +769,19 @@ func newWindowBase(id, title string, x, y, width, height, z int, ptyDataChan cha
 				window.CwdFunc(cwd)
 			}
 		},
-		TuiosNavigation: func(direction string) {
-			if window.NvimNavFunc != nil {
-				window.NvimNavFunc(direction)
+		PrivateOSC: func(cmd int, data []byte) {
+			if cmd != nvimNavigatorOSC {
+				return
 			}
-		},
-		NvimNavigatorState: func(active bool) {
-			if window.NvimNavStateFunc != nil {
-				window.NvimNavStateFunc(active)
-			}
+			handleNvimNavigatorOSC(data, func(direction string) {
+				if window.NvimNavFunc != nil {
+					window.NvimNavFunc(direction)
+				}
+			}, func(active bool) {
+				if window.NvimNavStateFunc != nil {
+					window.NvimNavStateFunc(active)
+				}
+			})
 		},
 	})
 

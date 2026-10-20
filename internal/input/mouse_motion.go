@@ -6,8 +6,8 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/Gaurav-Gosain/tuios/internal/app"
 	"github.com/Gaurav-Gosain/tuios/internal/config"
-	"github.com/Gaurav-Gosain/tuios/internal/vt"
 	uv "github.com/charmbracelet/ultraviolet"
+	"tuios.dev/vt"
 )
 
 // guestWantsMotion reports whether a guest's own mouse mode would have had the
@@ -95,6 +95,16 @@ func handleMouseMotion(msg tea.MouseMotionMsg, o *app.OS) (*app.OS, tea.Cmd) {
 	}
 	if !o.Dragging && !o.Resizing && !o.ScrollbarDragging {
 		if o.OverlayMouseMotion(mouse.X, mouse.Y) {
+			return o, nil
+		}
+		// A docked session is a real pane, not a list of sidebar rows. Send
+		// tracking motion to its guest before the rail hover path consumes it.
+		if w := o.SidebarSessionPaneAt(mouse.X, mouse.Y); w != nil {
+			if w.Terminal != nil && guestWantsMotion(w.Terminal, mouse.Button) {
+				if tx, ty, inside := w.ScreenToTerminal(mouse.X, mouse.Y); inside {
+					sendMouseToWindow(o, w, uv.MouseMotionEvent{X: tx, Y: ty, Button: uv.MouseButton(mouse.Button), Mod: uv.KeyMod(mouse.Mod)})
+				}
+			}
 			return o, nil
 		}
 		// The sidebar band tracks hover the same way the overlays do, and
@@ -191,7 +201,11 @@ func handleMouseMotion(msg tea.MouseMotionMsg, o *app.OS) (*app.OS, tea.Cmd) {
 	// since the rail owns the keyboard and a click is the way back to a pane.
 	// Inside a scratch group the hover finds only the group's panes: the
 	// backdrop is not the current workspace.
-	if o.Settings.FocusFollowsMouse && !o.SidebarFocused &&
+	// The pause key (appearance.focus_follows_mouse_pause) holds focus where it
+	// is for as long as the report carries it. It is only read here: the guest
+	// forwarding below still sends the motion with the modifier on it.
+	if o.Settings.FocusFollowsMouse && !focusFollowsMousePaused(o.Settings.FocusFollowsMousePause, mouse.Mod) &&
+		!o.SidebarFocused &&
 		!o.Dragging && !o.Resizing && !o.ScrollbarDragging &&
 		!o.AnyOverlayOpen() && !o.ContextMenuActive() &&
 		!o.SidebarBandContains(mouse.X, mouse.Y) && !o.InDockBand(mouse.Y) {
@@ -543,4 +557,17 @@ func handleMouseMotion(msg tea.MouseMotionMsg, o *app.OS) (*app.OS, tea.Cmd) {
 	}
 
 	return o, nil
+}
+
+// focusFollowsMousePaused reports whether the configured pause key is held on
+// a motion report. The report is the only place the modifier state comes
+// from, so a release is seen on the first motion after it.
+func focusFollowsMousePaused(key string, mod tea.KeyMod) bool {
+	switch key {
+	case config.FocusFollowsMousePauseCtrl:
+		return mod&tea.ModCtrl != 0
+	case config.FocusFollowsMousePauseAlt:
+		return mod&tea.ModAlt != 0
+	}
+	return false
 }

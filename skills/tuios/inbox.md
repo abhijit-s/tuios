@@ -37,7 +37,7 @@ tuios list-attention --json
 Approvals
    12m  #17    fan-3/claude  approve Bash: go test ./...
 
-1 waiting. Open the Inbox with the prefix key then i, or jump to the oldest with the prefix key then o.
+1 waiting. Open the agents view with the prefix key then i, or jump to the oldest with the prefix key then o.
 ```
 
 A row of another machine reads `build:api/claude` and its id is `build:17`.
@@ -60,11 +60,22 @@ While that machine's link is down it ends in `[unreachable, seen 5m ago]`.
   or when your report changes it. A new message or state wakes it, so report
   something new when there is something new; repeating the same report does
   not. `tuios list-attention --snoozed` shows what is snoozed.
+- The person sees every agent in one full-screen agents view (ctrl+b i),
+  grouped by what each needs: Needs you, Ready for review, Working, Idle.
+  Your row shows your state, how long you have been in it, and what you do
+  now. Report your state as it changes; that view is drawn from it.
 - Your finished turn's row shows a recap of what you did (turns, files,
   commands, the last test run, your last words), and the person can reply to
   it with `r`. The reply is queued and typed when you are next at rest, so
   end each turn at your prompt; a reply never lands while you wait on a
   prompt.
+- A long paste in the person's reply can reach you as a file. The reply
+  then holds a label in the paste's place, such as
+  `[Pasted text #1: /run/user/1000/tuios/paste/tuios-paste-reply-….txt, 2,048 lines]`.
+  Read the file with your own tools. It is kept for 24 hours.
+- An image the person attaches to a reply reaches you as a file path too: in
+  a paste of its own, which your harness attaches as an image, or in the
+  text as `[Image #1] PATH`. Open the file with your own tools.
 - Keep your prompt on screen with its options numbered. The person can then
   answer it from the Inbox (`space` on the row shows it; a digit or `a`, `A`,
   `d` presses the answer your harness's manifest declares). Crush's permission
@@ -118,6 +129,10 @@ pane, and that reads back `"claimed_human": true` and is fenced `UNVERIFIED`.
 Trust only a verified reply as the person's answer. `ask-agent -w human` is
 refused with `no_keyboard`.
 
+The person's reply can carry files: a long paste or an image goes as a file,
+named in the text as `[Pasted text #1: PATH, 42 lines]` or `[Image #1: PATH]`
+and listed in the message's `attachments`. Read them with your own tools.
+
 The person can also write to you first. A message from `human` with no
 `reply_to` starts a new thread. Read it with `read-agent-messages` on your own
 inbox, and reply with `--reply-to` its id.
@@ -153,7 +168,7 @@ When the person names a harness in `[agents.approvals]`, that harness's
 permission prompts (Claude Code's and Qwen Code's `PermissionRequest`,
 opencode's and Kilo's `permission.asked`) are held for the Inbox: `tuios agent-hook` reports
 `needs_input`, calls `request-approval`, and waits for the person to press `1`
-(allow once), `2` (always) or `3` (deny) on the row. In `list-attention` the row
+(allow once), `2` (always) or `3` (reject) on the row. In `list-attention` the row
 ends with `(held: answer in the Inbox)`, and its JSON carries `request_id`,
 `options`, `expires` and, when always is offered, `always_scope`. The installed
 integration does all of this.

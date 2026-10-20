@@ -23,6 +23,9 @@ type listOverlay struct {
 	MaxVisible int
 	Search     bool
 	Query      string
+	// SearchLine, when set, draws the search line in place of the sigil,
+	// the query and a cursor at its end, for a line edited with a cursor.
+	SearchLine func(width int) string
 	Count      int
 	Selected   int
 	// Scroll points at the caller's scroll offset; the renderer clamps it to the
@@ -42,6 +45,12 @@ type listOverlay struct {
 	// most the fitted width: more about the selected row than the row holds.
 	// DetailFor builds them for the fitted width.
 	DetailFor func(width int) []string
+	// DetailAt, when set, is told where the detail's first line was drawn,
+	// relative to the panel, for a detail that puts pictures on the host.
+	DetailAt func(x, y int)
+	// DetailStyled says the detail lines carry their own colours and fill
+	// the width, as the reply editor's do, so they are drawn as they are.
+	DetailStyled bool
 	// RenderRow returns the content for row i on the given row background, at
 	// most width cells wide (width is the fitted panel width, not the requested
 	// one); the helper fills the remainder with rowBg so the selection highlight
@@ -99,6 +108,9 @@ func (m *OS) renderListOverlay(cfg listOverlay) (string, overlay.Geometry, []ove
 		search := overlay.Style(bg).Foreground(pal.AccentBright).Bold(true).Render(overlay.Sigil()) +
 			overlay.Style(bg).Foreground(pal.Fg).Render(cfg.Query) +
 			overlay.Cursor(" ", bg, pal.Fg)
+		if cfg.SearchLine != nil {
+			search = cfg.SearchLine(cfg.Width)
+		}
 		lines = append(lines, search, overlay.Rule(cfg.Width, bg, pal))
 		rowYOffset = 2
 	}
@@ -140,10 +152,16 @@ func (m *OS) renderListOverlay(cfg listOverlay) (string, overlay.Geometry, []ove
 	} else {
 		lines = append(lines, overlay.Style(bg).Render(" "))
 	}
+	detailRow := -1
 	if cfg.DetailFor != nil {
 		if detail := cfg.DetailFor(cfg.Width); len(detail) > 0 {
 			lines = append(lines, overlay.Rule(cfg.Width, bg, pal))
+			detailRow = len(lines)
 			for _, l := range detail {
+				if cfg.DetailStyled {
+					lines = append(lines, l)
+					continue
+				}
 				lines = append(lines, overlay.Style(bg).Foreground(pal.Fg).Render(l))
 			}
 		}
@@ -156,6 +174,9 @@ func (m *OS) renderListOverlay(cfg listOverlay) (string, overlay.Geometry, []ove
 		Hints: cfg.Hints,
 	}
 	content, geo := panel.Render(pal)
+	if cfg.DetailAt != nil && detailRow >= 0 {
+		cfg.DetailAt(geo.BodyX, geo.BodyY+detailRow)
+	}
 
 	rows := make([]overlayRowHit, 0, max(end-start, 0))
 	for i := start; i < end; i++ {

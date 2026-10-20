@@ -6,6 +6,8 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/Gaurav-Gosain/tuios/internal/herdrplugin"
 )
 
 // Command keybindings: [[keybindings.command]] entries that bind a key to a
@@ -35,6 +37,10 @@ const (
 	CommandTypePopup   = "popup"
 	CommandTypePane    = "pane"
 	CommandTypeShell   = "shell"
+	// CommandTypePluginAction runs a herdr plugin action. The command is
+	// the action id, bare or qualified with the plugin id, as herdr's
+	// [[keys.command]] type = "plugin_action" names it.
+	CommandTypePluginAction = "plugin_action"
 )
 
 // CommandActionPrefix starts the action name of every command entry.
@@ -49,7 +55,8 @@ type CommandBinding struct {
 	// Key is the key that runs the command. "prefix+" puts it after the
 	// leader. Any other key acts in window mode and terminal mode.
 	Key string `toml:"key"`
-	// Type is scratch, popup, pane or shell. Empty means popup.
+	// Type is scratch, popup, pane, shell or plugin_action. Empty means
+	// popup.
 	Type string `toml:"type,omitempty"`
 	// Command is run by sh -c, so it can hold pipes and quotes. A scratch
 	// entry with no command runs the user's shell.
@@ -118,6 +125,9 @@ func (c CommandBinding) Label() string {
 		return d
 	}
 	if cmd := strings.TrimSpace(c.Command); cmd != "" {
+		if c.ResolvedType() == CommandTypePluginAction {
+			return "Plugin action " + cmd
+		}
 		return "Run " + cmd
 	}
 	return c.ResolvedName()
@@ -186,8 +196,8 @@ func commandProblem(c CommandBinding, normalizer *KeyNormalizer) string {
 	switch t := c.ResolvedType(); {
 	case strings.TrimSpace(c.Key) == "":
 		return "The entry has no key. Add a key, for example key = \"prefix+alt+g\"."
-	case t != CommandTypeScratch && t != CommandTypePopup && t != CommandTypePane && t != CommandTypeShell:
-		return fmt.Sprintf("The type %q is not known. Use scratch, popup, pane or shell.", c.Type)
+	case t != CommandTypeScratch && t != CommandTypePopup && t != CommandTypePane && t != CommandTypeShell && t != CommandTypePluginAction:
+		return fmt.Sprintf("The type %q is not known. Use scratch, popup, pane, shell or plugin_action.", c.Type)
 	case strings.TrimSpace(c.Command) == "" && t != CommandTypeScratch:
 		return "The entry has no command. Add a command."
 	case c.ResolvedName() == "":
@@ -324,6 +334,35 @@ func validateCommands(cfg *UserConfig, result *ValidationResult) {
 		result.Warnings = append(result.Warnings, ValidationError{
 			Field: fmt.Sprintf("keybindings.command[%d]", p.Entry), Key: p.Key, Message: p.Problem,
 		})
+	}
+	validatePluginActionKeys(cfg, result)
+}
+
+// validatePluginActionKeys warns about a plugin_action entry whose action no
+// plugin on this machine has. It is a warning, since the plugin can be
+// installed later. The manifests are read only when such an entry exists.
+func validatePluginActionKeys(cfg *UserConfig, result *ValidationResult) {
+	var entries []herdrplugin.Entry
+	loaded := false
+	for i, c := range cfg.Keybindings.Command {
+		id := strings.TrimSpace(c.Command)
+		if c.ResolvedType() != CommandTypePluginAction || id == "" {
+			continue
+		}
+		if !loaded {
+			path, err := GetConfigPath()
+			if err != nil {
+				return
+			}
+			entries = herdrplugin.Discover(herdrplugin.DefaultDirs(path, cfg.Plugins.Dirs), cfg.Plugins.Enabled)
+			loaded = true
+		}
+		if len(herdrplugin.FindAction(entries, id)) == 0 {
+			result.Warnings = append(result.Warnings, ValidationError{
+				Field: fmt.Sprintf("keybindings.command[%d]", i+1), Key: c.Key,
+				Message: fmt.Sprintf("No plugin has the action %q. The key does nothing until you install a plugin with this action. Run tuios plugins list to see the plugins.", id),
+			})
+		}
 	}
 }
 

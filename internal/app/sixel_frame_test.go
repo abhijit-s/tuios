@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/Gaurav-Gosain/tuios/internal/terminal"
-	"github.com/Gaurav-Gosain/tuios/internal/vt"
+	"tuios.dev/vt"
 )
 
 // sixelTestImage is cols x rows cells of 10x20 pixels, each cell its own
@@ -238,7 +238,7 @@ func TestSixelFallbackModes(t *testing.T) {
 func TestFrameHookWriterOrder(t *testing.T) {
 	var buf strings.Builder
 	w := NewFrameHookWriter(&buf)
-	w.SetHook(func([]byte) []byte { return []byte("IMG") })
+	w.SetHook(func(f []byte) ([]byte, []byte) { return f, []byte("IMG") })
 	_, _ = w.Write([]byte("\x1b[?2026hFRAME\x1b[?2026l"))
 	if got := buf.String(); got != "\x1b[?2026hFRAMEIMG\x1b[?2026l" {
 		t.Fatalf("wrote %q", got)

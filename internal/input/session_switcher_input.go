@@ -31,7 +31,7 @@ func handleSessionSwitcherInput(msg tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cm
 		return o, nil
 	}
 
-	if listKey(keyStr, false, listPage, o.SessionSwitcherMove) {
+	if listKey(o, keyStr, false, listPage, o.SessionSwitcherMove) {
 		return o, nil
 	}
 
@@ -64,7 +64,8 @@ func handleSessionSwitcherInput(msg tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cm
 		o.SessionSwitcherQuery = ""
 		o.SessionSwitcherSelected = 0
 		o.SessionSwitcherScroll = 0
-		return o, nil
+		// A session on another machine opens off the Update goroutine.
+		return o, o.TakeSidebarCmd()
 
 	case "backspace":
 		if o.SessionSwitcherQuery != "" {

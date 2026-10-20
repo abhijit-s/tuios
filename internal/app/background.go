@@ -4,12 +4,14 @@ import (
 	"fmt"
 	"image"
 	"image/color"
+	"strconv"
 	"strings"
 
-	"charm.land/lipgloss/v2"
 	uv "github.com/charmbracelet/ultraviolet"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/Gaurav-Gosain/tuios/internal/config"
+	"github.com/Gaurav-Gosain/tuios/internal/overlay"
 	"github.com/Gaurav-Gosain/tuios/internal/terminal"
 	"github.com/Gaurav-Gosain/tuios/internal/theme"
 )
@@ -90,11 +92,23 @@ func surfaceSetting(s *config.Settings, which surface) string {
 	case surfaceChrome:
 		return s.WindowChromeBackgroundResolved()
 	case surfaceDock:
-		return s.DockBackgroundResolved()
+		return themeGround(s.DockBackground, s.Background, s.DockBackgroundResolved(), theme.RoleDockGround)
 	case surfaceSidebar:
-		return s.SidebarBackgroundResolved()
+		return themeGround(s.SidebarBackground, s.Background, s.SidebarBackgroundResolved(), theme.RoleRailGround)
 	}
 	return config.BackgroundOff
+}
+
+// themeGround is a dock or rail setting, or the theme's chrome.dock.ground or
+// chrome.rail.ground when the surface's own key is not set and
+// appearance.background paints nothing, which is its default. The surface's
+// key wins, off included. The role's name is the setting, so the ground
+// resolves and is memoised like a colour from the config.
+func themeGround(own, all, resolved string, role theme.Role) string {
+	if own != "" || (all != "" && all != config.BackgroundOff) || !theme.ChromeNames(role) {
+		return resolved
+	}
+	return role.String()
 }
 
 // ground is the colours painted on one surface on this frame.
@@ -121,6 +135,8 @@ func (g ground) on() bool { return g.bg != nil }
 // groundMemo is one surface's resolved ground and what it was resolved from.
 type groundMemo struct {
 	setting, themeID string
+	themeGen         uint64
+	depth            overlay.Depth
 	valid            bool
 	ground           ground
 }
@@ -134,12 +150,17 @@ func (m *OS) surfaceGround(which surface) ground {
 	if setting == config.BackgroundOff {
 		return ground{}
 	}
-	themeID := theme.CurrentThemeID()
+	// The generation, not the id alone: the omarchy theme keeps its id while
+	// its colours change.
+	// The depth too: a slot name resolves to the terminal's own slot at 16
+	// colours.
+	gen, depth := theme.Generation(), theme.Depth()
 	memo := &m.groundCache[which]
-	if memo.valid && memo.setting == setting && memo.themeID == themeID {
+	if memo.valid && memo.setting == setting && memo.themeGen == gen && memo.depth == depth {
 		return memo.ground
 	}
-	memo.setting, memo.themeID, memo.valid = setting, themeID, true
+	themeID := theme.CurrentThemeID()
+	memo.setting, memo.themeID, memo.themeGen, memo.depth, memo.valid = setting, themeID, gen, depth, true
 	memo.ground = resolveGround(setting, themeID)
 	return memo.ground
 }
@@ -179,13 +200,19 @@ func (m *OS) frameGrounds() frameGrounds {
 // foreground is the theme's lifted until it reads on it when a theme is set,
 // and the host's own when none is, since tuios does not know the host's
 // palette and choosing a stranger's is worse than trusting the user's pick.
+// A role or a slot name is a colour too, resolved on the theme in force; one
+// that resolves to the terminal's default colour paints nothing.
 func resolveGround(setting, themeID string) ground {
 	var g ground
 	switch setting {
 	case config.BackgroundOff:
 		return g
 	case config.BackgroundTheme:
-		if themeID == "" {
+		// At 16 colours a ground is the terminal's own background (see
+		// overlay.Depth16). The frame writer stepped the theme's ground down
+		// to the nearest of the sixteen, so a dark slate ground came out the
+		// terminal's blue.
+		if themeID == "" || theme.Depth() == overlay.Depth16 {
 			return g
 		}
 		bg := theme.TerminalBg()
@@ -197,17 +224,27 @@ func resolveGround(setting, themeID string) ground {
 			g.fg = solidColor(fg)
 		}
 	default:
-		if !config.IsHexColor(setting) {
+		bg := theme.ConfigColor(setting)
+		if isNilColor(bg) || overlay.IsNoColor(bg) {
 			return g
 		}
-		g.bg = solidColor(lipgloss.Color(setting))
+		g.bg = solidColor(bg)
 		if themeID != "" {
 			if fg := theme.TerminalFg(); !isNilColor(fg) {
 				g.fg = solidColor(theme.ReadableAt(fg, g.bg, theme.ContrastFloor))
 			}
 		}
 	}
-	g.key = setting + "\x00" + themeID
+	// At 256 colours the ground is the palette entry the chrome would pick,
+	// chosen here once. Left in truecolor, the frame writer stepped it down
+	// cube first, and nord's #2e3440 became the teal 23.
+	if theme.Depth() == overlay.Depth256 {
+		g.bg = overlay.To256(g.bg)
+		if g.fg != nil {
+			g.fg = overlay.To256(g.fg)
+		}
+	}
+	g.key = setting + "\x00" + themeID + "\x00" + strconv.FormatUint(theme.Generation(), 10) + "\x00" + theme.Depth().String()
 	g.bgSGR = sgrColor(48, g.bg)
 	if g.fg != nil {
 		g.fgSGR = sgrColor(38, g.fg)
@@ -215,9 +252,12 @@ func resolveGround(setting, themeID string) ground {
 	return g
 }
 
-// sgrColor is the SGR sequence that sets a truecolor foreground (38) or
-// background (48).
+// sgrColor is the SGR sequence that sets a foreground (38) or background (48):
+// a palette index for a 256-colour entry, truecolor for anything else.
 func sgrColor(which int, c color.Color) string {
+	if i, ok := c.(ansi.IndexedColor); ok {
+		return fmt.Sprintf("\x1b[%d;5;%dm", which, i)
+	}
 	r, g, b, _ := c.RGBA()
 	return fmt.Sprintf("\x1b[%d;2;%d;%d;%dm", which, r>>8, g>>8, b>>8)
 }
@@ -366,7 +406,7 @@ func desktopBlank(g ground) uv.Cell {
 // those paths having to remember; a window already told is a string
 // comparison, and with nothing to report the strings are empty.
 func (m *OS) syncReportColors() {
-	r := m.paneReportNow()
+	r := m.reportedToPanes()
 	for _, w := range m.Windows {
 		if w != nil {
 			w.SetReportColors(r.fg, r.bg, r.pal, r.key)
@@ -378,8 +418,30 @@ func (m *OS) syncReportColors() {
 // #rrggbb, empty for a colour there is no answer for, and the sixteen as the
 // comma list SessionState.PaneReportPalette describes.
 func (m *OS) paneReportHex() (bg, fg, pal string) {
-	r := m.paneReportNow()
+	r := m.reportedToPanes()
 	return r.bgHex, r.fgHex, r.palHex
+}
+
+// themePreviewing reports whether the theme in force is only a preview: the
+// theme picker or the theme editor is open.
+func (m *OS) themePreviewing() bool {
+	return m.ShowThemePicker || m.themeEditor.open
+}
+
+// reportedToPanes is the answer panes are given. While a theme is only
+// previewed it is the answer they had before, so a program in a pane is not
+// sent a mode 2031 notice for each theme the picker shows on the way to a
+// pick. The panes are still drawn in the preview: that goes through
+// SetThemeColors, which sends no notice. When the picker or the editor
+// closes, the theme in force is reported once, and a cancelled pick reports
+// nothing new.
+func (m *OS) reportedToPanes() *paneReport {
+	if m.themePreviewing() && m.paneReportSentSet {
+		return &m.paneReportSent
+	}
+	r := m.paneReportNow()
+	m.paneReportSent, m.paneReportSentSet = *r, true
+	return r
 }
 
 // colorHex spells a colour as #rrggbb, and nil as empty.

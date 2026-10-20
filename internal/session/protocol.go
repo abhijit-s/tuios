@@ -163,6 +163,21 @@ const (
 	// sends it only to a daemon whose welcome set SessionUsed. See
 	// session_used.go.
 	MsgSessionUsed
+	// MsgSessionsChanged tells a client that the session listing changed: a
+	// session, a window, a title, a folder or an agent state it shows. It has
+	// no payload. The client asks for the listing again. The daemon sends it
+	// only to a client whose hello set ListingPush. See
+	// daemon_listing_push.go.
+	MsgSessionsChanged
+	// MsgPaneMark tells a client that a pane it does not stream rang the
+	// bell or printed, once until the client subscribes to the pane or drops
+	// it. The daemon sends it only to a client whose hello set PaneMarks.
+	// See pane_marks.go.
+	MsgPaneMark
+	// MsgGoodbye is the daemon's last message to a client before it stops:
+	// why it stops. The daemon sends it only to a client whose hello set
+	// Goodbye. See daemon_goodbye.go.
+	MsgGoodbye
 )
 
 // WatchDirPayload is the body of MsgWatchDir. WindowID is the pane the folder
@@ -283,6 +298,14 @@ type HelloPayload struct {
 	// without it lays the panes out around its own chrome whatever the
 	// session says, so its chrome always counts. See calculateSessionReserve.
 	ViewChrome bool `json:"view_chrome,omitzero"`
+	// ListingPush says the client reads MsgSessionsChanged. The daemon sends
+	// it to no other client. See daemon_listing_push.go.
+	ListingPush bool `json:"listing_push,omitzero"`
+	// PaneMarks says the client reads MsgPaneMark. The daemon sends it to no
+	// other client. See pane_marks.go.
+	PaneMarks bool `json:"pane_marks,omitzero"`
+	// Goodbye says the client reads MsgGoodbye. See daemon_goodbye.go.
+	Goodbye bool `json:"goodbye,omitzero"`
 }
 
 // WelcomePayload is sent by server in response to Hello.
@@ -342,6 +365,14 @@ type WelcomePayload struct {
 	// asked for tuios attach -d warns when it does not see it: an older
 	// daemon attaches and detaches nobody.
 	DetachOthers bool `json:"detach_others,omitzero"`
+	// ListingPush says the daemon sends MsgSessionsChanged to a client whose
+	// hello set ListingPush. Such a client stops polling the listing. A
+	// client that does not see it (a daemon that predates it) keeps polling.
+	ListingPush bool `json:"listing_push,omitzero"`
+	// PaneMarks says the daemon sends MsgPaneMark to a client whose hello set
+	// PaneMarks. A client that does not see it (a daemon that predates it)
+	// marks no tab for a pane it does not stream.
+	PaneMarks bool `json:"pane_marks,omitzero"`
 }
 
 // AttachPayload requests attachment to a session.
@@ -369,6 +400,10 @@ type AttachPayload struct {
 	// window_size policies it does not count toward the session's size;
 	// under smallest it counts like any client. An older daemon ignores it.
 	ViewOnly bool `json:"view_only,omitzero"`
+	// Passive displays and accepts input for a pane but does not implement
+	// renderer commands (for example a session shown in a sidebar rail).
+	// Command routing skips it; its viewport does not size the shared session.
+	Passive bool `json:"passive,omitempty"`
 	// Cwd is the start directory of a session this attach creates (CreateNew
 	// and no session by that name). See NewPayload.Cwd. An attach to a
 	// session that exists ignores it.
@@ -600,6 +635,10 @@ type SessionInfo struct {
 	// SessionState.Global. Omitted when false, which is what an older daemon
 	// sends and what every client reads as an ordinary session.
 	Global bool `json:"global,omitempty"`
+	// Space is the space the session is filed under. See SessionState.Space.
+	// Omitted when the session is in none, which is also what an older daemon
+	// sends.
+	Space string `json:"space,omitempty"`
 	// Worktree is set for a session whose directory is a git worktree: which
 	// repository, which branch, and whether the directory still exists. It is
 	// what the rail groups by. Omitted for every other session, which is also
@@ -1149,14 +1188,22 @@ func readFramePayloadOf(r io.Reader, h frameHeader) (*Message, error) {
 }
 
 // readFramePayload reads n payload bytes into memory that grows as they
-// arrive: it starts at firstFrameChunk at most and doubles, by frameGrowStep
-// at most, up to n. A sender that announces more than it sends costs what it
-// sent, not what it announced.
+// arrive: it starts at firstFrameChunk, or twice what a buffered reader
+// already holds, and doubles, by frameGrowStep at most, up to n. A sender that
+// announces more than it sends costs at most twice what it sent, not what it
+// announced.
 func readFramePayload(r io.Reader, n int) ([]byte, error) {
 	if n == 0 {
 		return nil, nil
 	}
-	payload := make([]byte, 0, min(n, firstFrameChunk))
+	first := firstFrameChunk
+	// Bytes a buffered reader already holds have arrived. Starting at twice
+	// them costs no more than the doublings would after them, and takes most
+	// frames in one buffer.
+	if b, ok := r.(interface{ Buffered() int }); ok {
+		first = max(first, 2*b.Buffered())
+	}
+	payload := make([]byte, 0, min(n, first))
 	for len(payload) < n {
 		if len(payload) == cap(payload) {
 			want := min(n, cap(payload)+min(cap(payload), frameGrowStep))

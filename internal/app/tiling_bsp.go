@@ -1,6 +1,7 @@
 package app
 
 import (
+	"errors"
 	"slices"
 
 	"github.com/Gaurav-Gosain/tuios/internal/config"
@@ -153,6 +154,9 @@ func openStartRect(rect layout.Rect) (x, y, w, h int) {
 
 // ApplyBSPLayout applies the BSP tree layout to all windows in the current workspace
 func (m *OS) ApplyBSPLayout() {
+	// Deferred so every way out refreshes it, and after noteDragSlot has
+	// recorded the held pane's slot, which a drop that changes nothing lands in.
+	defer m.refreshDropZone()
 	tree := m.GetOrCreateBSPTree()
 	if tree == nil || tree.IsEmpty() {
 		return
@@ -194,6 +198,12 @@ func (m *OS) ApplyBSPLayout() {
 			continue
 		}
 		rect = canvas.apply(rect)
+		// The open pane of a stack gives a row to each other member, above
+		// and below it in stack order. See stack.go.
+		if above, below := m.stackRows(win); above+below > 0 && rect.H > above+below+1 {
+			rect.Y += above
+			rect.H -= above + below
+		}
 		// A zoomed pane keeps its slot in the tree and loses its rectangle to the
 		// zoom box, so the tiler leaves the rectangle alone. Zoom is shared, so
 		// a peer's sync can bring a pane, close one or move the box while
@@ -491,8 +501,12 @@ func (m *OS) RemoveWindowFromBSPTree(window *terminal.Window) {
 		return
 	}
 
-	windowIntID := m.GetWindowIntID(window.ID)
-	tree.RemoveWindow(windowIntID)
+	// The open pane of a stack hands its tile to the next member, so the
+	// stack keeps its place. See stack.go.
+	if !m.handOverStack(window, tree) {
+		windowIntID := m.GetWindowIntID(window.ID)
+		tree.RemoveWindow(windowIntID)
+	}
 
 	// Apply the new layout
 	m.ApplyBSPLayout()
@@ -583,6 +597,10 @@ func (m *OS) splitFocused(dir layout.PreselectionDir, followSSH bool) {
 	if focusedWin == nil {
 		return
 	}
+	if err := m.SplitRefusal(dir); err != nil {
+		m.ShowNotification("This pane is too small to split.", "warning", m.Settings.NotificationDuration)
+		return
+	}
 
 	// In a daemon session the new pane is created daemon-side and arrives through
 	// a later state sync, so the preselection set here would never be consumed
@@ -622,6 +640,35 @@ func (m *OS) splitFocused(dir layout.PreselectionDir, followSSH bool) {
 
 	// Clear the split target
 	m.SplitTargetWindowID = ""
+}
+
+// ErrPaneTooSmall is why a split is refused: one of the two panes it makes
+// would be under the smallest pane size.
+var ErrPaneTooSmall = errors.New("the pane is too small to split")
+
+// SplitRefusal says why a split of the focused pane toward dir would not run,
+// or nil. A split that leaves either pane under the smallest size
+// (config.DefaultWindowWidth by config.DefaultWindowHeight cells) is refused,
+// because a pane that small cannot be resized back up without a jump and no
+// program in it fits. Only the split tree is checked: the other tilers place
+// panes by their own rules.
+func (m *OS) SplitRefusal(dir layout.PreselectionDir) error {
+	if !m.AutoTiling || m.LayoutName() != LayoutModeBSP {
+		return nil
+	}
+	focused := m.GetFocusedWindow()
+	tree := m.WorkspaceTrees[m.CurrentWorkspace]
+	if focused == nil || tree == nil || focused.IsFloating {
+		return nil
+	}
+	split := layout.SplitHorizontal
+	if dir == layout.PreselectionLeft || dir == layout.PreselectionRight {
+		split = layout.SplitVertical
+	}
+	if !tree.CanSplit(m.GetWindowIntID(focused.ID), split, tree.DefaultRatio, m.GetBSPBounds(), m.separatorGap()) {
+		return ErrPaneTooSmall
+	}
+	return nil
 }
 
 // SmartSplitFocused splits the focused window using the smart split algorithm:

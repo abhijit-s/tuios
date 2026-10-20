@@ -8,7 +8,7 @@ import (
 	"github.com/Gaurav-Gosain/tuios/internal/config"
 	"github.com/Gaurav-Gosain/tuios/internal/overlay"
 	"github.com/Gaurav-Gosain/tuios/internal/theme"
-	"github.com/Gaurav-Gosain/tuios/internal/vt"
+	"tuios.dev/vt"
 )
 
 // The scrim is the screen behind a modal overlay turned down, so the panel
@@ -81,6 +81,9 @@ var modalOverlays = [...]modalOverlay{
 	{id: "settings", open: func(m *OS) bool { return m.ShowSettings }, scrim: true},
 	{id: "keybinds", open: func(m *OS) bool { return m.ShowKeybindManager }, scrim: true},
 	{id: "themepicker", open: func(m *OS) bool { return m.ShowThemePicker }},
+	// The theme editor's preview is the whole screen, the sheet sits beside it.
+	{id: "themeeditor", open: func(m *OS) bool { return m.themeEditor.open }},
+	{id: "presetpicker", open: func(m *OS) bool { return m.presetPicker.open }, scrim: true},
 	{id: "dockeditor", open: func(m *OS) bool { return m.ShowDockEditor }},
 	{id: "sectioneditor", open: func(m *OS) bool { return m.ShowSectionEditor }},
 	{id: "glyphpicker", open: func(m *OS) bool { return m.ShowGlyphPicker }},
@@ -91,6 +94,7 @@ var modalOverlays = [...]modalOverlay{
 	{id: overlayKindShot, open: func(m *OS) bool { return m.ShotPreview.Open }, scrim: true},
 	{id: "quit", open: func(m *OS) bool { return m.ShowQuitMenu }, scrim: true},
 	{id: "sessionclose", open: func(m *OS) bool { return m.ShowSessionClose }, scrim: true},
+	{id: overlayKindRestart, open: func(m *OS) bool { return m.DaemonRestartOpen() }, scrim: true},
 	{id: "filedialog", open: func(m *OS) bool { return m.FilePromptOpen() }, scrim: true},
 	{id: "worktreeprompt", open: func(m *OS) bool { return m.WorktreePromptOpen() }, scrim: true},
 	{id: overlayKindCopyDialog, open: func(m *OS) bool { return m.CopyDialogOpen() }, scrim: true},

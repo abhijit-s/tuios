@@ -4,6 +4,9 @@ import (
 	"encoding/json"
 	"strconv"
 	"strings"
+
+	"github.com/Gaurav-Gosain/tuios/internal/config"
+	"github.com/Gaurav-Gosain/tuios/internal/harness"
 )
 
 // The delivery queue's verbs: queue-prompt, list-queued and cancel-queued. The
@@ -54,6 +57,13 @@ type queuePromptParams struct {
 	Text       string `json:"text"`
 	HumanNonce string `json:"human_nonce"`
 	From       string `json:"from"`
+	// Parts is the message in ordered parts. When it is given, Text is
+	// ignored: a client sends both so a daemon older than parts types the
+	// text. See queue_parts.go.
+	Parts []queuePart `json:"parts"`
+	// Host is the machine the pane is on, for a pane of a linked machine.
+	// See queue_host.go.
+	Host string `json:"host"`
 }
 
 // verbQueuePrompt answers queue-prompt.
@@ -62,11 +72,28 @@ func (d *Daemon) verbQueuePrompt(cs *connState, params json.RawMessage) (any, *v
 	if verr := decodeParams(params, &p); verr != nil {
 		return nil, verr
 	}
-	if strings.TrimSpace(p.Text) == "" {
-		return nil, invalidParam("text", "text is required: the message to type when the agent is at rest")
+	if p.Host != "" {
+		return d.queuePromptToHost(cs, p)
 	}
-	if len(p.Text) > queueMaxText {
-		return nil, invalidParam("text", "text is longer than "+strconv.Itoa(queueMaxText)+" bytes")
+	text, size := p.Text, len(p.Text)
+	if p.Parts != nil {
+		var verr *verbError
+		if text, size, verr = checkQueueParts(p.Parts); verr != nil {
+			return nil, verr
+		}
+	} else {
+		if strings.TrimSpace(p.Text) == "" {
+			return nil, invalidParam("text", "text is required: the message to type when the agent is at rest")
+		}
+		if len(p.Text) > queueMaxText {
+			return nil, invalidParam("text", "text is longer than "+strconv.Itoa(queueMaxText)+" bytes")
+		}
+	}
+	if cs != nil && cs.viaLink && hasFileParts(p.Parts) && !d.linkPolicy(cs).Allows(config.LinkAllowFiles) {
+		cs.mu.Lock()
+		peer := cs.linkPeer
+		cs.mu.Unlock()
+		return nil, linkFilesRefusal(peer)
 	}
 	sess, verr := d.resolveVerbSession(p.Session)
 	if verr != nil {
@@ -77,21 +104,31 @@ func (d *Daemon) verbQueuePrompt(cs *connState, params json.RawMessage) (any, *v
 	if verr != nil {
 		return nil, verr
 	}
-	e, verr := d.newQueueEntry(cs, sess, state, p.Text, p.From, p.HumanNonce)
+	if hasImageParts(p.Parts) && d.inputProfileFor(sess, target.ID).Images == harness.ImagesNone {
+		return nil, noImagesError(target)
+	}
+	e, verr := d.newQueueEntry(cs, sess, state, text, p.From, p.HumanNonce)
 	if verr != nil {
 		return nil, verr
 	}
+	e.parts, e.size = p.Parts, size
 	res, verr := d.queuePrompt(sess, target, e)
 	if verr != nil {
 		return nil, verr
 	}
-	return map[string]any{
+	out := map[string]any{
 		"type":       "prompt_queued",
 		"id":         res.ID,
 		"position":   res.Position,
 		"queued":     res.Queued,
 		"delivering": res.Delivering,
-	}, nil
+	}
+	if p.Parts != nil {
+		// Tells the client the parts were read. A daemon older than parts
+		// leaves it out, having queued the text.
+		out["parts"] = len(p.Parts)
+	}
+	return out, nil
 }
 
 // queueTarget resolves the pane a message is queued for: the named window, or

@@ -9,7 +9,9 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	uv "github.com/charmbracelet/ultraviolet"
+	tint "github.com/lrstanley/bubbletint/v2"
 
+	"github.com/Gaurav-Gosain/tuios/internal/config"
 	"github.com/Gaurav-Gosain/tuios/internal/overlay"
 	"github.com/Gaurav-Gosain/tuios/internal/theme"
 )
@@ -100,6 +102,40 @@ func (m *OS) seedHostColors(caps *HostCapabilities) {
 			m.setHostSlot(i, unpackColor(caps.ANSI[i]))
 		}
 	}
+	m.followSchemeTheme()
+}
+
+// schemeTheme is the theme the config asks for on this terminal: theme_light
+// while the local terminal is light and a pair is set, else theme.
+func (m *OS) schemeTheme() string {
+	if m.UserConfig == nil {
+		return ""
+	}
+	a := m.UserConfig.Appearance
+	if a.ThemeLight != "" && theme.SchemeLight() {
+		return a.ThemeLight
+	}
+	return a.Theme
+}
+
+// followSchemeTheme puts the theme of the pair that fits the terminal in
+// force, when the config sets theme_light. It runs when the local terminal
+// reports its background, and after a light and dark switch (mode 2031). The
+// picker's and the theme editor's previews are left alone while they are
+// open. The editor calls this again when it closes. A --theme flag is an
+// explicit choice, so with one the pair is not followed.
+func (m *OS) followSchemeTheme() {
+	if m.UserConfig == nil || m.UserConfig.Appearance.ThemeLight == "" ||
+		m.Client != ClientLocal || m.LearnMode || m.ShowThemePicker || m.themeEditor.open ||
+		config.FlagTheme() != "" {
+		return
+	}
+	name := m.schemeTheme()
+	if name == m.schemeApplied {
+		return
+	}
+	m.schemeApplied = name
+	m.applyTheme(name)
 }
 
 // unpackColor turns a 0xRRGGBB word into a colour.
@@ -131,6 +167,13 @@ func (m *OS) setHostBg(c color.Color) bool {
 	}
 	h.bg, h.bgHex = c, hex
 	h.gen++
+	// The local client is alone in its process, so the dialogs may follow
+	// its terminal while no theme is set. A served client's terminal is one
+	// of several, and the process-wide chrome is not its to move.
+	if m.Client == ClientLocal && !m.LearnMode {
+		theme.SetHostGround(c, h.light)
+		theme.SetSchemeLight(h.light)
+	}
 	return true
 }
 
@@ -296,6 +339,7 @@ func parseHostSlotReply(s string) (int, color.Color, bool) {
 // hostColorsChanged lands a change of the host's colours: the chrome is
 // rebuilt on the new ground, and panes and the daemon are told.
 func (m *OS) hostColorsChanged() {
+	m.followSchemeTheme()
 	m.MarkAllDirty()
 	m.syncReportColors()
 	m.SyncStateToDaemon()
@@ -355,9 +399,29 @@ type paneReport struct {
 type paneReportMemo struct {
 	groundKey string
 	themed    bool
-	gen       uint64
-	valid     bool
-	r         paneReport
+	// tint is the theme the answer was worked out from. A theme switch
+	// gives a new pointer, and so does a theme registered again under the
+	// same id with new colours.
+	tint  *tint.Tint
+	gen   uint64
+	valid bool
+	r     paneReport
+}
+
+// themeReportPalette is a theme's sixteen as a pane is told them, and as the
+// comma list the daemon is sent. A slot the theme does not set stays nil and
+// empty, which keeps the emulator's own answer for it.
+func themeReportPalette(t *tint.Tint) (*[16]color.Color, string) {
+	var pal [16]color.Color
+	var b strings.Builder
+	for i, c := range theme.ANSIOrder(t) {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		pal[i] = theme.AsColor(c)
+		b.WriteString(colorHex(pal[i]))
+	}
+	return &pal, b.String()
 }
 
 // paneReportNow is what panes are told they are drawn on.
@@ -366,16 +430,19 @@ type paneReportMemo struct {
 // With no theme the host's own colours fill in whatever the paint does not
 // say: the background when nothing is painted, the text colour when a colour
 // of the user's is painted with no theme to take ink from, and the sixteen.
-// With a theme and nothing painted the emulator answers with the theme's
-// colours, which is what it is given as its defaults.
+// With a theme the theme's colours fill in the rest. A pane this process runs
+// is given them as its defaults anyway, but the daemon's emulators are not:
+// the daemon never loads a theme, so without this a pane in a daemon session
+// answered black and white under any theme.
 func (m *OS) paneReportNow() *paneReport {
 	g := m.paneGround()
 	themed := theme.IsEnabled()
+	cur := theme.Current()
 	memo := &m.paneReport
-	if memo.valid && memo.groundKey == g.key && memo.themed == themed && memo.gen == m.host.gen {
+	if memo.valid && memo.groundKey == g.key && memo.themed == themed && memo.tint == cur && memo.gen == m.host.gen {
 		return &memo.r
 	}
-	memo.groundKey, memo.themed, memo.gen, memo.valid = g.key, themed, m.host.gen, true
+	memo.groundKey, memo.themed, memo.tint, memo.gen, memo.valid = g.key, themed, cur, m.host.gen, true
 
 	var r paneReport
 	if g.on() {
@@ -393,6 +460,14 @@ func (m *OS) paneReportNow() *paneReport {
 			r.pal = &pal
 			r.palHex = m.host.palHex
 		}
+	} else if cur != nil {
+		if r.bg == nil {
+			r.bg = theme.AsColor(cur.Bg)
+		}
+		if r.fg == nil {
+			r.fg = theme.AsColor(cur.Fg)
+		}
+		r.pal, r.palHex = themeReportPalette(cur)
 	}
 	r.bgHex, r.fgHex = colorHex(r.bg), colorHex(r.fg)
 	if r.bgHex != "" || r.fgHex != "" || r.palHex != "" {

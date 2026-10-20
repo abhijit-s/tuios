@@ -3,13 +3,14 @@ package app
 import (
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/Gaurav-Gosain/tuios/internal/debuglog"
-	"github.com/Gaurav-Gosain/tuios/internal/vt"
+	"tuios.dev/vt"
 )
 
 func kittyPassthroughLog(format string, args ...any) {
@@ -176,6 +177,19 @@ type KittyPassthrough struct {
 	// before it is compared with that bitmap. See kitty_damage.go.
 	lastBitmap   map[string]map[uint32]*bitmapCache
 	directFrames map[string]*directFrame
+
+	// kept is the last payload of each image, by window and host id, for a
+	// screenshot to draw. keptBytes is what the payloads hold and keptSeq
+	// orders them for eviction. virtualBoxes is the box each virtual
+	// placement fills, by window, host id and placement id. See kitty_keep.go.
+	kept         map[string]map[uint32]*keptImage
+	keptBytes    int
+	keptSeq      uint64
+	virtualBoxes map[string]map[uint32]map[uint32]virtualBox
+
+	// rawChunks marks a window whose transmit-only upload is passing through
+	// in chunks, so the last chunk is not kept as if it were a whole image.
+	rawChunks map[string]bool
 
 	// Screen dimensions (updated by RefreshAllPlacements)
 	screenWidth  int
@@ -864,6 +878,7 @@ func (kp *KittyPassthrough) releaseHostID(windowID string, hostID uint32) {
 	}
 	kp.pendingOutput = fmt.Appendf(kp.pendingOutput, "\x1b_Ga=d,d=I,i=%d,q=2\x1b\\", hostID)
 	delete(kp.virtualImages[windowID], hostID)
+	kp.forgetKept(windowID, hostID)
 	if hostID < lowHostIDs {
 		if kp.freeLowIDs == nil {
 			kp.freeLowIDs = make(map[uint32]struct{})
@@ -924,31 +939,80 @@ func (kp *KittyPassthrough) allocateHostID() uint32 {
 	return id
 }
 
-// calculateImageCells calculates the number of rows and columns the image will occupy.
-// Uses cmd.Rows/Columns if specified, otherwise calculates from pixel dimensions and cell size.
+// calculateImageCells returns the number of cells the image occupies. A guest
+// that states both c= and r= is not second-guessed. One that states a single
+// dimension asks the host to fit the other one, keeping the aspect of the
+// source rectangle (the whole picture unless x, y, w and h crop it), as kitty
+// does. One that states neither gets the picture's pixel size in cells, which
+// the caller supplies: from s= and v=, a PNG header, or the placement record.
+//
+// Every number here comes from the guest, so none of them is trusted: a
+// negative one counts as unstated, and the box is held to maxBoxCells a side.
 func (kp *KittyPassthrough) calculateImageCells(cmd *vt.KittyCommand) (rows, cols int) {
-	if cmd.Rows > 0 {
-		rows = cmd.Rows
-	}
-	if cmd.Columns > 0 {
-		cols = cmd.Columns
+	rows, cols = clampCells(cmd.Rows), clampCells(cmd.Columns)
+	if rows > 0 && cols > 0 {
+		return rows, cols
 	}
 
-	// If rows/cols not specified, calculate from image dimensions
-	if rows == 0 || cols == 0 {
-		caps := kp.hostCaps()
-		kittyPassthroughLog("calculateImageCells: imgPixels=(%d,%d), cmdRC=(%d,%d), cellSize=(%d,%d)",
-			cmd.Width, cmd.Height, cmd.Columns, cmd.Rows, caps.CellWidth, caps.CellHeight)
-		if caps.CellWidth > 0 && caps.CellHeight > 0 {
-			if rows == 0 && cmd.Height > 0 {
-				rows = (cmd.Height + caps.CellHeight - 1) / caps.CellHeight
+	caps := kp.hostCaps()
+	kittyPassthroughLog("calculateImageCells: imgPixels=(%d,%d), cmdRC=(%d,%d), cellSize=(%d,%d)",
+		cmd.Width, cmd.Height, cmd.Columns, cmd.Rows, caps.CellWidth, caps.CellHeight)
+	if caps.CellWidth > 0 && caps.CellHeight > 0 {
+		srcW := sourceSpan(cmd.Width, cmd.SourceX, cmd.SourceWidth)
+		srcH := sourceSpan(cmd.Height, cmd.SourceY, cmd.SourceHeight)
+		// One dimension fixed: apply the source's aspect to the fixed span, then
+		// count the cells it takes.
+		switch {
+		case cols > 0 && srcW > 0 && srcH > 0:
+			rows = fitCells(float64(cols)*float64(caps.CellWidth)*float64(srcH),
+				float64(srcW)*float64(caps.CellHeight))
+		case rows > 0 && srcW > 0 && srcH > 0:
+			cols = fitCells(float64(rows)*float64(caps.CellHeight)*float64(srcW),
+				float64(srcH)*float64(caps.CellWidth))
+		default:
+			if rows == 0 {
+				rows = fitCells(float64(cmd.Height), float64(caps.CellHeight))
 			}
-			if cols == 0 && cmd.Width > 0 {
-				cols = (cmd.Width + caps.CellWidth - 1) / caps.CellWidth
+			if cols == 0 {
+				cols = fitCells(float64(cmd.Width), float64(caps.CellWidth))
 			}
 		}
 	}
 
 	kittyPassthroughLog("calculateImageCells: result rows=%d, cols=%d", rows, cols)
 	return rows, cols
+}
+
+// maxBoxCells bounds each side of a placement's box. No screen comes near it,
+// and it keeps a guest's c=, r=, s= or v= from overflowing an int.
+const maxBoxCells = 1 << 16
+
+// clampCells is a guest's cell count held to [0, maxBoxCells].
+func clampCells(n int) int {
+	return min(max(n, 0), maxBoxCells)
+}
+
+// fitCells is pixels/cell rounded up, since a partial cell is a cell, and held
+// to [0, maxBoxCells]. It works in floats so no product of guest numbers can
+// overflow or reach a division by zero.
+func fitCells(pixels, cell float64) int {
+	if pixels <= 0 || cell <= 0 {
+		return 0
+	}
+	return int(min(math.Ceil(pixels/cell), maxBoxCells))
+}
+
+// sourceSpan is how many pixels of one axis a source rectangle shows: span
+// when the guest gives it, otherwise the rest of the picture past off. It is
+// cut to the picture when the picture's size is known, as kitty shows only
+// the part of the rectangle inside the picture.
+func sourceSpan(full, off, span int) int {
+	off = max(off, 0)
+	if full > 0 {
+		rest := max(full-off, 0)
+		if span <= 0 || span > rest {
+			return rest
+		}
+	}
+	return max(span, 0)
 }

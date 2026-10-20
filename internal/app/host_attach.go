@@ -37,6 +37,7 @@ func (m *OS) SwitchToHostSession(host, name string, create bool) error {
 	if m.DaemonClient == nil {
 		return fmt.Errorf("not in daemon mode")
 	}
+	m.cancelHostOpen()
 	if host == "" || host == federation.LocalHostName {
 		host = federation.LocalHostName
 	}
@@ -67,6 +68,9 @@ type hostDial struct {
 	// sshAuthSock is the agent socket of the client the dial replaces. See
 	// session.TUIClient.SSHAuthSock.
 	sshAuthSock string
+	// term and colorTerm are the replaced client's Term and ColorTerm, so a
+	// session made on the new machine gets the person's terminal.
+	term, colorTerm string
 	// kind, served and viewOnly are the replaced client's Kind, Served and
 	// ViewOnly, so a served or read-only client stays one on the new machine.
 	kind             string
@@ -79,10 +83,11 @@ func (m *OS) hostDialFor(host, name string, create, global bool) hostDial {
 		reserve:     m.DaemonClient.OwnLayoutReserve(),
 		version:     m.DaemonClient.ClientVersion(),
 		sshAuthSock: m.DaemonClient.SSHAuthSock,
-		kind:        m.DaemonClient.Kind,
-		served:      m.DaemonClient.Served,
-		viewOnly:    m.DaemonClient.ViewOnly,
-		width:       m.Width, height: m.Height,
+		term:        m.DaemonClient.Term, colorTerm: m.DaemonClient.ColorTerm,
+		kind:     m.DaemonClient.Kind,
+		served:   m.DaemonClient.Served,
+		viewOnly: m.DaemonClient.ViewOnly,
+		width:    m.Width, height: m.Height,
 		caps: m.clientCapabilities(),
 	}
 }
@@ -95,6 +100,7 @@ func (d hostDial) open() (*session.TUIClient, *session.SessionState, error) {
 	client.SetOwnLayoutReserve(d.reserve)
 	client.StartDir = d.cwd
 	client.SSHAuthSock = d.sshAuthSock
+	client.Term, client.ColorTerm = d.term, d.colorTerm
 	client.Kind, client.Served, client.ViewOnly = d.kind, d.served, d.viewOnly
 	var err error
 	if d.host == federation.LocalHostName {
@@ -161,6 +167,7 @@ func (m *OS) switchToHostAsync(host, name string, create bool, cwd, requestID st
 	if !m.hostIsUp(host) {
 		return &hostUnavailableError{host: host}
 	}
+	m.cancelHostOpen()
 	d := m.hostDialFor(host, name, create, false)
 	d.cwd = cwd
 	ch := m.sessionCreateChan()
@@ -207,7 +214,9 @@ func (m *OS) finishHostSwitch(msg SessionCreatedMsg) {
 // the connection open made.
 func (m *OS) adoptHostClient(client *session.TUIClient, state *session.SessionState, host string) {
 	previousHost, previousSession := m.AttachedHost, m.SessionName
+	from := lastSession{host: m.attachedMachine(), name: previousSession}
 	m.adoptClient(client, state, host)
+	m.leftSession(from)
 	if host != federation.LocalHostName && previousHost == "" {
 		// Remember where to come back to if the link drops.
 		m.hostReturn = previousSession
@@ -252,6 +261,8 @@ func (m *OS) adoptClient(client *session.TUIClient, state *session.SessionState,
 	// pull the user off the session they just chose.
 	m.hostReconnect = nil
 	m.hostReconnectGen++
+	m.cancelHostOpen()
+	m.hostReconnectDeferred = false
 
 	old := m.DaemonClient
 	if old != nil {
@@ -417,6 +428,35 @@ func (m *OS) switchSession(host, name string) error {
 	return nil
 }
 
+// lastSession is the session this client left on its last switch.
+type lastSession struct {
+	host, name string
+}
+
+// leftSession records the session this client was on before a switch that
+// landed, for last_session. It is called from SwitchToSession and
+// adoptHostClient, the two places every switch ends in, so a switch from the
+// Inbox or into a session just made counts as well as one from the rail.
+// Both ends are named by machine, so a session on another machine is found
+// again. The workspace history belongs to the session left, so it goes.
+func (m *OS) leftSession(from lastSession) {
+	m.lastWorkspace = 0
+	if from.name == "" || (from.host == m.attachedMachine() && from.name == m.SessionName) {
+		return
+	}
+	m.lastSession = from
+}
+
+// LastSession goes back to the session this client was on before the current
+// one, as tmux's switch-client -l does.
+func (m *OS) LastSession() {
+	if m.lastSession.name == "" {
+		m.ShowNotification("No last session", "info", m.Settings.NotificationDuration)
+		return
+	}
+	m.openSession(m.lastSession.host, m.lastSession.name)
+}
+
 // openSession is switchSession for a surface: it reports a failure itself and
 // says whether the client is now on the session.
 func (m *OS) openSession(host, name string) bool {
@@ -446,6 +486,12 @@ func (m *OS) OpenSessionNode(n sessiontree.Node) bool {
 	host, name, ok := sessionNodeTarget(n)
 	if !ok {
 		return false
+	}
+	if host != "" && host != m.attachedMachine() {
+		// Off the Update goroutine and in every link state, as the rail
+		// opens it. See host_open.go.
+		m.openRemoteSession(host, name)
+		return true
 	}
 	return m.openSession(host, name)
 }

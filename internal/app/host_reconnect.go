@@ -126,6 +126,13 @@ func (m *OS) beginHostReconnect(cause error) tea.Cmd {
 		// died must not restart the clock or double the dials.
 		return nil
 	}
+	if m.hostOpen != nil {
+		// A click waits for another session, and the newest request wins.
+		// When the click fails, the reconnect starts then. The caller keeps
+		// the panes meanwhile: see HostReconnectDeferred.
+		m.hostReconnectDeferred = true
+		return nil
+	}
 	m.hostReconnectGen++
 	m.hostReconnect = &hostReconnect{
 		gen:         m.hostReconnectGen,
@@ -191,9 +198,11 @@ func (m *OS) handleHostReconnectTick(msg hostReconnectTickMsg) tea.Cmd {
 	caps := m.clientCapabilities()
 	reserve := m.ownLayoutReserveForReconnect()
 	agent, kind := "", ""
+	termType, colorTerm := "", ""
 	served, viewOnly := false, false
 	if m.DaemonClient != nil {
 		agent = m.DaemonClient.SSHAuthSock
+		termType, colorTerm = m.DaemonClient.Term, m.DaemonClient.ColorTerm
 		// A served or read-only client stays one after the reconnect.
 		kind, served, viewOnly = m.DaemonClient.Kind, m.DaemonClient.Served, m.DaemonClient.ViewOnly
 	}
@@ -204,6 +213,7 @@ func (m *OS) handleHostReconnectTick(msg hostReconnectTickMsg) tea.Cmd {
 		// not detach the other clients under single_client.
 		client.Reconnect = true
 		client.SSHAuthSock = agent
+		client.Term, client.ColorTerm = termType, colorTerm
 		client.Kind, client.Served, client.ViewOnly = kind, served, viewOnly
 		if _, err := client.ConnectThroughHost(host, version, width, height, caps); err != nil {
 			_ = client.Close()
@@ -259,6 +269,8 @@ func (m *OS) resumeOnHost(client *session.TUIClient, state *session.SessionState
 	host := r.host
 	took := time.Since(r.since).Round(time.Second)
 	m.hostReconnect = nil
+	// The reconnect landed, so no click may pull the person away after it.
+	m.cancelHostOpen()
 
 	old := m.DaemonClient
 	if old != nil {
@@ -402,7 +414,7 @@ func hostReconnectReason(host string, err error) string {
 		case session.ErrVerbUnknownHost:
 			return fmt.Sprintf("The host %s is not configured. Add it with 'tuios hosts add'.", host)
 		case session.ErrVerbProtocolMismatch, session.ErrVerbUnknownVerb:
-			return "The daemon on this machine is too old. Restart it with 'tuios kill-server'."
+			return "The daemon on this machine is too old. Restart it with 'tuios restart-server'."
 		}
 	}
 	return what + fmt.Sprintf(" The session keeps running there. Run 'tuios hosts' to see %s.", host)
@@ -414,7 +426,10 @@ func hostReconnectReason(host string, err error) string {
 func (m *OS) hostLinkNote() string {
 	r := m.hostReconnect
 	if r == nil {
-		return ""
+		if m.daemonReconnect != nil {
+			return " " + daemonWaitNote + " "
+		}
+		return m.hostOpenNote()
 	}
 	name := r.host
 	const room = 12
@@ -423,6 +438,11 @@ func (m *OS) hostLinkNote() string {
 	}
 	return " Reconnecting to " + name + " "
 }
+
+// HostReconnectDeferred reports whether a lost link to the attached host
+// waits for a rail click to land or fail before it is dialed again. The
+// panes stay on screen meanwhile.
+func (m *OS) HostReconnectDeferred() bool { return m.hostReconnectDeferred }
 
 // ReconnectingToHost reports whether the client is trying to get a lost link
 // back. It is what a test reads, and what tells a caller that the frame on

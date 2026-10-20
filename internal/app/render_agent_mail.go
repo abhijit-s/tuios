@@ -187,7 +187,11 @@ func (m *OS) renderAgentMailCompose() (string, overlay.Geometry, []overlayRowHit
 		mute.Render(overlay.Truncate("  "+name+" reads it with read-agent-messages.", width)),
 	}
 	hints := []overlay.Hint{{Key: overlay.EnterKey(), Label: "send"}, {Key: "esc", Label: "cancel"}}
-	extra := 2
+	if st.Comp != nil {
+		hints = composerHints(st.Comp.Hints(overlay.UseASCII()))
+	}
+	draft := m.agentMailDraftLines("message: ", width)
+	extra := 1 + len(draft)
 	if st.Error != "" {
 		extra++
 	}
@@ -196,7 +200,8 @@ func (m *OS) renderAgentMailCompose() (string, overlay.Geometry, []overlayRowHit
 	for len(body) < rows {
 		body = append(body, "")
 	}
-	body = append(body, overlay.Rule(width, bg, pal), m.agentMailPromptLine("message: ", width))
+	body = append(body, overlay.Rule(width, bg, pal))
+	body = append(body, draft...)
 	if st.Error != "" {
 		body = append(body, overlay.Style(bg).Foreground(pal.Warn).Render(overlay.Truncate(st.Error, width)))
 	}
@@ -207,13 +212,14 @@ func (m *OS) renderAgentMailCompose() (string, overlay.Geometry, []overlayRowHit
 		Hints: hints,
 	}
 	content, geo := panel.Render(pal)
+	m.agentMailDraftAt(geo, rows)
 	return content, geo, nil
 }
 
-// agentMailPromptLine is the line a draft is typed on: the prompt, the end of
-// the draft that fits, and the cursor. The prompt says when the draft is being
-// sent, and when keys from outside the keyboard touched it.
-func (m *OS) agentMailPromptLine(prompt string, width int) string {
+// agentMailDraftLines are the lines a draft is typed on: the prompt, which
+// says when the draft is being sent and when keys from outside the keyboard
+// touched it, then the editor.
+func (m *OS) agentMailDraftLines(prompt string, width int) []string {
 	st := &m.AgentMail
 	pal := theme.UI()
 	bg := pal.Surface
@@ -222,13 +228,14 @@ func (m *OS) agentMailPromptLine(prompt string, width int) string {
 	}
 	// Said in words, not only in colour: a draft that keys routed from
 	// outside touched is sent as a claim, not as the person's answer.
-	if st.DraftAutomated {
+	if st.draftAutomated() {
 		prompt = "automated " + prompt
 	}
-	return overlay.Style(bg).Foreground(pal.AccentBright).Bold(true).Render(overlay.Sigil()) +
-		overlay.Style(bg).Foreground(pal.FgMute).Render(prompt) +
-		overlay.Style(bg).Foreground(pal.Fg).Render(agentMailDraftTail(st.Draft, width-lipgloss.Width(prompt)-4)) +
-		overlay.Cursor(" ", bg, pal.Fg)
+	out := []string{overlay.Fill(overlay.Style(bg).Foreground(pal.FgMute).Render(strings.TrimSpace(prompt)), width, bg)}
+	if st.Comp == nil {
+		return out
+	}
+	return append(out, st.Comp.Render(max(width, 8), composerStyles(pal), bg)...)
 }
 
 // agentMailWindowName is what to call a window the overlay was opened for.
@@ -416,9 +423,14 @@ func (m *OS) renderAgentMailThread() (string, overlay.Geometry, []overlayRowHit)
 
 	var hints []overlay.Hint
 	extra := 0
+	var draft []string
 	if st.Composing {
 		hints = []overlay.Hint{{Key: overlay.EnterKey(), Label: "send"}, {Key: "esc", Label: "cancel"}}
-		extra += 2
+		if st.Comp != nil {
+			hints = composerHints(st.Comp.Hints(overlay.UseASCII()))
+		}
+		draft = m.agentMailDraftLines("reply: ", width)
+		extra += 1 + len(draft)
 	} else {
 		hints = m.keyHints(config.ActionMailReply, "reply", config.ActionMailFocusPane, "open pane")
 		if down, up := m.inboxKey(config.ActionMailDown), m.inboxKey(config.ActionMailUp); down != "" && up != "" {
@@ -439,7 +451,8 @@ func (m *OS) renderAgentMailThread() (string, overlay.Geometry, []overlayRowHit)
 		body = append(body, "")
 	}
 	if st.Composing {
-		body = append(body, overlay.Rule(width, bg, pal), m.agentMailPromptLine("reply: ", width))
+		body = append(body, overlay.Rule(width, bg, pal))
+		body = append(body, draft...)
 	}
 	if st.Error != "" {
 		body = append(body, overlay.Style(bg).Foreground(pal.Warn).Render(overlay.Truncate(st.Error, width)))
@@ -452,18 +465,17 @@ func (m *OS) renderAgentMailThread() (string, overlay.Geometry, []overlayRowHit)
 		Hints: hints,
 	}
 	content, geo := panel.Render(pal)
+	if st.Composing {
+		m.agentMailDraftAt(geo, rows)
+	}
 	return content, geo, nil
 }
 
-// agentMailDraftTail is the end of the draft that fits beside the prompt, so
-// the cursor stays on screen while a long reply is typed.
-func agentMailDraftTail(draft string, avail int) string {
-	if avail < 1 {
-		return ""
-	}
-	r := []rune(draft)
-	if len(r) <= avail {
-		return draft
-	}
-	return string(r[len(r)-avail:])
+// agentMailDraftAt records where the draft's first line was drawn, relative
+// to the panel, for its pictures: under rows of body, the rule and the
+// prompt line.
+func (m *OS) agentMailDraftAt(geo overlay.Geometry, rows int) {
+	at := &m.AgentMail.wires.at
+	at.x, at.y, at.ok = geo.BodyX, geo.BodyY+rows+2, true
+	at.drawn, at.top = true, 0
 }

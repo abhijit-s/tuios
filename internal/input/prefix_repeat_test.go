@@ -1,6 +1,7 @@
 package input
 
 import (
+	"slices"
 	"testing"
 	"time"
 
@@ -140,4 +141,101 @@ func keyByName(name string) tea.KeyPressMsg {
 		return tea.KeyPressMsg{Code: 'p', Mod: tea.ModCtrl}
 	}
 	return tea.KeyPressMsg{}
+}
+
+// TestEveryRepeatableActionExists. The set is keyed by action name, and a name
+// nothing registers is never looked up, so a typo or a rename leaves that
+// command one-shot with no error anywhere. resize_left and its siblings sat
+// in the set for months while the resize actions were named resize_pane_*.
+//
+// Negative control: putting "resize_left" back in the set fails this.
+func TestEveryRepeatableActionExists(t *testing.T) {
+	d := GetDispatcher()
+	for _, action := range config.DefaultPrefixRepeat {
+		if !d.HasAction(action) && !app.PrefixWorkActions[action] {
+			t.Errorf("%q is repeatable but no action of that name is registered", action)
+		}
+	}
+}
+
+// TestARepeatListReplacesTheDefault: keybindings.repeat is the whole set, not
+// an addition to it. A tmux user who binds next_workspace to n leaves it out,
+// so the n of a word typed right after ctrl+b n reaches the shell. An empty
+// list turns repeat off.
+//
+// Negative control: merging the list into DefaultPrefixRepeat keeps
+// terminal_focus_right armed in both rows.
+func TestARepeatListReplacesTheDefault(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		repeat []string
+		arms   map[string]bool
+	}{
+		{"own list", []string{"prefix_next_window"}, map[string]bool{"prefix_next_window": true, "terminal_focus_right": false}},
+		{"empty", []string{}, map[string]bool{"prefix_next_window": false, "terminal_focus_right": false}},
+		{"unset", nil, map[string]bool{"prefix_next_window": false, "terminal_focus_right": true}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := config.DefaultConfig()
+			cfg.Keybindings.Repeat = tc.repeat
+			m := app.NewOS(app.OSOptions{UserConfig: cfg})
+			m.KeybindRegistry = config.NewKeybindRegistry(cfg)
+			m.Settings.PrefixRepeatTime = config.PrefixRepeatTimeDefault
+			for action, want := range tc.arms {
+				m.ClearPrefixRepeat()
+				m.PrefixActive = true
+				key, ok := prefixKeyFor(t, m, action)
+				if !ok {
+					t.Fatalf("ASSERTION: no prefix key runs %s", action)
+				}
+				HandlePrefixCommand(key, m)
+				if got := m.PrefixRepeatLive(); got != want {
+					t.Errorf("after %s the prefix is armed = %v, want %v", action, got, want)
+				}
+			}
+		})
+	}
+}
+
+// TestEveryPresetActionIsRegistered: each action a preset binds, and each it
+// marks to repeat, is one the dispatcher runs. A preset that names an action
+// by a wrong name binds a key that does nothing, with no error anywhere.
+//
+// Negative control: renaming last_workspace to last_workspaces in the tmux
+// preset fails it.
+func TestEveryPresetActionIsRegistered(t *testing.T) {
+	d := GetDispatcher()
+	known := func(a string) bool { return d.HasAction(a) || app.PrefixWorkActions[a] }
+	def := config.DefaultConfig().Keybindings
+	defaults := map[string]map[string][]string{
+		"prefix_mode": def.PrefixMode, "terminal_mode": def.TerminalMode, "tuios_prefix": def.TuiosPrefix,
+		"window_prefix": def.WindowPrefix, "workspace_prefix": def.WorkspacePrefix,
+	}
+	for _, name := range config.Presets()[1:] {
+		cfg, err := config.ParseUserConfig([]byte("[keybindings]\npreset = \"" + name + "\"\n"))
+		if err != nil {
+			t.Fatalf("preset %s: %v", name, err)
+		}
+		kb := cfg.Keybindings
+		for section, m := range map[string]map[string][]string{
+			"prefix_mode": kb.PrefixMode, "terminal_mode": kb.TerminalMode, "tuios_prefix": kb.TuiosPrefix,
+			"window_prefix": kb.WindowPrefix, "workspace_prefix": kb.WorkspacePrefix,
+		} {
+			for action, keys := range m {
+				// Only what the preset changed: a few tuios terminal-mode
+				// keys are read by the input path, not the dispatcher.
+				if slices.Equal(keys, defaults[section][action]) {
+					continue
+				}
+				if len(keys) > 0 && !known(action) {
+					t.Errorf("preset %s binds %v to %s [%s], which no handler runs", name, keys, action, section)
+				}
+			}
+		}
+		for _, action := range kb.Repeat {
+			if !known(action) {
+				t.Errorf("preset %s repeats %s, which no handler runs", name, action)
+			}
+		}
+	}
 }

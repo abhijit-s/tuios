@@ -199,7 +199,7 @@ func (m *OS) ApplyAppearanceLive(retile bool) { m.applyAppearanceLive(retile) }
 // sentinel "none" disables theming and restores standard terminal colors.
 func (m *OS) applyTheme(name string) {
 	if name == themeNone {
-		_ = theme.Initialize("")
+		_ = theme.Initialize(theme.NoneID)
 	} else {
 		_ = theme.Initialize(name)
 	}
@@ -263,6 +263,7 @@ func (m *OS) persistSettings() tea.Cmd {
 	// The agent switch applies on this client now. The daemon follows the
 	// file this writes. See agents_off.go.
 	agents := m.applyAgentsSwitch()
+	write = m.queueSettingsSave(write)
 	save := func() tea.Msg {
 		note, err := write()
 		if err != nil {
@@ -392,9 +393,13 @@ func (m *OS) settingsCategories() []settingsCategory {
 			// multiplexer looks for it. See agents_off.go.
 			opt("agents.enabled"),
 			custom("appearance.theme", m.themeItem()),
+			custom("", m.themeEditItem()),
+			opt("appearance.theme_light"),
 			custom("appearance.glyphs", m.glyphItem()),
 			opt("appearance.border_style"),
 			opt("appearance.window_title_position"),
+			opt("appearance.window_title_style"),
+			opt("appearance.window_title_align"),
 			opt("appearance.window_title_format"),
 			// Hand-written: the value in force is the session's pane geometry,
 			// not this client's config. See sharedBordersItem.
@@ -409,6 +414,8 @@ func (m *OS) settingsCategories() []settingsCategory {
 			opt("appearance.scrollbar.track"),
 			opt("appearance.border_focused_color"),
 			opt("appearance.border_unfocused_color"),
+			opt("appearance.border_focused_gradient"),
+			opt("appearance.border_gradient_angle"),
 			custom("appearance.gap", m.paneGapItem()),
 			opt("appearance.tiling_scheme"),
 			opt("appearance.drop_preview"),
@@ -423,6 +430,7 @@ func (m *OS) settingsCategories() []settingsCategory {
 			custom("appearance.scroll_column_width", m.scrollColumnWidthItem()),
 			opt("appearance.scroll_column_max"),
 			opt("appearance.dim_unfocused"),
+			opt("appearance.dim_foreground"),
 			opt("appearance.dim_multifocus"),
 			opt("appearance.modal_dim"),
 			opt("appearance.panel_padding"),
@@ -466,6 +474,9 @@ func (m *OS) settingsCategories() []settingsCategory {
 			opt("appearance.sidebar.width"),
 			custom("appearance.sidebar.sections", m.sectionLayoutItem()),
 			opt("appearance.sidebar.header_case"),
+			opt("appearance.sidebar.row_style"),
+			opt("appearance.sidebar.header_style"),
+			opt("appearance.sidebar.density"),
 			opt("appearance.sidebar.show_glyphs"),
 			opt("appearance.sidebar.show_counts"),
 			opt("appearance.sidebar.show_numbers"),
@@ -505,6 +516,18 @@ func (m *OS) settingsCategories() []settingsCategory {
 			opt("appearance.sidebar.subagent_hide_finished"),
 		})...)
 	}
+	// When both edges display sessions, the old rail's sections, file and
+	// agent options do nothing. Keep them accessible only when a rail can
+	// actually use ordinary sections, instead of showing irrelevant controls.
+	left, right := m.sidebarSessionConfig(sidebarLeft), m.sidebarSessionConfig(sidebarRight)
+	if left != nil && right != nil && left.Session != "" && right.Session != "" {
+		sidebar.Items = nil
+	} else if cfg := m.sidebarSessionConfig(m.legacySidebarEdge()); cfg != nil && cfg.Session != "" {
+		sidebar.Items = slices.DeleteFunc(sidebar.Items, func(item settingItem) bool {
+			return item.Path == "appearance.sidebar.sections"
+		})
+	}
+	sidebar.Items = slices.Insert(sidebar.Items, 0, m.sidebarSessionSettingItems()...)
 
 	// The marks a pane paints over its own output, in the order a person meets
 	// them: the selection first, then the search, then the copy mode cursor.
@@ -560,6 +583,7 @@ func (m *OS) settingsCategories() []settingsCategory {
 			opt("appearance.dock_workspace_tooltip"),
 			opt("appearance.dock_workspace_label_max"),
 			opt("appearance.dock_pill_caps"),
+			opt("appearance.dock_prefix_indicator"),
 			opt("appearance.dock_mode_icon_window"),
 			opt("appearance.dock_mode_icon_terminal"),
 			opt("appearance.dock_mode_icon_tiling"),
@@ -571,11 +595,15 @@ func (m *OS) settingsCategories() []settingsCategory {
 		Name: "Behavior",
 		Items: m.resolveRows([]settingsRow{
 			opt("appearance.motion"),
+			opt("appearance.animation_speed"),
+			opt("appearance.theme_transition"),
+			opt("appearance.theme_transition_duration"),
 			opt("appearance.confirm_quit"),
 			opt("appearance.whichkey_enabled"),
 			opt("appearance.whichkey_position"),
 			opt("appearance.wrap_lists"),
 			opt("appearance.focus_follows_mouse"),
+			opt("appearance.focus_follows_mouse_pause"),
 			opt("appearance.click_to_type"),
 			opt("appearance.auto_enter_terminal_on_focus"),
 			opt("appearance.nvim_navigation"),
@@ -690,12 +718,18 @@ func (m *OS) settingsCategories() []settingsCategory {
 			opt("daemon.resume_agents"),
 		}), daemon.Items[2:]...)...)
 	}
+	// The restart row leads the tab, where a person who came to the daemon's
+	// settings after an update looks first.
+	if m.DaemonRestartAvailable() {
+		daemon.Items = append([]settingItem{m.restartDaemonItem()}, daemon.Items...)
+	}
 
 	tape := settingsCategory{
 		Name: "Tape",
 		Items: m.resolveRows([]settingsRow{
 			opt("tape.autorun"),
 			opt("tape.auto_review"),
+			opt("tape.show_status"),
 		}),
 	}
 
@@ -770,7 +804,14 @@ func (m *OS) themeItem() settingItem {
 			m.setThemeSelection(v)
 		})
 	item.activate = func(m *OS) tea.Cmd { m.OpenThemePicker(); return nil }
-	item.differs = differsFromDefault("appearance.theme", func(*OS) string { return theme.CurrentThemeID() })
+	// The configured name, not the active id: with no theme set, tuios
+	// follows Omarchy, and that is the default rather than a change.
+	item.differs = differsFromDefault("appearance.theme", func(m *OS) string {
+		if m.UserConfig != nil {
+			return m.UserConfig.Appearance.Theme
+		}
+		return theme.CurrentThemeID()
+	})
 	return item
 }
 
@@ -812,6 +853,26 @@ func (m *OS) screensaverEffectItem() settingItem {
 // dockComponentsItem opens the dock layout editor. It reaches no single
 // registry path: the dock's three lists are lists rather than scalars, so the
 // registry does not carry them and no derived row could express one.
+// themeEditItem opens the theme editor on the theme in use.
+func (m *OS) themeEditItem() settingItem {
+	return settingItem{
+		Label:   "Edit theme",
+		Desc:    "Change the colours of the theme in use, and see them on the whole screen. Press enter to open the editor.",
+		Control: controlEnum,
+		value: func(m *OS) string {
+			if id := theme.CurrentThemeID(); id != "" {
+				return id
+			}
+			return themeNone
+		},
+		activate: func(m *OS) tea.Cmd {
+			m.CloseSettings()
+			m.OpenThemeEditor(theme.CurrentThemeID(), false, "")
+			return nil
+		},
+	}
+}
+
 func (m *OS) dockComponentsItem() settingItem {
 	return settingItem{
 		Label:   "Components",

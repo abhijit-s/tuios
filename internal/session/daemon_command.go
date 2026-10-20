@@ -228,6 +228,8 @@ func (d *Daemon) handleExecuteCommand(cs *connState, msg *Message) error {
 		}
 		d.pendingRequests[payload.RequestID] = pr
 		d.pendingRequestsMu.Unlock()
+		// cleanupLoop expires it if no result comes.
+		d.wakes.cleanup.Set()
 	}
 
 	if err := d.sendMessage(tuiClient, MsgRemoteCommand, remoteCmd); err != nil {
@@ -316,6 +318,7 @@ func (d *Daemon) routeToTUISync(tui *connState, requestID string, cmd *RemoteCom
 	d.pendingRequestsMu.Lock()
 	d.pendingRequests[requestID] = &pendingRequest{resultCh: ch, created: time.Now()}
 	d.pendingRequestsMu.Unlock()
+	d.wakes.cleanup.Set()
 
 	clearPending := func() {
 		d.pendingRequestsMu.Lock()
@@ -366,7 +369,8 @@ func (d *Daemon) findTargetSession(sessionName string) *Session {
 // that ran it reached one pane.
 //
 // A view-only client, such as a read-only web viewer, is not the person: it
-// is picked only when no other client shows the session.
+// is picked only when no other client shows the session. A passive rail viewer
+// cannot execute renderer commands at all, so it is never a routing target.
 func (d *Daemon) findTUIClient(sessionID string) *connState {
 	d.clientsMu.RLock()
 	defer d.clientsMu.RUnlock()
@@ -379,7 +383,7 @@ func (d *Daemon) findTUIClient(sessionID string) *connState {
 	var person, viewer pick
 	for _, cs := range d.clients {
 		cs.mu.Lock()
-		match := cs.sessionID == sessionID && cs.isTUIClient && cs.attached
+		match := cs.sessionID == sessionID && cs.isTUIClient && cs.attached && !cs.passive
 		input, seq, viewOnly := cs.lastActivity, cs.attachSeq, cs.viewOnly
 		cs.mu.Unlock()
 		if !match {

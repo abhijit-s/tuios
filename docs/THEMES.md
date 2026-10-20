@@ -8,8 +8,15 @@ overlays, the dockbar) from them.
 ## Table of Contents
 
 - [Selecting a Theme](#selecting-a-theme)
+- [Edit a Theme](#edit-a-theme)
+- [A Light and a Dark Theme](#a-light-and-a-dark-theme)
+- [Match Your Terminal](#match-your-terminal)
+- [Programs That Follow the Theme](#programs-that-follow-the-theme)
 - [Custom Themes](#custom-themes)
 - [Theme File Format](#theme-file-format)
+- [Start from Another Theme](#start-from-another-theme)
+- [Export and Share a Theme](#export-and-share-a-theme)
+- [Looks](#looks)
 - [Defaults for Omitted Colors](#defaults-for-omitted-colors)
 - [Chrome Colors](#chrome-colors)
 - [Colour Depth](#colour-depth)
@@ -45,9 +52,178 @@ and the settings page (`Ctrl+B` `,`) has a Theme row that opens the same picker.
 The picker is searchable and shows a color swatch for each theme; cancelling
 restores the theme that was active when you opened it.
 
+Type to filter the list. The picker also takes these keys:
+
+| Key | What it does |
+|---|---|
+| `ctrl+e` | Edit the highlighted theme in the theme editor |
+| `ctrl+o` | Make a new theme from the highlighted one, and open it in the theme editor |
+| `ctrl+f` | Show all themes, then only dark ones, then only light ones |
+| `ctrl+r` | Go to a random theme in the list |
+| `ctrl+y` | Copy the id of the highlighted theme |
+| `ctrl+d` | Delete the highlighted theme file. For an edited built-in theme, remove your edit. Press `y` to confirm |
+
+A theme from a file in your themes directory shows `(yours)`. A file that
+uses the id of a built-in theme shows `(edited)`. You cannot delete the theme
+that is in use, or a theme file that another file names as its `base`.
+
+The arrow keys preview the highlighted theme on the whole screen. In a client
+of `tuios ssh` or `tuios-web` they do not: the theme applies to every client of
+that server, so the picker shows a sample line in the highlighted theme
+instead. Enter applies the theme. The glyph picker works the same way.
+
+`charmtone` and `charmtone-light` use the colours of Charm's CharmTone. Their
+chrome uses the Charple accent. See
+[CharmTone themes](CONFIGURATION.md#charmtone-themes).
+
 Leaving the theme unset disables theming entirely and TUIOS uses your terminal's
 own colors. An unknown theme name logs a warning and leaves the colors as they
 were, rather than failing to start.
+
+## Edit a Theme
+
+The theme editor changes a theme's colours while you look at the whole screen.
+It opens as a sheet on the side with no rail. The panes do not move.
+
+To open it:
+
+- Command palette (`Ctrl+P`): **Edit theme**, for the theme in use.
+- Settings > Appearance: **Edit theme**.
+- Theme picker: `ctrl+e` edits the highlighted theme. `ctrl+o` makes a new
+  theme from it, named `<theme>-custom`.
+
+The sheet has three tabs:
+
+- **Quick**: two seeds, the accent and the surface, and whether the theme is
+  dark. The rest of the chrome follows them: the dialog greys and the text
+  inks from the surface, the pills and marks from the accent and the sixteen.
+  A new theme opens here.
+- **Roles**: the chrome roles, in groups: Accents, Frame, Dock and rail,
+  Dialogs and Status. `Text`, `Dim text` and `Quiet text` show their measured
+  colour. You cannot set them.
+- **Pane colours**: the foreground, the background, the selection, the cursor
+  and the sixteen. Programs in panes use these colours.
+
+Each row shows the role, a swatch, where the colour comes from, its hex and,
+for a colour with text or a mark on it, its contrast. Where the colour comes
+from is one of `custom` (a hex in this theme), `slot` or `role` (a name in
+this theme), `from base`, or `set in config.toml` (a key in the config wins).
+A contrast under its floor shows `!`: 4.5:1 for text, 3:1 for a mark, a pill
+or a border. At 256 colours the contrast is for the colours the terminal
+shows. At 16 colours the sheet shows no contrast, because the terminal
+decides those colours.
+
+| Key | What it does |
+|---|---|
+| `↑` `↓` | Move between rows |
+| `tab`, `shift+tab` | Go to the next or the previous tab |
+| `enter` | Open the colour picker on the row. A slot chip stores the slot's name, so the colour follows the theme. On **Dark theme**, switch between dark and light |
+| `e` | Type a value: hex, a slot, a role or a CharmTone name. `tab` completes the name |
+| `x` | Give the row back to the base |
+| `f` | Fix the row's contrast: make it lighter or darker until it reads on its ground. A strong colour that cannot get light or dark enough also becomes less strong. Not at 16 colours |
+| `u` | Undo the last change |
+| `ctrl+s` | Save the theme file |
+| `space` | Hide the sheet to see the whole screen. Press `space` again to show it |
+| `esc` | Close the editor. With changes that are not saved, press `esc` two times |
+
+- When the cursor lands on a role, every piece of the screen in that role
+  shows in its inverse colour for a moment, so you can see where the role is
+  used. A role that may not be on the screen, such as a notification or the
+  copy-mode pill, shows a sample under the list.
+- At 256 colours, the sheet says when two status colours look the same.
+- Each change shows on the whole screen at once. In a client of `tuios ssh`
+  or `tuios-web` the theme is the server's, so only the sheet shows the
+  change.
+- `ctrl+s` writes the theme's file with only what differs from the base. A
+  new theme saves as `<id>.json` in the themes directory. A built-in theme
+  saves as an edited copy under its own id. Every client on the machine reads
+  the file again.
+- If the file changed on disk after the editor read it, `ctrl+s` tells you
+  and writes nothing. Press `ctrl+s` again to replace the file.
+- A client of `tuios ssh` or `tuios-web` cannot save.
+- When the editor closes, the theme that was in use comes back. If you saved
+  the theme in use, it comes back with your changes.
+
+## A Light and a Dark Theme
+
+`theme_light` sets a second theme for when your terminal is light. `theme` is
+then the dark theme:
+
+```toml
+[appearance]
+theme = "catppuccin_mocha"
+theme_light = "catppuccin_latte"
+```
+
+- tuios asks the terminal for its background when it starts, and uses
+  `theme_light` on a light background.
+- A terminal that follows the system's light and dark switch (ghostty, kitty
+  and others) tells tuios when the switch happens. tuios then changes the
+  theme.
+- With `theme_light` set, the theme picker asks what a pick is for. Press `d`
+  for the dark theme, `l` for the light theme or `b` for both. Any other key
+  goes back to the list.
+- A `--theme` flag wins over `theme_light`. tuios then uses the theme of
+  the flag on a light and on a dark terminal.
+- Only the local client follows the switch. A client of `tuios ssh` or
+  `tuios-web` uses `theme`.
+
+## Match Your Terminal
+
+If your terminal already has a theme, in kitty, ghostty or another terminal,
+tuios can use it with no theme file:
+
+```toml
+[appearance]
+theme = "none"
+```
+
+- The panes use the terminal's own colours. A program in a pane that asks for
+  the background or the sixteen colours gets the terminal's answer.
+- The dialogs, the rail and the dock use a ramp built from the terminal's
+  background. On a dark background the dialogs sit one step lighter than it.
+  On a light background they sit one small step darker.
+- The accents stay tuios's own. To change them, use a theme file with a
+  `chrome` object.
+- `tuios theme reload` also asks each terminal for its colours again. Run it
+  after a tool changes the terminal's colours.
+
+An empty `theme` keeps the terminal's colours for the panes too, but the
+dialogs keep tuios's constant ramp on a dark terminal. In a client of
+`tuios ssh` or `tuios-web`, the dialogs keep the constant ramp, because one
+server serves many terminals.
+
+## Programs That Follow the Theme
+
+A program in a pane can ask tuios for the theme colours. OSC 10 gives the
+text colour, OSC 11 gives the background and OSC 4 gives one of the sixteen
+colours. The answers are the colours that the pane shows.
+
+A program can also ask tuios to tell it when the colours change:
+
+- A program that turns on mode 2031 (`CSI ? 2031 h`) gets `CSI ? 997 ; 1 n`
+  on a dark background or `CSI ? 997 ; 2 n` on a light background.
+- tuios sends this notice each time the theme colours change. This includes a
+  change from one dark theme to another dark theme.
+- tuios sends one notice for each theme change, also when the background, the
+  text colour and the sixteen colours all change.
+- While the theme picker or the theme editor is open, tuios sends no notice.
+  The panes show each theme. When you pick a theme, tuios sends one notice.
+  When you cancel, tuios sends nothing.
+- With two or more clients in one session, the panes report the theme of the
+  client that you used last. A client that you do not use does not change it.
+- `CSI ? 996 n` asks for the same report at any time.
+
+Neovim 0.11 and later asks for the background again when the notice comes, and
+sets `'background'`. opencode with the `system` theme asks for all the colours
+again and draws with the new colours.
+
+A program that uses only the sixteen ANSI colours changes colour with the theme
+and needs no notice.
+
+For a program that reads its colours from a file, use the `after-theme-change`
+hook. The hook gets the theme id, the background and a light flag. See
+[HOOKS.md](HOOKS.md).
 
 ## Custom Themes
 
@@ -67,12 +243,22 @@ built-in one. Subdirectories are not scanned. A file that fails to parse is
 skipped with a warning in the log and does not prevent the other themes, or the
 app, from loading.
 
-The directory is read at startup, and read again in two cases: when a theme id
-that is not registered yet is selected with `tuios set-config appearance.theme
-<id>`, and on every `tuios list-themes`. So a new theme file can be
-selected without a restart: write the file, then select its id. Selecting a
-theme that is already registered does not re-read its file, so to see an edit
-to a theme that is already loaded, save it under a new id or restart tuios.
+Every tuios client watches the themes and glyphs directories. When you save a
+file there, the client reads the files again and repaints. An edit to the
+theme in use shows at once, with no restart and no new id. A file that does
+not load shows a warning, and the other themes stay. New output in a pane
+takes the edited colours.
+
+`tuios theme reload` does the same in every client on this machine. Use it
+when a program writes a theme file and you want the clients to read it now:
+
+```sh
+# pywal: write a tuios theme from the wallpaper, then reload
+wal -i ~/wall.png -o "tuios theme reload"
+```
+
+For matugen, write the theme from a template and set `post_hook = "tuios theme
+reload"` on that template.
 
 ## Theme File Format
 
@@ -119,10 +305,149 @@ Two fields control identity:
 
 Note the color names: TUIOS uses `purple`, not `magenta`.
 
+## Start from Another Theme
+
+`base` names a theme to start from. A field the file leaves out comes from the
+base:
+
+```json
+{
+  "id": "dracula-ember",
+  "base": "dracula",
+  "red": "#ff5555",
+  "chrome": { "accent": "bright_red", "accent_bright": "#ff9e64" }
+}
+```
+
+- The base is a built-in theme or another file in the themes directory. A base
+  can have a base of its own.
+- `dark` comes from the base unless the file sets it.
+- The base's `chrome` fields are kept unless the file sets them. A slot name
+  or a role name in `chrome` is read after the merge, so `"accent":
+  "bright_red"` follows a `bright_red` the file changes.
+- A file can use the id of a built-in theme and name that theme as its base.
+  This edits the built-in theme for you only.
+- Files that name each other as base load as none of them. `tuios list-themes`
+  shows the loop.
+
+## Export and Share a Theme
+
+`tuios theme export <theme>` prints a theme as a theme file:
+
+```sh
+tuios theme export dracula-ember > dracula-ember.json
+```
+
+- A theme from your themes directory is written against the built-in theme it
+  starts from. The file has the `base` and only the colours that are
+  different. A base that is another file of yours is followed to the built-in
+  theme, so the file loads on a machine that does not have your other file.
+- A built-in theme is written with all its colours and no `base`.
+- `--full` writes all the colours of any theme, with no `base`.
+- `--format base16` writes a base16 scheme in YAML for other programs.
+  `base00` is the background. `base01` and `base02` are the theme's `surface`
+  and `card` when it sets a `surface`. `base08`, `base0A`, `base0B`, `base0C`
+  and `base0D` are `error`, `warning`, `success`, `accent_bright` and
+  `accent`.
+
+`tuios theme share <theme>` prints the same file as one line, for a chat
+message or a comment:
+
+```
+tuios-theme:v1:eyJpZCI6ImRyYWN1bGEtZW1iZXIiLCJiYXNlIjoiZHJhY3VsYSIs...
+```
+
+The part after `tuios-theme:v1:` is the file in base64url with no padding.
+
+## Looks
+
+A look is one TOML file that sets how tuios looks: theme, glyph set, borders,
+gaps, dock and rail style. It can also hold a theme and a glyph set. The
+[gallery](https://tuios.dev/gallery) shares looks, and `tuios look apply`
+installs one. [CLI_REFERENCE.md](CLI_REFERENCE.md#looks-tuios-look) describes
+the commands.
+
+```toml
+look = 1                        # the format version, required
+name = "Tokyo blocks"           # optional
+author = "someone"              # optional
+
+[appearance]
+border_style = "rounded"
+gap = 1
+
+[appearance.sidebar]
+row_style = "pill"
+sections = "sessions,terminals,git"
+
+[dock]
+left = ["mode", "workspaces"]
+right = ["clock", "session-controls"]
+
+[dock.tabs]
+style = "flat"
+number_glyphs = ["一", "二", "三"]
+
+[theme]                         # optional: a theme, with the keys of a theme file
+id = "tokyo"
+base = "tokyonight"
+bg = "#16161e"
+
+[theme.chrome]
+accent = "#7aa2f7"
+
+[glyphs]                        # optional: a glyph set, with the keys of a glyph set file
+id = "tokyo"
+close = "x"
+```
+
+- `look = 1` is the format version. A tuios that reads an older version
+  refuses a newer look and tells you to update.
+- The option tables take the look keys only. `tuios look keys` lists them.
+  The keys set colour, theme, glyphs, borders, gaps, titles, the dock, the
+  rail, the scrollbar, selection colours and the spotlight. They also set the
+  layout: `tiled` and `layout` in `[startup]`, the side and size of the
+  master pane, the width of a scrolling column, and the zoom size.
+- A look cannot set a key that runs a program, names a file or a folder, or
+  changes a host, the daemon, keybindings, hooks or other startup keys. tuios
+  leaves out such a key and names it.
+- A look can set the dock lists `left`, `center` and `right` in `[dock]`, and
+  the tab keys in `[dock.tabs]`. A dock list can name built-in cells only.
+  tuios leaves out an item such as `custom/clock` and names it, and keeps the
+  other items. A look cannot set `[dock.custom]`.
+- `appearance.sidebar.sections` can name every rail section but `custom`.
+  tuios leaves out `custom` and keeps the other sections. A layout with no
+  section left, such as `spacer` alone, is left out. A look cannot set
+  `[appearance.sidebar.custom]`.
+- tuios checks each value as `tuios set-config` does. A value that is not
+  correct stops the look. A string cannot hold a control character.
+- `[theme]` takes the keys of a [theme file](#theme-file-format). Put the
+  chrome roles in `[theme.chrome]`. `id` is required. tuios installs the theme
+  as `look-<id>`, and `appearance.theme` names it. If you set
+  `appearance.theme`, set it to the theme's `id`.
+- `[glyphs]` takes the keys of a glyph set file
+  ([GLYPHS.md](GLYPHS.md)). `id` is required. tuios installs it as
+  `look-<id>`, and `appearance.glyphs` names it.
+- A look file is 64 KiB at most. A theme or a glyph set in it is 32 KiB at
+  most.
+
+tuios writes the look to `config.d/look.toml` and does not change
+`config.toml`. `config.toml` wins over `config.d`, so a key that
+`config.toml` sets hides the same key in the look. `tuios look apply` names
+those keys. When you change a look key in the settings, tuios writes the
+change to `config.toml`. The next `tuios look apply` or `tuios look remove`
+then keeps your change.
+
+tuios does not replace or delete a file of your own. If `config.d/look.toml`
+is a file that tuios did not write, `tuios look` stops. It also stops if a
+theme or glyph set with the `look-<id>` name is there and no look installed
+it. Rename that file, then apply the look again.
+
 ## Defaults for Omitted Colors
 
 Every color field is optional. A field you leave out is filled in rather than
-left unset, so a partial theme is valid:
+left unset, so a partial theme is valid. With a `base`, the base fills it.
+Without one:
 
 | Field | Fallback |
 |---|---|
@@ -179,8 +504,75 @@ so a theme written without a `chrome` object renders identically:
 | `panel` | the outer band and the selected-row bar | derived from `surface` |
 | `card` | inset chips and input fields | derived from `surface` |
 
-A field that is not a hex color is dropped on its own and that role derives as
-usual, so a typo costs one color rather than the theme.
+A field takes any colour value from
+[CONFIGURATION.md](CONFIGURATION.md#colour-values): hex, an ANSI number, a slot
+name, a CharmTone name, or another role. A slot name is a colour of this
+theme's own sixteen, so `"accent": "bright_magenta"` takes this file's
+`bright_purple`. A role name is another field of the same object:
+
+```json
+"chrome": {
+  "accent": "bright_red",
+  "info":   "accent",
+  "card":   "#2a2a37"
+}
+```
+
+A role that the object does not set is the colour that role derives from, so
+`"info": "warning"` with no `warning` field is the theme's `yellow`. Hex can be
+written with or without the `#`, as before. A number with 3 or 6 digits and no
+`#` is read as hex. `text`, `dim` and `muted` are not fields, because tuios
+measures the text inks from the surface.
+
+A field that is not a colour is dropped on its own and that role derives as
+usual, so a typo costs one color rather than the theme. Roles that name each
+other in a loop, such as `"accent": "info"` and `"info": "accent"`, have no
+colour. tuios does not load that file, and `tuios list-themes` names the
+roles in the loop.
+
+### Roles for one piece of chrome
+
+These fields colour one piece of the screen each. They sit in nested objects
+by surface. Each one you leave out draws as before:
+
+```json
+"chrome": {
+  "border": { "unfocused": "bright_black", "copy": "yellow", "multifocus": "magenta" },
+  "rule":   "surface",
+  "status": { "attention": "bright_red", "busy": "accent" },
+  "dots":   { "close": "red", "minimize": "yellow", "zoom": "green" },
+  "dock":   { "ground": "#181825" },
+  "rail":   { "ground": "#181825" }
+}
+```
+
+| Field | What it colors | When absent |
+|---|---|---|
+| `border.unfocused` | the border of a pane without focus | `red` |
+| `border.copy` | the copy-mode pill, and the border of the focused pane in copy mode | `warning` for the pill. The border keeps the mode's colour |
+| `border.multifocus` | the border of each pane that takes the keys with multifocus, and the multi copy pill | slot 3, and `border.copy` for the pill |
+| `rule` | the line under the dock and the lines on the rail | measured from the ground |
+| `status.attention` | an agent that waits for input, on the rail, and the border of the focused pane while its agent waits | `warning` on the rail. The border keeps the mode's colour |
+| `status.busy` | a working agent on the rail, and the shimmer on its row | `info`, and `accent_bright` for the shimmer |
+| `dots.close`, `dots.minimize`, `dots.zoom` | the window buttons in the dots style | red, amber and green |
+| `dock.ground` | the background of the dock | none |
+| `rail.ground` | the background of the rail | none |
+
+- `appearance.dock_background` and `appearance.sidebar.background` in the
+  config win over `dock.ground` and `rail.ground`, `off` included. So does an
+  `appearance.background` that is a colour or `theme`. See
+  [CONFIGURATION.md](CONFIGURATION.md).
+- `appearance.border_unfocused_color` in the config wins over
+  `border.unfocused`. `appearance.border_focused_color` wins over the focused
+  border's colours by state.
+- In a config colour, write a role by its full name, such as
+  `fg = "status.attention"`.
+- At 16 colours these fields are not used. Each piece uses its slot, as before.
+
+With a theme, three more pieces take their colours from the roles above: the
+link under the pointer uses `accent_bright`, the scrollback position on a
+pane's border uses `warning`, and the leader key in the key cast uses
+`accent_bright`. With no theme they keep their fixed colours.
 
 ### The surface
 
@@ -310,7 +702,9 @@ pointer are underlined.
 - **The chrome's neutrals do not follow the sixteen.** Dialogs and the
   which-key popup draw on a constant grey ramp on a dark theme, and on a ramp
   built from the background on a light one, whatever the sixteen are;
-  `chrome.surface` is the knob that moves it.
+  `chrome.surface` is the knob that moves it. With `theme = "none"` the ramp
+  follows the terminal's background (see
+  [Match Your Terminal](#match-your-terminal)).
 
 ## Related Documentation
 

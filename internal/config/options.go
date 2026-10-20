@@ -116,7 +116,17 @@ var (
 	SidebarPositions     = []string{"left", "right", "hidden"}
 	WhichKeyPositions    = []string{"bottom-right", "bottom-left", "top-right", "top-left", "center"}
 	WindowTitlePositions = []string{"bottom", "top", "hidden"}
-	daemonLogLevels      = []string{"off", "errors", "basic", "messages", "verbose", "trace"}
+	// DockPrefixIndicators are where an armed leader shows: on the dock's
+	// mode pill, or on the floating badge it had before the pill could.
+	DockPrefixIndicators = []string{"pill", "badge"}
+	// WindowTitleStyles are the shapes of a pane's title: pill has rounded
+	// caps on a fill, tab is the fill alone, plain is the text on the line.
+	WindowTitleStyles = []string{"pill", "tab", "plain"}
+	// WindowTitleAligns are where the title sits on its row. auto is the end
+	// away from the window buttons on the top row, and the middle on the
+	// bottom row.
+	WindowTitleAligns = []string{"auto", "left", "center", "right"}
+	daemonLogLevels   = []string{"off", "errors", "basic", "messages", "verbose", "trace"}
 )
 
 // The shipped edges for the dock, the rail and the window title. Named because
@@ -127,6 +137,12 @@ const (
 	DefaultDockbarPosition     = "top"
 	DefaultSidebarPosition     = "right"
 	DefaultWindowTitlePosition = "top"
+	DefaultDockPrefixIndicator = "pill"
+	// DefaultBorderGradientAngle runs the gradient from the top left corner
+	// to the bottom right one.
+	DefaultBorderGradientAngle = 45
+	DefaultWindowTitleStyle    = "pill"
+	DefaultWindowTitleAlign    = "auto"
 )
 
 // optionSpecs is the registry, hand-written so each entry can say what the
@@ -227,6 +243,11 @@ var optionSpecs = []Option{
 		Default:     "false",
 	},
 	{
+		Path: "appearance.focus_follows_mouse_pause", Type: OptionString, Section: "appearance",
+		Description: "Hold this key to keep the focus on the current pane as the mouse moves: off, ctrl, alt",
+		Accepted:    FocusFollowsMousePauseKeys, Default: FocusFollowsMousePauseOff,
+	},
+	{
 		Path: "appearance.alt_drag", Type: OptionBool, Section: "appearance",
 		Description: "Alt plus left-drag moves a pane",
 		Default:     "true",
@@ -319,8 +340,23 @@ var optionSpecs = []Option{
 		Accepted:    WindowTitlePositions, Default: DefaultWindowTitlePosition,
 	},
 	{
+		Path: "appearance.window_title_style", Type: OptionString, Section: "appearance",
+		Description: "Shape of a pane's title: pill has rounded caps, tab is a plain fill, plain is the text on the border",
+		Accepted:    WindowTitleStyles, Default: DefaultWindowTitleStyle,
+	},
+	{
+		Path: "appearance.window_title_align", Type: OptionString, Section: "appearance",
+		Description: "Where a pane's title sits on its row. auto keeps it away from the window buttons",
+		Accepted:    WindowTitleAligns, Default: DefaultWindowTitleAlign,
+	},
+	{
 		Path: "appearance.theme", Type: OptionString, Section: "appearance",
-		Description: "Colour theme name. Empty keeps your terminal's own colours.",
+		Description: "Colour theme name. Empty follows Omarchy when it is installed, else keeps your terminal's colours. none always keeps them.",
+		Default:     "", Theme: true,
+	},
+	{
+		Path: "appearance.theme_light", Type: OptionString, Section: "appearance",
+		Description: "Theme to use while the terminal is light. Empty uses theme for both. theme is then the dark theme",
 		Default:     "", Theme: true,
 	},
 	{
@@ -330,12 +366,22 @@ var optionSpecs = []Option{
 	},
 	{
 		Path: "appearance.border_focused_color", Type: OptionString, Section: "appearance",
-		Description: "Hex colour overriding the focused pane's border, e.g. #89b4fa",
+		Description: "Colour overriding the focused pane's border: #89b4fa, a slot name such as bright_cyan, or a role such as accent",
 		Default:     "", Color: true,
 	},
 	{
+		Path: "appearance.border_focused_gradient", Type: OptionString, Section: "appearance",
+		Description: "Two or more colours, separated by spaces, that the focused pane's border steps through. Empty draws one colour",
+		Default:     "",
+	},
+	{
+		Path: "appearance.border_gradient_angle", Type: OptionInt, Section: "appearance",
+		Description: "Direction of the focused border's gradient in degrees: 0 runs left to right, 90 top to bottom",
+		Default:     "45", Min: 0, Max: 359,
+	},
+	{
 		Path: "appearance.border_unfocused_color", Type: OptionString, Section: "appearance",
-		Description: "Hex colour overriding an unfocused pane's border, e.g. #585b70",
+		Description: "Colour overriding an unfocused pane's border: #585b70, a slot name such as bright_black, or a role such as muted",
 		Default:     "", Color: true,
 	},
 	{
@@ -461,6 +507,24 @@ var optionSpecs = []Option{
 		Default:     "true",
 	},
 	{
+		Path: "appearance.animation_speed", Type: OptionInt, Section: "appearance",
+		Description: "Percent window animations run at: 100 as shipped, 200 twice as fast, 50 half as fast",
+		Default:     strconv.Itoa(AnimationSpeedDefault),
+		Min:         AnimationSpeedMin, Max: AnimationSpeedMax,
+		Percent: true,
+	},
+	{
+		Path: "appearance.theme_transition", Type: OptionString, Section: "appearance",
+		Description: "How tuios shows a theme change: none, circle (the new theme grows from the middle of the screen) or fade",
+		Accepted:    ThemeTransitions, Default: ThemeTransitionNone,
+	},
+	{
+		Path: "appearance.theme_transition_duration", Type: OptionInt, Section: "appearance",
+		Description: "Milliseconds a theme transition takes at animation speed 100",
+		Default:     strconv.Itoa(ThemeTransitionMsDefault),
+		Min:         ThemeTransitionMsMin, Max: ThemeTransitionMsMax,
+	},
+	{
 		Path: "appearance.scroll_column_max", Type: OptionInt, Section: "appearance",
 		Description: "Highest a column's width may be set to in the scrolling layout, as a percent. 100 lets a column fill the screen, at the cost of the next one peeking in at the edge.",
 		Default:     strconv.Itoa(ScrollColumnWidthMax),
@@ -490,6 +554,11 @@ var optionSpecs = []Option{
 		Percent: true,
 	},
 	{
+		Path: "appearance.dim_foreground", Type: OptionBool, Section: "appearance",
+		Description: "Let dim_unfocused dim a pane's text too, not only its background",
+		Default:     "true",
+	},
+	{
 		Path: "appearance.dim_multifocus", Type: OptionBool, Section: "appearance",
 		Description: "Dim the panes in the multifocus set like other panes you are not in",
 		Default:     "false",
@@ -499,27 +568,27 @@ var optionSpecs = []Option{
 	// ResolveBackground.
 	{
 		Path: "appearance.background", Type: OptionString, Section: "appearance",
-		Description: "Background painted on every surface not set on its own (panes, desktop, window chrome, dock, rail): off (your terminal shows through), theme, or a #RRGGBB literal",
+		Description: "Background painted on every surface not set on its own (panes, desktop, window chrome, dock, rail): off (your terminal shows through), theme, or a colour (#rrggbb, 0-255, a slot name or a role name)",
 		Accepted:    Backgrounds, Default: BackgroundOff, Color: true,
 	},
 	{
 		Path: "appearance.pane_background", Type: OptionString, Section: "appearance",
-		Description: "Background behind pane content: off, theme, or a #RRGGBB literal; empty follows appearance.background",
+		Description: "Background behind pane content: off, theme, or a colour (#rrggbb, 0-255, a slot name or a role name); empty follows appearance.background",
 		Accepted:    Backgrounds, Default: "", Color: true,
 	},
 	{
 		Path: "appearance.desktop_background", Type: OptionString, Section: "appearance",
-		Description: "Background behind and between panes, including gaps and an empty workspace: off, theme, or a #RRGGBB literal; empty follows appearance.background",
+		Description: "Background behind and between panes, including gaps and an empty workspace: off, theme, or a colour (#rrggbb, 0-255, a slot name or a role name); empty follows appearance.background",
 		Accepted:    Backgrounds, Default: "", Color: true,
 	},
 	{
 		Path: "appearance.window_chrome_background", Type: OptionString, Section: "appearance",
-		Description: "Background under pane borders, title bars and the lines between shared-border panes: off, theme, or a #RRGGBB literal; empty follows appearance.background",
+		Description: "Background under pane borders, title bars and the lines between shared-border panes: off, theme, or a colour (#rrggbb, 0-255, a slot name or a role name); empty follows appearance.background",
 		Accepted:    Backgrounds, Default: "", Color: true,
 	},
 	{
 		Path: "appearance.dock_background", Type: OptionString, Section: "dock",
-		Description: "Background under the dock: off, theme, or a #RRGGBB literal; empty follows appearance.background",
+		Description: "Background under the dock: off, theme, or a colour (#rrggbb, 0-255, a slot name or a role name); empty follows appearance.background",
 		Accepted:    Backgrounds, Default: "", Color: true,
 	},
 	{
@@ -581,7 +650,7 @@ var optionSpecs = []Option{
 	},
 	{
 		Path: "appearance.dock_workspace_tab_format", Type: OptionString, Section: "dock",
-		Description: "Workspace tab template accepting {index} and {name} (empty: {name})",
+		Description: "Workspace tab template accepting {index}, {name}, {icon} and {zoom} (empty: {name})",
 		Default:     "",
 	},
 	{
@@ -598,6 +667,11 @@ var optionSpecs = []Option{
 		Path: "appearance.dock_pill_caps", Type: OptionBool, Section: "dock",
 		Description: "Draw rounded caps on every dock pill: the mode chip, the workspace tabs and the minimized windows. Off draws flat pills",
 		Default:     "true",
+	},
+	{
+		Path: "appearance.dock_prefix_indicator", Type: OptionString, Section: "dock",
+		Description: "Where the dock shows an armed leader key: pill colours the mode pill, badge draws a separate badge",
+		Accepted:    DockPrefixIndicators, Default: DefaultDockPrefixIndicator,
 	},
 	{
 		Path: "appearance.dock_mode_icon_window", Type: OptionString, Section: "dock",
@@ -660,7 +734,7 @@ var optionSpecs = []Option{
 	},
 	{
 		Path: "appearance.scrollbar.tint", Type: OptionString, Section: "scrollbar",
-		Description: "Bar colour: quiet, border, muted, or a #RRGGBB literal",
+		Description: "Bar colour: quiet, border, muted, or a colour (#rrggbb, 0-255, a slot name or a role name)",
 		Accepted:    ScrollbarTints, Default: ScrollbarTintQuiet, Color: true,
 	},
 
@@ -811,7 +885,7 @@ var optionSpecs = []Option{
 	},
 	{
 		Path: "appearance.sidebar.background", Type: OptionString, Section: "sidebar",
-		Description: "Background under the rail: off, theme, or a #RRGGBB literal; empty follows appearance.background",
+		Description: "Background under the rail: off, theme, or a colour (#rrggbb, 0-255, a slot name or a role name); empty follows appearance.background",
 		Accepted:    Backgrounds, Default: "", Color: true,
 	},
 	{
@@ -838,6 +912,21 @@ var optionSpecs = []Option{
 		Path: "appearance.sidebar.header_case", Type: OptionString, Section: "sidebar",
 		Description: "How the rail's section headers read: lowercase keeps the quiet furniture look, uppercase draws them as headings",
 		Accepted:    RailHeaderCases, Default: RailHeaderLowercase,
+	},
+	{
+		Path: "appearance.sidebar.row_style", Type: OptionString, Section: "sidebar",
+		Description: "How the rail marks the row you are on: bar in the gutter, marker glyph, underline, or pill",
+		Accepted:    RailRowStyles, Default: RailRowBar,
+	},
+	{
+		Path: "appearance.sidebar.header_style", Type: OptionString, Section: "sidebar",
+		Description: "How a rail section header is drawn: auto, plain, rule, pill, or icon with the section's icon",
+		Accepted:    RailHeaderStyles, Default: RailHeaderAuto,
+	},
+	{
+		Path: "appearance.sidebar.density", Type: OptionString, Section: "sidebar",
+		Description: "Space between the rail's sections: normal, or roomy for a blank row in front of each section after the first",
+		Accepted:    RailDensities, Default: RailDensityNormal,
 	},
 	{
 		Path: "appearance.sidebar.editor", Type: OptionString, Section: "sidebar",
@@ -1112,6 +1201,11 @@ var optionSpecs = []Option{
 		Description: "Open the review dialog on detection instead of only badging it",
 		Default:     "false",
 	},
+	{
+		Path: "tape.show_status", Type: OptionBool, Section: "tape",
+		Description: "Show the RUNNING pill and a message while a tape plays",
+		Default:     "true",
+	},
 
 	// [dock]
 	// The three component lists and the [dock.custom] tables are absent for the
@@ -1297,6 +1391,13 @@ var optionSpecs = []Option{
 		Accepted:    PiPCorners, Default: PiPCornerBottomRight,
 	},
 
+	// [mermaid]. Read each time tuios mermaid runs.
+	{
+		Path: "mermaid.theme", Type: OptionString, Section: "mermaid",
+		Description: "Colours of tuios mermaid: tuios for the colours of your theme, or a named theme such as flexoki, nord or rose-pine",
+		Default:     "tuios",
+	},
+
 	// [hints]. Read each time hints mode opens. hints.patterns is a list and
 	// is set in the file only, like [keybindings].
 	{
@@ -1429,14 +1530,10 @@ func (o Option) checkValue(value string) error {
 	if o.Color {
 		// Empty is how a colour option says unset: the border falls back to the
 		// theme's, the tint to its own default. Clearing has to stay reachable.
-		if value == "" || slices.Contains(o.Accepted, value) || IsHexColor(value) {
+		if value == "" || slices.Contains(o.Accepted, value) || theme.IsColor(value) {
 			return nil
 		}
-		if len(o.Accepted) > 0 {
-			return fmt.Errorf("%s: %q is not a colour; expected #RRGGBB, one of %s, or empty",
-				o.Path, value, strings.Join(o.Accepted, ", "))
-		}
-		return fmt.Errorf("%s: %q is not a colour; expected #RRGGBB or empty", o.Path, value)
+		return fmt.Errorf("%s: %s. Use an empty value to unset it", o.Path, ColourProblem(value, o.Accepted...))
 	}
 	if o.Theme && !theme.Exists(value) {
 		// Exists re-reads the custom themes directory before it says no, so a
