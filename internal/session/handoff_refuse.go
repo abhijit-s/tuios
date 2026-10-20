@@ -62,7 +62,7 @@ func (d *Daemon) handoffRefusal() error {
 	hosted := len(d.hostedPanes)
 	d.hostedPanesMu.Unlock()
 	if hosted > 0 {
-		return fmt.Errorf("%d %s here for another machine, and those cannot be handed over yet. Close them first", hosted, pluralWord(hosted, "pane runs", "panes run"))
+		return hostedRefusal(hosted)
 	}
 	for _, sess := range d.manager.AllSessions() {
 		for _, p := range sess.allPTYs() {
@@ -75,6 +75,13 @@ func (d *Daemon) handoffRefusal() error {
 		return fmt.Errorf("%s, and the upgrade would close the pipe it reports on. Try again when it has finished", what)
 	}
 	return nil
+}
+
+// hostedRefusal is the refusal while n panes run here for another machine. A
+// hosted pane's master is not among the descriptors the exec keeps, so the
+// exec would close its terminal and end the pane on the machine that opened it.
+func hostedRefusal(n int) error {
+	return fmt.Errorf("%d %s here for another machine, and those cannot be handed over yet. Close them first", n, pluralWord(n, "pane runs", "panes run"))
 }
 
 // pluralWord is one or many.
