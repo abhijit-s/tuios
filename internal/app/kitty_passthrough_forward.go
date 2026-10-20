@@ -682,7 +682,9 @@ func (kp *KittyPassthrough) forwardFileTransmit(cmd *vt.KittyCommand, windowID s
 		// position is taken from this frame even though the frame itself is
 		// not sent, and the refresh pass re-places only if it actually moved.
 		// Marking the data dirty is what is skipped, because the data is not.
-		if existing := kp.placements[windowID][imageKey(hostID)]; existing != nil {
+		// A transmit that does not place (a=t) moves nothing, wherever the
+		// cursor is, as it changes no geometry when its frame is new.
+		if existing := kp.placements[windowID][imageKey(hostID)]; existing != nil && andPlace {
 			existing.GuestX = cursorX
 			existing.AbsoluteLine = scrollbackLen + cursorY
 			existing.HostX = windowX + contentOffsetX + cursorX
@@ -697,7 +699,14 @@ func (kp *KittyPassthrough) forwardFileTransmit(cmd *vt.KittyCommand, windowID s
 
 	// Kept for a screenshot before the host is sent the name: for t=t and
 	// t=s the host deletes the object once it has read it.
-	kp.keepFileMedium(cmd, windowID, hostID, filePath, !reusingID || cmd.ImageID == 0)
+	//
+	// Not for an a=t under i=0: it has no id a later a=p could name, so
+	// nothing ever shows it, and a path entry counts no bytes against the
+	// bound, so one kept for it would never be evicted. The direct path keeps
+	// nothing for it either.
+	if andPlace || cmd.ImageID != 0 {
+		kp.keepFileMedium(cmd, windowID, hostID, filePath, !reusingID || cmd.ImageID == 0)
+	}
 
 	// PERFORMANCE: Forward the file path directly to the host terminal.
 	// The host (Ghostty/Kitty) reads the file itself, so there is no need to
@@ -928,8 +937,13 @@ func (kp *KittyPassthrough) forwardFileTransmit(cmd *vt.KittyCommand, windowID s
 		// delete that rebuilding the entry used to imply.
 		// A frame written at once above is already placed.
 		existing.DataDirty = !placedNow
-		existing.ImagePixelWidth = sized.Width
-		existing.ImagePixelHeight = sized.Height
+		// A size this frame does not state, and whose header did not read,
+		// is unknown rather than zero. The size the placement already has is
+		// the better guess: zero measures the crop in the host's cell.
+		if sized.Width > 0 && sized.Height > 0 {
+			existing.ImagePixelWidth = sized.Width
+			existing.ImagePixelHeight = sized.Height
+		}
 		// A transmit that does not place (a=t) replaces the image and nothing
 		// else. The placement keeps the cell box and crop its own command gave
 		// it. Taken from the a=t they would be the picture's own size, and a

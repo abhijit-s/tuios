@@ -36,12 +36,22 @@ import (
 //   - A guest can send other pixels under the same id with a=t after the
 //     picture is placed. That replaces the stored image and places nothing,
 //     so the placement keeps the cell box and the crop it had.
+//   - The bytes sent again can be the ones the host already holds. Nothing is
+//     forwarded then, and the placement must not follow the cursor either: an
+//     a=t places nothing, wherever the cursor is when it comes. The guest moves
+//     the cursor to the top left first, where the whole 100x10 cells fit, so a
+//     placement moved there is not clipped.
+//   - The file sent again can have a header that does not read as a PNG. Its
+//     size is then unknown, and the size already known for the picture has to
+//     stay, or the crop is measured in the host's cell again.
 func TestKittyOverflowCropKeepsThePicturesScale(t *testing.T) {
 	for _, tc := range []struct{ medium, how string }{
 		{"direct", ""}, {"file", ""}, {"file-zlib", ""}, {"file-at", ""}, {"temp", ""},
 		{"direct", "later"}, {"file", "later"}, {"temp", "later"},
 		{"direct", "natural"}, {"file", "natural"}, {"temp", "natural"},
 		{"file", "resend"}, {"temp", "resend"}, {"direct", "resend"},
+		{"file", "same"}, {"temp", "same"},
+		{"file", "badhead"}, {"temp", "badhead"},
 	} {
 		name := strings.TrimSuffix(tc.medium+"-"+tc.how, "-")
 		boxCols, boxRows, perCol, perRow := 100, 10, 20, 40
