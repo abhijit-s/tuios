@@ -1207,6 +1207,10 @@ type walkResult struct {
 	// skippedCount counts every skipped item, also those past
 	// fileWalkSkippedMax.
 	skippedCount int
+	// denied counts the entries a walk over a link left out because they
+	// are in the read deny list. A denied folder counts once. They are not
+	// named.
+	denied int
 }
 
 // skippedKind names what a mode is, for a skipped item.
@@ -1228,10 +1232,11 @@ func skippedKind(m fs.FileMode) string {
 // folder, so a copy can make them in order. Links are not followed: a link,
 // a pipe, a socket and a device are not copied, and the walk names them, so
 // the person learns what stayed behind. A part file of a copy in flight is
-// neither copied nor named.
-func walkTree(root string, limit int) (walkResult, error) {
+// neither copied nor named. An entry denied reports true for is neither
+// copied nor named either, and out.denied counts it; nil denies nothing.
+func walkTree(root string, limit int, denied func(string) bool) (walkResult, error) {
 	var out walkResult
-	err := walkTreeTo(root, limit, func(e WalkEntry) error {
+	err := walkTreeTo(root, limit, countDenied(denied, &out.denied), func(e WalkEntry) error {
 		out.entries = append(out.entries, e)
 		out.total += e.Size
 		return nil
@@ -1244,15 +1249,37 @@ func walkTree(root string, limit int) (walkResult, error) {
 	return out, err
 }
 
+// countDenied is denied, counting each entry it denies in n. Nil stays nil.
+func countDenied(denied func(string) bool, n *int) func(string) bool {
+	if denied == nil {
+		return nil
+	}
+	return func(p string) bool {
+		if denied(p) {
+			*n++
+			return true
+		}
+		return false
+	}
+}
+
 // walkTreeTo is walkTree that hands each entry to emit as it is found, and
 // each skipped item to skip.
-func walkTreeTo(root string, limit int, emit func(WalkEntry) error, skip func(SkippedItem)) error {
+func walkTreeTo(root string, limit int, denied func(string) bool, emit func(WalkEntry) error, skip func(SkippedItem)) error {
 	n := 0
 	return filepath.WalkDir(root, func(p string, de fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 		if p == root {
+			return nil
+		}
+		if denied != nil && denied(p) {
+			// Not named at all: the name of a key is already more than a
+			// link may learn. A denied folder is not entered.
+			if de.IsDir() {
+				return filepath.SkipDir
+			}
 			return nil
 		}
 		rel, _ := filepath.Rel(root, p)
@@ -1329,8 +1356,8 @@ func (d *Daemon) verbFileWalk(cs *connState, params json.RawMessage) (any, *verb
 			enc := json.NewEncoder(bw)
 			var total int64
 			var skipped []SkippedItem
-			count := 0
-			err := walkTreeTo(root, fileWalkMax, func(e WalkEntry) error {
+			count, denied := 0, 0
+			err := walkTreeTo(root, fileWalkMax, countDenied(d.linkWalkDenied(cs), &denied), func(e WalkEntry) error {
 				total += e.Size
 				return enc.Encode(e)
 			}, func(s SkippedItem) {
@@ -1339,7 +1366,7 @@ func (d *Daemon) verbFileWalk(cs *connState, params json.RawMessage) (any, *verb
 					skipped = append(skipped, s)
 				}
 			})
-			end := map[string]any{"end": true, "bytes": total, "skipped": skipped, "skipped_count": count}
+			end := map[string]any{"end": true, "bytes": total, "skipped": skipped, "skipped_count": count, "denied": denied}
 			if err != nil {
 				v := fileError("list", path, err)
 				if isWalkTooLarge(err) {
@@ -1353,7 +1380,7 @@ func (d *Daemon) verbFileWalk(cs *connState, params json.RawMessage) (any, *verb
 		}
 		return map[string]any{"path": path, "stream": true}, nil
 	}
-	w, err := walkTree(root, fileWalkReplyMax)
+	w, err := walkTree(root, fileWalkReplyMax, d.linkWalkDenied(cs))
 	if isWalkTooLarge(err) {
 		return nil, newVerbError(ErrVerbInvalidParams, "copy: "+err.Error()+". Ask with stream for a larger folder")
 	}
@@ -1364,7 +1391,7 @@ func (d *Daemon) verbFileWalk(cs *connState, params json.RawMessage) (any, *verb
 	if skipped == nil {
 		skipped = []SkippedItem{}
 	}
-	return map[string]any{"path": path, "entries": w.entries, "bytes": w.total, "skipped": skipped, "skipped_count": w.skippedCount}, nil
+	return map[string]any{"path": path, "entries": w.entries, "bytes": w.total, "skipped": skipped, "skipped_count": w.skippedCount, "denied": w.denied}, nil
 }
 
 // fileVerbs is the file verb family.
@@ -1477,7 +1504,7 @@ func fileVerbs() map[string]verbEntry {
 			handler:  (*Daemon).verbFileHash,
 		},
 		"file-walk": {
-			description: "List every file and folder under a folder on this machine, for a folder copy. At most 20000 entries in one reply; with stream, up to 1000000 entries, one JSON line each after the reply, and a last line {end, bytes, skipped, skipped_count} or {end, code, error}. Links are not followed: a link, a named pipe, a socket and a device are not copied, and skipped names them.",
+			description: "List every file and folder under a folder on this machine, for a folder copy. At most 20000 entries in one reply; with stream, up to 1000000 entries, one JSON line each after the reply, and a last line {end, bytes, skipped, skipped_count, denied} or {end, code, error}. Links are not followed: a link, a named pipe, a socket and a device are not copied, and skipped names them. Over a link, an entry in the read deny list is left out and not named, and denied counts it.",
 			params: []verbParam{
 				pathParam("The folder."),
 				{Name: "stream", Type: "bool", Description: "Send the entries after the reply, one JSON line each, for a folder of more than 20000 entries."},
@@ -1487,6 +1514,7 @@ func fileVerbs() map[string]verbEntry {
 				{Name: "bytes", Type: "int", Description: "The bytes of every file together."},
 				{Name: "skipped", Type: "[]object", Description: "The first 200 items a copy does not carry: rel and kind (symlink, pipe, socket, device)."},
 				{Name: "skipped_count", Type: "int", Description: "How many items a copy does not carry, all of them."},
+				{Name: "denied", Type: "int", Description: "Over a link, how many entries were left out because a linked machine may not read them. A folder counts once. They are not named."},
 			},
 			examples: []string{`{"id":1,"verb":"file-walk","params":{"path":"~/photos"}}`},
 			handler:  (*Daemon).verbFileWalk,
