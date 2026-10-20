@@ -92,7 +92,7 @@ func (m *OS) refreshSwitcherItems() {
 	}
 	if m.ShowWorkspaceSwitcher {
 		if m.paneMove != nil {
-			m.WorkspaceSwitcherItems = m.moveTargetWorkspaces(m.paneMove.session)
+			m.WorkspaceSwitcherItems = m.moveTargetWorkspaces()
 		} else {
 			m.WorkspaceSwitcherItems = m.buildWorkspaceItems()
 		}

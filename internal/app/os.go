@@ -1256,9 +1256,9 @@ type OS struct {
 	SessionSwitcherScroll        int
 	SessionSwitcherItems         []sessiontree.Node
 	SessionSwitcherConfirmDelete string // non-empty = confirming deletion of this session name
-	// paneMove is a move of a pane to another session in progress. While it
-	// is set the session switcher and then the workspace switcher pick where
-	// the pane goes rather than where to go. See move_to_session.go.
+	// paneMove is a move of a pane in progress. While it is set the session
+	// switcher and then the workspace switcher pick where the pane goes
+	// rather than where to go. See move_pane.go.
 	paneMove *paneMove
 
 	// FederationHosts is what the daemon last said about the machines in the

@@ -47,7 +47,7 @@ func handleSessionSwitcherInput(msg tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cm
 			if selected, ok := o.SessionSwitcherTarget(o.SessionSwitcherSelected); ok {
 				o.MoveToSessionChosen(selected)
 			} else {
-				o.ShowNotification("No other session matches "+o.SessionSwitcherQuery, "info", o.Settings.NotificationDuration)
+				o.ShowNotification("No session matches "+o.SessionSwitcherQuery, "info", o.Settings.NotificationDuration)
 			}
 			return o, nil
 		}

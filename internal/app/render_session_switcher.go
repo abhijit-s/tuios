@@ -58,9 +58,9 @@ func (m *OS) renderSessionSwitcher() (string, overlay.Geometry, []overlayRowHit)
 		// deletes, so the footer offers only the choice.
 		title = "Move " + printableTitle(m.paneMove.label) + " to session"
 		hints = []overlay.Hint{{Key: overlay.EnterGlyph, Label: "choose"}, {Key: "esc", Label: "cancel"}}
-		empty, emptyHint = "No other session", overlay.Hint{}
+		empty, emptyHint = "No session", overlay.Hint{}
 		if m.SessionSwitcherQuery != "" {
-			empty = "No other session matches '" + m.SessionSwitcherQuery + "'"
+			empty = "No session matches '" + m.SessionSwitcherQuery + "'"
 		}
 	}
 
@@ -112,7 +112,13 @@ func (m *OS) sessionSwitcherRow(item sessiontree.Node, selected bool, rowBg colo
 			Bold(sidebarAttention(item.AgentState)).Render(" " + glyph)
 	}
 	if item.IsCurrent {
-		right = overlay.Style(rowBg).Foreground(pal.Success).Render("current  ") + right
+		// Picking where a pane goes, this session is a move to another
+		// workspace, and the row says so.
+		tag := "current"
+		if m.paneMove != nil {
+			tag = "this session"
+		}
+		right = overlay.Style(rowBg).Foreground(pal.Success).Render(tag+"  ") + right
 	}
 	// A restored session is by definition not the current one, so the tag sits
 	// in the slot "current" would otherwise hold and never competes with it.
