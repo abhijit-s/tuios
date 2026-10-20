@@ -1499,6 +1499,8 @@ func (d *Daemon) verbSetAgentState(cs *connState, params json.RawMessage) (any, 
 		HarnessPID: p.HarnessPID,
 		IfState:    ifState,
 
+		HarnessIsCaller: callerRunsHarness(cs, p.HarnessPID),
+
 		SessionStart: p.SessionStart,
 		SharedServer: d.agentMatcher.registry.SharedServer(p.Harness),
 	}
@@ -1742,6 +1744,8 @@ func (d *Daemon) verbSetAgentSession(cs *connState, params json.RawMessage) (any
 		SessionID:   sid,
 		HarnessPID:  p.HarnessPID,
 		foreignPane: d.harnessOutsidePane(cs, sess, target, p.HarnessPID),
+
+		HarnessIsCaller: callerRunsHarness(cs, p.HarnessPID),
 	})
 	if err != nil {
 		return nil, mapResolveErr(err, sess)
