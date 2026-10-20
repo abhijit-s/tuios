@@ -229,6 +229,11 @@ func (m *OS) renderTerminal(window *terminal.Window, isFocused bool, inTerminalM
 		return window.CachedContent
 	}
 
+	// A TML window draws its surface, not its PTY. See tml.go.
+	if m.DrawsTML(window) {
+		return m.renderTML(window, dim)
+	}
+
 	// The guest has an open synchronized update (DEC 2026): it has begun a frame
 	// and does not want it seen half-drawn. The compositor holds the window's
 	// cached layer for this, but a retile, scroll, rename or palette change

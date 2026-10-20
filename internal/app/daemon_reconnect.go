@@ -118,6 +118,9 @@ func (m *OS) handleDaemonReconnectTick(msg daemonReconnectTickMsg) tea.Cmd {
 		return nil
 	}
 	gen, name, width, height := r.gen, r.sessionName, r.width, r.height
+	// The whole dial ends with the wait. A new daemon that says hello and
+	// then stalls would otherwise hold the attach for its 30 seconds.
+	end := r.since.Add(r.budget)
 	version := m.clientVersionForReconnect()
 	caps := m.clientCapabilities()
 	reserve := m.ownLayoutReserveForReconnect()
@@ -131,7 +134,8 @@ func (m *OS) handleDaemonReconnectTick(msg daemonReconnectTickMsg) tea.Cmd {
 		// Getting the session back is not the person attaching, so it must
 		// not detach the other clients under single_client.
 		client.Reconnect = true
-		client.HandshakeTimeout = daemonDialTimeout
+		client.HandshakeTimeout = max(min(daemonDialTimeout, time.Until(end)), time.Millisecond)
+		client.AttachDeadline = end
 		client.SSHAuthSock, client.Display = agent, display
 		client.UseCallerTerm()
 		if err := client.ConnectWithCapabilities(version, width, height, caps); err != nil {
@@ -197,7 +201,9 @@ func (m *OS) resumeOnNewDaemon(client *session.TUIClient, state *session.Session
 	}
 	m.LogInfo("%s", text)
 	m.ShowNotification(text, "success", 2*m.Settings.NotificationDuration)
-	return nil
+	// An open agents view picks its live pane again: no input may come to
+	// run the follow, and the box stays empty until one does.
+	return m.CockpitSideFetch()
 }
 
 // ReconnectingToDaemon reports whether the client waits for a new daemon.

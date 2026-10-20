@@ -48,6 +48,10 @@ var (
 )
 
 func main() {
+	// A `go install ...@vX` build has no ldflags; its module version stands in
+	// for them before anything below reads the stamps.
+	applyModuleVersion()
+
 	// The build identity, handed to internal/app before anything can crash.
 	// A crash report that cannot say which build produced it cannot be placed
 	// against a commit, and internal/app cannot read these vars itself.
@@ -1418,7 +1422,8 @@ the move instead of staying put.
 With --to-session, the window moves to another session. The program in it
 keeps running, and the window keeps its id and its scrollback. The workspace
 is optional then: without it, the window goes to the workspace that session
-shows. A popup, a scratch pane and a pane on another machine cannot move.`,
+shows. A popup, a scratch pane, a TML pane and a pane on another machine
+cannot move.`,
 		Example: `  # Move the focused window to workspace 3
   tuios move-window 3
 
@@ -2983,6 +2988,7 @@ command in authorized_keys to make the policy a boundary:
 	rootCmd.AddCommand(newPluginsCommand())
 	rootCmd.AddCommand(newCpCommand(), newTransfersCommand())
 	rootCmd.AddCommand(newMermaidCommand())
+	rootCmd.AddCommand(newTMLCommand())
 
 	addExplorers(rootCmd)
 	return rootCmd

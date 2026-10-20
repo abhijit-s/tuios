@@ -1,4 +1,4 @@
-// Ported from pele src/preprocess.ts at 458322a5b8abb1ae57ddf127c32017ab9fb14a92.
+// Ported from pele src/preprocess.ts at 8603bf3313add9143cd417015d4a6bd6c522dada.
 //
 // RE_DIRECTIVE uses a lookahead, which Go's regexp lacks: matchDirective is a
 // hand-written matcher that takes the same text.
@@ -7,11 +7,11 @@ package sketch
 
 import (
 	"encoding/json"
-	"regexp"
 	"strings"
 	"unicode/utf8"
 
 	"tuios.dev/sketch/internal/js"
+	"tuios.dev/sketch/internal/lazyre"
 	"tuios.dev/sketch/internal/types"
 	"tuios.dev/sketch/internal/util"
 )
@@ -30,10 +30,10 @@ type preprocessed struct {
 
 var (
 	// /^\s*%%(?!{)[^\n]+\n?/gm
-	reComment  = regexp.MustCompile(`(?m)^[` + js.S + `]*%%[^{\n][^\n]*\n?`)
-	reHTMLTag  = regexp.MustCompile(`<(\w+)([^>]*)>`)
-	reAttr     = regexp.MustCompile(`="([^"]*)"`)
-	reCRLF     = regexp.MustCompile(`\r\n?`)
+	reComment  = lazyre.New(`(?m)^[` + js.S + `]*%%[^{\n][^\n]*\n?`)
+	reHTMLTag  = lazyre.New(`<(\w+)([^>]*)>`)
+	reAttr     = lazyre.New(`="([^"]*)"`)
+	reCRLF     = lazyre.New(`\r\n?`)
 	unsafeKeys = map[string]bool{"__proto__": true, "constructor": true, "prototype": true}
 )
 
@@ -377,8 +377,8 @@ func preprocess(source string) preprocessed {
 }
 
 var (
-	reEntity = regexp.MustCompile(`#\w+;`)
-	reIntEnt = regexp.MustCompile(`^\+?\d+$`)
+	reEntity = lazyre.New(`#\w+;`)
+	reIntEnt = lazyre.New(`^\+?\d+$`)
 )
 
 // lineEndFrom is the index of the first line terminator at or after from, or len(text).

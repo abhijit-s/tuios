@@ -1,7 +1,7 @@
 package sketch
 
 // Ported from pele tests/support/inert.ts, tests/support/xml.ts and the flowchart
-// part of tests/render/security.test.ts at 458322a5b8abb1ae57ddf127c32017ab9fb14a92.
+// part of tests/render/security.test.ts at 8603bf3313add9143cd417015d4a6bd6c522dada.
 
 import (
 	"errors"
@@ -160,7 +160,8 @@ var (
 	reBadHead     = regexp.MustCompile(`(?i)^(?:[\\/]{2}|[a-z][a-z0-9+.-]*:)`)
 	reTarget      = regexp.MustCompile(`^_(?:self|blank|parent|top)$`)
 	reUnsafeStyle = regexp.MustCompile(`(?i)url[` + js.S + `]*\(|expression|@import|javascript:|[<>{}\\]`)
-	reUnsafePaint = regexp.MustCompile(`(?i)url[` + js.S + `]*\(|javascript:`)
+	// A backslash is refused too: a CSS escape such as \75 rl( spells url(.
+	reUnsafePaint = regexp.MustCompile(`(?i)url[` + js.S + `]*\(|javascript:|\\`)
 	reTabsBreaks  = regexp.MustCompile(`[\t\n\r]`)
 	reLeadCtrl    = regexp.MustCompile(`^[\x00-\x20]+`)
 )

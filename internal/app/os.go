@@ -108,6 +108,9 @@ type WindowLayout struct {
 // OS represents the main application state and window manager.
 // It manages all windows, workspaces, and user interactions.
 type OS struct {
+	// tml holds the TML surfaces this client draws. See tml.go.
+	tml tmlClient
+
 	// ClientTitle is the title of the terminal this client runs in, set
 	// through herdr's client.window_title.set. Empty sets none.
 	ClientTitle string
@@ -2157,6 +2160,8 @@ func (m *OS) SwitchToSession(targetSession string) error {
 // It runs only once the daemon has confirmed which session this connection is
 // on, because every step of it is irreversible.
 func (m *OS) rebuildForSession(state *session.SessionState, savedWidth, savedHeight int) {
+	// The surfaces of the session left are not drawn here any more.
+	m.pruneTMLViews(state)
 	// The daemon already dropped these subscriptions when it took the detach.
 	// Unsubscribing again is what clears the client's own output, resize and
 	// exit handlers, so a pane from the session just left cannot fire into the
@@ -2191,6 +2196,11 @@ func (m *OS) rebuildForSession(state *session.SessionState, savedWidth, savedHei
 	// dropped above, and on a switch back the ids match again with nothing
 	// streaming the pane, so the view would show a frozen screen.
 	m.pip = pipState{occluder: m.pip.occluder[:0]}
+	// The agents view's live box has the same problem. A session the daemon
+	// restored keeps its window ids, so the box would see the same id after
+	// a reattach, prime nothing, and stop updating. Forget it, and let the
+	// next follow pick the pane again.
+	m.cockpitLiveForget()
 
 	// The box the panes go in is the new session's: its size under its own
 	// window_size policy and its clients, and the chrome reserve its clients

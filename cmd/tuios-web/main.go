@@ -22,6 +22,7 @@ import (
 	"github.com/Gaurav-Gosain/tuios/internal/config"
 	"github.com/Gaurav-Gosain/tuios/internal/fang"
 	"github.com/Gaurav-Gosain/tuios/internal/netutil"
+	"github.com/Gaurav-Gosain/tuios/internal/release"
 	"github.com/Gaurav-Gosain/tuios/internal/served"
 	"github.com/Gaurav-Gosain/tuios/internal/serverscope"
 	"github.com/Gaurav-Gosain/tuios/internal/session"
@@ -118,8 +119,9 @@ Client features:
   # Same, with a certificate and a password you already have
   tuios-web --host 0.0.0.0 --cert cert.pem --key key.pem --password-file ~/.config/tuios/web-password
 
-  # Same, on a network you trust, with nothing encrypted and no password
-  tuios-web --host 0.0.0.0 --insecure --no-auth
+  # Same, on a network you trust, with nothing encrypted and no password.
+  # --no-auth needs the address of one interface. It does not work with 0.0.0.0
+  tuios-web --host 192.168.1.20 --insecure --no-auth
 
   # Behind a reverse proxy on this machine that sends its own host name.
   # --allow-host needs a password or --no-auth
@@ -159,9 +161,9 @@ Client features:
 	rootCmd.Flags().BoolVar(&webAutoTLS, "auto-tls", false, "Serve HTTPS from a self-signed certificate tuios-web generates and keeps (see `tuios-web cert`)")
 	rootCmd.Flags().BoolVar(&webInsecure, "insecure", false, "Serve a non-loopback host over plain HTTP, sending every keystroke unencrypted (trusted networks only)")
 	rootCmd.Flags().StringVar(&webUser, "user", defaultWebUser, "User name the browser must give with the password")
-	rootCmd.Flags().StringVar(&webPasswordFile, "password-file", "", "Read the password from the first line of this file. The file must be yours, with mode 600 or 400")
+	rootCmd.Flags().StringVar(&webPasswordFile, "password-file", "", "Read the password from the first line of this file. The file must be yours, with mode 600 or 400 (on Windows, only you, SYSTEM and Administrators may read it)")
 	rootCmd.Flags().BoolVar(&webRandomPassword, "random-password", false, "Make a new password at start and print it")
-	rootCmd.Flags().BoolVar(&webNoAuth, "no-auth", false, "Serve a non-loopback host with no password. Anyone who reaches the port gets a shell (trusted networks only)")
+	rootCmd.Flags().BoolVar(&webNoAuth, "no-auth", false, "Serve a non-loopback host with no password. Anyone who reaches the port gets a shell (trusted networks only). Not with 0.0.0.0 or ::")
 	rootCmd.Flags().StringSliceVar(&webAllowHosts, "allow-host", nil, "On a loopback --host, also accept this host name (no port) in the Host header, for example for a reverse proxy. Needs a password or --no-auth (repeatable)")
 	registerCertFlags(rootCmd)
 	rootCmd.Flags().StringVar(&webTouch, "touch", "auto", "Touch input mode: auto, on, off. Touch widens the gestures aimed at a single cell")
@@ -180,6 +182,10 @@ Client features:
 }
 
 func main() {
+	// A `go install ...@vX` build has no ldflags; its module version stands in
+	// for them before anything below reads the stamps.
+	applyModuleVersion()
+
 	// See cmd/tuios/main.go: a crash report names the build it came from, and
 	// internal/app cannot read these vars itself.
 	app.SetBuildStamp(version, commit)
@@ -206,7 +212,7 @@ func main() {
 // accessFlags collects the command line that decides who may connect.
 func accessFlags() webAccessFlags {
 	return webAccessFlags{
-		host:           webHost,
+		host:           webBindAddr,
 		port:           webPort,
 		tls:            webTLSCert != "" || webAutoTLS,
 		user:           webUser,
@@ -237,6 +243,14 @@ func runWebServer() error {
 	// anything is started, so the user gets the answer instead of a daemon
 	// and a half-open port. The password comes first: it is read and removed
 	// from the environment before the daemon starts, so no pane inherits it.
+	// Resolve --host once. The checks read the address it binds, and sip
+	// binds that address, so the two cannot disagree. See bindhost.go.
+	bind, err := resolveBindHost(context.Background(), netResolver, webHost)
+	if err != nil {
+		return err
+	}
+	webBindAddr = bind
+
 	access, err := planWebAccess(os.Stderr, accessFlags())
 	if err != nil {
 		return err
@@ -355,7 +369,7 @@ func runWebServer() error {
 
 	// Create sip server
 	sipConfig := sip.DefaultConfig()
-	sipConfig.Host = webHost
+	sipConfig.Host = webBindAddr
 	sipConfig.Port = webPort
 	sipConfig.ReadOnly = webReadOnly
 	sipConfig.MaxConnections = webMaxConnections
@@ -411,7 +425,7 @@ func runWebServer() error {
 		mode = "ephemeral"
 	}
 	log.Printf("Starting web server on %s (mode: %s)", serverURL(), mode)
-	if webInsecure && !isLoopbackHost(webHost) {
+	if webInsecure && !isLoopbackHost(webBindAddr) {
 		log.Printf("Insecure: %s is served over plain HTTP, so anyone on this network can read what you type", serverURL())
 	}
 
@@ -589,7 +603,7 @@ func checkTransportSecurity(w io.Writer) error {
 		// error rendering.
 		return errors.New("pass both --cert and --key, or neither: a certificate is no use without its key")
 	}
-	if webTLSCert != "" || webAutoTLS || webInsecure || isLoopbackHost(webHost) {
+	if webTLSCert != "" || webAutoTLS || webInsecure || isLoopbackHost(webBindAddr) {
 		return nil
 	}
 
@@ -786,4 +800,11 @@ func cellSize(pty sip.Pty) (cellWidth, cellHeight int) {
 // file the server loaded when it started. See config.AppearanceFrom.
 func webAppearanceOverrides() config.Overrides {
 	return interfaceFlags.Overrides()
+}
+
+// applyModuleVersion replaces the placeholder stamps of a `go install` build
+// with its module version. See release.Stamps.WithModuleVersion.
+func applyModuleVersion() {
+	s := release.Stamps{Version: version, Commit: commit, Date: date, BuiltBy: builtBy}.WithModuleVersion()
+	version, commit, date, builtBy = s.Version, s.Commit, s.Date, s.BuiltBy
 }

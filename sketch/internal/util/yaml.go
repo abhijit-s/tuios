@@ -1,4 +1,4 @@
-// Ported from pele src/util/yaml.ts at 458322a5b8abb1ae57ddf127c32017ab9fb14a92.
+// Ported from pele src/util/yaml.ts at 8603bf3313add9143cd417015d4a6bd6c522dada.
 //
 // pele throws; the port panics with yamlError or incomplete and ParseYaml
 // recovers them into an error.
@@ -8,11 +8,11 @@ package util
 import (
 	"errors"
 	"math"
-	"regexp"
 	"strings"
 	"unicode/utf8"
 
 	"tuios.dev/sketch/internal/js"
+	"tuios.dev/sketch/internal/lazyre"
 )
 
 // A small YAML reader covering what Mermaid feeds to js-yaml with the JSON schema:
@@ -35,7 +35,7 @@ type reader struct {
 	i     int
 }
 
-var reCRLFYaml = regexp.MustCompile(`\r\n?`)
+var reCRLFYaml = lazyre.New(`\r\n?`)
 
 func newReader(src string) *reader {
 	return &reader{lines: strings.Split(reCRLFYaml.ReplaceAllString(src, "\n"), "\n")}
@@ -64,20 +64,20 @@ func (r *reader) indent() int {
 }
 
 var (
-	reInt         = regexp.MustCompile(`^[-+]?(?:0|[1-9][0-9]*)$`)
-	reHex         = regexp.MustCompile(`^[-+]?0x[0-9a-fA-F]+$`)
-	reOct         = regexp.MustCompile(`^[-+]?0o[0-7]+$`)
-	reBin         = regexp.MustCompile(`^[-+]?0b[01]+$`)
-	reFloat       = regexp.MustCompile(`^[-+]?(?:[0-9][0-9]*(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][-+]?[0-9]+)?$`)
-	reKeyStart    = regexp.MustCompile(`[` + js.S + `#:,\[\]{}&*!|>'"%@` + "`" + `]`)
-	reInf         = regexp.MustCompile(`^[-+]?\.(?:inf|Inf|INF)$`)
-	reNaN         = regexp.MustCompile(`^\.(?:nan|NaN|NAN)$`)
-	reFlowEnd     = regexp.MustCompile(`[` + js.S + `,\[\]{}]`)
-	reDigit19     = regexp.MustCompile(`[1-9]`)
-	reBlockHeader = regexp.MustCompile(`^[|>][-+0-9]*[` + js.S + `]*(?:#` + js.Dot + `*)?$`)
-	reLeadBlank   = regexp.MustCompile(`^[ \t]`)
-	reEscNL       = regexp.MustCompile(`\\\n[ \t]*`)
-	reNewlines    = regexp.MustCompile(`\n+`)
+	reInt         = lazyre.New(`^[-+]?(?:0|[1-9][0-9]*)$`)
+	reHex         = lazyre.New(`^[-+]?0x[0-9a-fA-F]+$`)
+	reOct         = lazyre.New(`^[-+]?0o[0-7]+$`)
+	reBin         = lazyre.New(`^[-+]?0b[01]+$`)
+	reFloat       = lazyre.New(`^[-+]?(?:[0-9][0-9]*(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][-+]?[0-9]+)?$`)
+	reKeyStart    = lazyre.New(`[` + js.S + `#:,\[\]{}&*!|>'"%@` + "`" + `]`)
+	reInf         = lazyre.New(`^[-+]?\.(?:inf|Inf|INF)$`)
+	reNaN         = lazyre.New(`^\.(?:nan|NaN|NAN)$`)
+	reFlowEnd     = lazyre.New(`[` + js.S + `,\[\]{}]`)
+	reDigit19     = lazyre.New(`[1-9]`)
+	reBlockHeader = lazyre.New(`^[|>][-+0-9]*[` + js.S + `]*(?:#` + js.Dot + `*)?$`)
+	reLeadBlank   = lazyre.New(`^[ \t]`)
+	reEscNL       = lazyre.New(`\\\n[ \t]*`)
+	reNewlines    = lazyre.New(`\n+`)
 )
 
 // at is the byte of s at i, or 0 past its end, where pele reads undefined.
@@ -169,6 +169,10 @@ func scalar(raw string) YamlValue {
 		return true
 	case "false", "False", "FALSE":
 		return false
+	}
+	// Every number pattern below starts with a sign, a dot or a digit.
+	if !strings.ContainsRune("+-.0123456789", rune(s[0])) {
+		return s
 	}
 	if reInt.MatchString(s) || reFloat.MatchString(s) {
 		return js.Number(s)

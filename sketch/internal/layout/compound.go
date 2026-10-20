@@ -1,4 +1,4 @@
-// Ported from pele src/layout/compound.ts at 458322a5b8abb1ae57ddf127c32017ab9fb14a92.
+// Ported from pele src/layout/compound.ts at 8603bf3313add9143cd417015d4a6bd6c522dada.
 
 package layout
 
@@ -614,19 +614,26 @@ func CompoundLayout(nodes []*CNode, edges []*CEdge, rootDir Dir, opt LayeredOpti
 	for _, lv := range order {
 		for _, le := range lv.edges {
 			e := edges[le.e]
-			route := []float64{}
 			var outward []*level
 			for item := e.Src; nodes[item].Parent != lv.id; item = nodes[item].Parent {
 				outward = append(outward, levelOf[nodes[item].Parent])
 			}
-			for _, l := range outward {
-				route = appendRoute(route, l.portOf[le.e*2].route, l.x, l.y)
-			}
-			route = appendRoute(route, lv.routes[le.e], lv.x, lv.y)
 			var inward []*level
 			for item := e.Dst; nodes[item].Parent != lv.id; item = nodes[item].Parent {
 				inward = append(inward, levelOf[nodes[item].Parent])
 			}
+			size := len(lv.routes[le.e])
+			for _, l := range outward {
+				size += len(l.portOf[le.e*2].route)
+			}
+			for _, l := range inward {
+				size += len(l.portOf[le.e*2+1].route)
+			}
+			route := make([]float64, 0, size)
+			for _, l := range outward {
+				route = appendRoute(route, l.portOf[le.e*2].route, l.x, l.y)
+			}
+			route = appendRoute(route, lv.routes[le.e], lv.x, lv.y)
 			for i := len(inward) - 1; i >= 0; i-- {
 				route = appendRoute(route, inward[i].portOf[le.e*2+1].route, inward[i].x, inward[i].y)
 			}

@@ -253,6 +253,13 @@ func HandleTerminalModeKey(msg tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
 		}
 		return o, nil
 	}
+	// A TML window takes the key itself: its surface is drawn by this
+	// client, and its PTY only holds the place. See app/tml.go.
+	if o.DrawsTML(focusedWindow) {
+		recordTerminalKey(o, msg)
+		o.NotePaneKey()
+		return o, o.TMLKey(focusedWindow, msg.String())
+	}
 	// Normal terminal mode: pass through all keys
 	if focusedWindow != nil {
 		// The pane gets the key as the host sent it, on either encoding.

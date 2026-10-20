@@ -1,4 +1,4 @@
-// Ported from pele src/diagrams/er/render.ts at 458322a5b8abb1ae57ddf127c32017ab9fb14a92.
+// Ported from pele src/diagrams/er/render.ts at 8603bf3313add9143cd417015d4a6bd6c522dada.
 
 package er
 
@@ -434,6 +434,8 @@ func draw(db *ErDb, config types.Config, options types.RenderOptions, turned boo
 	}
 
 	var clusters, nodesOut strings.Builder
+	// An entity takes about 700 bytes of markup and a relationship about 400.
+	nodesOut.Grow(len(views) * 704)
 	for i, view := range views {
 		c := cnodes[i]
 		node := view.node
@@ -547,6 +549,7 @@ func draw(db *ErDb, config types.Config, options types.RenderOptions, turned boo
 	}
 
 	var edgesOut, labelsOut strings.Builder
+	edgesOut.Grow(len(cedges) * 400)
 	for i, ce := range cedges {
 		edge := drawn[i]
 		label := edgeLabels[i]
@@ -618,19 +621,19 @@ func draw(db *ErDb, config types.Config, options types.RenderOptions, turned boo
 		}
 	}
 
-	var content strings.Builder
-	content.WriteString(svg.LabelSvg(title, width/2, pad+title.Height/2, ` class="pele-title" font-weight="var(--_tw)"`, nil))
+	content := make([]string, 0, 32)
+	content = append(content, svg.LabelSvg(title, width/2, pad+title.Height/2, ` class="pele-title" font-weight="var(--_tw)"`, nil))
 	if clusters.Len() > 0 {
-		content.WriteString(`<g class="pele-clusters">` + clusters.String() + `</g>`)
+		content = append(content, `<g class="pele-clusters">`, clusters.String(), `</g>`)
 	}
 	if edgesOut.Len() > 0 {
-		content.WriteString(`<g class="pele-edges" fill="none" stroke="var(--_l)" stroke-linecap="round">` + edgesOut.String() + `</g>`)
+		content = append(content, `<g class="pele-edges" fill="none" stroke="var(--_l)" stroke-linecap="round">`, edgesOut.String(), `</g>`)
 	}
 	if labelsOut.Len() > 0 {
-		content.WriteString(`<g class="pele-edge-labels" font-size="` + js.Num(smallSize) + `">` + labelsOut.String() + `</g>`)
+		content = append(content, `<g class="pele-edge-labels" font-size="`+js.Num(smallSize)+`">`, labelsOut.String(), `</g>`)
 	}
-	content.WriteString(`<g class="pele-nodes">` + nodesOut.String() + `</g>`)
-	out := svg.SvgDocument("er", width, height, size, options, svg.Accessible{AccTitle: db.accTitle, AccDescr: db.accDescr}, content.String())
+	content = append(content, `<g class="pele-nodes">`, nodesOut.String(), `</g>`)
+	out := svg.SvgDocument("er", width, height, size, options, svg.Accessible{AccTitle: db.accTitle, AccDescr: db.accDescr}, content...)
 
 	return types.Rendered{SVG: out, Width: width, Height: height, Links: links}
 }

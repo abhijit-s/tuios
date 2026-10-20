@@ -1,14 +1,14 @@
-// Ported from pele src/diagrams/flowchart/db.ts at 458322a5b8abb1ae57ddf127c32017ab9fb14a92.
+// Ported from pele src/diagrams/flowchart/db.ts at 8603bf3313add9143cd417015d4a6bd6c522dada.
 
 package flowchart
 
 import (
-	"regexp"
 	"slices"
 	"strconv"
 	"strings"
 
 	"tuios.dev/sketch/internal/js"
+	"tuios.dev/sketch/internal/lazyre"
 	"tuios.dev/sketch/internal/types"
 	"tuios.dev/sketch/internal/util"
 )
@@ -253,9 +253,6 @@ func (db *FlowDb) AddVertex(id string, textObj *FlowText, typ *string, style []s
 	if dir != nil {
 		vertex.Dir = *dir
 	}
-	if props == nil {
-		props = map[string]string{}
-	}
 	if vertex.Props == nil {
 		vertex.Props = props
 	} else {
@@ -361,23 +358,24 @@ func (db *FlowDb) AddSingleLink(start, end string, typ *LinkInfo, id string) {
 		edge.LabelType = labelType(typ.Text.Type)
 	}
 	if typ != nil {
-		t := typ.Type
-		edge.Type = &t
-		s := typ.Stroke
-		edge.Stroke = &s
+		// The edge's own copies, in one allocation.
+		own := &struct {
+			typ, stroke string
+			length      int
+		}{typ: typ.Type, stroke: typ.Stroke}
+		edge.Type = &own.typ
+		edge.Stroke = &own.stroke
 		if typ.Length != nil {
-			l := *typ.Length
-			if l > 10 {
-				l = 10
-			}
-			edge.Length = &l
+			own.length = min(*typ.Length, 10)
+			edge.Length = &own.length
 		}
 	}
+	pair := start + "\x00" + end
 	if _, taken := db.edgeById[id]; id != "" && !taken {
 		edge.ID = id
 		edge.IsUserDefinedId = true
 	} else {
-		existing := db.pairCount[start+"\x00"+end]
+		existing := db.pairCount[pair]
 		n := 0
 		if existing != 0 {
 			n = existing + 1
@@ -389,7 +387,6 @@ func (db *FlowDb) AddSingleLink(start, end string, typ *LinkInfo, id string) {
 		throwFlow("Edge limit exceeded. "+strconv.Itoa(len(db.Edges))+" edges found, but the limit is "+strconv.Itoa(max)+".", types.CodeLimit)
 	}
 	db.Edges = append(db.Edges, edge)
-	pair := start + "\x00" + end
 	db.pairCount[pair]++
 	if _, ok := db.edgeById[edge.ID]; !ok {
 		db.edgeById[edge.ID] = edge
@@ -549,7 +546,7 @@ func (db *FlowDb) SetClickEvent(ids string) {
 	db.SetClass(ids, "clickable")
 }
 
-var reDescrIndent = regexp.MustCompile(`\n[` + js.S + `]+`)
+var reDescrIndent = lazyre.New(`\n[` + js.S + `]+`)
 
 func (db *FlowDb) SetAccTitle(text string) {
 	db.AccTitle = js.TrimStart(text)

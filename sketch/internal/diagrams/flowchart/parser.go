@@ -1,12 +1,12 @@
-// Ported from pele src/diagrams/flowchart/parser.ts at 458322a5b8abb1ae57ddf127c32017ab9fb14a92.
+// Ported from pele src/diagrams/flowchart/parser.ts at 8603bf3313add9143cd417015d4a6bd6c522dada.
 
 package flowchart
 
 import (
-	"regexp"
 	"strings"
 
 	"tuios.dev/sketch/internal/js"
+	"tuios.dev/sketch/internal/lazyre"
 	"tuios.dev/sketch/internal/types"
 )
 
@@ -37,7 +37,7 @@ type frame struct {
 const TEXT_TOKENS = "'UNICODE_TEXT', 'TEXT', 'TAGSTART'"
 
 // Mermaid trims whitespace between a closing brace and the end of its line before parsing.
-var RE_BRACE_TRAIL = regexp.MustCompile(`\}[` + js.S + `]*\n`)
+var RE_BRACE_TRAIL = lazyre.New(`\}[` + js.S + `]*\n`)
 
 var DIRECTIONS = [...]string{"TB", "BT", "RL", "LR", "TD"}
 

@@ -1,4 +1,4 @@
-// Ported from pele src/svg/builder.ts at 458322a5b8abb1ae57ddf127c32017ab9fb14a92.
+// Ported from pele src/svg/builder.ts at 8603bf3313add9143cd417015d4a6bd6c522dada.
 
 // Package svg writes the SVG that every diagram type shares: text, shapes,
 // edges, clusters and the root element.
@@ -62,38 +62,75 @@ func EscText(s string) string {
 	return Esc(text.DecodeEntities(s))
 }
 
-// The two decimals of a coordinate, by hundredths.
-var fraction = func() [100]string {
-	var f [100]string
-	for i := 1; i < 100; i++ {
-		if i%10 == 0 {
-			f[i] = "." + strconv.Itoa(i/10)
-		} else if i < 10 {
-			f[i] = ".0" + strconv.Itoa(i)
-		} else {
-			f[i] = "." + strconv.Itoa(i)
-		}
-	}
-	return f
-}()
-
 // Num writes a coordinate with at most two decimals.
 func Num(value float64) string {
 	n := js.Round(value * 100)
 	if n == 0 {
 		return "0"
 	}
-	if n > 0 {
-		if n < 1e11 {
-			q := math.Floor(n / 100)
-			return strconv.FormatInt(int64(q), 10) + fraction[int(n-q*100)]
+	if n > -1e11 && n < 1e11 {
+		if n > 0 && n < 10000 {
+			// n is whole. A small whole number of units comes from strconv,
+			// which keeps these, so it costs no allocation.
+			if i := int(n); i%100 == 0 {
+				return strconv.Itoa(i / 100)
+			}
 		}
-	} else if n > -1e11 {
-		m := -n
-		q := math.Floor(m / 100)
-		return "-" + strconv.FormatInt(int64(q), 10) + fraction[int(m-q*100)]
+		var buf [24]byte
+		return string(appendHundredths(buf[:0], n))
 	}
 	return js.Num(n / 100)
+}
+
+// AppendNum appends Num(value) to b.
+func AppendNum(b []byte, value float64) []byte {
+	n := js.Round(value * 100)
+	if n == 0 {
+		return append(b, '0')
+	}
+	if n > -1e11 && n < 1e11 {
+		return appendHundredths(b, n)
+	}
+	return append(b, js.Num(n/100)...)
+}
+
+// WriteStrings writes each of strs to b. One call in place of a run of
+// WriteString calls keeps the code that writes markup small.
+//
+//go:noinline
+func WriteStrings(b *strings.Builder, strs ...string) {
+	for _, s := range strs {
+		b.WriteString(s)
+	}
+}
+
+// WriteNum writes Num(value) to b. It is called from many places, and kept
+// out of line so each call stays small.
+//
+//go:noinline
+func WriteNum(b *strings.Builder, value float64) {
+	var buf [32]byte
+	b.Write(AppendNum(buf[:0], value))
+}
+
+// appendHundredths writes n/100 for a whole n with 0 < |n| < 1e11: the whole
+// part, then up to two decimals without trailing zeros.
+func appendHundredths(b []byte, n float64) []byte {
+	if n < 0 {
+		b = append(b, '-')
+		n = -n
+	}
+	q := math.Floor(n / 100)
+	b = strconv.AppendInt(b, int64(q), 10)
+	r := int(n - q*100)
+	if r == 0 {
+		return b
+	}
+	b = append(b, '.', byte('0'+r/10))
+	if r%10 != 0 {
+		b = append(b, byte('0'+r%10))
+	}
+	return b
 }
 
 // LabelSvg writes a measured label as SVG text centered on (cx, cy).
@@ -107,7 +144,15 @@ func LabelSvg(label text.Label, cx, cy float64, attrs string, icons IconResolver
 	y := cy - label.Height/2 + lh/2 + shift
 
 	if len(lines) == 1 && len(lines[0]) == 1 && lines[0][0].Icon == "" && lines[0][0].Style == 0 {
-		return `<text` + attrs + ` x="` + Num(cx) + `" y="` + Num(y) + `" text-anchor="middle">` + Esc(lines[0][0].Text) + `</text>`
+		text := Esc(lines[0][0].Text)
+		var b strings.Builder
+		b.Grow(len(attrs) + len(text) + 72)
+		WriteStrings(&b, `<text`, attrs, ` x="`)
+		WriteNum(&b, cx)
+		b.WriteString(`" y="`)
+		WriteNum(&b, y)
+		WriteStrings(&b, `" text-anchor="middle">`, text, `</text>`)
+		return b.String()
 	}
 
 	shared := SharedStyle(label)

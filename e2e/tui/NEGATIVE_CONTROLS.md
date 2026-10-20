@@ -8412,6 +8412,7 @@ and a `javascript:` link, and asserts on the raw output. Run on 2026-10-19.
 | A table may have thousands of columns | The column cap in `parseBlocks` and `delimiterRow` | Removed | `FuzzParse/seed#8` ("a table of 65 columns and 1 rows is past the bounds") | **caught** |
 | A message written again keeps its old card | `sum` in `ckCardKey` | Left out of the key | `TestCockpitThreadOtherHarnesses/gemini` ("kept the old text of a message written again") | **caught** |
 | A `javascript:` link is sent as OSC 8 | The scheme check in `ckLinkTarget` | Never taken | `TestCockpitThreadCards` ("an escape sequence or a javascript: link in the message reached the host terminal") | **caught** |
+
 ## tuios restart-server
 
 `TestRestartServerMovesTheDaemonToTheNewBuild` starts a daemon of this build
@@ -8470,6 +8471,30 @@ not reattach. Run on 2026-10-18 on branch `feat/reattach-after-daemon-restart`.
 | The client attaches and keeps its old panes | `resumeOnNewDaemon`: the `rebuildForSessionOn` call cut | `TestRestartTheDaemonFromTheVersionNotice` ("the second client did not reattach with the panes") | **caught** |
 | The restart does not say "restart" | `runRestart`: `kill-server` without `--restart` | `TestRestartTheDaemonFromTheVersionNotice` ("the second client quit (code 1) instead of reattaching") | **caught** |
 | The client is deaf to "stop" | `beginDaemonReconnect`: the goodbye check cut | `TestPlainKillServerEndsClientsAtOnce` ("the client did not quit within 1 s of a plain kill-server") | **caught** |
+
+## Restart follow-ups
+
+`TestHostsSyncRestartWithYes` now attaches a client on the fake host before
+the sync restarts its daemon. The client must reattach in the same process.
+`TestCockpitLiveBoxAfterDaemonRestart` opens the agents view on an agent
+whose pane is on workspace 2, restarts the daemon with `restart-server
+--yes`, and prints in the pane. The live box must show the new output with no
+key pressed. `TestAttachDeadlineBoundsTheReply` (in `internal/session`) is a
+daemon that reads the attach and never answers. Run on 2026-10-20 on branch
+`fix/daemon-restart-followups`.
+
+| Control | How | Tests that fail | Verdict |
+| --- | --- | --- | --- |
+| hosts sync stops the daemon with a plain kill-server | `syncStopFunc`: `--restart` left out | `TestHostsSyncRestartWithYes` ("the client attached on old quit (code 1) instead of reattaching") | **caught** |
+| The live box keeps its pane across the reattach, and nothing follows again | `rebuildForSession`: the `cockpitLiveForget` call cut, and `resumeOnNewDaemon` returns nil | `TestCockpitLiveBoxAfterDaemonRestart` ("the live box did not follow the pane after the daemon restart") | **caught** |
+| Only the `cockpitLiveForget` call cut | as above, the follow kept | none: the follow after the reattach also picks the pane | not caught |
+| Only the follow after the reattach cut | as above, the forget kept | none: a frame that wants the side column runs the follow | not caught |
+| The attach reply waits 30 s | `AttachSession`: `recv` instead of `recvUntil(deadline)` | `TestAttachDeadlineBoundsTheReply` ("still waiting 5 s later, past its 300 ms deadline") | **caught** |
+
+The two halves of the live box fix each cover the bug alone in this test, so
+the test guards the pair. Both stay: the forget drops a pane id that can
+match again after a restore, and the follow does not wait for a key.
+
 ## The cockpit's spawn sheet
 
 `TestCockpitSpawnSheet` opens the cockpit with `ctrl+b i`, presses `n`, types
@@ -8703,3 +8728,72 @@ Upstream main fails both new cases with the pane at `none`: `host-pid` ("a host 
 | The shell test dropped from the exit lapse: `&& fg == ""` removed, leaving `info.atShell()` alone | `protocol-pane` ("a protocol pane lost its state when a harness under it exited, with the pane program still running: the pane is {State:none ...}") | **caught** |
 
 Not covered end to end: an agent actually in another pid namespace. `host-pid` stands in for it with a pid the reporter does not descend from, which is what the daemon sees of one. Nor a platform that does not give the peer's pid, where no harness pid is timed and a report claim stays until it is cleared.
+
+### Follow-ups: a harness pid the caller runs under, and a busy protocol pane
+
+Two cases join the test for the maintainer's follow-ups to #873. `host-pid` reports from outside the pane with `tuios call set-agent-state` and a `harness_pid` naming a `sleep` the test started, a live process here that the reporter does not descend from, as a container's own pid can happen to be. It ends the `sleep` and holds the pane at its shell for three detection ticks. `protocol-pane` starts a `start-agent --protocol acp` pane on `testdata/fakeacp`, whose pane process is the protocol program and so reads as at its shell while it runs. A harness for it is `sh` handing its pid to the `tuios call set-agent-state` it execs, which reports with that pid and exits, as a harness child that restarts does. The pane is held for three ticks. Run on 2026-10-20 on macOS against upstream main at 0f62e38f. The fixed build passes all eight cases.
+
+Upstream main fails both new cases with the pane at `none`: `host-pid` ("a host process the reporter does not descend from was taken for its harness, and its exit for the harness's") and `protocol-pane` ("a protocol pane lost its state when a harness under it exited, with the pane program still running").
+
+| Control: what was cut | Tests that fail | Verdict |
+| --- | --- | --- |
+| Every harness pid timed: `setAgentHarnessPID` reads the start time whether or not `callerRunsHarness` placed the pid under the caller | `host-pid` ("a host process the reporter does not descend from was taken for its harness, and its exit for the harness's: the pane is {State:none ...}") | **caught** |
+| No harness pid timed: `callerRunsHarness` returns false, so a hook's own harness is never taken for exited | `crash` ("the agents section still lists the pane after its agent left it, with the shell running") | **caught** |
+| The shell test dropped from the exit lapse: `&& fg == ""` removed, leaving `info.atShell()` alone | `protocol-pane` ("a protocol pane lost its state when a harness under it exited, with the pane program still running: the pane is {State:none ...}") | **caught** |
+
+Not covered end to end: an agent actually in another pid namespace. `host-pid` stands in for it with a pid the reporter does not descend from, which is what the daemon sees of one. Nor a platform that does not give the peer's pid, where no harness pid is timed and a report claim stays until it is cleared.
+## TML surfaces in popups and panes
+
+The tests are `TestTMLShowPopup` and `TestTMLShowPaneAndClose` in `tml_test.go`, and the `tml surface` case of `TestIdleCostStaysLow`. Each control is a text replacement in the branch's checkout, built and put back before the next. Run on 2026-10-20 on Linux.
+
+| Control: what was cut | Tests that fail | Verdict |
+| --- | --- | --- |
+| The render hook: `renderTerminal` no longer hands a TML window to `renderTML` | `TestTMLShowPopup` ("the popup never drew the surface"; the box shows the placeholder line) | **caught** |
+| The key routing: terminal mode sends the keys of a TML window to its PTY | `TestTMLShowPopup` ("the keys never picked the second row") | **caught** |
+| The mouse routing: `sendMouseToWindow` sends a TML window's clicks to its PTY | `TestTMLShowPopup` ("a click on the Log tab never showed the log") | **caught** |
+| The attach push: the daemon sends no open surface after the attach reply | `TestTMLShowPopup` ("the reattached client did not draw the surface with its state") | **caught** |
+| The early-push backlog: a push that arrives before the client wires its handler is dropped | `TestTMLShowPopup`, the same reattach step | **caught** |
+| Idle: the client draws every surface again every 100 ms | `TestIdleCostStaysLow/tml_surface` (25 ticks, budget 2; 4182 context switches, budget 400) | **caught** |
+
+A control that sets a TML window's output flag on each render does not fail the idle case: the flag is read only on a pass that something else woke, so it starts no loop. It is not kept.
+
+### After the review of #944
+
+`TestTMLProgramCloseIsNotThePersons` and `TestTMLSurfaceThroughAHostShowsThePlaceholder` in `tml_test.go`. Run on 2026-10-20, the same way.
+
+| Control: what was cut | Tests that fail | Verdict |
+| --- | --- | --- |
+| `movableRefusal` lets a TML pane move to another session | `TestTMLProgramCloseIsNotThePersons` ("a TML pane moved to another session") | **caught** |
+| `tml-close` reports its value as the person's (`closed`) | `TestTMLProgramCloseIsNotThePersons` ("ended with <nil> after a program's close, want exit status 2") | **caught** |
+| `--name` stored with its control characters | `TestTMLProgramCloseIsNotThePersons` ("the window name kept its control characters") | **caught** |
+| A client attached through a host draws TML windows itself | `TestTMLSurfaceThroughAHostShowsThePlaceholder` ("the far surface did not show its placeholder line") | **caught** |
+| A client attached through a host claims `tml_surfaces` in its hello | none: the client still does not draw the window, so the pushes it gets go unused | not caught |
+| The placeholder ends on any byte after an esc, not only on a lone esc | `TestTMLSurfaceThroughAHostShowsThePlaceholder` ("a click closed the far surface") | **caught** |
+
+The hello claim is kept off through a host anyway: it spares the link the pushes. The cap of open surfaces per caller (8 per pane, 32 per session outside the panes) has no e2e case. Reaching it opens 32 windows.
+
+### The owner of a TML surface
+
+`TestTMLOwnerScriptAnswersEvents` in `tml_owner_test.go`. Run on 2026-10-20, the same way.
+
+| Control: what was cut | Tests that fail | Verdict |
+| --- | --- | --- |
+| The client sends no emit to the daemon | "the owner's patch never reached the frame" (the script never heard rerun) | **caught** |
+| `tml-open` with events opens no stream on its connection | the same step | **caught** |
+| `tml-patch` changes the state and pushes nothing | the same step | **caught** |
+| `tml-replace` ignores `keep_state` | "the replaced tree never drew with the kept state" | **caught** |
+| A client one version behind applies only the patch's first operation | "the owner's patch never reached the frame" (Runs: 2 came, the note did not) | **caught** |
+
+The last control shows that the patch path, not a full state replace, draws the owner's answer.
+
+### TML pushes to a slow client, and reads in scope
+
+`TestTMLStalledClientKeepsDaemonMemoryBounded`, `TestTMLSurfaceReadsStayInScope` and `TestTMLEmitOverTheLimitIsShown` in `tml_bounds_test.go`. Run on 2026-10-20, the same way.
+
+| Control: what was cut | Tests that fail | Verdict |
+| --- | --- | --- |
+| Every push queued on its own, each with the whole state (the build before the outbox) | `TestTMLStalledClientKeepsDaemonMemoryBounded` ("the daemon's peak memory grew by 634312 kB") | **caught** |
+| tml-get without the session check | `TestTMLSurfaceReadsStayInScope` ("a read pane in alpha was not refused a surface in beta") | **caught** |
+| The client only logs a refused input | `TestTMLEmitOverTheLimitIsShown` ("the refused emit left no message") | **caught** |
+
+The test reads the daemon's peak memory (VmHWM), not its resident set at the end: the garbage collector gives back what the burst held, and a first version that read VmRSS passed the control once.

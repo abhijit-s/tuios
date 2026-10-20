@@ -2,7 +2,7 @@ module github.com/Gaurav-Gosain/tuios
 
 go 1.26.6
 
-toolchain go1.26.9
+toolchain go1.26.10
 
 require (
 	charm.land/bubbletea/v2 v2.0.8
@@ -10,7 +10,7 @@ require (
 	charm.land/ssh v0.4.3
 	charm.land/tone v0.1.0
 	charm.land/wish/v2 v2.0.3
-	github.com/Gaurav-Gosain/sip v0.9.3
+	github.com/Gaurav-Gosain/sip v0.9.4
 	github.com/Gaurav-Gosain/tuiffects v0.7.1
 	github.com/adrg/xdg v0.5.3
 	github.com/alecthomas/chroma/v2 v2.27.0
@@ -81,9 +81,12 @@ require (
 	golang.org/x/net v0.60.0 // indirect
 	golang.org/x/sync v0.23.0
 	golang.org/x/text v0.42.0
+	tuios.dev/loom v0.1.1-0.20261020192006-0884f277fb70
+	tuios.dev/plot v0.1.0 // indirect
 	tuios.dev/progstatus v0.1.0
 	tuios.dev/shot v0.2.0
-	tuios.dev/sketch v0.0.0-20261019190825-c06bfb3b5dbb
+	tuios.dev/sketch v0.1.2-0.20261020184059-c9a2ad8595cd
 	tuios.dev/swatch v0.1.0
+	tuios.dev/tml v0.1.1-0.20261019164123-bf9b29e8d0d8
 	tuios.dev/vt v0.2.1-0.20261018063954-380e9b0f60bb
 )

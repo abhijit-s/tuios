@@ -23,7 +23,8 @@ Over the socket every failure carries a stable code in the error envelope:
 `no_buffer`, `risk_unacknowledged`, `agents_disabled`, `busy`, `too_many_connections`,
 `no_file`, `file_exists`, `no_permission`, `hash_mismatch`, `source_changed`,
 `cross_device`, `disk_full`, `no_transfer`, `same_session`, `pane_not_movable`,
-`upgrade_refused`, `daemon_upgrading`, `internal`. `internal` is a failure inside the daemon
+`upgrade_refused`, `daemon_upgrading`, `invalid_tml`, `no_surface`, `too_many_surfaces`,
+`internal`. `internal` is a failure inside the daemon
 that none of the others names; its message says what went wrong. The CLI folds
 the same information into its messages.
 
@@ -79,7 +80,10 @@ Not one of these is a timeout. Retrying one unchanged fails the same way, except
 | `no_transfer` | No transfer has that id. A finished transfer leaves the list 30 minutes after it ends. |
 | `upgrade_refused` | From `daemon-upgrade`: the new binary failed its check, the daemon holds something a live upgrade cannot hand over (a pane on another machine, a running fan check, a capturing popup), or the platform has no live upgrade. Nothing was changed. The message says which. Tell the person. |
 | `daemon_upgrading` | A live upgrade replaced the daemon while your call ran or waited, and the connection closed. Your pane and its program are as they were. Make the call again: the upgraded daemon answers it. |
-| `same_session`, `pane_not_movable` | From `move-window` with `to_session`: the window is already in that session, or it is a popup, a scratch pane or a pane on another machine. Nothing moved. |
+| `same_session`, `pane_not_movable` | From `move-window` with `to_session`: the window is already in that session, or it is a popup, a scratch pane, a TML pane or a pane on another machine. Nothing moved. |
+| `invalid_tml` | A TML document does not parse or validate. The error lists each problem with a JSON Pointer to the node and the fix. Run `tuios tml validate`. |
+| `no_surface` | No open TML surface has that id. It closed, or the id is wrong. |
+| `too_many_surfaces` | The caller holds as many open TML surfaces as it may: 8 for a pane, 32 per session for the callers outside the panes. Close one first. |
 
 ## The exit codes of tuios cp
 

@@ -29,6 +29,8 @@ import (
 // It owns PTYs and stores session state. Clients run the TUI.
 type Daemon struct {
 	manager *Manager
+	// tml holds the open TML surfaces. See tml_surface.go.
+	tml tmlHost
 	// instance names this daemon run, fresh on every start. hello reports
 	// it, and a hub records it for each host, so a client attached to a
 	// session on another machine can tell which of that machine's hosts is
@@ -564,6 +566,12 @@ type connState struct {
 	// goodbye says the client's hello set Goodbye: it reads MsgGoodbye.
 	// Guarded by mu. See daemon_goodbye.go.
 	goodbye bool
+	// tmlSurfaces says the client's hello set TMLSurfaces: it draws TML
+	// surfaces and reads MsgTMLSurface. Guarded by mu. See tml_surface.go.
+	tmlSurfaces bool
+	// tmlOut holds the TML pushes not yet written to this client: one per
+	// surface, the newest. See tml_surface.go.
+	tmlOut tmlOutbox
 	// isTUIClient indicates this is a full TUI client (vs a control client)
 	// TUI clients can receive and execute remote commands
 	isTUIClient bool

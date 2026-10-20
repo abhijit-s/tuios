@@ -1,14 +1,14 @@
-// Ported from pele src/text/label.ts at 458322a5b8abb1ae57ddf127c32017ab9fb14a92.
+// Ported from pele src/text/label.ts at 8603bf3313add9143cd417015d4a6bd6c522dada.
 
 package text
 
 import (
 	"math"
-	"regexp"
 	"strings"
 	"unicode/utf8"
 
 	"tuios.dev/sketch/internal/js"
+	"tuios.dev/sketch/internal/lazyre"
 )
 
 type Span struct {
@@ -31,13 +31,30 @@ type Label struct {
 const LINE_HEIGHT = 1.5
 
 var (
-	reBreak  = regexp.MustCompile(`(?i)<br[` + js.S + `]*/?>|\\n|\n`)
-	reTag    = regexp.MustCompile(`^</?([a-zA-Z][\w-]*)(?:[` + js.S + `][^<>]*)?/?>`)
-	reIcon   = regexp.MustCompile(`(fa[bklrs]?):fa-([\w-]+)`)
-	reMarkup = regexp.MustCompile(`[<\\\n*_]|fa[bklrs]?:fa-`)
-	rePieces = regexp.MustCompile(`[` + js.S + `]*[^` + js.S + `]+[` + js.S + `]*|[` + js.S + `]+`)
-	reCRLF   = regexp.MustCompile(`\r\n?`)
+	reBreak = lazyre.New(`(?i)<br[` + js.S + `]*/?>|\\n|\n`)
+	reTag   = lazyre.New(`^</?([a-zA-Z][\w-]*)(?:[` + js.S + `][^<>]*)?/?>`)
+	reIcon  = lazyre.New(`(fa[bklrs]?):fa-([\w-]+)`)
+	rePiece = lazyre.New(`[` + js.S + `]*(?:[` + cjkOpen + `]*[` + cjk + `][` + cjkClose + `]*|[^` + js.S + cjk + `]+[` + cjkClose + `]*)[` + js.S + `]*|[` + js.S + `]+`)
+	reCRLF  = lazyre.New(`\r\n?`)
 )
+
+// Break between any two Chinese or Japanese characters. Hangul is left out: Korean puts spaces between words.
+const (
+	cjk      = `\x{2e80}-\x{9fff}\x{f900}-\x{faff}\x{ff00}-\x{ff60}`
+	cjkClose = `、。，．：；！？）］｝」』】〕〉》〙〗ー…‥・ゝゞぁぃぅぇぉっゃゅょゎァィゥェォッャュョヮ,.:;!?)\]}`
+	cjkOpen  = `（［｛「『【〔〈《〘〖(\[{`
+)
+
+// hasCJK is /[CJK]/.test(text). The ranges are all in the BMP, so a rune
+// compares as the UTF-16 unit it is in JavaScript.
+func hasCJK(text string) bool {
+	for _, r := range text {
+		if r >= 0x2e80 && r <= 0x9fff || r >= 0xf900 && r <= 0xfaff || r >= 0xff00 && r <= 0xff60 {
+			return true
+		}
+	}
+	return false
+}
 
 var EMPTY = Label{}
 
@@ -249,7 +266,7 @@ func wrap(line []Span, measurer TextMeasurer, size, max float64, out *[][]Span, 
 			width += w
 			continue
 		}
-		for _, piece := range rePieces.FindAllString(span.Text, -1) {
+		for _, piece := range rePiece.FindAllString(span.Text, -1) {
 			part := piece
 			if width > 0 && width+measurer.Width(js.TrimEnd(part), size, span.Style) > max {
 				commit()
@@ -282,13 +299,22 @@ func LayoutLabel(raw string, markdown bool, measurer TextMeasurer, size, maxWidt
 	}
 	lineHeight := js.Round(size * LINE_HEIGHT)
 
-	if !reMarkup.MatchString(raw) && !strings.Contains(raw, "&") && !strings.Contains(raw, "ﬂ") {
+	if !hasMarkup(raw) && !strings.Contains(raw, "&") && !strings.Contains(raw, "ﬂ") {
 		text := js.Trim(raw)
 		width := measurer.Width(text, size, base)
-		if width <= maxWidth || !strings.Contains(text, " ") {
+		if width <= maxWidth || !(strings.Contains(text, " ") || hasCJK(text)) {
+			// One span on one line: its slices share one allocation.
+			one := &struct {
+				lines  [1][]Span
+				spans  [1]Span
+				widths [1]float64
+			}{}
+			one.spans[0] = Span{Text: text, Style: base, Width: width}
+			one.lines[0] = one.spans[:]
+			one.widths[0] = width
 			return Label{
-				Lines:      [][]Span{{{Text: text, Style: base, Width: width}}},
-				Widths:     []float64{width},
+				Lines:      one.lines[:],
+				Widths:     one.widths[:],
 				Width:      width,
 				Height:     lineHeight,
 				Size:       size,
@@ -333,6 +359,25 @@ func LayoutLabel(raw string, markdown bool, measurer TextMeasurer, size, maxWidt
 		}
 	}
 	return Label{Lines: lines, Widths: widths, Width: width, Height: float64(len(lines)) * lineHeight, Size: size, LineHeight: lineHeight}
+}
+
+// hasMarkup is /[<\\\n*_]|fa[bklrs]?:fa-/: whether raw may hold a break, a tag, an
+// escape, emphasis or an icon.
+func hasMarkup(raw string) bool {
+	if strings.ContainsAny(raw, "<\\\n*_") {
+		return true
+	}
+	for i := 0; ; {
+		j := strings.Index(raw[i:], "fa")
+		if j < 0 {
+			return false
+		}
+		k := i + j + 2
+		if strings.HasPrefix(raw[k:], ":fa-") || k < len(raw) && strings.IndexByte("bklrs", raw[k]) >= 0 && strings.HasPrefix(raw[k+1:], ":fa-") {
+			return true
+		}
+		i += j + 1
+	}
 }
 
 // Plain gives the label as lines of plain text. Not part of pele.

@@ -1,4 +1,4 @@
-// Ported from pele src/diagrams/flowchart/lexer.ts at 458322a5b8abb1ae57ddf127c32017ab9fb14a92.
+// Ported from pele src/diagrams/flowchart/lexer.ts at 8603bf3313add9143cd417015d4a6bd6c522dada.
 //
 // pele reads UTF-16 code units with charCodeAt. The port reads the UTF-8 bytes:
 // code() decodes the character at a byte offset, and where pele steps one unit
@@ -8,11 +8,11 @@
 package flowchart
 
 import (
-	"regexp"
 	"strings"
 	"unicode/utf8"
 
 	"tuios.dev/sketch/internal/js"
+	"tuios.dev/sketch/internal/lazyre"
 	"tuios.dev/sketch/internal/util"
 )
 
@@ -55,7 +55,7 @@ var NODE_CHAR = func() [128]uint8 {
 const sp = `[` + js.S + `]`
 
 // sticky compiles a pattern that pele runs with the y flag: it must match at the position.
-func sticky(pattern string) *regexp.Regexp { return regexp.MustCompile(`^(?:` + pattern + `)`) }
+func sticky(pattern string) *lazyre.Regexp { return lazyre.New(`^(?:` + pattern + `)`) }
 
 var (
 	RE_ACC_TITLE    = sticky(`accTitle` + sp + `*:` + sp + `*`)
@@ -67,7 +67,7 @@ var (
 	RE_DIR          = sticky(sp + `*(?:LR|RL|TB|BT|TD|BR)\b`)
 	RE_DIR_SYM      = sticky(sp + `*[<>^]`)
 	RE_DIR_V        = sticky(sp + `*v\b`)
-	RE_DIRECTION    = [5]*regexp.Regexp{
+	RE_DIRECTION    = [5]*lazyre.Regexp{
 		sticky(js.Dot + `*direction` + sp + `+TB[^\n]*`),
 		sticky(js.Dot + `*direction` + sp + `+BT[^\n]*`),
 		sticky(js.Dot + `*direction` + sp + `+RL[^\n]*`),
@@ -75,24 +75,104 @@ var (
 		sticky(js.Dot + `*direction` + sp + `+TD[^\n]*`),
 	}
 	RE_LINK         = sticky(sp + `*[xo<]?--+[-xo>]` + sp + `*`)
-	RE_START_LINK   = sticky(sp + `*[xo<]?--` + sp + `*`)
 	RE_THICK_LINK   = sticky(sp + `*[xo<]?==+[=xo>]` + sp + `*`)
 	RE_THICK_START  = sticky(sp + `*[xo<]?==` + sp + `*`)
 	RE_DOTTED_LINK  = sticky(sp + `*[xo<]?-?\.+-[xo>]?` + sp + `*`)
 	RE_DOTTED_START = sticky(sp + `*[xo<]?-\.` + sp + `*`)
 	RE_INVIS_LINK   = sticky(sp + `*~~~+` + sp + `*`)
-	RE_NEWLINE      = sticky(`(?:\r?\n)+`)
-	// [^\S\n\r]: whitespace other than \n and \r.
-	RE_SPACE      = sticky(`[\t\v\f \x{a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}\x{feff}]+`)
-	RE_EMPTY_CALL = sticky(`\(` + sp + `*\)`)
-	RE_BR         = regexp.MustCompile(`\n` + sp + `*`)
+	RE_EMPTY_CALL   = sticky(`\(` + sp + `*\)`)
+	RE_BR           = lazyre.New(`\n` + sp + `*`)
 )
+
+// skipJSSpace returns where the run of JavaScript whitespace from q ends.
+func skipJSSpace(src string, q int) int {
+	for q < len(src) {
+		r, size := utf8.DecodeRuneInString(src[q:])
+		if !js.IsSpace(r) {
+			break
+		}
+		q += size
+	}
+	return q
+}
+
+// linkEnd is RE_LINK, /\s*[xo<]?--+[-xo>]\s*/y, at p: where the link ends, or -1.
+func linkEnd(src string, p int) int {
+	q := skipJSSpace(src, p)
+	if q < len(src) && (src[q] == 'x' || src[q] == 'o' || src[q] == '<') {
+		q++
+	}
+	j := q
+	for j < len(src) && src[j] == '-' {
+		j++
+	}
+	switch dashes := j - q; {
+	case dashes >= 2 && j < len(src) && (src[j] == 'x' || src[j] == 'o' || src[j] == '>'):
+		j++
+	case dashes >= 3:
+		// The last dash is the [-xo>].
+	default:
+		return -1
+	}
+	return skipJSSpace(src, j)
+}
+
+// startLinkEnd is RE_START_LINK, /\s*[xo<]?--\s*/y, at p: where the start of
+// a link with text ends, or -1.
+func startLinkEnd(src string, p int) int {
+	q := skipJSSpace(src, p)
+	if q < len(src) && (src[q] == 'x' || src[q] == 'o' || src[q] == '<') {
+		q++
+	}
+	if !strings.HasPrefix(src[q:], "--") {
+		return -1
+	}
+	return skipJSSpace(src, q+2)
+}
+
+// newlineRun is /(?:\r?\n)+/y at p: where the run of line ends from p ends, or
+// -1 if there is none.
+func newlineRun(src string, p int) int {
+	q := p
+	for q < len(src) {
+		if src[q] == '\n' {
+			q++
+		} else if src[q] == '\r' && q+1 < len(src) && src[q+1] == '\n' {
+			q += 2
+		} else {
+			break
+		}
+	}
+	if q == p {
+		return -1
+	}
+	return q
+}
+
+// spaceRun is /[^\S\n\r]+/y at p: where the run of whitespace other than \n
+// and \r from p ends, or -1 if there is none.
+func spaceRun(src string, p int) int {
+	q := p
+	for q < len(src) {
+		r, size := utf8.DecodeRuneInString(src[q:])
+		if r == '\n' || r == '\r' || !js.IsSpace(r) {
+			break
+		}
+		q += size
+	}
+	if q == p {
+		return -1
+	}
+	return q
+}
 
 func tokenize(src string) Tokens {
 	n := len(src)
-	var types []int
-	var texts []string
-	var starts []int
+	// About one token for every three bytes of a flowchart.
+	guess := n/3 + 8
+	types := make([]int, 0, guess)
+	texts := make([]string, 0, guess)
+	starts := make([]int, 0, guess)
 	var stack []int
 	state := S_INITIAL
 	p := 0
@@ -152,7 +232,7 @@ func tokenize(src string) Tokens {
 			stack = stack[:len(stack)-1]
 		}
 	}
-	at := func(re *regexp.Regexp, q int) int {
+	at := func(re *lazyre.Regexp, q int) int {
 		if q > n {
 			return -1
 		}
@@ -307,11 +387,11 @@ func tokenize(src string) Tokens {
 		d := linkChar(p)
 		var e int
 		if d == 45 {
-			if e = at(RE_LINK, p); e >= 0 {
+			if e = linkEnd(src, p); e >= 0 {
 				emit(T_LINK, p, e)
 				return true
 			}
-			if e = at(RE_START_LINK, p); e >= 0 {
+			if e = startLinkEnd(src, p); e >= 0 {
 				push(S_edgeText)
 				emit(T_START_LINK, p, e)
 				return true
@@ -621,11 +701,11 @@ func tokenize(src string) Tokens {
 			if link(c) {
 				return true
 			}
-			if e = at(RE_NEWLINE, p); e >= 0 {
+			if e = newlineRun(src, p); e >= 0 {
 				emit(T_NEWLINE, p, e)
 				return true
 			}
-			if e = at(RE_SPACE, p); e >= 0 {
+			if e = spaceRun(src, p); e >= 0 {
 				emit(T_SPACE, p, e)
 				return true
 			}
@@ -642,7 +722,7 @@ func tokenize(src string) Tokens {
 		return false
 	}
 
-	edgeText := func(c rune, linkRe *regexp.Regexp, a, b rune) bool {
+	edgeText := func(c rune, linkRe *lazyre.Regexp, a, b rune) bool {
 		if c == 34 {
 			quote()
 			return true

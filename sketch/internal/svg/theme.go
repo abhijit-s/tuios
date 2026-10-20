@@ -1,13 +1,13 @@
-// Ported from pele src/svg/theme.ts at 458322a5b8abb1ae57ddf127c32017ab9fb14a92.
+// Ported from pele src/svg/theme.ts at 8603bf3313add9143cd417015d4a6bd6c522dada.
 
 package svg
 
 import (
 	"math"
-	"regexp"
 	"strings"
 
 	"tuios.dev/sketch/internal/js"
+	"tuios.dev/sketch/internal/lazyre"
 	"tuios.dev/sketch/internal/types"
 )
 
@@ -34,14 +34,6 @@ func families(list string, generic string) string {
 	return generic
 }
 
-// FontStyle: the fonts the labels were measured in are the ones they are drawn in, unless the page names
-// others. The rest of what text inherits is pinned, as none of it was measured.
-func FontStyle(size float64, family string, mono string) string {
-	return ";--_fm:var(--pele-font-mono," + families(mono, "monospace") + ");font:" + js.Num(size) + "px sans-serif;" +
-		"letter-spacing:normal;word-spacing:normal;text-transform:none;direction:ltr;" +
-		"font-family:var(--pele-font," + families(family, "sans-serif") + ")"
-}
-
 var shapeProps = map[string]bool{
 	"fill": true, "fill-opacity": true, "stroke": true, "stroke-width": true, "stroke-dasharray": true,
 	"stroke-dashoffset": true, "stroke-linecap": true, "stroke-linejoin": true, "stroke-opacity": true,
@@ -54,9 +46,9 @@ var textProps = map[string]bool{
 }
 
 var (
-	reUnsafe    = regexp.MustCompile(`(?i)url[` + js.S + `]*\(|expression[` + js.S + `]*\(|javascript:|[<>{};\\]|@import|image-set|/\*`)
-	reImportant = regexp.MustCompile(`(?i)!important`)
-	rePx        = regexp.MustCompile(`^[\d.]+(px)?$`)
+	reUnsafe    = lazyre.New(`(?i)url[` + js.S + `]*\(|expression[` + js.S + `]*\(|javascript:|[<>{};\\]|@import|image-set|/\*`)
+	reImportant = lazyre.New(`(?i)!important`)
+	rePx        = lazyre.New(`^[\d.]+(px)?$`)
 )
 
 type ResolvedStyle struct {
@@ -158,14 +150,40 @@ func ResolveStyle(declarations []string) ResolvedStyle {
 	return out
 }
 
-var reClass = regexp.MustCompile(`[^\w-]+`)
-
+// ClassNames turns raw into class names, each after a space. pele replaces
+// each run of /[^\w-]+/ with a space and trims; what is left is the runs of
+// [\w-] one space apart.
 func ClassNames(raw string) string {
-	cleaned := js.Trim(reClass.ReplaceAllString(raw, " "))
-	if cleaned == "" {
-		return ""
+	clean := raw != ""
+	for i := 0; i < len(raw) && clean; i++ {
+		if !classByte(raw[i]) && (raw[i] != ' ' || i == 0 || i == len(raw)-1 || raw[i-1] == ' ') {
+			clean = false
+		}
 	}
-	return " " + cleaned
+	if clean {
+		return " " + raw
+	}
+	b := make([]byte, 0, len(raw)+1)
+	for i := 0; i < len(raw); {
+		if !classByte(raw[i]) {
+			i++
+			continue
+		}
+		j := i
+		for j < len(raw) && classByte(raw[j]) {
+			j++
+		}
+		b = append(b, ' ')
+		b = append(b, raw[i:j]...)
+		i = j
+	}
+	return string(b)
+}
+
+// classByte reports whether c is in [\w-]. Go's \w is ASCII, so every byte of
+// a character past ASCII is outside it.
+func classByte(c byte) bool {
+	return c >= '0' && c <= '9' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c == '_' || c == '-'
 }
 
 var series = [8]string{"#4c78a8", "#f58518", "#54a24b", "#e45756", "#72b7b2", "#eeca3b", "#b279a2", "#9d755d"}

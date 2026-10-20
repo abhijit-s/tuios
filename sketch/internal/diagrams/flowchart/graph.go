@@ -1,4 +1,4 @@
-// Ported from pele src/diagrams/flowchart/graph.ts at 458322a5b8abb1ae57ddf127c32017ab9fb14a92.
+// Ported from pele src/diagrams/flowchart/graph.ts at 8603bf3313add9143cd417015d4a6bd6c522dada.
 
 package flowchart
 
@@ -298,7 +298,8 @@ func buildFlowGraph(model *FlowDb, defaultCurve string) FlowGraph {
 		}
 		var tooltip *string
 		if t, ok := model.Tooltips[vertex.ID]; ok {
-			tooltip = &t
+			kept := t
+			tooltip = &kept
 		}
 		node := &GraphNode{
 			ID:                vertex.ID,

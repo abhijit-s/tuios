@@ -1,4 +1,4 @@
-// Ported from pele src/diagrams/state/render.ts at 458322a5b8abb1ae57ddf127c32017ab9fb14a92.
+// Ported from pele src/diagrams/state/render.ts at 8603bf3313add9143cd417015d4a6bd6c522dada.
 
 package state
 
@@ -630,6 +630,8 @@ func draw(db *StateDb, config types.Config, options types.RenderOptions, turned 
 	}
 
 	var clusters, dividers, nodesOut, notesOut strings.Builder
+	// A state takes about 230 bytes of markup and a transition about 300.
+	nodesOut.Grow(len(cnodes) * 232)
 	// Draws the dashed lines between the regions among a composite's members.
 	divide := func(items []int, left, top, right, bottom float64) {
 		var regions []int
@@ -812,6 +814,7 @@ func draw(db *StateDb, config types.Config, options types.RenderOptions, turned 
 	}
 
 	var edgesOut, labelsOut strings.Builder
+	edgesOut.Grow(len(cedges) * 304)
 	loopSeen := make([]int, states)
 	loopText := make([]float64, states)
 	for i, ce := range cedges {
@@ -937,22 +940,22 @@ func draw(db *StateDb, config types.Config, options types.RenderOptions, turned 
 		}
 	}
 
-	var content strings.Builder
+	content := make([]string, 0, 32)
 	if clusters.Len() > 0 {
-		content.WriteString(`<g class="pele-clusters">` + clusters.String() + `</g>`)
+		content = append(content, `<g class="pele-clusters">`, clusters.String(), `</g>`)
 	}
 	if dividers.Len() > 0 {
-		content.WriteString(`<g class="pele-dividers" stroke-dasharray="4 4"` + RULE + `>` + dividers.String() + `</g>`)
+		content = append(content, `<g class="pele-dividers" stroke-dasharray="4 4"`+RULE+`>`, dividers.String(), `</g>`)
 	}
 	if edgesOut.Len() > 0 {
-		content.WriteString(`<g class="pele-edges" fill="none" stroke="var(--_l)" stroke-linecap="round">` + edgesOut.String() + `</g>`)
+		content = append(content, `<g class="pele-edges" fill="none" stroke="var(--_l)" stroke-linecap="round">`, edgesOut.String(), `</g>`)
 	}
 	if labelsOut.Len() > 0 {
-		content.WriteString(`<g class="pele-edge-labels" font-size="` + js.Num(small) + `">` + labelsOut.String() + `</g>`)
+		content = append(content, `<g class="pele-edge-labels" font-size="`+js.Num(small)+`">`, labelsOut.String(), `</g>`)
 	}
-	content.WriteString(`<g class="pele-nodes">` + nodesOut.String() + notesOut.String() + `</g>`)
-	titled := svg.WithTitle(db.Title, measurer, size, pad, width, height, content.String())
-	out := svg.SvgDocument("state", titled.Width, titled.Height, size, options, svg.Accessible{AccTitle: db.AccTitle, AccDescr: db.AccDescr}, titled.Content)
+	content = append(content, `<g class="pele-nodes">`, nodesOut.String(), notesOut.String(), `</g>`)
+	titled := svg.WithTitle(db.Title, measurer, size, pad, width, height, content...)
+	out := svg.SvgDocument("state", titled.Width, titled.Height, size, options, svg.Accessible{AccTitle: db.AccTitle, AccDescr: db.AccDescr}, titled.Content...)
 
 	return types.Rendered{SVG: out, Width: titled.Width, Height: titled.Height, Links: links}
 }

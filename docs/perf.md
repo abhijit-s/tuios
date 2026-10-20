@@ -3106,6 +3106,47 @@ refused. The build before it measured 40,980,642 and 38,327,522 bytes (Go
 38,344,210, so it adds 8,192 and 16,688 bytes. No third-party dependency was
 added. The new budgets leave 4,198 and 4,204 bytes of room.
 
+tuios-web has no budget, and its growth is recorded here. The refusal of
+`--no-auth` on a wildcard bind, the bind host that is resolved once, and the
+owner and DACL check of the password file on Windows add 8,192 bytes on
+linux/amd64 (42,410,146 to 42,418,338) and 22,016 bytes on windows/amd64
+(42,994,176 to 43,016,192), built the release way on Go 1.26.9. tuios uses
+the shared bind host parse in internal/netutil and does not change size, so its budgets stay.
+
+The budgets went to 41,013,512 (linux/amd64) and 38,365,198 (darwin/arm64) for
+the perf pass on tuios.dev/sketch, which renders a diagram about 30% faster
+and starts about 1 ms sooner. Its regexps compile on first use through a small
+wrapper, its hot ones have hand-written matchers, and its SVG writers append
+to buffers. The new writers stay out of line, which took 17 KB of the growth
+back. The build before it measured 40,988,834 and 38,344,210 bytes (Go 1.26.9,
+a clean clone, as CI builds it). The change measured 41,009,314 and 38,360,994,
+so it adds 20,480 and 16,784 bytes. No third-party dependency was added. The
+new budgets leave 4,198 and 4,204 bytes of room.
+
+The linux/amd64 budget went to 41,025,800 for the move to Go 1.26.10 and the
+harness pid and kitty a=t follow-ups (#929, #930). Go 1.26.10 left 102 bytes of
+room on linux/amd64. #929 measured 41,017,506 bytes (Go 1.26.10, a clean clone,
+as CI builds it), and #930 adds about 4,096 more on top. The new budget leaves
+about 4,198 bytes of room after both. darwin/arm64 is unchanged.
+
+The budgets went to 41,980,100 (linux/amd64) and 39,233,300 (darwin/arm64) for
+TML surfaces in popups and panes: `tuios tml show`, the TML verbs, and the
+renderer in the client. tuios now links three libraries of its own,
+tuios.dev/tml (the language), tuios.dev/loom (layout, widgets and input) and
+tuios.dev/plot (charts). By symbol size they are about 226 KB, 216 KB and 56 KB,
+and the glue in tuios about 27 KB. No third-party dependency was added. The
+build before it measured 41,021,602 and 38,361,298 bytes (Go 1.26.10, a clean
+clone, as CI builds it). The change measured 41,975,970 and 39,229,138, so it
+adds 954,368 and 867,840 bytes. The binary stays under the 45 MB ceiling. The
+new budgets leave 4,130 and 4,162 bytes of room.
+
+The budgets then went to 42,045,700 and 39,317,600 for the owners of TML
+surfaces: the events, the patch, replace, get, list and validate verbs and
+their commands, the pushes that carry a patch, and the outbox that holds one
+push per client and surface. They add 65,536 bytes on linux/amd64
+(42,041,506) and 84,336 on darwin/arm64 (39,313,474), Go 1.26.10. The new
+budgets leave 4,194 and 4,126 bytes of room.
+
 To raise a budget, do it on purpose in its own commit: run
 `scripts/binary-size.sh` on the Go version in go.mod, set the new budget a
 little above the printed size in the `budget` function of that script, and say
@@ -4120,3 +4161,60 @@ compiler folded, and read 1.1 ns.
 `BenchmarkE2EBackgroundFlood` (new): a pane the client does not stream
 prints 16 MiB per iteration. The client gets 1 mark, for the pane's prompt,
 then 0 marks and 0 socket reads per flood. It fails on a second mark.
+
+## 2026-10 tuios.dev/sketch render speed
+
+sketch renders a diagram about 30% faster warm, and a one-shot render starts
+about 1 ms sooner. Its SVG is the same, byte for byte, on the 263 pele goldens
+and on a corpus of 421 diagrams of the eight types it draws: the Mermaid docs
+examples, pele's samples and layout cases, and the diagrams in ondine's docs.
+
+### What changed
+
+- About a hundred package-level regexps compile on first use, through
+  `internal/lazyre`. Mermaid's detectors and the hot regexps of the
+  flowchart lexer, the label and the class names have hand-written matchers.
+  Fuzz targets hold each one to the regexp it replaces.
+- Numbers, paths and markers append to buffers. The diagrams hand their
+  groups to `SvgDocument` as parts, and the document is written into one
+  builder with the root tag. Node and edge builders start at about their
+  final size.
+- Layout sizes its edge points, pieces and routes up front, and
+  Brandes-Koepf positioning shares one buffer among its four layouts.
+
+### Numbers
+
+Intel Core i7-10700, Linux, Go 1.27.1, pinned to one core, other work on the
+machine (load average 3 to 4). `BenchmarkRenderCorpus` renders each golden
+source once an iteration:
+
+| | before | after |
+|---|---:|---:|
+| time per diagram | 51.4 µs | 38.9 µs |
+| allocations per corpus pass | 88,254 | 62,494 |
+| bytes per corpus pass | 8.6 MB | 6.4 MB |
+
+The ondine corpus (421 diagrams, median of three alternating runs of the
+median of 300 renders):
+
+| | before | after |
+|---|---:|---:|
+| median render | 46.1 µs | 32.7 µs |
+| p95 render | 95.0 µs | 70.9 µs |
+| sum of medians | 33.7 ms | 23.4 ms |
+| one-shot CLI, median flowchart | 2.12 ms | 1.12 ms |
+| init of sketch's packages | 0.94 ms | 0.08 ms |
+
+`TestRenderAllocBudget` holds a golden render to 260 allocations (234 now,
+336 before). `TestInitBudget` holds the init of the internal packages to 400
+allocations (255 now, 4,172 before). An allocation count does not depend on
+the machine, so neither test reads a clock.
+
+### Measured and deliberately not changed
+
+- The garbage collector is about 19% of a warm render on one core
+  (`GOGC=off` takes a corpus pass from 30.3 ms to 24.7 ms). A library does not
+  set `GOGC`; fewer allocations is the lever.
+- `js.Hypot` keeps JavaScript's compensated sum, which costs about 2%. A plain
+  `math.Hypot` can differ in the last bit and move a route.
+- The tuios binary grows by 20 KB (see "Binary size budget").

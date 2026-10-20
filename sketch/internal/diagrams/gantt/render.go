@@ -1,4 +1,4 @@
-// Ported from pele src/diagrams/gantt/render.ts at 458322a5b8abb1ae57ddf127c32017ab9fb14a92.
+// Ported from pele src/diagrams/gantt/render.ts at 8603bf3313add9143cd417015d4a6bd6c522dada.
 //
 // pele's `text` is textSetting here, as the package text is imported. Dates are read in
 // options.Location, or in the host's zone when it is nil.
@@ -7,12 +7,12 @@ package gantt
 
 import (
 	"math"
-	"regexp"
 	"slices"
 	"strings"
 
 	"tuios.dev/sketch/internal/diagrams/common"
 	"tuios.dev/sketch/internal/js"
+	"tuios.dev/sketch/internal/lazyre"
 	"tuios.dev/sketch/internal/svg"
 	"tuios.dev/sketch/internal/text"
 	"tuios.dev/sketch/internal/types"
@@ -26,8 +26,8 @@ const (
 )
 
 var (
-	RE_BREAK       = regexp.MustCompile(`(?i)<br[` + js.S + `]*/?>`)
-	reNewlineSpace = regexp.MustCompile(`\n[` + js.S + `]+`)
+	RE_BREAK       = lazyre.New(`(?i)<br[` + js.S + `]*/?>`)
+	reNewlineSpace = lazyre.New(`\n[` + js.S + `]+`)
 )
 
 func ganttConfig(config types.Config, key string) any {
@@ -556,25 +556,26 @@ func renderGantt(model *GanttDb, config types.Config, options types.RenderOption
 	if topAxis {
 		axisLine += "M" + num(left) + "," + num(plotTop-gridLead) + "H" + num(right)
 	}
-	var content strings.Builder
-	content.WriteString(svg.LabelSvg(title, width/2, pad+title.Height/2, ` class="pele-title" font-weight="var(--_tw)"`, nil))
+	content := make([]string, 0, 32)
+	content = append(content, svg.LabelSvg(title, width/2, pad+title.Height/2, ` class="pele-title" font-weight="var(--_tw)"`, nil))
 	if bands.Len() > 0 {
-		content.WriteString(`<g class="pele-sections">` + bands.String() + `</g>`)
+		content = append(content, `<g class="pele-sections">`, bands.String(), `</g>`)
 	}
 	if excluded.Len() > 0 {
-		content.WriteString(`<g class="pele-excluded" fill="var(--_a)">` + excluded.String() + `</g>`)
+		content = append(content, `<g class="pele-excluded" fill="var(--_a)">`, excluded.String(), `</g>`)
 	}
-	content.WriteString(`<g class="pele-grid" fill="none"><path d="` + grid.String() + `" stroke="var(--_b)" stroke-dasharray="1 3"/><path d="` + axisLine + `" stroke="var(--_b)"/></g>`)
+	// The grid's path data sits inside a tag, so it joins the strings around it.
+	content = append(content, `<g class="pele-grid" fill="none"><path d="`+grid.String()+`" stroke="var(--_b)" stroke-dasharray="1 3"/><path d="`+axisLine+`" stroke="var(--_b)"/></g>`)
 	if vertLines.Len() > 0 {
-		content.WriteString(`<g class="pele-verts" fill="none" stroke="var(--_l)" stroke-width="1.5" stroke-dasharray="4 3">` + vertLines.String() + `</g>`)
+		content = append(content, `<g class="pele-verts" fill="none" stroke="var(--_l)" stroke-width="1.5" stroke-dasharray="4 3">`, vertLines.String(), `</g>`)
 	}
-	content.WriteString(today)
-	content.WriteString(`<g class="pele-tasks" font-size="` + num(labelSize) + `">` + tasksOut.String() + `</g>`)
-	content.WriteString(`<g class="pele-section-labels" font-size="` + num(sectionSize) + `">` + sectionOut.String() + `</g>`)
-	content.WriteString(`<g class="pele-axis" font-size="` + js.Num(tickSize) + `" fill="var(--_m)">` + axisBottom.String() + axisTop.String() + `</g>`)
+	content = append(content, today)
+	content = append(content, `<g class="pele-tasks" font-size="`+num(labelSize)+`">`, tasksOut.String(), `</g>`)
+	content = append(content, `<g class="pele-section-labels" font-size="`+num(sectionSize)+`">`, sectionOut.String(), `</g>`)
+	content = append(content, `<g class="pele-axis" font-size="`+js.Num(tickSize)+`" fill="var(--_m)">`, axisBottom.String(), axisTop.String(), `</g>`)
 	if vertLabels.Len() > 0 {
-		content.WriteString(`<g class="pele-vert-labels" font-size="` + num(labelSize) + `">` + vertLabels.String() + `</g>`)
+		content = append(content, `<g class="pele-vert-labels" font-size="`+num(labelSize)+`">`, vertLabels.String(), `</g>`)
 	}
 
-	return types.Rendered{SVG: svg.SvgDocument("gantt", width, height, size, options, acc, content.String()), Width: width, Height: height, Links: links}
+	return types.Rendered{SVG: svg.SvgDocument("gantt", width, height, size, options, acc, content...), Width: width, Height: height, Links: links}
 }

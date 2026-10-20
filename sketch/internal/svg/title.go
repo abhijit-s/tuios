@@ -1,4 +1,4 @@
-// Ported from pele src/svg/title.ts at 458322a5b8abb1ae57ddf127c32017ab9fb14a92.
+// Ported from pele src/svg/title.ts at 8603bf3313add9143cd417015d4a6bd6c522dada.
 
 package svg
 
@@ -9,13 +9,14 @@ import (
 )
 
 type Titled struct {
-	Width   float64
-	Height  float64
-	Content string
+	Width  float64
+	Height float64
+	// Content is the drawing in parts, to be joined in order.
+	Content []string
 }
 
 // WithTitle puts a diagram title above content that was laid out without one.
-func WithTitle(title string, measurer text.TextMeasurer, size, pad, width, height float64, content string) Titled {
+func WithTitle(title string, measurer text.TextMeasurer, size, pad, width, height float64, content ...string) Titled {
 	label := text.LayoutLabel(title, false, measurer, size, 4000, text.Bold)
 	if label.Height == 0 {
 		return Titled{width, height, content}
@@ -25,7 +26,7 @@ func WithTitle(title string, measurer text.TextMeasurer, size, pad, width, heigh
 	return Titled{
 		Width:  full,
 		Height: math.Ceil(height + shift),
-		Content: LabelSvg(label, full/2, pad+label.Height/2, ` class="pele-title" font-weight="var(--_tw)"`, nil) +
-			`<g transform="translate(` + Num((full-width)/2) + `,` + Num(shift) + `)">` + content + `</g>`,
+		Content: append(append([]string{LabelSvg(label, full/2, pad+label.Height/2, ` class="pele-title" font-weight="var(--_tw)"`, nil) +
+			`<g transform="translate(` + Num((full-width)/2) + `,` + Num(shift) + `)">`}, content...), `</g>`),
 	}
 }

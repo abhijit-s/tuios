@@ -46,6 +46,12 @@ type TUIClient struct {
 	// dials a daemon that may still be starting sets it. See handshaking.
 	HandshakeTimeout time.Duration
 	handshaking      bool
+	// AttachDeadline, when set, is the latest time the reply to the next
+	// AttachSession may come, instead of 30 seconds from the request. A
+	// client that waits for a new daemon sets it to the end of its wait: a
+	// daemon that says hello and then stalls must not hold it past that.
+	// AttachSession clears it.
+	AttachDeadline time.Time
 	// goodbye is the daemon's last word before it closed, and when it came.
 	// See daemon_goodbye.go.
 	goodbye atomic.Pointer[Goodbye]
@@ -286,6 +292,12 @@ type TUIClient struct {
 	sessionsChangedHandler func()
 	// paneMarkHandler takes the daemon's MsgPaneMark push. See OnPaneMark.
 	paneMarkHandler func(PaneMarkPayload)
+	// tmlSurfaceHandler takes the daemon's MsgTMLSurface push. See
+	// OnTMLSurface. tmlBacklog holds the pushes that came before a handler
+	// did, the newest per surface: the daemon sends the open surfaces right
+	// behind the attach reply, before the client has wired its handlers.
+	tmlSurfaceHandler func(*TMLSurfacePayload)
+	tmlBacklog        []*TMLSurfacePayload
 	// pasteRefusedHandler takes a paste the daemon refused. See
 	// paste_retry.go. pastes holds the large inputs sent and not answered,
 	// and pasteBarriers the pings behind them, by request id, under
@@ -441,6 +453,11 @@ func (c *TUIClient) handshake(version string, width, height int, caps *ClientCap
 		// See daemon_goodbye.go.
 		Goodbye: true,
 	}
+	// A client draws TML surfaces of this machine's daemon only: what the
+	// person does on one goes back through this machine's socket, which
+	// holds no surface of a session on another machine. Through a host the
+	// window shows its placeholder line instead. See tml_surface.go.
+	hello.TMLSurfaces = c.viaHost == ""
 
 	// Add graphics capabilities if provided
 	if caps != nil {
@@ -605,11 +622,19 @@ func (c *TUIClient) AttachSession(name string, createNew bool, width, height int
 	}
 	c.DetachOthers = false
 
+	deadline := c.AttachDeadline
+	c.AttachDeadline = time.Time{}
+
 	if err := c.send(msg); err != nil {
 		return nil, err
 	}
 
-	resp, err := c.recv()
+	var resp *Message
+	if deadline.IsZero() {
+		resp, err = c.recv()
+	} else {
+		resp, err = c.recvUntil(deadline)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -1171,6 +1196,29 @@ func (c *TUIClient) OnPaneMark(handler func(PaneMarkPayload)) {
 	c.multiClientMu.Lock()
 	c.paneMarkHandler = handler
 	c.multiClientMu.Unlock()
+}
+
+// DrawsTML reports whether this client draws TML surfaces: only a client of
+// this machine's daemon does. See the hello.
+func (c *TUIClient) DrawsTML() bool { return c.viaHost == "" }
+
+// OnTMLSurface registers the handler for MsgTMLSurface, the daemon's push of
+// a TML surface when it opens, changes or closes, and of every open one when
+// this client attaches. It runs on the read-loop goroutine, so it only
+// queues. See tml_surface.go.
+func (c *TUIClient) OnTMLSurface(handler func(*TMLSurfacePayload)) {
+	c.multiClientMu.Lock()
+	c.tmlSurfaceHandler = handler
+	backlog := c.tmlBacklog
+	if handler != nil {
+		c.tmlBacklog = nil
+	}
+	c.multiClientMu.Unlock()
+	if handler != nil {
+		for _, p := range backlog {
+			handler(p)
+		}
+	}
 }
 
 // ListingPush reports whether the daemon pushes listing changes, so the
@@ -1909,6 +1957,24 @@ func (c *TUIClient) handleMessage(msg *Message) {
 			handler(payload)
 		}
 
+	case MsgTMLSurface:
+		var payload TMLSurfacePayload
+		if msg.ParsePayload(&payload) != nil {
+			return
+		}
+		c.multiClientMu.Lock()
+		handler := c.tmlSurfaceHandler
+		if handler == nil {
+			// Kept, in order, for the handler OnTMLSurface registers. The
+			// handler is wired right after the attach, so only the pushes
+			// that follow the attach reply wait here.
+			c.tmlBacklog = append(c.tmlBacklog, &payload)
+		}
+		c.multiClientMu.Unlock()
+		if handler != nil {
+			handler(&payload)
+		}
+
 	case MsgDetached:
 		// Session detached. Handled via pendingResponses in SwitchSession.
 		// Do NOT close c.done here; it must stay open for subsequent switches.
@@ -2460,14 +2526,23 @@ func (c *TUIClient) send(msg *Message) error {
 }
 
 func (c *TUIClient) recv() (*Message, error) {
-	c.readMu.Lock()
-	defer c.readMu.Unlock()
-
 	wait := 30 * time.Second
 	if c.handshaking && c.HandshakeTimeout > 0 {
 		wait = c.HandshakeTimeout
 	}
-	_ = c.conn.SetReadDeadline(time.Now().Add(wait))
+	return c.recvUntil(time.Now().Add(wait))
+}
+
+// recvUntil reads one message that must arrive by deadline, and never later
+// than the 30 seconds recv gives.
+func (c *TUIClient) recvUntil(deadline time.Time) (*Message, error) {
+	c.readMu.Lock()
+	defer c.readMu.Unlock()
+
+	if limit := time.Now().Add(30 * time.Second); deadline.After(limit) {
+		deadline = limit
+	}
+	_ = c.conn.SetReadDeadline(deadline)
 	return ReadMessage(c.reader())
 }
 

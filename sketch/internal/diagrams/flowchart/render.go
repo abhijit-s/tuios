@@ -1,11 +1,11 @@
-// Ported from pele src/diagrams/flowchart/render.ts at 458322a5b8abb1ae57ddf127c32017ab9fb14a92.
+// Ported from pele src/diagrams/flowchart/render.ts at 8603bf3313add9143cd417015d4a6bd6c522dada.
 
 package flowchart
 
 import (
 	"math"
-	"regexp"
 	"strings"
+	"unicode/utf8"
 
 	"tuios.dev/sketch/internal/diagrams/common"
 	"tuios.dev/sketch/internal/js"
@@ -77,12 +77,53 @@ func renderFlowchart(db *FlowDb, config types.Config, options types.RenderOption
 	return fitted(false)
 }
 
-var (
-	reDefaultClass = regexp.MustCompile(`^default[` + js.S + `]?`)
-	reInternalLink = regexp.MustCompile(` internal-link(?: |$)`)
-	reEdgeClasses  = regexp.MustCompile(`edge-thickness-normal|edge-pattern-solid|flowchart-link`)
-	reStep         = regexp.MustCompile(`^step`)
-)
+// edgeClasses are the classes every edge has, which the drawing leaves out.
+var edgeClasses = [...]string{"edge-thickness-normal", "edge-pattern-solid", "flowchart-link"}
+
+// withoutEdgeClasses is /edge-thickness-normal|edge-pattern-solid|flowchart-link/g
+// replaced with "": from left to right, each match is cut, and the scan goes on
+// after it.
+func withoutEdgeClasses(classes string) string {
+	var b []byte
+	last := 0
+	for i := 0; i < len(classes); {
+		cut := ""
+		if c := classes[i]; c == 'e' || c == 'f' {
+			for _, class := range edgeClasses {
+				if strings.HasPrefix(classes[i:], class) {
+					cut = class
+					break
+				}
+			}
+		}
+		if cut == "" {
+			i++
+			continue
+		}
+		if b == nil {
+			b = make([]byte, 0, len(classes))
+		}
+		b = append(b, classes[last:i]...)
+		i += len(cut)
+		last = i
+	}
+	if b == nil {
+		return classes
+	}
+	return string(append(b, classes[last:]...))
+}
+
+// withoutDefault is /^default\s?/ replaced with "".
+func withoutDefault(classes string) string {
+	rest, ok := strings.CutPrefix(classes, "default")
+	if !ok {
+		return classes
+	}
+	if r, size := utf8.DecodeRuneInString(rest); size > 0 && js.IsSpace(r) {
+		rest = rest[size:]
+	}
+	return rest
+}
 
 // draw: `turned` draws a flowchart that runs across as one that runs down. `tight` sets nodes closer together.
 func draw(db *FlowDb, config types.Config, options types.RenderOptions, variant FlowVariant, turned bool, tight bool) types.Rendered {
@@ -294,7 +335,7 @@ func draw(db *FlowDb, config types.Config, options types.RenderOptions, variant 
 		EdgeSep:  EDGE_SEP,
 		RankSep:  rankSep,
 		PortSep:  20,
-		Tracks:   isString && reStep.MatchString(curveStr),
+		Tracks:   isString && strings.HasPrefix(curveStr, "step"),
 		Straight: isString && curveStr == "linear",
 		HeadRoom: svg.MarkerTrim("arrow_point"),
 	}
@@ -340,12 +381,14 @@ func draw(db *FlowDb, config types.Config, options types.RenderOptions, variant 
 	}
 
 	var clusters, struckTitles, nodesOut strings.Builder
+	// A node takes about 270 bytes of markup and an edge about 200.
+	nodesOut.Grow(len(views) * 272)
 	for i, view := range views {
 		c := cnodes[i]
 		node := view.node
 		x := c.X
 		y := c.Y
-		classes := svg.ClassNames(reDefaultClass.ReplaceAllString(node.CssClasses, ""))
+		classes := svg.ClassNames(withoutDefault(node.CssClasses))
 		id := svg.EscText(node.ID)
 		if c.IsGroup && variant != nil && c.Parent < 0 {
 			if out, ok := variant.DrawGroup(c, view.label, view.style, classes, id, rootDir, icons); ok {
@@ -427,7 +470,8 @@ func draw(db *FlowDb, config types.Config, options types.RenderOptions, variant 
 		}
 
 		label := svg.LabelSvg(view.label, 0, view.dy, ` class="pele-label"`+view.style.Text, icons)
-		internal := reInternalLink.MatchString(classes + " ")
+		// / internal-link(?: |$)/ on classes + " ".
+		internal := strings.Contains(classes+" ", " internal-link ")
 		if internal && deref(node.Label) != "" && !(options.Links != nil && !*options.Links) {
 			// The label is a note name, but it still ends up in an href, so it gets the same check as a URL.
 			name := text.DecodeEntities(*node.Label)
@@ -440,7 +484,13 @@ func draw(db *FlowDb, config types.Config, options types.RenderOptions, variant 
 			label = `<a class="internal-link"` + href + ` data-href="` + target + `">` + label + `</a>`
 			links = append(links, types.LinkInfo{ID: node.ID, Href: name, Internal: true})
 		}
-		body := innerSvg + label
+		// A plain node's body is its shape and its label, written one after the other.
+		body := ""
+		plain := true
+		if (node.Tooltip != nil && *node.Tooltip != "") || (node.Link != nil && *node.Link != "") {
+			plain = false
+			body = innerSvg + label
+		}
 		if node.Tooltip != nil && *node.Tooltip != "" {
 			body = `<title>` + svg.EscText(*node.Tooltip) + `</title>` + body
 		}
@@ -451,7 +501,15 @@ func draw(db *FlowDb, config types.Config, options types.RenderOptions, variant 
 			}
 			body = util.Linked(body, *node.Link, node.ID, &links, options, attrs)
 		}
-		nodesOut.WriteString(`<g class="pele-node pele-shape-` + view.shape + classes + `" data-id="` + id + `" transform="translate(` + svg.Num(x) + `,` + svg.Num(y) + `)">` + body + `</g>`)
+		svg.WriteStrings(&nodesOut, `<g class="pele-node pele-shape-`, view.shape, classes, `" data-id="`, id, `" transform="translate(`)
+		svg.WriteNum(&nodesOut, x)
+		nodesOut.WriteByte(',')
+		svg.WriteNum(&nodesOut, y)
+		if plain {
+			svg.WriteStrings(&nodesOut, `)">`, innerSvg, label, `</g>`)
+		} else {
+			svg.WriteStrings(&nodesOut, `)">`, body, `</g>`)
+		}
 	}
 
 	reach := svg.NewSideReach()
@@ -464,6 +522,7 @@ func draw(db *FlowDb, config types.Config, options types.RenderOptions, variant 
 	}
 
 	var edgesOut, labelsOut strings.Builder
+	edgesOut.Grow(len(cedges) * 208)
 	loopSeen := map[int]int{}
 	for i, ce := range cedges {
 		edge := drawn[i]
@@ -505,16 +564,15 @@ func draw(db *FlowDb, config types.Config, options types.RenderOptions, variant 
 			case "dotted":
 				attrs += ` stroke-dasharray="3 4"`
 			}
-			classes := svg.ClassNames(reEdgeClasses.ReplaceAllString(edge.Classes, ""))
+			classes := svg.ClassNames(withoutEdgeClasses(edge.Classes))
 			line := ""
 			if style != nil {
 				line = style.Line
 			}
-			edgesOut.WriteString(`<g class="pele-edge` + classes + `" data-id="` + svg.EscText(edge.ID) + `"` + line + `>` +
-				`<path d="` + path.D + `"` + attrs + `/>` +
-				svg.Marker(startType, path.Sx, path.Sy, path.Sdx, path.Sdy, color) +
-				svg.Marker(endType, path.Ex, path.Ey, path.Edx, path.Edy, color) +
-				`</g>`)
+			svg.WriteStrings(&edgesOut, `<g class="pele-edge`, classes, `" data-id="`, svg.EscText(edge.ID), `"`, line, `><path d="`, path.D, `"`, attrs, `/>`)
+			svg.WriteMarker(&edgesOut, startType, path.Sx, path.Sy, path.Sdx, path.Sdy, color)
+			svg.WriteMarker(&edgesOut, endType, path.Ex, path.Ey, path.Edx, path.Edy, color)
+			edgesOut.WriteString(`</g>`)
 		}
 		if label.Width > 0 {
 			textAttrs := ""
@@ -529,21 +587,22 @@ func draw(db *FlowDb, config types.Config, options types.RenderOptions, variant 
 	if variant != nil {
 		typ = variant.Type()
 	}
-	content := svg.LabelSvg(title, width/2, pad+title.Height/2, ` class="pele-title" font-weight="var(--_tw)"`, nil)
+	content := make([]string, 0, 16)
+	content = append(content, svg.LabelSvg(title, width/2, pad+title.Height/2, ` class="pele-title" font-weight="var(--_tw)"`, nil))
 	if clusters.Len() > 0 {
-		content += `<g class="pele-clusters">` + clusters.String() + `</g>`
+		content = append(content, `<g class="pele-clusters">`, clusters.String(), `</g>`)
 	}
 	if edgesOut.Len() > 0 {
-		content += `<g class="pele-edges" fill="none" stroke="var(--_l)" stroke-linecap="round">` + edgesOut.String() + `</g>`
+		content = append(content, `<g class="pele-edges" fill="none" stroke="var(--_l)" stroke-linecap="round">`, edgesOut.String(), `</g>`)
 	}
 	if struckTitles.Len() > 0 {
-		content += `<g class="pele-cluster-titles">` + struckTitles.String() + `</g>`
+		content = append(content, `<g class="pele-cluster-titles">`, struckTitles.String(), `</g>`)
 	}
 	if labelsOut.Len() > 0 {
-		content += `<g class="pele-edge-labels" font-size="` + js.Num(edgeSize) + `">` + labelsOut.String() + `</g>`
+		content = append(content, `<g class="pele-edge-labels" font-size="`+js.Num(edgeSize)+`">`, labelsOut.String(), `</g>`)
 	}
-	content += `<g class="pele-nodes">` + nodesOut.String() + `</g>`
-	out := svg.SvgDocument(typ, width, height, size, options, svg.Accessible{AccTitle: db.AccTitle, AccDescr: db.AccDescr}, content)
+	content = append(content, `<g class="pele-nodes">`, nodesOut.String(), `</g>`)
+	out := svg.SvgDocument(typ, width, height, size, options, svg.Accessible{AccTitle: db.AccTitle, AccDescr: db.AccDescr}, content...)
 
 	rendered := types.Rendered{SVG: out, Width: width, Height: height, Links: links}
 	if options.Geometry != nil {

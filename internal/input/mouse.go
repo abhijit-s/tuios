@@ -14,6 +14,12 @@ import (
 // The event carries the pane cell. A guest in SGR-pixel mode is also told the
 // pixel inside the pane, when the host reported the pointer in pixels.
 func sendMouseToWindow(o *app.OS, win *terminal.Window, event uv.MouseEvent) {
+	// A TML window's surface takes the event. Its placeholder asks for
+	// mouse reporting, which is what routes the event here. See app/tml.go.
+	if o.DrawsTML(win) {
+		o.TMLMouse(win, event)
+		return
+	}
 	if win.Terminal == nil {
 		return
 	}

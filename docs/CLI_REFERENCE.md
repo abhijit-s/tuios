@@ -4778,6 +4778,102 @@ fi
 
 ---
 
+### `tuios tml`
+
+Show a TML document in tuios: a dashboard, a test result or a question. TML is
+a markup for terminal surfaces: a tree of known components, such as text,
+tables, stats, charts, tabs and buttons, with a JSON state. tuios draws it with
+your theme's colours. Keys and the mouse work in it. The daemon keeps the
+surface, so it stays when you detach and comes back when you attach.
+
+**Usage:**
+```bash
+tuios tml show FILE [--popup | --pane] [--wait] [--width W] [--height H]
+tuios tml show FILE --events
+tuios tml patch SURFACE OPS
+tuios tml replace SURFACE FILE [--keep-state]
+tuios tml get SURFACE
+tuios tml list [-s SESSION]
+tuios tml close SURFACE [VALUE]
+tuios tml validate FILE
+```
+
+FILE is a TML text or TML JSON file, or `-` for standard input.
+
+`tml show` checks the document, opens it and prints the surface id and the
+window id. A popup floats over the panes and needs an attached client. Press
+`esc` to close it, unless the document uses `esc`. A pane (`--pane`) is tiled
+like any pane.
+
+With `--wait` the command stays open until the surface closes. It prints the
+value the document closed with as JSON, such as `"rerun"`, and exits with
+status 0. It prints `null` and exits with status 1 when the person closed the
+surface without a value. It exits with status 2 when a program closed it with
+`tml close`: the value it prints is then not the person's answer.
+
+With `--events` the command prints the answer, then one JSON line for each
+`tml-event` of the surface: an `emit` action the person ran, and the close,
+which is the last line. A script that reads them is the surface's owner. It
+answers with `tml patch`, a JSON Patch on the state (`-` reads it from standard
+input), or `tml replace`, a new document. A patch with a `test` that no longer
+matches is refused: read the state with `tml get` and send it again.
+`tml list` names the open surfaces of a session.
+
+`tml close` closes a surface. VALUE is JSON, and a waiting `tml show` prints
+it. `tml validate` prints each problem with its line, the node and the fix,
+and exits with status 1 when the document has errors. It needs no daemon.
+
+**Flags of `tml show`:**
+- `-s, --session <name>`: Target session (default: most recently active)
+- `--popup`: Show it as a popup (the default)
+- `--pane`: Show it as a tiled pane
+- `--name <name>`: Name for the window (default: the document's title)
+- `--width`, `--height`: Popup size in cells or percent (default: 80% and 60%)
+- `--workspace <n>`: Workspace to open it on
+- `--wait`: Stay open until the surface closes, and print its value
+- `--timeout <ms>`: With `--wait`, how long to wait
+- `--json`: Output the result as JSON
+- `--events`: Print the surface's events as JSON lines until it closes
+
+**Examples:**
+```bash
+# Show a report as a popup
+tuios tml show report.tml
+
+# Show a dashboard as a pane, from standard input
+some-generator | tuios tml show - --pane
+
+# Ask a question and use the answer
+answer=$(tuios tml show confirm.tml --wait)
+
+# Own a dashboard from a script: answer each rerun with a patch
+tuios tml show dash.tml --events | while IFS= read -r line; do
+  case $line in
+    *'"type":"tml_opened"'*) id=$(printf '%s' "$line" | jq -r .surface) ;;
+    *'"name":"rerun"'*) tuios tml patch "$id" '[{"op":"replace","path":"/runs","value":2}]' ;;
+  esac
+done
+```
+
+A small document:
+
+```xml
+<tml version="1" title="Deploy">
+  <state>{"tag": "v0.11.0"}</state>
+  <col pad="1" gap="1">
+    <text>Deploy <b>{state.tag}</b> to production?</text>
+    <row gap="2">
+      <button key="y" kind="primary" on-press="close('yes')">Deploy</button>
+      <button key="n" on-press="close('no')">Cancel</button>
+    </row>
+  </col>
+</tml>
+```
+
+The verbs behind these commands are `tml-open`, `tml-patch`, `tml-replace`,
+`tml-get`, `tml-list`, `tml-close` and `tml-validate`, in
+[protocol.md](protocol.md). The events are `tml-event`.
+
 ### `tuios mermaid`
 
 Draw the Mermaid diagrams of a file in the terminal, or save them as SVG or PNG.
@@ -5063,9 +5159,9 @@ tuios-web [flags]
 - `--auto-tls`: Generate and serve a self-signed certificate (managed with `tuios-web cert`)
 - `--insecure`: Serve a non-loopback host over plain HTTP, unencrypted (trusted networks only)
 - `--random-password`: Make a new password at start and print it
-- `--password-file <path>`: Read the password from the first line of this file. The file must be yours, with mode 600 or 400
+- `--password-file <path>`: Read the password from the first line of this file. The file must be yours, with mode 600 or 400 (on Windows, only you, SYSTEM and Administrators may read it)
 - `--user <string>`: User name the browser must give with the password (default: "tuios")
-- `--no-auth`: Serve a non-loopback host with no password (trusted networks only)
+- `--no-auth`: Serve a non-loopback host with no password (trusted networks only). Not with `0.0.0.0` or `::`
 - `--allow-host <name>`: On a loopback `--host`, also accept this host name (no port) in the Host header, for example for a reverse proxy. Needs a password or `--no-auth`. You can give it more than one time
 - `--touch <auto|on|off>`: Touch support and the on-screen key bar (default: auto-detect)
 - `--default-session <string>`: Default session name for all connections (creates shared session)
@@ -5091,8 +5187,8 @@ connects. The browser asks for the user name and the password.
 - `--random-password`: tuios-web makes a new password at start and prints it
   with a URL that holds it.
 - `--password-file <path>`: tuios-web reads the password from the first line
-  of the file. The file must belong to you, with mode 600 or 400. tuios-web
-  does not check the file permissions on Windows.
+  of the file. The file must belong to you, with mode 600 or 400. On Windows,
+  only you, SYSTEM and Administrators may read or change it.
 - `TUIOS_WEB_PASSWORD`: tuios-web reads the password from this environment
   variable. It does not pass the variable to panes. But your own processes
   can still read it from `/proc`. Use `--password-file` instead.
@@ -5111,7 +5207,10 @@ line arguments in `ps`.
   `--no-auth`. It works only with a loopback `--host`.
 - On any other host: tuios-web does not start without a password. TLS
   encrypts the connection, but it does not check who connects. Pass
-  `--no-auth` to serve anyway, on a network you trust.
+  `--no-auth` to serve anyway, on a network you trust. `--no-auth` does not
+  work with `0.0.0.0` or `::`. These addresses also listen on this machine,
+  where a web page in your browser can open a shell. Give the address of one
+  interface.
 
 **Subcommands:**
 - `tuios-web cert`: Show the status of the self-signed TLS certificate `--auto-tls` uses
@@ -5149,8 +5248,9 @@ mkdir -p ~/.config/tuios
 tuios-web --host 0.0.0.0 --port 7681 --cert tuios-cert.pem --key tuios-key.pem \
   --password-file ~/.config/tuios/web-password
 
-# Same, on a network you trust, with nothing encrypted and no password
-tuios-web --host 0.0.0.0 --port 7681 --insecure --no-auth
+# Same, on a network you trust, with nothing encrypted and no password.
+# --no-auth needs the address of one interface. It does not work with 0.0.0.0
+tuios-web --host 192.168.1.20 --port 7681 --insecure --no-auth
 
 # Start in read-only mode (view only)
 tuios-web --read-only

@@ -1648,6 +1648,9 @@ catalog.
 | `disk_full` | The disk had no room for the write. What was written stays in the part. |
 | `no_transfer` | No transfer has that id. A finished one leaves the list 30 minutes after it ends. |
 | `busy` | The daemon had no room for the request now, (`transfer-start`) another copy writes that destination now, or (`daemon-upgrade`) a live upgrade is already running. Nothing was done. |
+| `invalid_tml` | The TML document does not parse or does not validate. Nothing was opened or changed. The error carries `problems`: each one has `at` (a JSON Pointer to the node), `code`, `message`, and where it helps `did_you_mean`, `accepted` or `available`. |
+| `no_surface` | No open TML surface has that id. It closed, or the id is wrong. `list-windows` names the surface of each TML window. |
+| `too_many_surfaces` | The caller holds as many open TML surfaces as it may: 8 for a pane, and 32 per session for the callers outside the panes. Nothing was opened. |
 
 Codes are stable and additive: existing codes never change meaning, and a new
 code is only ever introduced for a condition that previously had none. A client
@@ -2537,6 +2540,138 @@ Response:
 {"result": {"type": "popup_opened", "window_id": "9a3c...", "name": "fzf",
             "workspace": 1, "pty_id": "4bff...", "width": "60%", "height": "60%"}}
 ```
+
+### tml-open
+
+Show a TML document as a popup or a pane. TML is a markup for terminal
+surfaces: a tree of known components with a JSON state. The daemon keeps the
+surface: its tree, its state and a version. Every attached client draws it in
+the window with its own theme colours, and keeps its own view state (focus,
+the cursor row, the open tab, sort and scroll). The surface stays while nobody
+is attached, and ends with the daemon.
+
+Params: `doc` (required: TML text or TML JSON as a string, or a TML JSON
+object), `target` (`popup`, the default, or `pane`), `session`, `name`
+(default: the document's title), `width` and `height` (popup only, as for
+`popup`), `workspace`, `wait` and `timeout`.
+
+The document is checked as `tuios tml validate` checks it. A document with
+errors fails with `invalid_tml`, and the error carries `problems`, each with a
+JSON Pointer to the node and the fix. A caller in no pane may send up to 1 MiB,
+and a caller in a pane up to 256 KiB. A pane may hold 8 open surfaces, and the
+callers outside the panes 32 per session; one more fails with
+`too_many_surfaces`. A popup needs an attached client and fails with
+`needs_client` without one. Control characters are dropped from `name`.
+
+The window is of kind `tml`, and `list-windows` reports it with `kind`, `uri`
+(`tuios://tml/<surface>`) and `surface`. Like a `view` window it has a PTY,
+whose program prints one line for a client that does not draw TML. A popup
+closes on an esc the document does not use. Focus, close-window and the
+layout treat it as any window, but it cannot move to another session. A
+client draws the surfaces of its own machine's daemon only: a client attached
+through a host shows the placeholder line.
+
+The surface's local actions run in the client: tabs, sorting, the cursor,
+folding, scrolling, `set` and `toggle`. A change to the state goes back to the
+daemon, so another client and a later attach see it. `close(value)` closes the
+surface with that value. `copy(value)` copies through the client.
+`emit('name', value)` sends a `tml-event` to the owner. `open`, `pane` and
+links do nothing yet. A paste into a surface is dropped, with a message: no
+component takes text yet.
+
+With `wait` the call stays open until the surface closes, and answers
+`{"type": "tml_result", "surface", "window_id", "value", "reason"}`. `reason`
+says who gave the value. `closed` is a `close()` action the person ran, so the
+value is the person's answer. `program` is a `tml-close`: a program gave the
+value, not the person. `dismissed` is the window closing without a value
+(esc, close-window, the session ending); `value` is then null.
+`timeout` bounds the wait in milliseconds and leaves the surface open when it
+runs out.
+
+With `events` the connection becomes the surface's owner stream: the answer
+carries `seq` and `boot_id` as a `subscribe` ack does, and each `tml-event` of
+this surface follows on the same connection, one JSON line each. The close is
+the last one. A `tml-event` value is at most 64 KiB, and the events are not
+kept for a later `subscribe` to replay. `events` cannot be used with `wait`,
+and a connection that has
+an event stream already is refused. The owner answers on another connection
+with `tml-patch` or `tml-replace`. Anyone may also `subscribe` with
+`types: ["tml-event"]`.
+
+Request:
+
+```json
+{"verb": "tml-open", "params": {"doc": "<tml version=\"1\" title=\"Hi\"><text>Hello</text></tml>", "wait": true}}
+```
+
+Response:
+
+```json
+{"result": {"type": "tml_opened", "surface": "tml-4f1a9c02", "window_id": "9a3c...",
+            "target": "popup", "workspace": 1}}
+```
+
+### tml-close
+
+Close a TML surface and its window. Params: `surface` (required) and `value`
+(any JSON, optional). A `tml-open` that waits on the surface answers with the
+value and reason `program`. An unknown or closed surface fails with
+`no_surface`.
+
+### tml-input
+
+What the person did on a TML surface, sent by the attached client that drew
+it: `ops`, a JSON Patch on the state from its local actions, `events`, the
+`emit` actions it ran (`[{"name", "value"}]`, each published as a
+`tml-event`), and `close` with an optional `value`. It needs `human_nonce`,
+the client's attach nonce, and fails with `not_human` without one. A program
+uses `tml-patch`, `tml-replace` and `tml-close` instead.
+
+### tml-patch
+
+Change a surface's state with a JSON Patch (RFC 6902). Params: `surface` and
+`ops`. A patch is at most 64 KiB, and the state stays within the document's
+limits. It applies whole or not at all: a `test` that does not match refuses
+it with `invalid_params`, and the hint says to read the state again with
+`tml-get`. Answers `{"type": "tml_patched", "version", "changed"}`. Each
+client then draws again only what reads the changed paths.
+
+### tml-replace
+
+Swap a surface's tree. Params: `surface`, `doc` (as `tml-open` takes it) and
+`keep_state` (keep the state the surface has now). Each client keeps its view
+state for the nodes whose ids stay. Answers `{"type": "tml_replaced",
+"version"}`.
+
+### tml-get
+
+Read a surface. Params: `surface`. Answers `doc` (the tree as TML JSON),
+`state`, `version`, `doc_version`, `window_id`, `title` and `owner`.
+
+`tml-get`, `tml-patch`, `tml-replace` and `tml-close` check the surface's
+session against the caller: a pane reaches its own session and its fan group,
+a read needs the `read` grant, and a connection restricted to its own session
+reaches only that session. Each refusal is `forbidden`.
+
+### tml-list
+
+List the open surfaces of a session. Params: `session`. Answers `surfaces`,
+each with `surface`, `window_id`, `title`, `owner` and `version`.
+
+### tml-validate
+
+Check a document as `tml-open` would, with no session. Params: `doc`. Answers
+`{"type": "tml_valid", "warnings": [...]}`, or fails with `invalid_tml`.
+
+The daemon sends each surface to a TUI client whose hello sets
+`tml_surfaces`, as a `MsgTMLSurface` frame: when it opens, when it changes,
+when it closes, and for every open surface right after the attach reply. A
+push carries the tree only when the client may not have it: on open, on attach
+and after a replace. A push that a patch made carries the patch and no state:
+a client one version behind applies it, and a client further behind reads the
+surface with `tml-get`. Each client has at most one push waiting per surface:
+a newer one folds into it, and the folded push goes out as the whole surface.
+A client that reads slowly costs the daemon one push per surface.
 
 ### close-window
 
@@ -6709,6 +6844,7 @@ Event types:
 | `transfer` | A copy the daemon runs (see [Files and transfers](#files-and-transfers)) changed. `action` is `created`, `state`, `ended` or `removed`, and `transfer` is its row as `transfer-list` returns it. `removed` says a copy that ended left the list, by `transfer-clear` or 30 minutes after it ended, and carries its last row. A state is said once per change; a folder copy going between `running` and `verifying` for each file is not a change. A copy the daemon takes back from its journal at start says `state` once. | `action`, `transfer` |
 | `transfer-progress` | A copy's row while its bytes move, at most four a second per copy. Opt-in: only a subscription whose `types` names it receives it. Not replayed on a resume. | `action` (`progress`), `transfer` |
 | `transfer-file` | One file of a copy ended. `action` and `file.state` are `done` (copied and checked), `same` (there already with the same bytes), `skipped` (there and different, left as it was), `conflict` (made there during the copy, left as it was) or `failed`. `file` has `id`, `pane`, `rel`, `state`, `sha256`, `code` and `error`. Opt-in: only a subscription whose `types` names it receives it. Not replayed on a resume. | `action`, `file` |
+| `tml-event` | What a person did on a TML surface that its owner hears: an `emit` action in the document, or the close, which is the surface's last event. `tml` has `surface`, `name` (the emit's name, or `close`), `value` (absent when null), `reason` (on a close: `closed`, `program` or `dismissed`) and `version`. `window` is the TML window. Opt-in: only a subscription whose `types` names it receives it, and a `tml-open` with `events` gets the events of its own surface. | `tml` |
 
 ### What fires when
 
