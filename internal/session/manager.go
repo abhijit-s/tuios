@@ -55,6 +55,9 @@ type Manager struct {
 	// display. See display_follow.go.
 	displayFollow atomic.Bool
 	displaySource atomic.Pointer[func(sessionID string) []string]
+	// cellSource gives a new pane its session's cell in pixels. See
+	// Daemon.newPaneCellSize.
+	cellSource atomic.Pointer[func(sessionID string) (w, h int, ok bool)]
 	// herdrSocket is the herdr protocol socket the daemon listens on, "" when
 	// it does not. herdrMode is [agents] herdr_protocol. Both are read at
 	// spawn time through HerdrEnv. See herdr_compat.go.
@@ -311,6 +314,9 @@ func (m *Manager) CreateSession(name string, cfg *SessionConfig, width, height i
 	if cfg.DisplayEnv == nil {
 		cfg.DisplayEnv = m.displayEnv
 	}
+	if cfg.CellSize == nil {
+		cfg.CellSize = m.cellSize
+	}
 	if cfg.history == nil {
 		cfg.history = m.history
 	}
@@ -426,7 +432,9 @@ func (m *Manager) RenameSession(old, newName string) (*Session, error) {
 
 	// A saved session that is not running still owns its state file. Taking
 	// its name would overwrite that file, and the saved session would be lost.
-	if _, err := os.Stat(getResurrectionPath(newName)); err == nil && m.GetSession(newName) == nil {
+	if path, err := getResurrectionPath(newName); err != nil {
+		return nil, err
+	} else if _, err := os.Stat(path); err == nil && m.GetSession(newName) == nil {
 		return nil, fmt.Errorf("a saved session is named '%s'. Restore it with 'tuios resurrect %s', or pick another name", newName, newName)
 	}
 

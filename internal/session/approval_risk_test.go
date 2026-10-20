@@ -142,7 +142,8 @@ func TestRiskFromTheLineWhenTheHookNamesNoCall(t *testing.T) {
 }
 
 // TestUnheldApprovalIsMarkedFromItsLine: an approval nobody holds is marked
-// from the line its pane reported, and the mark follows the line.
+// from the line its pane reported. Each prompt starts a new mark, and while
+// one is open a later line adds to its mark and takes nothing off.
 func TestUnheldApprovalIsMarkedFromItsLine(t *testing.T) {
 	d, sp := startTestDaemon(t)
 	enableRiskyApprovals(t, d, 30*time.Second, nil)
@@ -165,6 +166,8 @@ func TestUnheldApprovalIsMarkedFromItsLine(t *testing.T) {
 		{integration.Clip("approve Bash: git push -f && echo " + strings.Repeat("x", integration.MaxMessage)), []string{risk.RuleForcePush, risk.RuleCutShort}},
 		{"approve Bash: echo wait...", nil},
 	} {
+		// The pane goes back to work between cases, so each is a new prompt.
+		setAgentState(t, c, "work", a, "working", "", "")
 		setAgentState(t, c, "work", a, "needs_input", "approval", tc.line)
 		items := waitAttention(t, c, "the item for "+tc.line, func(items []map[string]any) bool {
 			return len(items) == 1 && items[0]["summary"] == tc.line
@@ -173,9 +176,21 @@ func TestUnheldApprovalIsMarkedFromItsLine(t *testing.T) {
 			t.Errorf("%q is marked %v, want %v", tc.line, got, tc.want)
 		}
 	}
+	// On the same prompt a harmless line keeps the mark the risky one set.
+	setAgentState(t, c, "work", a, "working", "", "")
+	setAgentState(t, c, "work", a, "needs_input", "approval", "approve Bash: git push -f")
+	setAgentState(t, c, "work", a, "needs_input", "approval", "approve Bash: ls")
+	items := waitAttention(t, c, "the harmless line", func(items []map[string]any) bool {
+		return len(items) == 1 && items[0]["summary"] == "approve Bash: ls"
+	})
+	if got := itemRisk(items[0]); !slices.Equal(got, []string{risk.RuleForcePush}) {
+		t.Errorf("a harmless line on the same prompt left the mark %v, want [%s]", got, risk.RuleForcePush)
+	}
+
 	// A question is never marked.
+	setAgentState(t, c, "work", a, "working", "", "")
 	setAgentState(t, c, "work", a, "needs_input", "question", "run rm -rf build?")
-	items := waitAttention(t, c, "the question", func(items []map[string]any) bool {
+	items = waitAttention(t, c, "the question", func(items []map[string]any) bool {
 		return len(items) == 1 && items[0]["kind"] == AttentionQuestion
 	})
 	if items[0]["risk"] != nil {
@@ -185,6 +200,7 @@ func TestUnheldApprovalIsMarkedFromItsLine(t *testing.T) {
 	// With builtin = false and no rules of the person's, nothing is marked.
 	off := false
 	d.SetApprovalPolicy(ApprovalPolicyFromConfig(config.ApprovalsConfig{Enabled: []string{"claude"}, Risk: config.RiskConfig{Builtin: &off}}))
+	setAgentState(t, c, "work", a, "working", "", "")
 	setAgentState(t, c, "work", a, "needs_input", "approval", "approve Bash: git reset --hard")
 	items = waitAttention(t, c, "the approval", func(items []map[string]any) bool {
 		return len(items) == 1 && items[0]["summary"] == "approve Bash: git reset --hard"
@@ -374,8 +390,13 @@ func TestRespondToARiskyPrompt(t *testing.T) {
 // risky prompt and may not allow one, even acknowledging it, unless
 // panes_may_allow is set.
 //
+// The mark on the item is the pane's own report, so the daemon also reads the
+// prompt on the screen, and a pane that clears the mark is still refused.
+//
 // Negative control: with the byPane check removed from respondRiskRefusal, the
-// pane's acknowledged approve presses 1.
+// pane's acknowledged approve presses 1. With promptRisk's result left out of
+// verbRespond, the approve after the mark is cleared presses 1. With
+// stickyRisk returning the new mark alone, the Write's approve presses 1.
 func TestAPaneMayNotAllowARiskyPrompt(t *testing.T) {
 	d, sp := startTestDaemon(t)
 	ag := startBlockedAgent(t, d, sp, "grant", "claude-code", "approve")
@@ -392,6 +413,41 @@ func TestAPaneMayNotAllowARiskyPrompt(t *testing.T) {
 		t.Fatalf("ASSERTION: a pane's allow reached the agent: %q", got)
 	}
 
+	// The mark comes from the pane's own report, and a pane may report a
+	// harmless line over it. The prompt on the screen still shows rm -rf,
+	// and the daemon reads that too.
+	d.SetApprovalPolicy(ApprovalPolicyFromConfig(config.ApprovalsConfig{}))
+	markRisky(t, d, "grant", ag.window)
+	delete(params, "value")
+	delete(params, "risk_ack")
+	params["action"] = "approve"
+	resp := callVerb(t, c, "respond", params)
+	wantForbidden(t, "a pane allowing a risky prompt it marked harmless", resp)
+	if msg := fmt.Sprint(resp["error"]); !strings.Contains(msg, risk.RuleRecursiveDelete) {
+		t.Errorf("the refusal does not name the rule the screen matched: %s", msg)
+	}
+	if got := ag.received(); got != "" {
+		t.Fatalf("ASSERTION: a pane's allow reached the agent: %q", got)
+	}
+
+	// A Write outside the worktree shows a path on the screen, not a command,
+	// so the screen matches no rule. The pane reports the call, then a
+	// harmless line over it: the mark stays until the prompt closes.
+	wa := startBlockedAgent(t, d, sp, "grantw", "claude-code", "write")
+	d.setApprovalPeer(func(*connState) (bool, string) { return true, wa.window })
+	cw := dialVerb(t, sp)
+	setAgentState(t, cw, "grantw", wa.window, "needs_input", "approval", "approve Write: /etc/tuios-test-target")
+	waitRiskOn(t, d, "grantw", wa.window, risk.RuleOutsideWorktree)
+	setAgentState(t, cw, "grantw", wa.window, "needs_input", "approval", "approve Bash: ls")
+	if got := d.attention.riskOn("grantw", wa.window); !slices.Contains(got, risk.RuleOutsideWorktree) {
+		t.Errorf("a later report took the mark off: %v", got)
+	}
+	wantForbidden(t, "a pane allowing a Write it marked harmless", callVerb(t, cw, "respond", map[string]any{"session": "grantw", "window": wa.window, "action": "approve"}))
+	if got := wa.received(); got != "" {
+		t.Fatalf("ASSERTION: a pane's allow reached the agent: %q", got)
+	}
+	d.setApprovalPeer(func(*connState) (bool, string) { return true, ag.other })
+
 	d.SetApprovalPolicy(ApprovalPolicy{PanesMayAllow: true})
 	delete(params, "value")
 	params["action"] = "approve"
@@ -400,6 +456,18 @@ func TestAPaneMayNotAllowARiskyPrompt(t *testing.T) {
 	}
 	if got := ag.received(); got != "1" {
 		t.Errorf("the agent read %q, want 1", got)
+	}
+}
+
+// waitRiskOn waits for a pane's blocking item to carry rule.
+func waitRiskOn(t *testing.T, d *Daemon, session, window, rule string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second * testDeadlineScale)
+	for !slices.Contains(d.attention.riskOn(session, window), rule) {
+		if time.Now().After(deadline) {
+			t.Fatalf("the item's mark is %v, want %s", d.attention.riskOn(session, window), rule)
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -62,11 +63,32 @@ func getResurrectionDir() string {
 	return filepath.Join(xdg.StateHome, resurrectionDir)
 }
 
-// getResurrectionPath returns the path for a specific session's resurrection file.
-// Callers are responsible for having validated the name (see ValidateSessionName);
-// this is a plain join and cannot defend itself.
-func getResurrectionPath(sessionName string) string {
-	return filepath.Join(getResurrectionDir(), sessionName+".json")
+// getResurrectionPath returns the path for a specific session's resurrection
+// file. Callers still validate a name they are given (see
+// ValidateSessionName), but the join refuses a name that would leave the state
+// folder on its own: a session name reaches here from another machine too
+// (MsgResurrect over a link), and filepath.Join cleans "..".
+func getResurrectionPath(sessionName string) (string, error) {
+	return stateJoin(getResurrectionDir(), sessionName, ".json")
+}
+
+// stateJoin is dir/name+suffix, for a name that is one path element. Any
+// other name is an error, so a session name or a window id can never name a
+// file outside the state folder it is joined to.
+//
+// Windows drops the dots and spaces at the end of a path element, so "..." is
+// the folder itself there and "foo." is "foo", and "con" is a device. Such a
+// name is refused too.
+func stateJoin(dir, name, suffix string) (string, error) {
+	if name == "" || strings.Trim(name, ".") == "" || strings.HasSuffix(name, ".") || strings.HasSuffix(name, " ") ||
+		strings.ContainsAny(name, "/\\\x00") || (runtime.GOOS == "windows" && windowsDeviceName(name)) {
+		return "", fmt.Errorf("the name %q cannot name a saved state file", name)
+	}
+	path := filepath.Join(dir, name+suffix)
+	if filepath.Dir(path) != filepath.Clean(dir) {
+		return "", fmt.Errorf("the name %q cannot name a saved state file", name)
+	}
+	return path, nil
 }
 
 // ValidateSessionName rejects a name a session could never be saved under. The
@@ -83,16 +105,41 @@ func ValidateSessionName(name string) error {
 	if strings.TrimSpace(name) != name {
 		return fmt.Errorf("session name %q has leading or trailing whitespace", name)
 	}
-	if name == "." || name == ".." {
-		return fmt.Errorf("session name %q is reserved", name)
+	if strings.Trim(name, ".") == "" {
+		return fmt.Errorf("session name %q is reserved. Use a name with a letter or a digit", name)
 	}
 	if strings.ContainsAny(name, `/\`) {
-		return fmt.Errorf("session name %q contains a path separator; a session name is also the name of its state file", name)
+		return fmt.Errorf("session name %q contains a path separator. A session name is also the name of its state file", name)
+	}
+	// Windows drops a dot at the end of a file name, so "foo." and "foo"
+	// would share one state folder there. The rule holds on every system, so
+	// a saved session keeps its name when it moves to another machine.
+	if strings.HasSuffix(name, ".") {
+		return fmt.Errorf("session name %q ends in a dot. Remove the dot", name)
+	}
+	if windowsDeviceName(name) {
+		return fmt.Errorf("session name %q is a device name on Windows. Use a different name", name)
 	}
 	if strings.ContainsFunc(name, func(r rune) bool { return r < 0x20 || r == 0x7f }) {
 		return fmt.Errorf("session name %q contains a control character", name)
 	}
 	return nil
+}
+
+// windowsDeviceName reports whether Windows opens a file of this name as a
+// device: CON, PRN, AUX, NUL, COM1 to COM9 and LPT1 to LPT9, in any case, also
+// with an extension ("nul.txt").
+func windowsDeviceName(name string) bool {
+	base, _, _ := strings.Cut(name, ".")
+	base = strings.ToUpper(strings.TrimRight(base, " "))
+	switch base {
+	case "CON", "PRN", "AUX", "NUL":
+		return true
+	}
+	if len(base) == 4 && (strings.HasPrefix(base, "COM") || strings.HasPrefix(base, "LPT")) {
+		return base[3] >= '1' && base[3] <= '9'
+	}
+	return false
 }
 
 // ResurrectionStateDir returns the directory holding saved session state, so a
@@ -226,7 +273,11 @@ func SaveSessionForResurrection(state *SessionState) error {
 		return fmt.Errorf("failed to marshal session state: %w", err)
 	}
 
-	if err := atomicfile.Write(getResurrectionPath(state.Name), data, 0o600, false); err != nil {
+	path, err := getResurrectionPath(state.Name)
+	if err != nil {
+		return err
+	}
+	if err := atomicfile.Write(path, data, 0o600, false); err != nil {
 		return fmt.Errorf("failed to write resurrection file: %w", err)
 	}
 
@@ -237,7 +288,10 @@ func SaveSessionForResurrection(state *SessionState) error {
 // version-incompatible files are archived (not deleted) and returned as an
 // error, so a single bad file can never crash the daemon or block startup.
 func LoadResurrectionState(sessionName string) (*SessionState, error) {
-	path := getResurrectionPath(sessionName)
+	path, err := getResurrectionPath(sessionName)
+	if err != nil {
+		return nil, err
+	}
 	data, err := os.ReadFile(path) // #nosec G304
 	if err != nil {
 		return nil, fmt.Errorf("no resurrection data for session %q: %w", sessionName, err)
@@ -282,8 +336,10 @@ func ListResurrectableInfos() ([]ResurrectableInfo, error) {
 			continue
 		}
 		info := ResurrectableInfo{Name: name, WindowCount: len(state.Windows), Space: state.Space}
-		if fi, statErr := os.Stat(getResurrectionPath(name)); statErr == nil {
-			info.SavedAt = fi.ModTime()
+		if path, err := getResurrectionPath(name); err == nil {
+			if fi, statErr := os.Stat(path); statErr == nil {
+				info.SavedAt = fi.ModTime()
+			}
 		}
 		infos = append(infos, info)
 	}
@@ -315,7 +371,10 @@ func ListResurrectableSessions() ([]string, error) {
 // RemoveResurrectionState deletes the resurrection file for a session, and
 // its saved pane history.
 func RemoveResurrectionState(sessionName string) {
-	path := getResurrectionPath(sessionName)
+	path, err := getResurrectionPath(sessionName)
+	if err != nil {
+		return
+	}
 	_ = os.Remove(path)
 	// The session's pane history goes with it. It is only ever read back into
 	// a restore of this state, and it holds whatever the panes printed.

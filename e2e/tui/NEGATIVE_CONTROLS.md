@@ -7467,3 +7467,65 @@ The build before the fix has no panic hook, so its `/panic` case times out inste
 | Bug | Fix removed | How | Tests that fail | Verdict |
 |---|---|---|---|---|
 | The source pane writes the file's controls to the terminal | `mermaid.TermSafe` in `paneText` | Returned the line as it is | `/kitty` and `/text` (OSC 2, OSC 52, BEL), `/parse_error` (BEL) | **caught** |
+
+### A picture cropped past its pane edge keeps its own scale
+
+A guest that scales a PNG into a cell box and places it past the pane's bottom right corner is cropped to the cells that show. `TestKittyOverflowCropKeepsThePicturesScale` sends a 2000x400 picture into 100x10 cells, twice the pinned 10x20 cell on both axes, by every medium a PNG can travel in, and checks that the source rectangle is 20 of its pixels a column and 40 a row. Without its size the crop was measured in the host's cell: a slice of the picture at its own size. Run on 2026-10-19.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| A PNG sent by name has no known size | The header read in `mediumPixels` | Branch skipped | `/file`, `/file-zlib`, `/file-at`, `/temp` ("41x4 cells show the source rectangle x=0,y=0,w=410,h=80, want ... w=820,h=160") | **caught** |
+| The header is read at the start of the file, not at the medium's offset | `O=` and `S=` passed to `kittyMediumPNGSize` | Passed as 0 | `/file-at` | **caught** |
+| A PNG compressed again is read as it is | `o=z` passed to `kittyMediumPNGSize` | Passed as false | `/file-zlib` | **caught** |
+| A file transmit that only stores the picture leaves a placement, drawn unscaled beside the real one | The `!andPlace` return before `putPlacement` in `forwardFileTransmit` | Removed | `/file-later`, `/temp-later` ("118x20 cells show the source rectangle x=0,y=0,w=1180,h=400, want ... w=2360,h=800") | **caught** |
+
+The `-later` cases store the picture with a=t and place it with a=p, as snacks.nvim does. The check is on the last command for each placement id. The real placement still goes out unclipped for one command before the refresh pass clips it under the same id; that is older than this fix, happens inline too, and is not covered here.
+
+`/direct` passes on every build: an inline PNG's size was already read from its first chunk, and it is the case that shows the test's arithmetic is right.
+
+### A pane in a detached session takes a measured cell
+
+`TestDetachedPaneTakesTheCellOfAClientElsewhere` attaches a client with an 8x16 cell to one session, opens a detached session from the command line, and has its first pane print every pixel size a program can read. Each must be in 8x16 cells, not the 10x20 fallback. Run on 2026-10-19.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| A pane made by a verb takes no cell when it is made | The `CellSize` call in `AddDaemonWindowWith` | Branch skipped | `TestDetachedPaneTakesTheCellOfAClientElsewhere` ("TIOCGWINSZ is 780x440 pixels, want 624;352") | **caught** |
+| A session nobody measures has no cell | The fallback to a client elsewhere in `newPaneCellSize` | Branch skipped | `TestDetachedPaneTakesTheCellOfAClientElsewhere` (same) | **caught** |
+
+`TestDetachedPaneReportsAPixelSize`, where no client is attached anywhere and the fallback cell is right, passes with the fix.
+
+### A session's panes keep their cell with nobody attached
+
+`TestDetachLeavesThePaneCellAlone` runs the pixel guest in a session with a client with an 8x16 cell attached, attaches a client with a 12x24 cell to another session, closes the first client, waits until list-clients shows nobody on the session, and has the daemon recalculate the session's size with a set-option of `daemon.window_size`. Every 2048 report the guest gets must stay in 8x16 cells. The fallback to a client elsewhere is for a new pane only. Run on 2026-10-19.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| The panes of a session nobody is attached to switch to the cell of a client elsewhere | `newPaneCellSize` split out of `sessionCellSize` | The build before the fix, where `sessionCellSize` itself falls back to a client elsewhere | `TestDetachLeavesThePaneCellAlone` ("the guest was told a 12x24 cell"), twice | **caught** |
+
+A plain leave recalculates nothing once no client is left (`notifyClientLeft` only recalculates while `clientCount > 0`), so without the set-option the same build passes: the test needs something that recalculates the size of a session nobody is attached to. A latest hold timer firing after the leave is the other such path. With `newPaneCellSize` returning `sessionCellSize` alone, `TestDetachedPaneTakesTheCellOfAClientElsewhere` fails and this test passes, so the two tests pin the two halves.
+
+### A picture that names no cell box, and an a=t re-send of a placed picture
+
+`TestKittyOverflowCropKeepsThePicturesScale` has two more kinds of case. `-natural` names no cell box, as kitty icat can, so the picture is 200x20 cells at its own size and the host must be left showing fewer cells, cropped 10 of its pixels a column and 20 a row. `-resend` places the picture in its 100x10 box and then sends other pixels under the same id with a=t. Run on 2026-10-19.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| A file a=t under a placed id rewrites the placement's cell box and crop | The `!andPlace` return in `forwardFileTransmit`'s refresh of an existing placement | The build before the fix | `/file-resend`, `/temp-resend` ("the placement is 118x20 cells, want it clipped to fewer than 100x10") | **caught** |
+| A PNG sent by name with no cell box is never placed | The header read in `mediumPixels` | Branch skipped | `/file-natural`, `/temp-natural` ("the image was never left placed") | **caught** |
+
+`/direct-natural` and `/direct-resend` pass on every build: an inline PNG's size was already read from its first chunk, and an inline a=t passes through without touching the placement.
+
+Real kitty icat (0.49.2) through a pane of this build and of main sends `s=`, `v=`, `c=` and `r=` itself: a 2000x400 PNG comes as a 1180x236 bitmap in 118x12 cells, and a 600x200 one as a file in 60x10 cells, the same commands on both builds. So icat at the left of a pane wide enough is not clipped; the `-natural` cases cover a guest that names no box.
+## Agent row after exit
+
+The test is `TestHookClaimLapsesWithTheHarness` in `harness_integrations_test.go`. A program named `claude` (`testdata/fakeclaude`) runs the stand-in script, which replays a Claude Code session with tool calls through the real `tuios agent-hook claude-code`, ends the turn with `Stop`, and then leaves the pane at its shell. The `unreadable-pid` case runs no stand-in: it reports for the pane from outside it with `tuios call set-agent-state` and a `harness_pid` of 2000000000, which no pid namespace on Linux or macOS reaches, as an agent in a container with the socket passed in would, and holds the pane at its shell for three detection ticks. Each control is a text replacement in the branch's checkout, built to a separate binary and put back before the next. Run on 2026-10-18 on macOS against upstream main at 55590f29. The fixed build passes all six cases.
+
+Upstream main, which has no fix, passes every case but `crash`: with no `SessionEnd` the daemon kept the pane `done` with harness `claude-code` and source `report`, and the row (`○ pilot`) stayed with the shell running until the pane closed. The first version of the fix, which took a harness pid that did not read for exited, fails `unreadable-pid`: the pane went to `none` at the first detection pass, to be set again by the agent's next report.
+
+| Control: what was cut | Tests that fail | Verdict |
+| --- | --- | --- |
+| The lapse not wired: the detector's `exited` check on a report claim at the shell replaced with `false` | `crash` ("the agents section still lists the pane after its agent left it, with the shell running") | **caught** |
+| The harness pid kept past `none`: `applyAgentReport` no longer forgets it on a `none` report | `note-after-exit` ("a person's note on the pane was cleared as if the harness had said it") | **caught** |
+| A pid recorded without its start time: `readHarnessProc` marks every pid timed, so one that does not read is taken for exited | `unreadable-pid` ("a harness pid this machine cannot read was taken for exited: the pane is {State:none ...}") | **caught** |
+
+Not covered end to end: a pid given to another process between the harness exiting and the detector looking, which the start time comparison in `harnessProc.exited` tells apart. A test cannot make the system hand a chosen pid to a new process. Nor Windows and other platforms that read no processes, where no start time is recorded and a report claim stays until it is cleared.

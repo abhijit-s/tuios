@@ -1426,11 +1426,12 @@ type Session struct {
 	// sessionGuard reads it to tell a new conversation in the same harness
 	// process (/clear or /resume after an interrupted turn) from a nested run
 	// in another process, and applyAgentSession reads it for the same reason.
-	// It is kept apart from agentClaims because other sources replace the
+	// The detector reads its start time to tell that the harness has exited
+	// (harnessProc). It is kept apart from agentClaims because other sources replace the
 	// claim, and the pid must outlive that. The detector forgets it when it sees
 	// the agent leave the pane. Daemon memory only, and read and written under
 	// stateMu.
-	agentHarnessPIDs map[string]int
+	agentHarnessPIDs map[string]harnessProc
 
 	// agentSharedGuards records, by window ID, the conversations the guard of
 	// a shared-server harness (Codex) protects on that window: the owner and
@@ -1620,6 +1621,10 @@ type SessionConfig struct {
 	// session's newest local client while [daemon] display follows, nil
 	// otherwise. The manager stamps it. See display_follow.go.
 	DisplayEnv func(sessionID string) []string
+	// CellSize returns the cell, in pixels, a new pane of the session takes,
+	// ok false when no client has measured one. The manager stamps it. See
+	// Daemon.newPaneCellSize.
+	CellSize func(sessionID string) (w, h int, ok bool)
 	// PaneToken returns the token a pane with the given window id is started
 	// with, exported as TUIOS_PANE_TOKEN. The manager stamps it with its own.
 	// Nil, or an empty answer, leaves the variable unset. See pane_token.go.

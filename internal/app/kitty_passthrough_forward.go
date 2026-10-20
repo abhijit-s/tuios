@@ -624,6 +624,11 @@ func (kp *KittyPassthrough) forwardFileTransmit(cmd *vt.KittyCommand, windowID s
 		return
 	}
 
+	// Every size below is measured in the image's own pixels. A PNG sent by
+	// name usually states none, and the bytes that hold it are in the file.
+	sized := *cmd
+	sized.Width, sized.Height = kp.mediumPixels(cmd, windowID, filePath)
+
 	// Reuse existing host ID if this window already has a placement for this
 	// guest image ID. This eliminates delete+re-place flicker for video playback:
 	// transmitting with the same ID replaces the image data in-place, and the
@@ -646,7 +651,7 @@ func (kp *KittyPassthrough) forwardFileTransmit(cmd *vt.KittyCommand, windowID s
 		// Reusing ID: check if dimensions changed (e.g., window resize).
 		// If so, delete old placement so it gets recreated at the new size.
 		if p := kp.placements[windowID][imageKey(hostID)]; p != nil {
-			imgRows, imgCols := kp.calculateImageCells(cmd)
+			imgRows, imgCols := kp.calculateImageCells(&sized)
 			if p.Rows != imgRows || p.Cols != imgCols {
 				kp.deleteOnePlacement(p)
 				kp.dropPlacement(windowID, imageKey(hostID))
@@ -713,7 +718,7 @@ func (kp *KittyPassthrough) forwardFileTransmit(cmd *vt.KittyCommand, windowID s
 
 	// Calculate image dimensions in cells
 	// Note: calculateImageCells returns (rows, cols) in that order
-	imgRows, imgCols := kp.calculateImageCells(cmd)
+	imgRows, imgCols := kp.calculateImageCells(&sized)
 
 	// Cap to the content area (not the cursor position) to allow full-height
 	// images. The image will be repositioned by RefreshAllPlacements after
@@ -785,11 +790,11 @@ func (kp *KittyPassthrough) forwardFileTransmit(cmd *vt.KittyCommand, windowID s
 	// case here is precisely the one where it is not: a browser keeps painting
 	// at the old size for as long as its relayout takes.
 	sourceWidth, sourceHeight := cmd.SourceWidth, cmd.SourceHeight
-	if sourceWidth == 0 && displayCols < imgCols && imgCols > 0 && cmd.Width > 0 {
-		sourceWidth = displayCols * (cmd.Width / imgCols)
+	if sourceWidth == 0 && displayCols < imgCols && imgCols > 0 && sized.Width > 0 {
+		sourceWidth = displayCols * (sized.Width / imgCols)
 	}
-	if sourceHeight == 0 && displayRows < imgRows && imgRows > 0 && cmd.Height > 0 {
-		sourceHeight = displayRows * (cmd.Height / imgRows)
+	if sourceHeight == 0 && displayRows < imgRows && imgRows > 0 && sized.Height > 0 {
+		sourceHeight = displayRows * (sized.Height / imgRows)
 	}
 	if sourceWidth > 0 {
 		fmt.Fprintf(&buf, ",w=%d", sourceWidth)
@@ -923,6 +928,16 @@ func (kp *KittyPassthrough) forwardFileTransmit(cmd *vt.KittyCommand, windowID s
 		// delete that rebuilding the entry used to imply.
 		// A frame written at once above is already placed.
 		existing.DataDirty = !placedNow
+		existing.ImagePixelWidth = sized.Width
+		existing.ImagePixelHeight = sized.Height
+		// A transmit that does not place (a=t) replaces the image and nothing
+		// else. The placement keeps the cell box and crop its own command gave
+		// it. Taken from the a=t they would be the picture's own size, and a
+		// cropped placement would come back uncropped over the panes beside it.
+		if !andPlace {
+			kittyPassthroughLog("forwardFileTransmit: replaced the data of hostID=%d, placement kept", hostID)
+			return
+		}
 		existing.GuestX = cursorX
 		existing.AbsoluteLine = scrollbackLen + cursorY
 		existing.HostX = hostX
@@ -935,10 +950,15 @@ func (kp *KittyPassthrough) forwardFileTransmit(cmd *vt.KittyCommand, windowID s
 		existing.SourceY = cmd.SourceY
 		existing.SourceWidth = cmd.SourceWidth
 		existing.SourceHeight = cmd.SourceHeight
-		existing.ImagePixelWidth = cmd.Width
-		existing.ImagePixelHeight = cmd.Height
 		existing.PlacedOnAltScreen = isAltScreen
 		kittyPassthroughLog("forwardFileTransmit: refreshed placement hostID=%d in place", hostID)
+		return
+	}
+	// A transmit that does not place (a=t) stores the image and shows nothing,
+	// which is how the direct path passes it through. The a=p that follows
+	// makes its own placement, at the size it asks for. One made here as well
+	// is drawn by the refresh passes at the image's own size: a second copy.
+	if !andPlace {
 		return
 	}
 	kp.putPlacement(windowID, imageKey(hostID), &PassthroughPlacement{
@@ -964,14 +984,12 @@ func (kp *KittyPassthrough) forwardFileTransmit(cmd *vt.KittyCommand, windowID s
 		Virtual:           cmd.Virtual,
 		Hidden:            true, // Start hidden, RefreshAllPlacements will place it
 		PlacedOnAltScreen: isAltScreen,
-		// The image's own pixel dimensions from the s/v params. The file and
-		// shared-memory path used to drop these, which left every source
-		// rectangle derived from a guess at the host's cell size instead of
-		// from the image, and a guess that is wrong by any amount scales the
-		// bitmap by exactly that ratio. They cost nothing to keep and they are
-		// the only exact answer available.
-		ImagePixelWidth:  cmd.Width,
-		ImagePixelHeight: cmd.Height,
+		// The image's own pixel dimensions (see mediumPixels). Without them
+		// every source rectangle is derived from a guess at the host's cell
+		// size instead of from the image, and a guess that is wrong by any
+		// amount scales the bitmap by exactly that ratio.
+		ImagePixelWidth:  sized.Width,
+		ImagePixelHeight: sized.Height,
 	})
 	kittyPassthroughLog("forwardFileTransmit: stored placement hostID=%d (hidden, waiting for refresh)", hostID)
 }
@@ -1834,6 +1852,22 @@ func (kp *KittyPassthrough) rememberImagePixels(windowID string, guestImageID ui
 		kp.imagePixels[windowID] = make(map[uint32][2]int)
 	}
 	kp.imagePixels[windowID][guestImageID] = [2]int{w, h}
+}
+
+// mediumPixels is the pixel size of an image a file medium names: what the
+// command states, or for a PNG, which kitty lets a guest send without s= and
+// v=, what the file's header says. It is remembered for a later a=p, as the
+// size of an image sent inline is. path is what kittyMediumPath resolved, and
+// is empty for shared memory with no path to read.
+func (kp *KittyPassthrough) mediumPixels(cmd *vt.KittyCommand, windowID, path string) (w, h int) {
+	w, h = cmd.Width, cmd.Height
+	if (w <= 0 || h <= 0) && cmd.Format == vt.KittyFormatPNG && path != "" {
+		if pw, ph, ok := kittyMediumPNGSize(path, cmd.Offset, cmd.Size, cmd.Compression == vt.KittyCompressionZlib); ok {
+			w, h = pw, ph
+		}
+	}
+	kp.rememberImagePixels(windowID, cmd.ImageID, w, h)
+	return w, h
 }
 
 // pngSize reads the width and height from the IHDR chunk of a PNG, which the

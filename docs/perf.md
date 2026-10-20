@@ -3069,6 +3069,35 @@ The change measured 40,960,162 and 38,310,546, so it adds 208,896 and 187,440
 bytes. No third-party dependency was added. The new budgets leave 4,198 and
 4,204 bytes of room.
 
+The linux/amd64 budget went to 40,972,552 when a picture sent as a file
+started to read its pixel size from the PNG header, a placement started to
+keep its cell box through an a=t re-send, and a new pane in a detached session
+started to take the cell of a client attached elsewhere (#906). The build
+before it measured 40,960,162 and 38,310,546 bytes (Go 1.26.9, a clean clone,
+as CI builds it). The change measured 40,968,354 and 38,310,754, so it adds
+8,192 and 208 bytes. No third-party dependency was added. darwin/arm64 stays
+inside its budget with 3,996 bytes of room. The new linux/amd64 budget leaves
+4,198 bytes of room.
+
+The budgets went to 40,988,936 (linux/amd64) and 38,331,278 (darwin/arm64)
+for the fixes that keep a config reload from removing risk rules, hold a
+pane's allow to the prompt on the screen and to the mark of the open prompt,
+open a tape without waiting on a FIFO, and name a pane on herdr agent.start
+as the caller. The build before it measured 40,964,258 and 38,310,754 bytes
+(Go 1.26.9, a clean clone, as CI builds it). The change measured 40,980,642
+and 38,327,282, so it adds 16,384 and 16,528 bytes. No third-party dependency
+was added. The new budgets leave 8,294 and 3,996 bytes of room, as before.
+
+The budgets went to 40,993,032 (linux/amd64) and 38,348,414 (darwin/arm64)
+when the link plane was hardened (#926): a resurrect name is checked before it
+becomes a path, the read deny list holds every credential carrier of the write
+deny list, MsgWatchDir keeps to the read rules, a walk over a link leaves out
+and counts the denied entries, and session names that Windows folds are
+refused. The build before it measured 40,980,642 and 38,327,522 bytes (Go
+1.26.9, a clean clone, as CI builds it). The change measured 40,988,834 and
+38,344,210, so it adds 8,192 and 16,688 bytes. No third-party dependency was
+added. The new budgets leave 4,198 and 4,204 bytes of room.
+
 To raise a budget, do it on purpose in its own commit: run
 `scripts/binary-size.sh` on the Go version in go.mod, set the new budget a
 little above the printed size in the `budget` function of that script, and say
