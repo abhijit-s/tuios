@@ -285,6 +285,9 @@ func (s *Session) CompactWorkspaces() (map[int]int, error) {
 		}
 		newOf := state.closeUp(empty)
 		s.renumberLocked(state, newOf)
+		// Every gap a pane exiting on its own left is closed now, so none is
+		// kept for the next person's change to close a second time.
+		s.gaps = nil
 		for from, to := range newOf {
 			if held[from] {
 				if moved == nil {
