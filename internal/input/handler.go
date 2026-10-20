@@ -155,6 +155,10 @@ func HandleInput(msg tea.Msg, o *app.OS) (tea.Model, tea.Cmd) {
 		if o.InboxReplyOpen() {
 			return o, o.InboxReplyPaste(msg.Content)
 		}
+		if o.CockpitSpawnOpen() {
+			o.CockpitSpawnPaste(msg.Content)
+			return o, nil
+		}
 		if pasteTakenByOverlay(o, msg.Content) {
 			return o, nil
 		}
@@ -207,6 +211,10 @@ func HandleInput(msg tea.Msg, o *app.OS) (tea.Model, tea.Cmd) {
 				return o, nil
 			}
 			return o, o.InboxReplyPaste(msg.Content)
+		}
+		if o.CockpitSpawnOpen() {
+			o.CockpitSpawnPaste(msg.Content)
+			return o, nil
 		}
 		if pasteTakenByOverlay(o, msg.Content) {
 			return o, nil
@@ -512,6 +520,11 @@ func routeKey(msg tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
 	if o.ShowSessionClose {
 		return handleSessionCloseInput(msg, o)
 	}
+	// The restart dialog owns the keyboard the same way: while a restart
+	// runs, no key may reach a pane the daemon is about to take away.
+	if o.DaemonRestartOpen() {
+		return handleDaemonRestartInput(msg, o)
+	}
 
 	// Hints mode owns the keyboard while it is open: a letter is part of a
 	// label, and nothing typed while the labels are up may reach the pane or
@@ -693,8 +706,10 @@ func routeKey(msg tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
 		return HandleTerminalModeKey(msg, o)
 	}
 
-	// Check for prefix key activation in window management mode
-	if isLeaderKey(msg, &o.Settings, o.HostBaseCode(msg)) {
+	// Check for prefix key activation in window management mode. A leader
+	// the prefix_mode table binds, pressed after the leader, runs that
+	// binding through HandlePrefixCommand below.
+	if isLeaderKey(msg, &o.Settings, o.HostBaseCode(msg)) && !leaderBoundInPrefix(msg, o) {
 		return handlePrefixKey(msg, o)
 	}
 
@@ -812,6 +827,18 @@ func isLeaderKey(msg tea.KeyPressMsg, s *config.Settings, base rune) bool {
 		}
 	}
 	return false
+}
+
+// leaderBoundInPrefix reports whether the leader, pressed with the prefix
+// already active, has a binding of its own in the prefix_mode table. That
+// binding wins over what the leader pressed two times does by default
+// (leader_twice), so leader_key = "ctrl+j" with terminal_focus_down on
+// "ctrl+j" focuses down on ctrl+j ctrl+j (issue #866). No default and no
+// preset binds the leader there, so the binding is always the user's, and
+// without one the leader pressed two times keeps its leader_twice meaning.
+func leaderBoundInPrefix(msg tea.KeyPressMsg, o *app.OS) bool {
+	return o.PrefixActive && o.KeybindRegistry != nil &&
+		lookupAction(o, msg, o.KeybindRegistry.GetPrefixAction) != ""
 }
 
 // handlePrefixKey handles Ctrl+B prefix key activation

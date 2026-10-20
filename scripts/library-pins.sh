@@ -80,16 +80,32 @@ commit_of() {
 	git rev-parse --verify --quiet "$ref^{commit}"
 }
 
+# wanted prints "dir module version" for each library version the proxy
+# serves: the version tuios pins, and each version another library of the
+# workspace requires (loom requires plot before tuios imports either).
+wanted() {
+	local dir module version libs
+	libs=$(libraries)
+	while read -r dir module; do
+		version=$(pinned "$module")
+		if [ -n "$version" ] || imported "$module"; then
+			echo "$dir $module $version"
+		fi
+		while read -r other _; do
+			(cd "$other" && go mod edit -json) |
+				jq -r --arg m "$module" '.Require[]? | select(.Path == $m) | .Version'
+		done <<<"$libs" | sort -u | while read -r version; do
+			[ -n "$version" ] && echo "$dir $module $version"
+		done
+	done <<<"$libs" | sort -u
+}
+
 # build_proxy writes a GOPROXY directory with every library at its pin.
 build_proxy() {
 	local out=$1 dir module version commit stage
 	mkdir -p "$out"
 	out=$(cd "$out" && pwd)
-	while read -r dir module; do
-		version=$(pinned "$module")
-		if [ -z "$version" ] && ! imported "$module"; then
-			continue
-		fi
+	while read -r dir module version; do
 		if ! commit=$(commit_of "$dir" "$version"); then
 			echo "$module@${version:-<no pin>}: no commit for this version in this clone" >&2
 			return 1
@@ -108,7 +124,7 @@ build_proxy() {
 			>"$out/$module/@v/$version.info"
 		echo "$version" >>"$out/$module/@v/list"
 		rm -rf "$stage"
-	done < <(libraries)
+	done < <(wanted)
 }
 
 # with_proxy runs a command with GOPROXY set to a directory of the pinned
@@ -197,6 +213,39 @@ check() {
 			continue
 		fi
 		echo "ok   go.work replaces $module@$version with ./$dir"
+	done < <(libraries)
+	# A library that requires another (loom requires plot) at a commit:
+	# the commit must be in this clone, hold the same files as the folder,
+	# and go.work must replace that version with the folder, since nothing
+	# else resolves it. A tagged version such as tml/v0.1.0 resolves alone.
+	local other req commit
+	while read -r dir module; do
+		while read -r other _; do
+			req=$( (cd "$other" && go mod edit -json) |
+				jq -r --arg m "$module" '.Require[]? | select(.Path == $m) | .Version')
+			[ -n "$req" ] || continue
+			if ! commit=$(commit_of "$dir" "$req"); then
+				echo "FAIL $other requires $module@$req, whose commit is not in this clone." >&2
+				status=1
+				continue
+			fi
+			if [[ ! $req =~ [-.][0-9]{14}-[0-9a-f]{12}$ ]]; then
+				echo "ok   $other requires $module@$req, a tag"
+				continue
+			fi
+			if ! git diff --quiet "$commit" -- "$dir"; then
+				echo "FAIL $other requires $module@$req, but $dir/ differs from ${commit:0:12}. Move the pin in $other." >&2
+				status=1
+				continue
+			fi
+			if ! go work edit -json | jq -e --arg m "$module" --arg v "$req" --arg f "./$dir" \
+				'any(.Replace[]?; .Old.Path == $m and .Old.Version == $v and .New.Path == $f)' >/dev/null; then
+				echo "FAIL go.work does not replace $module@$req (required by $other) with ./$dir." >&2
+				status=1
+				continue
+			fi
+			echo "ok   $other requires $module@$req, which matches $dir/ and go.work"
+		done < <(libraries)
 	done < <(libraries)
 	[ "$status" -eq 0 ] || return "$status"
 

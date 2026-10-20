@@ -72,6 +72,9 @@ uses that leader. The offer changes nothing until you press `U` and Enter.
   `send` sends it to the pane (the default) and `last_workspace` goes back to
   the last workspace. The screen preset sets `last_workspace`. `ctrl+c` still
   cancels the leader under every preset.
+- A `prefix_mode` binding on the leader key wins over `leader_twice`. With
+  `leader_key = "ctrl+j"` and `terminal_focus_down = ["ctrl+j"]`, the leader
+  pressed two times focuses the pane below.
 
 `tuios keybinds cheatsheet tmux` shows the keys in three groups: the keys that
 work as in tmux, the tuios keys that moved, and what tmux has that tuios does
@@ -890,6 +893,48 @@ move_window = ["s"]   # Ctrl+B t s instead of Ctrl+B t m
 
 `tuios move-window N` moves a pane to workspace `N` from a shell, and `tuios move-window --to-session` to another session. See [CLI_REFERENCE.md](CLI_REFERENCE.md).
 
+## Restart the daemon
+
+The `restart_daemon` action stops the daemon and starts it again with the
+newest tuios installed. Use it after an update. The action has no default key.
+The command palette has the entry "Restart the daemon". These open it too:
+
+- The notice that says the daemon and this window run different versions,
+  for example "The daemon runs 0.10.0. ctrl+b j restarts it." Click it, or
+  press the key it names. Press `esc` to put it off until the next start.
+- The row "Restart the daemon" at the top of the Daemon tab in the settings.
+- The rail's menu for this machine.
+
+A dialog shows the daemon's version now and after the restart, and this
+window's version when it moves too. It lists the programs that stop, by pane
+and session, and what comes back, with the agents that can resume. The text
+is the text `tuios restart-server` prints. Press `r` to restart, or `esc` to cancel. A click on a row
+does the same. The dialog then shows each step: stop the daemon, start the new
+one, attach again. tuios then starts again on the new build, in the same
+session, and says "The daemon restarted on 0.10.2. Your session is back."
+
+Other clients attached to the daemon wait up to 15 seconds for the new one.
+They then attach to their session again by themselves and say "The daemon
+restarted. tuios reattached." While they wait, the dock says "Waiting for the
+daemon. Keys are not sent." With the dock hidden, the middle of the screen
+says it. Keys typed then are not sent to the panes.
+
+When a step fails, the dialog says what happened and what to do next. When
+a program started or stopped after you agreed, the restart does not run, and
+the dialog asks you to read the new list. When your session did not come
+back, tuios does not attach to it: the dialog says so and points to
+`tuios resurrect`. When
+the daemon did not start, the row is "Quit tuios", and tuios prints the same
+words when it quits. To bind the action:
+
+```toml
+[keybindings.prefix_mode]
+restart_daemon = ["alt+r"]
+```
+
+`tuios restart-server` does the same from a shell. See
+[CLI_REFERENCE.md](CLI_REFERENCE.md#tuios-restart-server).
+
 ## Cycle through workspaces
 
 The `next_workspace` and `prev_workspace` actions go to the next or the
@@ -1381,7 +1426,7 @@ Inside it:
 | `a` `A` `r` `R` | On a held approval: allow once, always allow, reject, reject and say why. `1` `2` `3` still work |
 | `r`, `i`, `tab` | With no approval waiting: write a reply to the agent, or to the mail |
 | `space` | Read an approval's or a question's prompt and answer it here |
-| `n` | Start a new agent. For now this opens the launcher |
+| `n` | Open the New agent sheet. See below |
 | `f` | Show only what needs you, then each kind of item, then every agent |
 | `s` | Step the order inside each group |
 | `/` | Search. A `key:value` term is a selector, such as `harness:codex` |
@@ -1403,6 +1448,30 @@ folded group, or one a search hides, is left out, and closing the view clears
 the marks. An approval whose command does not fit on the card is not answered
 here: the card says so, and `enter` answers it in the pane.
 
+The New agent sheet starts an agent with a task. Write the task, then pick
+the agent, the model, where it works and the machine. `tab` and `shift+tab`
+move between the fields. `left` and `right` change the agent, where it works,
+the attempts and the button. `space` or `down` on the agent opens the list of
+every agent. `up` and `down` on the machines pick one. `v` on the attempts
+gives each attempt a different agent. `ctrl+j` adds a new line to the task.
+`enter` starts. `esc` closes the sheet and keeps what you wrote for the next
+`n`.
+
+| Field | What it does |
+|---|---|
+| Task | The first prompt. It is typed when the agent is ready |
+| Agent | The agents that run now come first, then the installed ones |
+| Model | Passed to the agent as `--model`. Empty uses the agent's default |
+| Where it works | A new worktree on its own branch, or this folder |
+| Branch, Base | The new branch, named after the task until you change it, and where it starts |
+| Machine | This machine and the linked hosts, the most free cores first |
+| Attempts | 1 to 8. Each attempt gets its own worktree and branch |
+
+A new worktree goes through the same path as `tuios fan`, and this folder
+through `tuios start-agent`. Uncommitted files stay in this folder. On a
+linked host the agent works in a new worktree of the host's checkout, which
+the host finds by the repository's origin.
+
 In the image view, which a click on an image chip in the reply opens: `o`
 opens the image in the desktop's viewer, `c` saves a copy and copies its
 path, `s` saves a copy, `left` and `right` step through the images, `+` and
@@ -1410,7 +1479,7 @@ path, `s` saves a copy, `left` and `right` step through the images, `+` and
 
 The mouse works too. A click on a row selects it, and a double-click goes to
 its pane. A click on a group heading folds the group. The buttons on an
-approval card answer it. `+ New agent` starts one, and the search box opens
+approval card answer it. `+ New agent` opens the New agent sheet, and the search box opens
 the search. The wheel scrolls the list, and over the focus it scrolls the
 card. A search narrows the items with the agents. A selector the search line
 cannot read shows its error in the search box.

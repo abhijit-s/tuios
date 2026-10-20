@@ -53,6 +53,9 @@ type UserConfig struct {
 	// PiP is the [pip] table: the size and corner of the picture-in-picture
 	// view that toggle_pip pins. Client-local, like the spotlight. See pip.go.
 	PiP PiPConfig `toml:"pip"`
+
+	// Mermaid is the [mermaid] table: the colours of tuios mermaid. See mermaid.go.
+	Mermaid MermaidConfig `toml:"mermaid"`
 	// Launcher is the [launcher] table: how the app launcher starts a
 	// graphical program. See launcher.go.
 	Launcher LauncherConfig `toml:"launcher"`
@@ -909,7 +912,8 @@ type KeybindingsConfig struct {
 	// LeaderTwice is what the leader pressed two times does: "send" (the
 	// default) sends the leader to the pane in terminal mode and cancels in
 	// window mode; "last_workspace" goes back to the last workspace, as
-	// screen's C-a C-a does. send_prefix sends the leader either way.
+	// screen's C-a C-a does. send_prefix sends the leader either way. A
+	// prefix_mode binding on the leader key wins over both (issue #866).
 	LeaderTwice string `toml:"leader_twice,omitempty"`
 	// KeyboardLayout is the layout tuios assumes for a key the terminal does
 	// not describe: "us" (the default when empty) or "other". With "us" a
@@ -1124,6 +1128,7 @@ func DefaultConfig() *UserConfig {
 		Hints:        defaultHintsConfig(),
 		Scratch:      defaultScratchConfig(),
 		PiP:          defaultPiPConfig(),
+		Mermaid:      MermaidConfig{Theme: "tuios"},
 		Panes:        defaultPanesConfig(),
 		PasteBuffers: defaultPasteBuffersConfig(),
 		Keybindings: KeybindingsConfig{

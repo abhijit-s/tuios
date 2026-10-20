@@ -180,6 +180,10 @@ const (
 	// that the daemon was lost. An older client ignores the type and says the
 	// daemon was lost. See handoff.go.
 	MsgDaemonUpgrading
+	// MsgGoodbye is the daemon's last message to a client before it stops:
+	// why it stops. The daemon sends it only to a client whose hello set
+	// Goodbye. See daemon_goodbye.go.
+	MsgGoodbye
 )
 
 // DaemonUpgradingPayload is the body of MsgDaemonUpgrading: the version the
@@ -312,6 +316,8 @@ type HelloPayload struct {
 	// PaneMarks says the client reads MsgPaneMark. The daemon sends it to no
 	// other client. See pane_marks.go.
 	PaneMarks bool `json:"pane_marks,omitzero"`
+	// Goodbye says the client reads MsgGoodbye. See daemon_goodbye.go.
+	Goodbye bool `json:"goodbye,omitzero"`
 }
 
 // WelcomePayload is sent by server in response to Hello.

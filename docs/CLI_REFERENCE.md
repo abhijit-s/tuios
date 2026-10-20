@@ -1162,7 +1162,97 @@ save and loses any state written since the last periodic save.
 When no daemon is running, the command reports that and removes a stale socket
 if one is present. It exits 0 in that case.
 
+`--restart` tells the attached clients that a new daemon follows, so they wait
+for it and attach again. Without it the clients quit at once.
+`tuios restart-server` passes it.
+
 A restart ends every program running in a pane. To move the daemon to another build with the programs still running, use [`tuios daemon upgrade`](#tuios-daemon-upgrade) instead.
+
+### `tuios restart-server`
+
+Stop the daemon and start it again with the newest tuios installed. Use it
+after an update: the daemon runs the build it started with until it stops.
+
+**Usage:**
+```bash
+tuios restart-server             # show what stops, ask, then restart
+tuios restart-server --dry-run   # show what stops, and change nothing
+tuios restart-server --yes       # restart without a question
+tuios restart-server --last      # show the steps of the last restart
+```
+
+The command first says what a restart does:
+
+```
+Daemon now      0.10.0
+After restart   0.10.2   (from ~/.local/bin/tuios)
+
+These stop:
+  nvim in "edit" (session work)
+  claude in "agent" (session work)
+Only shells in notes.
+
+These come back:
+  Each session, with its layout, its pane history and new shells.
+  claude-code in "agent" (session work) can resume.
+The Inbox offers to resume each one.
+Restart the daemon? [y/N]
+```
+
+Then it stops the daemon, starts the new one and waits until it answers:
+
+```
+Stopping the daemon...
+Starting the daemon 0.10.2...
+The daemon restarted on 0.10.2.
+These sessions came back: work, notes.
+```
+
+- The new daemon runs the newer of two binaries: the tuios at the path of
+  this command, which an update replaces, and the `tuios` on PATH, which an
+  install in the Nix store, mise, asdf or Linuxbrew moves. `--version`
+  decides. When the version after the restart is the daemon's own, the plan
+  says "This restart starts the same version."
+- The stop is `kill-server`, so every session is saved first. The new daemon
+  restores every saved session before it answers.
+- The stop and the start run in a process of their own, in a session of its
+  own and deaf to SIGHUP. So a restart run in a pane of the daemon it stops
+  finishes. Each step goes to `restart.log` beside the daemon log, and
+  `--last` shows it.
+- One restart runs at a time. A second one refuses while the first runs.
+- `daemon.resume_agents` says what the new daemon does with the agent
+  conversations: `ask` puts a Resume item in the Inbox, `auto` resumes them,
+  and `off` leaves them to `tuios resume-agent`.
+- The command asks in every state but a stopped daemon, a daemon that did
+  not answer included. With no terminal to ask on, it refuses unless `--yes`
+  is given. `--json` needs `--yes`. Nothing is changed when it refuses.
+- When the daemon is not running, the command starts it.
+
+The app runs this command from the command palette ("Restart the daemon"),
+from the version notice, from the Daemon tab of the settings and from the
+rail's menu for this machine. It then starts again in the same session.
+Other attached clients wait up to 15 seconds for the new daemon and attach
+to their session again. See
+[KEYBINDINGS.md](KEYBINDINGS.md#restart-the-daemon).
+
+`--expect DIGEST` refuses the restart unless the plan has that digest. The
+app passes the digest of the plan the person agreed to, so a program that
+started since makes the restart refuse: "What a restart stops changed after
+you agreed to it." Nothing is changed.
+
+`--json` writes one JSON object per line: `plan`, then `stopping`,
+`starting` and `done`. The `plan` object holds `binary`, `version`, `daemon`
+(with each session's `busy` panes and its `resume` agents) and
+`resume_mode`. The `done` object holds `restarted`, `after`, `back` and
+`missing`. A failed step sets `error` and `fix`, and the command exits 1.
+
+| Error | Next step |
+| --- | --- |
+| "The daemon did not stop. It still runs version X." | Run `tuios kill-server` to see why. |
+| "The daemon did not start." | Run `tuios start-server` to see why. The sessions come back when the daemon starts. |
+| "The daemon started and did not answer." | Run `tuios ls` to check it, or `tuios logs`. |
+| "Another restart of the daemon is running." | Wait for it to end. `tuios restart-server --last` shows its steps. |
+| "The restart stopped before it finished." | Run `tuios restart-server --last`, then `tuios ls`. |
 
 ### `tuios daemon`
 
@@ -2834,7 +2924,7 @@ tuios commands from them still reach the session. Attach and kill-session by
 the old name fail and name the new one. The rename also clears a label set
 with `tuios set-session-name`. The name of a running or saved session is
 refused. A daemon older than this command answers that it does not know it.
-Run `tuios kill-server` and start tuios again.
+Run `tuios restart-server`.
 
 With one argument, the session is the one given by `-s`, or else the session
 of the pane you run it in.
@@ -3423,8 +3513,11 @@ the command says so and points at `tuios new-window`.
 `custom_name` is present only on a window that was given a name, `cwd` only
 when the shell has reported its directory, and `host` only when the window's
 process runs on another machine. `agent_message` and `agent_state_at` appear
-once a pane has reported an agent state. The daemon answers this from its own
-state, so the shape is the same whether or not a client is attached.
+once a pane has reported an agent state. `agent_resumable` names the harness
+of a pane whose agent conversation a daemon restart would offer back, and is
+absent on every other pane. `tuios restart-server` reads it. The daemon answers
+this from its own state, so the shape is the same whether or not a client is
+attached.
 
 ### `tuios get-window`
 
@@ -3643,7 +3736,7 @@ tuios capture-pane [flags]
 - `--trim`: Drop the blank lines at the end of the capture.
 
 A daemon older than this tuios refuses `--unwrap` and `--trim`. The command
-then says to run `tuios kill-server` and start tuios again.
+then says to run `tuios restart-server`.
 
 A `--ansi` capture without `--resolved` keeps the guest's SGR indices (e.g.
 `\x1b[31m`); the consumer resolves them against its own palette. `--resolved`
@@ -4674,6 +4767,71 @@ fi
 
 ---
 
+### `tuios mermaid`
+
+Draw the Mermaid diagrams of a file in the terminal, or save them as SVG or PNG.
+
+**Usage:**
+```bash
+tuios mermaid FILE [--format svg|png|kitty|text] [-o FILE] [--diagram N] [--theme NAME]
+```
+
+FILE is a Mermaid source (`.mmd`), a Markdown file, or `-` for standard input.
+A Markdown file gives each of its `mermaid` code blocks.
+
+| Output | When |
+|--------|------|
+| `kitty` | The terminal shows kitty graphics: kitty itself, or tuios on such a terminal. The picture fits the terminal |
+| `text` | Any other terminal. Box-drawing characters draw the diagram, and the labels are text |
+| `svg` | The output is not a terminal |
+
+`text` draws flowcharts and sequence diagrams. Another type, or a drawing too
+wide for the terminal, is written as its source.
+
+`-o FILE` saves to a file, as SVG or PNG from its extension. With more than one
+diagram, the files get `-2`, `-3` and so on. `--scale` sets the pixels per SVG
+unit of a PNG, 2 by default. `--cols` and `--rows` set the size in cells.
+
+The colours come from your tuios theme, held to contrast floors against the
+terminal background. `--theme NAME`, or `theme` in `[mermaid]`, picks another
+theme:
+
+| Theme | From |
+|-------|------|
+| `tuios` | Your tuios theme. This is the default |
+| `pele` | pele's own colours |
+| `flexoki`, `flexoki-dark` | The pele.run site, light and dark |
+| `nord`, `everforest`, `gruvbox`, `rose-pine` | pele's launch video |
+| `catppuccin-mocha`, `catppuccin-latte`, `tokyo-night`, `dracula`, `solarized-light`, `kanagawa` | Those terminal themes |
+
+Text in a theme colour that lands on a fill the diagram sets itself changes to
+the theme's text or background colour, where that reads better.
+
+**Live view:**
+```bash
+tuios mermaid FILE --watch [--split]
+tuios mermaid [FILE] --demo [--loop]
+```
+
+`--watch` fills the terminal with the diagram and draws it again each time the
+file is saved. In a terminal with kitty graphics the diagram moves to its new
+layout: boxes slide and grow, new parts fade in, removed parts fade out. In
+other terminals the text drawing is drawn again. `--split` shows the source
+beside the diagram, or above it on a tall terminal. `--motion` sets the length
+of a motion, 260ms by default.
+
+`--demo` types a diagram one character at a time, for a recording. With FILE it
+types that diagram line by line, or the diagrams of a Markdown file one after
+the other. Without FILE it types a built-in flowchart. `--loop` starts again
+two seconds after the end. Press `r` to start again and `q` to quit.
+
+The live view sends no frames and uses no CPU while nothing moves.
+tuios.dev/sketch draws the diagrams. It is a Go port of pele
+and draws flowcharts, sequence diagrams, state diagrams, class diagrams, ER diagrams, pie charts, mindmaps and gantt charts now. A diagram of another type gives
+an error and its source. The command exits 1 when a diagram cannot be drawn.
+
+---
+
 ### `tuios mcp`
 
 Serve tuios to an agent harness as a Model Context Protocol server over stdin
@@ -5449,7 +5607,7 @@ at all: both are downloaded and verified before either is put in place.
 A file that does not match is discarded, nothing is installed, and the old
 binary is untouched.
 
-**The running daemon** keeps the old build, and update leaves it alone. Sessions you have open go on working. On macOS and Linux, `tuios daemon upgrade` moves the running daemon to the installed build with every pane's program still running; see [`tuios daemon upgrade`](#tuios-daemon-upgrade). It says why when the daemon cannot be upgraded live, and then `tuios kill-server` and starting tuios again moves it: panes are restored, and the programs that were running in them are not. update prints both commands, with `--server NAME` on a named server.
+**The running daemon** keeps the old build, and update leaves it alone. Sessions you have open go on working. On macOS and Linux, `tuios daemon upgrade` moves the running daemon to the installed build with every pane's program still running; see [`tuios daemon upgrade`](#tuios-daemon-upgrade). It says why when the daemon cannot be upgraded live, and then [`tuios restart-server`](#tuios-restart-server) moves it: panes are restored, and the programs that were running in them are not. update prints both commands, with `--server NAME` on a named server.
 
 Set `GITHUB_TOKEN` or `GH_TOKEN` to raise the release lookup's rate limit. It is
 never required and no token is created for you.
@@ -5979,7 +6137,7 @@ Most likely cause: TUIOS was upgraded while the daemon kept running, so the old 
 Fix: run 'tuios kill-server', then run this command again.
 ```
 
-Run `tuios kill-server`. This ends every program running in your panes. Each
+Run `tuios restart-server`. It lists what stops and asks first. A restart ends every program running in your panes. Each
 session's layout, window names and working directories are saved before the
 daemon exits and come back when it next starts, each pane with a new shell;
 `tuios resurrect` lists what is restorable.

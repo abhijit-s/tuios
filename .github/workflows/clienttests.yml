@@ -20,6 +20,8 @@ on:
       - "swatch/**"
       - "shot/**"
       - "tml/**"
+      - "plot/**"
+      - "loom/**"
       - "cmd/tuios-web/**"
       - "internal/app/**"
       - "internal/input/**"

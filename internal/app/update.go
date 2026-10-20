@@ -280,6 +280,12 @@ const (
 	// and attaching again continues the session. The version it became is
 	// the client's UpgradedTo.
 	ExitDaemonUpgraded
+	// ExitRestarted means the person restarted the daemon from the app and
+	// the new one answers. The entry point runs RestartExec to come back.
+	ExitRestarted
+	// ExitRestartFailed means a restart from the app failed after the old
+	// daemon stopped. RestartFailure says what to do next.
+	ExitRestartFailed
 )
 
 // InputHandler is a function type that handles input messages.
@@ -978,6 +984,11 @@ func (m *OS) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if side := m.CockpitSideWanted(); side != nil {
 		agents = tea.Batch(agents, side)
 	}
+	// The restart dialog's plan, on the same beat: the palette, a menu, the
+	// settings and the notice can each open the dialog. See daemon_restart.go.
+	if plan := m.restartPlanCmd(); plan != nil {
+		agents = tea.Batch(agents, plan)
+	}
 	// The maintenance tick last, after every sync above has said what it asked
 	// for: it is armed for the earliest job that is due, and not at all when
 	// none is. See nextWake.
@@ -1560,6 +1571,12 @@ func (m *OS) handleMsg(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 		m.renderSkipped = false
 		return m, cmd
 
+	case spawnInfoMsg:
+		m.applySpawnInfo(msg)
+		return m, nil
+	case spawnStartedMsg:
+		m.applySpawnStarted(msg)
+		return m, nil
 	case worktreeCreatedMsg:
 		// A worktree create that finished on its own goroutine, possibly after a
 		// clone's worth of minutes. The handler attaches to the session it made,
@@ -1939,6 +1956,7 @@ func (m *OS) handleMsg(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 			m.syncScratchView()
 			// Said once, on the first frame that has a screen to say it on.
 			m.warnOnBuildMismatch()
+			m.announceRestart()
 		}
 
 		// Notify daemon of our terminal size for multi-client size calculation
@@ -2475,6 +2493,11 @@ func (m *OS) handleMsg(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 		return m, ListenForClientEvents(m.ClientEventChan)
 
 	case DaemonDisconnectedMsg:
+		// A restart from the app stops the daemon on purpose. The dialog
+		// shows the steps, and the client goes on until they end.
+		if m.noteRestartDisconnect() {
+			return m, ListenForDaemonExit(m.daemonExitChan())
+		}
 		// The daemon connection was lost and cannot be recovered; quit cleanly
 		// so the user is not left staring at a frozen, unresponsive session.
 		// After a deliberate quit the drop is the expected consequence of
@@ -2509,6 +2532,14 @@ func (m *OS) handleMsg(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 			m.ExitReason = ExitHostLost
 			return m, tea.Quit
 		}
+		// The daemon on this machine may be restarting: wait a moment for
+		// the new one, and attach to the session it restored.
+		if cmd := m.beginDaemonReconnect(); cmd != nil {
+			return m, tea.Batch(cmd, ListenForDaemonExit(m.daemonExitChan()))
+		}
+		if m.ReconnectingToDaemon() {
+			return m, ListenForDaemonExit(m.daemonExitChan())
+		}
 		if !m.QuitRequested {
 			m.ExitReason = ExitDaemonLost
 			if m.DaemonClient != nil {
@@ -2519,6 +2550,15 @@ func (m *OS) handleMsg(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 		}
 		return m, tea.Quit
 
+	case daemonReconnectTickMsg:
+		return m, m.handleDaemonReconnectTick(msg)
+
+	case daemonReconnectResultMsg:
+		return m, m.handleDaemonReconnectResult(msg)
+
+	case restartPlanMsg, restartStepMsg, restartEndMsg, restartQuitMsg:
+		return m, m.handleRestartMsg(msg)
+
 	case hostReconnectTickMsg:
 		return m, m.handleHostReconnectTick(msg)
 
@@ -2526,6 +2566,10 @@ func (m *OS) handleMsg(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 		return m, m.handleHostReconnectResult(msg)
 
 	case SessionEndedMsg:
+		// The old daemon ending its sessions is part of a restart.
+		if m.restart.running() {
+			return m, ListenForDaemonExit(m.daemonExitChan())
+		}
 		// The session was destroyed underneath this client. Its windows are
 		// gone and its PTYs are closed, so there is nothing left to render and
 		// nothing to sync back. Record why and quit; the caller reports it and

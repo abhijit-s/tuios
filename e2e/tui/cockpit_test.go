@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -285,8 +286,9 @@ func saveCockpitFrames(t *testing.T, term *tuitest.Terminal, name string) {
 // TestCockpitThreadCards reads a Claude Code transcript as cards: a run of
 // reads folds to one line, the Edit opens on its diff with the changed words
 // lit, the todo list is a plan with its count, and the failed command shows
-// its output. A click on the diff's header folds it, and ] shows the last
-// turn's changes alone.
+// its output. The agent's Markdown is drawn: strong, lists, a highlighted
+// code block and a link. A click on the diff's header folds it, and ] shows
+// the last turn's changes alone.
 //
 // Negative controls, recorded in NEGATIVE_CONTROLS.md: with the changed
 // range left out of the diff lines the word check fails; with the todos
@@ -335,7 +337,8 @@ func TestCockpitThreadCards(t *testing.T) {
 	for _, sz := range [][2]int{{200, 55}, {100, 30}} {
 		// Each size attaches a session of its own, so the two clients do
 		// not share a size.
-		term := startIn(t, base, startOpts{args: []string{"attach", "home" + strconv.Itoa(sz[0])}, cols: sz[0], rows: sz[1], shippedLooks: true, env: []string{"TERM=xterm-256color", "COLORTERM=truecolor"}})
+		out := &lockedBuffer{}
+		term := startIn(t, base, startOpts{args: []string{"attach", "home" + strconv.Itoa(sz[0])}, cols: sz[0], rows: sz[1], shippedLooks: true, out: out, env: []string{"TERM=xterm-256color", "COLORTERM=truecolor"}})
 		if err := term.WaitFor(func(s tuitest.Screen) bool { return countWindows(s) == 1 }, bootTimeout); err != nil {
 			t.Fatalf("client never attached: %v\n%s", err, term.Snapshot())
 		}
@@ -368,6 +371,10 @@ func TestCockpitThreadCards(t *testing.T) {
 		}, uiTimeout); err != nil {
 			t.Fatalf("ASSERTION: the thread has no plan card: %v\n%s", err, term.Snapshot())
 		}
+		// Above the plan, the agent's Markdown is drawn, not shown raw.
+		scrollTo("K", "refresh loop")
+		cockpitMarkdown(t, term, out, scrollTo)
+		saveCockpitFrames(t, term, "markdown-"+strconv.Itoa(sz[0])+"x"+strconv.Itoa(sz[1]))
 		scrollTo("J", "Add(refreshSkew).Before")
 		if err := term.WaitForText("Add(refreshSkew).Before", uiTimeout); err != nil {
 			t.Fatalf("ASSERTION: the thread has no diff card: %v\n%s", err, term.Snapshot())
@@ -423,6 +430,70 @@ func TestCockpitThreadCards(t *testing.T) {
 			t.Fatal(err)
 		}
 		alive(t, term, "after the thread cards")
+	}
+}
+
+// cockpitMarkdown checks the agent's Markdown message of cockpit-auth.jsonl
+// as the thread draws it: no markup left, strong text bold, a bullet for each
+// item, the code block on a ground of its own with its keywords coloured,
+// the link underlined and sent as OSC 8, and escape sequences and a
+// javascript: link in the text kept from the host.
+func cockpitMarkdown(t *testing.T, term *tuitest.Terminal, out *lockedBuffer, scrollTo func(key, want string)) {
+	t.Helper()
+	if err := term.WaitFor(func(s tuitest.Screen) bool {
+		return containsAll(s.Text(), "in token.go and the refresh loop reads it", "• Move the check to a method with a skew",
+			"return now.Add(refreshSkew).After(t.Expiry)")
+	}, uiTimeout); err != nil {
+		t.Fatalf("ASSERTION: the Markdown message is not drawn: %v\n%s", err, term.Snapshot())
+	}
+	s := term.Screen()
+	text := s.Text()
+	for _, raw := range []string{"**refresh", "`token.go`", "```", "](https://"} {
+		if strings.Contains(text, raw) {
+			t.Fatalf("ASSERTION: the thread shows the Markdown %q raw\n%s", raw, term.Snapshot())
+		}
+	}
+	cell := func(needle string, off int) tuitest.Cell {
+		t.Helper()
+		row := rowWith(s, needle)
+		if row < 0 {
+			t.Fatalf("no row holds %q\n%s", needle, term.Snapshot())
+		}
+		line := s.Line(row)
+		col := len([]rune(line[:strings.Index(line, needle)])) + off
+		return s.Cell(col, row)
+	}
+	if !cell("and the refresh loop reads", 8).Bold || cell("and the refresh loop reads", 0).Bold {
+		t.Fatalf("ASSERTION: the strong words are not bold, or the words before them are\n%s", term.Snapshot())
+	}
+	fn, name := cell("func (t Token)", 0), cell("func (t Token)", 5)
+	if fn.Fg == name.Fg {
+		t.Fatalf("ASSERTION: the code block is not highlighted: func and its receiver share a colour\n%s", term.Snapshot())
+	}
+	if fn.Bg == cell("in token.go and", -3).Bg {
+		t.Fatalf("ASSERTION: the code block has no ground of its own\n%s", term.Snapshot())
+	}
+	scrollTo("J", "See RFC 6749 for the refresh rules.")
+	s = term.Screen()
+	if !cell("RFC 6749", 0).Underline || cell("See RFC 6749", 0).Underline {
+		t.Fatalf("ASSERTION: the link is not underlined, or the word before it is\n%s", term.Snapshot())
+	}
+	link := regexp.MustCompile(`\x1b\]8;[^;\x07\x1b]*;` + regexp.QuoteMeta("https://www.rfc-editor.org/rfc/rfc6749") + `(\x07|\x1b\\)`)
+	deadline := time.Now().Add(uiTimeout)
+	for !link.MatchString(out.String()) {
+		if time.Now().After(deadline) {
+			t.Fatalf("ASSERTION: no frame carries the link as OSC 8\n%s", term.Snapshot())
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	// Escape sequences in the text reach the host as text, never as
+	// sequences, and a javascript: link opens nothing.
+	scrollTo("J", "not a link")
+	if err := term.WaitForText("not a link", uiTimeout); err != nil {
+		t.Fatalf("ASSERTION: the message's last line is not drawn: %v\n%s", err, term.Snapshot())
+	}
+	if raw := out.String(); strings.Contains(raw, "\x1b]0;pwned") || strings.Contains(raw, "\x1b[31mred") || strings.Contains(raw, "javascript:") {
+		t.Fatalf("ASSERTION: an escape sequence or a javascript: link in the message reached the host terminal\n%s", term.Snapshot())
 	}
 }
 
@@ -699,4 +770,230 @@ func TestCockpitSideTabs(t *testing.T) {
 	waitText(t, term, "the pane tab", "TAB-marker-3")
 	saveCockpitFrames(t, term, "pane-tab-100x30")
 	alive(t, term, "after the side tabs")
+}
+
+// TestCockpitSpawnSheet starts an agent from the New agent sheet, the way a
+// person does: n opens the sheet over the cockpit, the task is typed, the
+// branch follows it, and enter starts the agent. A pane appears in a new
+// worktree on that branch and the fake claude reads the task. Then the
+// mouse starts a second agent in this folder: a click on This folder and a
+// click on Start. Frames at 200x55, 100x30 and 16 colours are kept.
+//
+// Negative controls, recorded in NEGATIVE_CONTROLS.md: with n opening the
+// launcher again the sheet never shows; with the branch left out of the fan
+// call the worktree is not on agent/lru-cache-safe.
+func TestCockpitSpawnSheet(t *testing.T) {
+	base, repo := fanFixture(t)
+	// Only the fake claude: an agent installed on this machine must never
+	// start from a test.
+	t.Setenv("PATH", strings.SplitN(os.Getenv("PATH"), string(os.PathListSeparator), 2)[0]+string(os.PathListSeparator)+"/usr/bin:/bin")
+	useShippedLooks(base)
+	for _, s := range []string{"home", "frames0", "frames1", "frames2"} {
+		if out, err := tuiosCLI(t, base, "new", s, "--detach", "--cwd", repo); err != nil {
+			t.Fatalf("create session %s: %v\n%s", s, err, out)
+		}
+	}
+	open := func(sess string, cols, rows int, env ...string) *tuitest.Terminal {
+		t.Helper()
+		term := startIn(t, base, startOpts{args: []string{"attach", sess}, cols: cols, rows: rows, shippedLooks: true, env: env})
+		if err := term.WaitFor(func(s tuitest.Screen) bool { return countWindows(s) >= 1 }, bootTimeout); err != nil {
+			t.Fatalf("client never attached: %v\n%s", err, term.Snapshot())
+		}
+		windowManagementMode(t, term)
+		if err := term.SendKeys(tuitest.Ctrl('b'), "i"); err != nil {
+			t.Fatal(err)
+		}
+		waitText(t, term, "the cockpit", "Agents", "New agent")
+		if err := term.SendKeys("n"); err != nil {
+			t.Fatal(err)
+		}
+		waitText(t, term, "the spawn sheet", "Task", "Where it works", "Machine", "best fit first", "Attempts", "Start agent")
+		return term
+	}
+	term := open("home", 200, 55, "TERM=xterm-256color", "COLORTERM=truecolor")
+	// The folder is read: the title names the repository and its branch,
+	// and the base is that branch.
+	waitText(t, term, "the folder read", "from "+filepath.Base(repo)+" / ", "claude ready")
+	if err := term.SendKeys("Make the LRU cache safe for concurrent reads."); err != nil {
+		t.Fatal(err)
+	}
+	waitText(t, term, "the branch named after the task", "agent/lru-cache-safe", "from the task")
+	_ = term.WaitStable(uiTimeout)
+	saveCockpitFrames(t, term, "spawn-sheet-200x55")
+
+	// esc closes the sheet and keeps it: n opens it with the task.
+	if err := term.SendKeys(tuitest.Esc); err != nil {
+		t.Fatal(err)
+	}
+	if err := term.WaitFor(func(s tuitest.Screen) bool { return !strings.Contains(s.Text(), "Where it works") }, uiTimeout); err != nil {
+		t.Fatalf("ASSERTION: esc did not close the sheet: %v\n%s", err, term.Snapshot())
+	}
+	if err := term.SendKeys("n"); err != nil {
+		t.Fatal(err)
+	}
+	waitText(t, term, "the kept draft after esc", "Where it works", "Make the LRU cache safe for concurrent reads.", "agent/lru-cache-safe")
+
+	// enter starts the agent in a new worktree and closes the sheet.
+	if err := term.SendKeys(tuitest.Enter); err != nil {
+		t.Fatal(err)
+	}
+	if err := term.WaitFor(func(s tuitest.Screen) bool { return !strings.Contains(s.Text(), "Where it works") }, uiTimeout); err != nil {
+		t.Fatalf("ASSERTION: enter did not close the sheet: %v\n%s", err, term.Snapshot())
+	}
+	deadline := time.Now().Add(40 * time.Second)
+	for {
+		rows := worktreeRows(t, base, "--group", "agent/lru-cache-safe")
+		if len(rows) == 1 && rows[0]["prompt_status"] == "sent" && rows[0]["branch"] == "agent/lru-cache-safe" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("ASSERTION: the sheet never made a worktree on agent/lru-cache-safe with the task sent: %v", rows)
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	pane, err := tuiosCLI(t, base, "capture-pane", "-s", "repo-agent-lru-cache-safe")
+	if err != nil {
+		t.Fatalf("capture-pane: %v: %s", err, pane)
+	}
+	if !strings.Contains(pane, "GOT: Make the LRU cache safe for concurrent reads.") {
+		t.Fatalf("ASSERTION: the agent in the new worktree never read the task:\n%s", pane)
+	}
+
+	// The mouse: n again, a task, a click on This folder, a click on Start.
+	if err := term.SendKeys("n"); err != nil {
+		t.Fatal(err)
+	}
+	waitText(t, term, "the sheet again", "Where it works")
+	if err := term.SendKeys("Read the README."); err != nil {
+		t.Fatal(err)
+	}
+	waitText(t, term, "the second task", "Read the README.", "agent/read-readme")
+	// A branch typed by the person stops following the task.
+	for range 4 {
+		if err := term.SendKeys(tuitest.Tab); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := term.SendKeys(tuitest.Ctrl('u'), "docs/readme"); err != nil {
+		t.Fatal(err)
+	}
+	waitText(t, term, "the typed branch", "docs/readme")
+	for range 4 {
+		if err := term.SendKeys(tuitest.Key("\x1b[Z")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := term.SendKeys(" Twice."); err != nil {
+		t.Fatal(err)
+	}
+	waitText(t, term, "the longer task", "Read the README. Twice.")
+	if s := term.Screen().Text(); !strings.Contains(s, "docs/readme") || strings.Contains(s, "from the task") {
+		t.Fatalf("ASSERTION: the branch the person typed followed the task again:\n%s", term.Snapshot())
+	}
+	row, col := findText(t, term, "This folder")
+	mouseClick(t, term, col, row, tuitest.MouseLeft, 0)
+	// This folder takes no branch: the branch field goes quiet and the
+	// sheet still shows the folder's radio picked.
+	if err := term.WaitFor(func(s tuitest.Screen) bool {
+		return strings.Contains(s.Text(), "● This folder")
+	}, uiTimeout); err != nil {
+		t.Fatalf("ASSERTION: a click on This folder did not pick it: %v\n%s", err, term.Snapshot())
+	}
+	row, col = findText(t, term, "Start agent")
+	mouseClick(t, term, col+2, row, tuitest.MouseLeft, 0)
+	if err := term.WaitFor(func(s tuitest.Screen) bool {
+		return strings.Contains(s.Text(), "Starting claude in this folder.") || strings.Contains(s.Text(), "Started claude in home.")
+	}, uiTimeout); err != nil {
+		t.Fatalf("ASSERTION: a click on Start said nothing: %v\n%s", err, term.Snapshot())
+	}
+	deadline = time.Now().Add(40 * time.Second)
+	for {
+		found := false
+		for _, w := range []string{"0", "1", "2", "3"} {
+			if p, err := tuiosCLI(t, base, "capture-pane", "-s", "home", "-w", w); err == nil && strings.Contains(p, "GOT: Read the README. Twice.") {
+				found = true
+			}
+		}
+		if found {
+			break
+		}
+		if time.Now().After(deadline) {
+			out, _ := tuiosCLI(t, base, "list-windows", "-s", "home", "--json")
+			t.Fatalf("ASSERTION: the agent started in this folder never read the task:\n%s\n%s", out, term.Snapshot())
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	alive(t, term, "after two starts from the sheet")
+
+	// A start the daemon refuses keeps the draft, and a base that starts
+	// with - is refused before anything is sent.
+	if err := term.SendKeys("n"); err != nil {
+		t.Fatal(err)
+	}
+	waitText(t, term, "the sheet for a refused start", "Where it works")
+	if err := term.SendKeys("Fail on purpose."); err != nil {
+		t.Fatal(err)
+	}
+	waitText(t, term, "the third task", "Fail on purpose.")
+	row, col = findText(t, term, "New worktree")
+	mouseClick(t, term, col, row, tuitest.MouseLeft, 0)
+	// The click leaves the keys on Where it works: Base is two fields on.
+	for range 2 {
+		if err := term.SendKeys(tuitest.Tab); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := term.SendKeys(tuitest.Ctrl('u'), "--force", tuitest.Enter); err != nil {
+		t.Fatal(err)
+	}
+	waitText(t, term, "the refused base", "A base cannot start with -.")
+	if err := term.SendKeys(tuitest.Ctrl('u'), "no-such-base", tuitest.Enter); err != nil {
+		t.Fatal(err)
+	}
+	waitText(t, term, "the refused start", "The agent did not start")
+	if err := term.SendKeys("n"); err != nil {
+		t.Fatal(err)
+	}
+	waitText(t, term, "the draft kept after a refused start", "Where it works", "Fail on purpose.", "no-such-base")
+	if err := term.SendKeys(tuitest.Esc); err != nil {
+		t.Fatal(err)
+	}
+
+	// The narrow layout and the 16 colour one, for the frames.
+	for i, v := range []struct {
+		name       string
+		cols, rows int
+		env        []string
+		fan        bool
+	}{
+		{"spawn-sheet-fan-200x55", 200, 55, []string{"TERM=xterm-256color", "COLORTERM=truecolor"}, true},
+		{"spawn-sheet-100x30", 100, 30, []string{"TERM=xterm-256color", "COLORTERM=truecolor"}, false},
+		{"spawn-sheet-16", 160, 45, []string{"TERM=xterm", "COLORTERM="}, false},
+	} {
+		small := open("frames"+strconv.Itoa(i), v.cols, v.rows, v.env...)
+		if err := small.SendKeys("Make the LRU cache safe for concurrent reads. Keep Get lock-free if you can."); err != nil {
+			t.Fatal(err)
+		}
+		want := []string{"concurrent"}
+		if v.cols >= 120 {
+			// Only the wide layout says the agent is ready on the machine.
+			want = append(want, "claude ready")
+		}
+		waitText(t, small, "the task on "+v.name, want...)
+		if v.fan {
+			// Three attempts, each with its own agent.
+			for range 7 {
+				if err := small.SendKeys(tuitest.Tab); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := small.SendKeys("+", "+", "v"); err != nil {
+				t.Fatal(err)
+			}
+			waitText(t, small, "three attempts", "Start 3 agents", "+ vary")
+		}
+		_ = small.WaitStable(uiTimeout)
+		saveCockpitFrames(t, small, v.name)
+		alive(t, small, "on "+v.name)
+	}
 }

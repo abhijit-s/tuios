@@ -458,5 +458,5 @@ func explainLookupError(err error, prerelease bool) error {
 func reportDaemonAfterUpdate(out io.Writer) {
 	fmt.Fprintln(out, "The daemon is still running the old build. Sessions you have open keep working.")
 	fmt.Fprintln(out, "To move it to the new one and keep every program running, run `"+serverCommand("daemon upgrade")+"` (experimental).")
-	fmt.Fprintln(out, "It says why when the daemon cannot be upgraded live. `"+killServerCommand()+"` then restarts it: panes are restored, but programs running in them are not.")
+	fmt.Fprintln(out, "It says why when the daemon cannot be upgraded live. `"+serverCommand("restart-server")+"`, or \"Restart the daemon\" in the command palette, then restarts it: the panes come back, but the programs in them stop.")
 }

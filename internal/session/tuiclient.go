@@ -41,6 +41,15 @@ type DisconnectHandler func(err error)
 // TUIClient is used by the TUIOS TUI to communicate with the daemon.
 // It handles PTY I/O and state synchronization.
 type TUIClient struct {
+	// HandshakeTimeout, when set, bounds the dial and each read of the
+	// handshake, instead of the 30 seconds an attach is given. A client that
+	// dials a daemon that may still be starting sets it. See handshaking.
+	HandshakeTimeout time.Duration
+	handshaking      bool
+	// goodbye is the daemon's last word before it closed, and when it came.
+	// See daemon_goodbye.go.
+	goodbye atomic.Pointer[Goodbye]
+
 	// Served and AllowNested are sent with every attach. Set them before the
 	// first one. See AttachPayload.
 	Served      bool
@@ -385,14 +394,21 @@ func (c *TUIClient) ConnectWithCapabilities(version string, width, height int, c
 		return fmt.Errorf("failed to get socket path: %w", err)
 	}
 
-	conn, err := net.DialTimeout("unix", socketPath, 5*time.Second)
+	dialWait := 5 * time.Second
+	if c.HandshakeTimeout > 0 {
+		dialWait = min(dialWait, c.HandshakeTimeout)
+	}
+	conn, err := net.DialTimeout("unix", socketPath, dialWait)
 	if err != nil {
 		return fmt.Errorf("failed to connect to daemon: %w", err)
 	}
 	c.conn = conn
 	c.br = nil
 
-	if err := c.handshake(version, width, height, caps); err != nil {
+	c.handshaking = true
+	err = c.handshake(version, width, height, caps)
+	c.handshaking = false
+	if err != nil {
 		_ = conn.Close()
 		return err
 	}
@@ -422,6 +438,8 @@ func (c *TUIClient) handshake(version string, width, height int, caps *ClientCap
 		ListingPush: true,
 		// See pane_marks.go.
 		PaneMarks: true,
+		// See daemon_goodbye.go.
+		Goodbye: true,
 	}
 
 	// Add graphics capabilities if provided
@@ -544,6 +562,13 @@ func (c *TUIClient) noteDaemonBuild(clientVersion, daemonVersion string) {
 
 // ClientVersion is the build this client announced at the handshake.
 func (c *TUIClient) ClientVersion() string { return c.clientBuild }
+
+// DaemonVersion is the build the daemon named at the handshake.
+func (c *TUIClient) DaemonVersion() string {
+	c.multiClientMu.RLock()
+	defer c.multiClientMu.RUnlock()
+	return c.daemonBuild
+}
 
 // BuildMismatch reports the daemon's build and this client's when they differ,
 // and empty strings when they agree or when either is unknown.
@@ -1785,6 +1810,11 @@ func (c *TUIClient) handleMessage(msg *Message) {
 			closedHandler()
 		}
 
+	case MsgGoodbye:
+		var payload GoodbyePayload
+		_ = msg.ParsePayload(&payload)
+		c.goodbye.Store(&Goodbye{Reason: payload.Reason, At: time.Now()})
+
 	case MsgSessionEnded:
 		// The attached session was destroyed (killed from the CLI, from another
 		// client, or over the control plane). Notify once so the app can exit;
@@ -2433,7 +2463,11 @@ func (c *TUIClient) recv() (*Message, error) {
 	c.readMu.Lock()
 	defer c.readMu.Unlock()
 
-	_ = c.conn.SetReadDeadline(time.Now().Add(30 * time.Second))
+	wait := 30 * time.Second
+	if c.handshaking && c.HandshakeTimeout > 0 {
+		wait = c.HandshakeTimeout
+	}
+	_ = c.conn.SetReadDeadline(time.Now().Add(wait))
 	return ReadMessage(c.reader())
 }
 

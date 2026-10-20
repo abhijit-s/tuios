@@ -2918,6 +2918,164 @@ picker for moving a pane to another workspace or session, with Ctrl+B t m,
 measured 37,904,546 and 35,628,786 on its own branch, two pages more on
 linux/amd64 and one on darwin/arm64: this session's row and mark, its
 workspace rows, the key and its which-key row. It runs no timer.
+Markdown in the thread measured 38,199,458
+and 35,864,450: about 94 KB and 67 KB for internal/markdown, a reader of the
+part of Markdown agents write, and the layout that draws it as cards. Code
+blocks use the lexers internal/diffview already holds. goldmark with its GFM
+extensions measured about 480 KB before any renderer, and glamour, which links
+every chroma lexer, about 8.8 MB.
+
+The budgets went to 38,265,100 (linux/amd64) and 35,919,100 (darwin/arm64)
+for `tuios restart-server`: the command, its plan of what a restart stops in
+internal/restartplan (shared with the app), the detached worker that does the
+stop and the start, the restart lock and log, the choice of the newest tuios
+installed, and the `agent_resumable` mark in list-windows. Main at e6a67800
+measured 38,203,554 and 35,864,450 bytes (Go 1.26.9, a clean clone, as CI
+builds it). The change measured 38,260,898 and 35,914,898, so it adds 57,344
+and 50,448 bytes. No dependency was added. The new budgets leave 4,202 and
+4,202 bytes of room.
+
+The budgets went to 38,318,350 (linux/amd64) and 35,986,050 (darwin/arm64)
+for the restart from the app: the restart dialog with its plan and steps, the
+version notice that opens it, the palette, settings and rail menu entries, the
+check of the agreed plan, and the client that starts again on the new build.
+The branch before it measured 38,260,898 and 35,914,898 bytes (Go 1.26.9, a
+clean clone, as CI builds it). The change measured 38,314,146 and 35,981,858,
+so it adds 53,248 and 66,960 bytes. A build in a git worktree carries no VCS
+stamp and measures one page less on each target. A first version added 77,824
+and 67,744. The cut: the plan's words and its JSON types are in
+internal/restartplan, which the CLI and the dialog share instead of each
+building the text; the dialog's answers use the close dialog's row; ansi's
+word wrap gave way to the wrapPlain the app has; and the carried flags are read
+from the commands instead of a second flag set. No dependency was added. The
+dialog costs nothing while it is closed: one comparison after each message.
+The new budgets leave 4,204 and 4,192 bytes of room.
+
+The budgets went to 38,342,920 (linux/amd64) and 36,003,400 (darwin/arm64)
+for the reattach after a daemon restart: the daemon's goodbye with its reason
+(MsgGoodbye, kill-server --restart), and a local client that waits for a new
+daemon after "restart" or a silent drop, dials it with a 2 second handshake,
+and attaches to the session the new daemon restored. The branch before it
+measured 38,314,146 and 35,981,858 bytes (Go 1.26.9, a clean clone, as CI
+builds it). The change measured 38,338,722 and 35,999,202, so it adds 24,576
+and 17,344 bytes. No dependency was added. An attached client runs no timer
+for it: the dials start only when the connection is lost. The goodbye is one
+message per client at shutdown. The new budgets leave 4,198 and 4,198 bytes
+of room.
+
+The budgets went to 38,506,760 (linux/amd64) and 36,137,790 (darwin/arm64)
+for the cockpit's spawn sheet: the sheet's fields and lists, its layout and
+drawing, the machine ranking, the preset, and the start through fan and
+start-agent. The branch before it measured 38,338,722 and 35,999,202 bytes
+(Go 1.26.9, a clean clone, as CI builds it). The change measured 38,502,562
+and 36,133,586, so it adds 163,840 and 134,384 bytes. It reads the manifests
+and git only when the sheet opens. The new budgets leave 4,198 and 4,204
+bytes of room.
+
+The budgets went to 38,514,952 (linux/amd64) and 36,154,622 (darwin/arm64)
+for the opencode thread on macOS and Windows: the check that the far end of
+the connection to opencode's service is this user's, read from the socket
+table of each system (the sysctl net.inet.tcp.pcblist_n on macOS), the
+parsers of those tables, and the reuse of an export while opencode's
+database is unchanged. Main at 6c5a295b measured 38,502,562 and 36,133,586
+bytes (Go 1.26.9, as CI builds it). The change measured 38,510,754 and
+36,150,418, so it adds 8,192 and 16,832 bytes. No dependency was added. The
+check runs only when a person reads an opencode thread. The new budgets
+leave 4,198 and 4,204 bytes of room.
+
+The ceiling is now 45 MB. Mermaid diagrams are built in: tuios.dev/sketch, a
+Go port of pele, draws them as SVG, as kitty pictures and as box-drawing text,
+and the diagram types it ports take most of the room above 40 MB. They stay
+built in until tuios has native plugins. Then the heavy optional parts, the
+diagram types among them, move out of the binary, and the ceiling comes down
+again.
+
+The budgets went to 39,522,568 (linux/amd64) and 37,028,734 (darwin/arm64) for
+`tuios mermaid` and tuios.dev/sketch: the Go port of pele with flowcharts,
+sketch/raster and two Arimo subsets. The build before it measured 38,510,754
+and 36,150,418 bytes (Go 1.26.9, a clean clone, as CI builds it). The change
+measured 39,518,370 and 37,024,530, so it adds 1,007,616 and 874,112 bytes. No
+third-party dependency was added. The new budgets leave 4,198 and 4,204 bytes
+of room.
+
+The budgets went to 39,854,344 (linux/amd64) and 37,316,414 (darwin/arm64) for
+sequence diagrams in tuios.dev/sketch and for sketch/text, which draws
+diagrams as box-drawing text where the terminal shows no pictures. The build
+before it measured 39,518,370 and 37,024,530 bytes (Go 1.26.9, a clean clone,
+as CI builds it). The change measured 39,850,146 and 37,312,210, so it adds
+331,776 and 287,680 bytes. No third-party dependency was added. The new
+budgets leave 4,198 and 4,204 bytes of room.
+
+The budgets went to 40,063,240 (linux/amd64) and 37,502,126 (darwin/arm64) for
+state diagrams in tuios.dev/sketch: the state lexer, parser, graph and
+renderer. The lexer keeps its small helpers out of line, which took it from
+100 KB to 26 KB of code. The build before it measured 39,854,242 and
+37,312,242 bytes (Go 1.26.9, a clean clone, as CI builds it). The change
+measured 40,059,042 and 37,497,922, so it adds 204,800 and 185,680 bytes. No
+third-party dependency was added. The new budgets leave 4,198 and 4,204 bytes
+of room.
+
+The budgets went to 40,259,848 (linux/amd64) and 37,689,054 (darwin/arm64) for
+class diagrams in tuios.dev/sketch: the class lexer, parser, graph and
+renderer. The lexer is a struct with methods, so its helpers stay out of line
+and its code is 10 KB. The build before it measured 40,059,042 and 37,497,922
+bytes (Go 1.26.9, a clean clone, as CI builds it). The change measured
+40,255,650 and 37,684,850, so it adds 196,608 and 186,928 bytes. No third-
+party dependency was added. The new budgets leave 4,198 and 4,204 bytes of
+room.
+
+The budgets went to 40,411,400 (linux/amd64) and 37,824,654 (darwin/arm64) for
+ER diagrams in tuios.dev/sketch: the ER lexer, parser, graph and renderer.
+Their code is 85 KB, and the renderer's draw function is 31 KB of it. The
+build before it measured 40,255,650 and 37,684,850 bytes (Go 1.26.9, a clean
+clone, as CI builds it). The change measured 40,407,202 and 37,820,450, so it
+adds 151,552 and 135,600 bytes. No third-party dependency was added. The new
+budgets leave 4,198 and 4,204 bytes of room.
+
+The budgets went to 40,485,128 (linux/amd64) and 37,875,678 (darwin/arm64) for
+pie charts in tuios.dev/sketch: the pie parser and renderer, the shared
+Langium-style tokenizer and V8's sine and cosine. Their code is 52 KB, and the
+renderer's draw function is 10 KB of it. The build before it measured
+40,407,202 and 37,820,450 bytes (Go 1.26.9, a clean clone, as CI builds it).
+The change measured 40,480,930 and 37,871,474, so it adds 73,728 and 51,024
+bytes. No third-party dependency was added. The new budgets leave 4,198 and
+4,204 bytes of room.
+
+The budgets went to 40,534,280 (linux/amd64) and 37,925,918 (darwin/arm64) for
+mindmaps in tuios.dev/sketch: the outline lexer and parser that mindmaps share
+with kanban boards, and the mindmap renderer. Their code is 33 KB. The lexer's
+helpers stay out of line, which keeps the lexer at 3 KB instead of 15 KB. The
+build before it measured 40,480,930 and 37,871,474 bytes (Go 1.26.9, a clean
+clone, as CI builds it). The change measured 40,530,082 and 37,921,714, so it
+adds 49,152 and 50,240 bytes. No third-party dependency was added. The new
+budgets leave 4,198 and 4,204 bytes of room.
+
+The budgets went to 40,743,176 (linux/amd64) and 38,127,278 (darwin/arm64) for
+gantt charts in tuios.dev/sketch: the gantt lexer, parser and scheduler, the
+dayjs and d3 date formats, the time axis, and the JavaScript Date and
+Date.parse they rest on. Their code is 106 KB, and the renderer is 30 KB of
+it. The build before it measured 40,530,082 and 37,921,714 bytes (Go 1.26.9, a
+clean clone, as CI builds it). The change measured 40,738,978 and 38,123,074,
+so it adds 208,896 and 201,360 bytes. No third-party dependency was added. The
+new budgets leave 4,198 and 4,204 bytes of room.
+
+The budgets went to 40,755,464 (linux/amd64) and 38,127,310 (darwin/arm64) for
+the fixes from the review of sketch and tuios mermaid: safe terminal output
+for diagram text and errors, bounded file reads and text canvases, the raster
+work budget in float64 with y clipping, and the theme font check. The build
+before it measured 40,738,978 and 38,123,074 bytes (Go 1.26.9, a clean clone,
+as CI builds it). The change measured 40,751,266 and 38,123,106, so it adds
+12,288 and 32 bytes. No third-party dependency was added. The new budgets
+leave 4,198 and 4,204 bytes of room.
+
+The budgets went to 40,964,360 (linux/amd64) and 38,314,750 (darwin/arm64) for
+the named diagram themes, the frames that move a diagram from one layout to
+the next, the readable-text pass in sketch/raster, and tuios mermaid --watch
+and --demo with their kitty frame encoder. The build before it measured
+40,751,266 and 38,123,106 bytes (Go 1.26.9, a clean clone, as CI builds it).
+The change measured 40,960,162 and 38,310,546, so it adds 208,896 and 187,440
+bytes. No third-party dependency was added. The new budgets leave 4,198 and
+4,204 bytes of room.
 
 To raise a budget, do it on purpose in its own commit: run
 `scripts/binary-size.sh` on the Go version in go.mod, set the new budget a

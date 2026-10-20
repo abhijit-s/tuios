@@ -7,6 +7,27 @@ below. Two of them are **not** caught here; that is written down rather than
 papered over, because a suite whose real coverage is unknown is worse than no
 suite.
 
+## Sidebar-created worktrees apply startup tiling
+
+`TestRailRightClickMakesAWorktree` drives the repository row's real right-click
+menu and worktree dialog. It checks the newly named session, not the session
+left behind: its tiling flag, configured layout mode, first pane's height,
+and a second daemon-created pane joining the layout without overlap. BSP,
+master-stack and scrolling are covered; an explicit `startup.tiled = false`
+case must remain floating.
+
+Before adding the `applyStartupToUnarranged` call to `handleWorktreeCreated`,
+the BSP case was run against a binary built from `50972f48`. It failed with
+`custom is "floating" with 1 windows, want "tiling" from [startup] tiled`.
+With the call wired in, all four cases pass, including three repeated runs.
+The related worktree-refusal, session-switcher create, and fresh/detached
+startup-tiling tests pass too.
+
+Repeat with `TUIOS_E2E=1 TUIOS_E2E_BIN=/path/to/tuios go test -count=1
+-run '^TestRailRightClickMakesAWorktree$' -v .` from `e2e/tui`. Setting
+`TUIOS_E2E_FRAMES` to an existing directory saves plain and styled frames
+of the created session and its two tiled panes for each layout.
+
 ## PR #626: a rail must not resize a shared session
 
 `TestSidebarSessionDoesNotShrinkAnotherViewer` attaches a 120x40 ordinary
@@ -8149,7 +8170,7 @@ one, and the password must stay out of every error and page. Run on
 | The cockpit does not read opencode | `threadTranscriptHarness` | `opencode` taken out | `TestCockpitThreadOtherHarnesses/opencode` | **caught** |
 | A service.json others can write sends the password where they choose | The mode and owner check in `readServiceFile` | Removed | `TestOpenCodeService/a_file_others_can_write` | **caught** |
 | The password goes to an address other than 127.0.0.1 | The host check in `readServiceFile` and the dial guard | Both removed | `TestOpenCodeService/an_address_other_than_127.0.0.1` | **caught** |
-| A service of this user that is not the file's process is trusted | The pid check against `/api/info` | Never true | `TestOpenCodeService/another_process_on_the_port` | **caught** (the check runs after the password is sent, so it stops only a process of this user; the port owner check below is what keeps the password from another user) |
+| A service of this user that is not the file's process is trusted | The pid check against `/api/info` | Never true | `TestOpenCodeService/another_process_on_the_port` | **caught** (the check runs after the password is sent, so it stops only a process of this user; the connection owner check below is what keeps the password from another user) |
 | A reported session id goes into a URL or an argument unchecked | `validOpenCodeSession` | Any id but "" | `TestOpenCodeService/a_session_id_that_is_not_one` | **caught** |
 
 After review (F1, F2): the password goes out only to a port this user is
@@ -8166,6 +8187,26 @@ on 2026-10-19.
 | A slow or failing service starts an opencode process | The `errNoService` gate in `openCodeFetch` | Export on any error | `TestOpenCodeServiceRules/a_service_that_is_there_but_fails` | **caught** |
 | Each event of a streaming session starts a fetch | `openCodeShared` | No sharing | `TestOpenCodeServiceRules/reads_of_one_session_share_a_fetch` | **caught** |
 | A timed-out export leaves its processes running | `killTreeOnCancel` | Not called | `TestOpenCodeServiceRules/an_export_that_runs_too_long` (the read took 30 s) | **caught** |
+
+After re-review (R1 to R4): the owner check moved into the dial. It reads
+the socket table for the server side of the connection itself, after the
+connect and before the first byte, so no gap is left between the check and
+the request (R1). It now runs on macOS (the so_uid of the socket in the
+sysctl net.inet.tcp.pcblist_n) and on Windows (the owning pid in
+GetExtendedTcpTable, which must be the pid in service.json and run as this
+user), where the export ran on every read before (R3). An export is used
+again while opencode's database files are unchanged. A shared fetch is
+finished in a defer (R2). `TestOpenCodeConnOwner` runs against the real
+kernel table of each system: the go-test workflow runs it on Linux, macOS
+and Windows. The parser fixtures under `testdata/pcblist_n` are written by
+`gen.c` from the XNU structs. Run on Linux on 2026-10-19.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| The password goes on a connection whose server side is another user's | `connOwnedByMe` in the dial | Never refuses | `TestOpenCodeConnOwner/no_request_to_a_service_of_another_user` (`err <nil>`), `TestOpenCodeServiceRules/a_port_another_user_holds` (2 requests) | **caught** |
+| The macOS parser reads the uid at the wrong offset | `xsoUID` | 64 changed to 60 | `TestPcblistOwner` (mine.bin and old.bin) | **caught** |
+| A fetch that panics blocks every later read of the session | The defer in `openCodeShared` | Finished after `fetch` returns only | `TestOpenCodeSharedPanic` (blocked) | **caught** |
+| Each read with no service starts an export | `openCodeExportCached` | `openCodeFromExport` called directly | `TestOpenCodeServiceRules/an_export_is_used_again_while_the_database_is_unchanged` (2 exports) | **caught** |
 
 ## Answer keys bound to their labels (Kimi Code CLI)
 
@@ -8313,3 +8354,158 @@ Run on 2026-10-20 on macOS on branch `feat/move-window-to-session`, from `1f0b3f
 `TestMovePaneWithinSession` writes the screens of the two steps (`here-session-step.txt`, `here-workspace-step.txt`), the final screen, and `list-windows --json` of alpha and beta. Run it with `TUIOS_E2E=1 TUIOS_E2E_BIN=/tmp/tuios TUIOS_E2E_FRAMES=/tmp/frames go test -count=1 -run 'TestMoveToSession|TestMovePaneWithinSession' .`
 
 The fixed build also passes every test matching `TestContextMenu`, `TestPlainRightClickOpensMenu`, `TestKeybindsList`, `TestKeybindsDoctor`, `TestWhichKey`, `TestTmuxPreset`, `TestScreenPreset`, `TestZellijPreset`, `TestKeybindsExplorer`, `TestHelpExplorer`, `TestGUIBridgeKeybinds`, `TestGUIBridgeAction`, `TestRunCommandRunsAnyAction`, `TestOverlayLayouts`, `TestEveryOverlayOwnsItsGround`, `TestMoveWindow`, `Switcher` and `SessionPicker` (34 tests), and the five tests in `move_to_session_ui_test.go`.
+### A plain right-click in window mode over a program tracking the mouse
+
+`TestPlainRightClickOpensMenuOverAMouseApp` turns on mouse tracking in a pane, checks that a terminal-mode right-click reaches the program and opens no menu, then checks that a window-mode right-click opens the pane menu and reaches the program as no report. Run on 2026-10-19.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| A window-mode right-click over a program tracking the mouse opens nothing | The menu opening for every sub-threshold right-click in `handleMouseRelease` | The build before the fix, which skipped the menu when the pane's program tracked the mouse | `TestPlainRightClickOpensMenuOverAMouseApp` ("in window-management mode a plain right-click over a program tracking the mouse opened no pane menu") | **caught** |
+
+A first version counted the program's reports while the menu was open and failed on the fixed build: the menu covers the echoed reports. They are counted once the menu is closed.
+
+### A seen done pane of another session in the navigator (issue #902)
+
+`TestNavigatorKeepsADonePaneSeen` finishes an agent in work, opens the
+navigator from home and reads ■ on the logs row, goes to the pane, comes back
+to home, and reads ○ on the row. Each read waits for the load to bring the
+pane's screen into the preview first. Run on 2026-10-19.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| The cached row drops the seen bit | `DoneSeen` in `navigatorSessions` | The field cut from the row | `TestNavigatorKeepsADonePaneSeen` ("the logs row never showed ○ (seen) after the load") | **caught** |
+| The load puts the unread mark back | `keepAgentMarks` in `ApplyNavigatorLoaded` | The call cut | `TestNavigatorKeepsADonePaneSeen` ("the logs row never showed ○ (seen) after the load") | **caught** |
+### A prefix binding on the leader key (issue #866)
+
+`TestLeaderBoundInPrefixRunsItsAction` binds `prefix_new_window` to the
+leader, `ctrl+a`, and presses the leader two times in terminal mode.
+`TestLeaderTwiceSendsTheLeaderToThePane` keeps the default with no such
+binding. Run on 2026-10-19.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| The leader two times sends the leader over a prefix binding | `leaderBoundInPrefix` in `HandleTerminalModeKey` | The check cut | `TestLeaderBoundInPrefixRunsItsAction` ("the leader two times did not run prefix_new_window, bound to ctrl+a") | **caught** |
+## Markdown in the agent thread
+
+`TestCockpitThreadCards` reads an agent message in `cockpit-auth.jsonl` that
+holds strong text, a code span, a list, a Go code block, a table, a task
+list, a quote and a link. `cockpitMarkdown` checks that no markup is left,
+that the strong words are bold, that the code block is highlighted on a
+ground of its own, and that the link is underlined and sent as OSC 8. Run on
+2026-10-19.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| The thread shows an agent's Markdown raw | `ckMarkdown` in `threadCardLines` | The text drawn through `threadWrap`, as before | `TestCockpitThreadCards` ("the Markdown message is not drawn") | **caught** |
+| A link opens nothing | The cell's `Link` in `ckCanvas.text` | Never set | `TestCockpitThreadCards` ("no frame carries the link as OSC 8") | **caught** |
+
+After review (F1, F3, missing controls). `FuzzParse` seeds hold a table one
+column past `maxTableCols` and one past `maxTableCells`, and assert both
+bounds. `TestCockpitThreadOtherHarnesses/gemini` appends a line that writes
+the last Gemini message again with new text while the thread is open.
+`TestCockpitThreadCards` reads a message with an OSC title, an SGR colour
+and a `javascript:` link, and asserts on the raw output. Run on 2026-10-19.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| A table pads short rows to millions of cells | The cell cap in `parseBlocks` | Removed | `FuzzParse/seed#9` ("a table of 64 columns and 70 rows is past the bounds") | **caught** |
+| A table may have thousands of columns | The column cap in `parseBlocks` and `delimiterRow` | Removed | `FuzzParse/seed#8` ("a table of 65 columns and 1 rows is past the bounds") | **caught** |
+| A message written again keeps its old card | `sum` in `ckCardKey` | Left out of the key | `TestCockpitThreadOtherHarnesses/gemini` ("kept the old text of a message written again") | **caught** |
+| A `javascript:` link is sent as OSC 8 | The scheme check in `ckLinkTarget` | Never taken | `TestCockpitThreadCards` ("an escape sequence or a javascript: link in the message reached the host terminal") | **caught** |
+## tuios restart-server
+
+`TestRestartServerMovesTheDaemonToTheNewBuild` starts a daemon of this build
+with a pane that runs `sleep`, and restarts it with a second build stamped
+`e2e-sync-next`. The plan must name the program and both versions, and the
+restart must say the new version and the session that came back.
+`TestRestartOffersToResumeTheConversation` now restarts through
+`restart-server`, whose plan must name the agent that can resume.
+`TestRestartServerFromAPaneLeavesADaemon` runs `restart-server --yes` in a
+pane of the daemon it restarts: the pane's terminal closes under it, and a
+daemon must hold the session again, restored.
+
+The controls were run on 2026-10-18 on branch `feat/restart-server`.
+
+| Control | How | Tests that fail | Verdict |
+| --- | --- | --- | --- |
+| The plan lists no program | `restartplan.Lines`: the line for each busy pane cut | `TestRestartServerMovesTheDaemonToTheNewBuild` ("the plan does not name the program the restart stops") | **caught** |
+| The steps run in the command itself | `runRestartServer`: `runRestart` instead of `runDetachedRestart` | `TestRestartServerFromAPaneLeavesADaemon` ("no daemon holds the session after restart-server ran in its pane") | **caught** |
+| The version after the restart is the old daemon's | `runRestart`: `rep.After` from the plan's daemon, not the new daemon's hello | `TestRestartServerMovesTheDaemonToTheNewBuild` ("the restart does not say \"The daemon restarted on e2e-sync-next.\"") | **caught** |
+| The sessions after the restart are not read | `runRestart`: `rep.Back = nil` | `TestRestartServerMovesTheDaemonToTheNewBuild` ("the restart does not say \"This session came back: e2e-restart.\"") | **caught** |
+| list-windows marks no agent | `verbListWindows`: the `addResumable` call cut | `TestRestartOffersToResumeTheConversation` ("restart-server --dry-run does not list the agent that can resume") | **caught** |
+
+## The restart from the app
+
+`TestRestartTheDaemonFromTheVersionNotice` (in `daemon_persistence_test.go`)
+starts a daemon of this build with a pane that printed history and a pane
+that runs `sleep`. A client of a second build attaches from a path of its own,
+and a third build is renamed onto that path, as an update does. A click on the
+version notice must open the dialog with the program that stops and the three
+versions. The client starts with `--debug new`, and must start again with
+`--debug`. `r` must bring the same client process back, attached to the same
+session, on a daemon of the third build, with both panes, their names and the
+restored history.
+
+The controls were run on 2026-10-18 on branch `feat/restart-daemon-in-app`.
+
+| Control | How | Tests that fail | Verdict |
+| --- | --- | --- | --- |
+| The restart runs the client's old file | `release.NewestInstalled`: `/proc/self/exe` instead of `os.Executable` | `TestRestartTheDaemonFromTheVersionNotice` ("the dialog does not say \"After restart   e2e-sync-next   (from \"") | **caught** |
+| A click on the notice does nothing | `jumpToNotifTarget`: the `DaemonRestart` case cut | `TestRestartTheDaemonFromTheVersionNotice` ("a click on the notice did not open the dialog") | **caught** |
+| The lost connection ends the client | the `DaemonDisconnectedMsg` case: the `noteRestartDisconnect` check cut | `TestRestartTheDaemonFromTheVersionNotice` ("child exited (code 1) before" the success line) | **caught** |
+| The client does not start again | `runDaemonSessionOn`: the `reattachAfterRestart` call cut | `TestRestartTheDaemonFromTheVersionNotice` ("child exited (code 0) before" the success line) | **caught** |
+| The root's flags are not carried | `carriedFlags`: the root's persistent flags not read | `TestRestartTheDaemonFromTheVersionNotice` ("the client started again without its flags", no `--debug=true`) | **caught** |
+| The plan is not checked | `runRestartServer`: the `--expect` check cut | `TestRestartServerMovesTheDaemonToTheNewBuild` ("a restart with another plan's digest was not refused", "the refused restart restarted the daemon anyway") | **caught** |
+
+A second client of the daemon's own build now attaches beside the first. It
+must reattach by itself, in the same process, with both panes and the restore
+divider, and say "The daemon restarted on e2e-sync-next. tuios reattached."
+`TestPlainKillServerEndsClientsAtOnce` stops the daemon with a plain
+kill-server and starts a new one at once: the client must quit within 1 s and
+not reattach. Run on 2026-10-18 on branch `feat/reattach-after-daemon-restart`.
+
+| Control | How | Tests that fail | Verdict |
+| --- | --- | --- | --- |
+| A lost connection ends the client, as before | the `DaemonDisconnectedMsg` case: the `beginDaemonReconnect` call cut | `TestRestartTheDaemonFromTheVersionNotice` ("the second client did not reattach", "the second client quit (code 1)") | **caught** |
+| The client attaches and keeps its old panes | `resumeOnNewDaemon`: the `rebuildForSessionOn` call cut | `TestRestartTheDaemonFromTheVersionNotice` ("the second client did not reattach with the panes") | **caught** |
+| The restart does not say "restart" | `runRestart`: `kill-server` without `--restart` | `TestRestartTheDaemonFromTheVersionNotice` ("the second client quit (code 1) instead of reattaching") | **caught** |
+| The client is deaf to "stop" | `beginDaemonReconnect`: the goodbye check cut | `TestPlainKillServerEndsClientsAtOnce` ("the client did not quit within 1 s of a plain kill-server") | **caught** |
+## The cockpit's spawn sheet
+
+`TestCockpitSpawnSheet` opens the cockpit with `ctrl+b i`, presses `n`, types
+a task and presses `enter`. A fake claude must read the task in a new worktree
+on `agent/lru-cache-safe`. Then the mouse picks This folder and clicks Start,
+and a second fake claude must read its task in the session. Run on 2026-10-19.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| `n` and New agent do not open the sheet | `CockpitNewAgent` opens the sheet | Returns at once | `TestCockpitSpawnSheet` ("waiting for the spawn sheet") | **caught** |
+| The worktree is not on the branch the sheet shows | `name` in the fan call | Left out | `TestCockpitSpawnSheet` ("the sheet never made a worktree on agent/lru-cache-safe") | **caught** |
+
+After review: `TestCockpitSpawnSheet` also checks that esc keeps the draft,
+that a branch the person typed stops following the task, that a base which
+starts with `-` is refused, and that a start the daemon refuses keeps the
+draft. Run on 2026-10-19.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| esc loses the draft | `spawnClose` keeps the sheet as the draft | The draft set to nil | `TestCockpitSpawnSheet` ("the kept draft after esc") | **caught** |
+| A typed branch follows the task again | The `cur != s.branchAuto` check in `spawnFollowTask` | Always false | `TestCockpitSpawnSheet` ("waiting for the typed branch") | **caught** |
+### tuios mermaid --watch and --demo give the terminal back
+
+`TestMermaidLiveGivesTheTerminalBack` runs `tuios mermaid --demo` on a fake terminal with kitty graphics and ends it with q, Ctrl+C, SIGTERM, SIGHUP, a panic in the frame encoder (a build with `-tags mermaidpanic`, which the case makes from source), and SIGTERM while the terminal has stopped reading. Each time termios must equal what it was before the program started, and after the last frame the picture must be deleted, the cursor shown and the alternate screen left. Its positive half is the first kitty frame, which every case waits for. Run on 2026-10-19.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| The terminal stays in raw mode after the view ends | `term.Restore` in the cleanup | Replaced with `_ = orig` | all six cases ("termios after exit is ...") | **caught** |
+| A signal other than SIGINT and SIGTERM leaves raw mode, and a stalled terminal keeps it raw until the blocked write returns | The cleanup that restores termios first, on every signal and panic | The build before the fix (3bdff3a2c) | `/SIGHUP` (exit 129, termios, no reset), `/SIGTERM_while_stalled` (termios while stalled) | **caught** |
+
+The build before the fix has no panic hook, so its `/panic` case times out instead of failing on termios. That case was checked with the `term.Restore` control above. The panic case builds its own binary with `-tags mermaidpanic` from the checkout and ignores `TUIOS_E2E_BIN`, so its control edits the source: with `term.Restore` removed it fails on termios (run again on 2026-10-19 after the hook moved from an environment variable to the build tag).
+
+### tuios mermaid --watch writes no terminal controls from the file
+
+`TestMermaidLiveWritesNoTerminalControls` watches a diagram with `--split` whose labels and source lines hold ESC (as `#27;` and as raw bytes), OSC 2, OSC 52 and BEL, in a kitty terminal and a text one, and a source with a parse error that quotes them. None of `ESC ]2;`, `ESC ]52;` or BEL may reach the terminal, and U+FFFD must show in their place. Its positive half is the source pane, which every case waits for. Run on 2026-10-19.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| The source pane writes the file's controls to the terminal | `mermaid.TermSafe` in `paneText` | Returned the line as it is | `/kitty` and `/text` (OSC 2, OSC 52, BEL), `/parse_error` (BEL) | **caught** |
