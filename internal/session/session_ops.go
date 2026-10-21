@@ -249,9 +249,10 @@ type NewWindowOptions struct {
 	// unexported: only new-window sets it, and the caller's onExit must not
 	// close the window for it to mean anything.
 	keepOpen bool
-	// closeOnExit says the caller's onExit closes the window. It changes
-	// nothing here: it is recorded on the pane so a live handoff can give the
-	// pane the same onExit in the next image. See PTY.closeOnExit.
+	// closeOnExit says the caller's onExit closes the window. It is recorded
+	// on the pane so a live handoff can give the pane the same onExit in the
+	// next image, and it tells the PTY that its exit is not a person's close
+	// (see PTY.ownShell).
 	closeOnExit bool
 	// Env is KEY=VALUE pairs the process gets on top of the daemon's own
 	// environment, from a caller that passed its own (fan, start-agent). The
