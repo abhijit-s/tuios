@@ -648,7 +648,7 @@ func (s *Session) handoffRecord() handoffSession {
 // handoffRecord is the pane as the next image adopts it, and false for a pane
 // whose bytes do not come from a descriptor here. The pane is quiesced.
 func (p *PTY) handoffRecord(sess *Session, window string) (handoffPane, bool) {
-	rec := handoffPane{ID: p.ID, Session: sess.ID, Window: window, FD: -1, TTY: p.TTYName(), KeepOpen: p.keepOpen != nil, CloseOnExit: p.closeOnExit}
+	rec := handoffPane{ID: p.ID, Session: sess.ID, Window: window, FD: -1, TTY: p.TTYName(), KeepOpen: p.keepOpen != nil, CloseOnExit: p.closeOnExit, OwnShell: p.ownShell}
 	if !ptyspawn.ControlMaster(p.pty, func(fd int) { rec.FD = fd }) || rec.FD < 0 {
 		return rec, false
 	}

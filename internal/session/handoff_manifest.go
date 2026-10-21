@@ -108,6 +108,11 @@ type handoffPane struct {
 	// CloseOnExit is a pane whose window closes when its process exits. See
 	// PTY.closeOnExit.
 	CloseOnExit bool
+	// OwnShell is a pane that runs the daemon's own shell, whose exit is a
+	// person's close. See PTY.ownShell. The adopted pane has no command to
+	// tell it by, so it is carried. A record from an image that did not carry
+	// it reads false, and the pane's exit leaves a gap as before.
+	OwnShell bool
 	// State is the pane's emulator, packed, with handoffHistoryRows of its
 	// history and the character cluster it left open.
 	State *TerminalState
