@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -12,11 +13,11 @@ import (
 	"tuios.dev/sketch"
 )
 
-// FuzzDraw draws diagram text as box drawing. The seeds are every flowchart and
-// sequence source of the corpus. A draw may fail, but must not panic, must take
+// FuzzDraw draws diagram text as box drawing. The seeds are every corpus
+// source of a type with a text drawing. A draw may fail, but must not panic, must take
 // bounded time, and must keep within the columns it was given.
 func FuzzDraw(f *testing.F) {
-	for _, name := range []string{"flowchart", "sequence"} {
+	for _, name := range []string{"flowchart", "sequence", "state", "class", "er", "pie", "mindmap", "gantt", "timeline", "xychart", "quadrant", "journey", "kanban", "git", "sankey"} {
 		data, err := os.ReadFile("../testdata/corpus/" + name + "-docs.json")
 		if err != nil {
 			f.Fatal(err)
@@ -27,6 +28,13 @@ func FuzzDraw(f *testing.F) {
 		}
 		for _, s := range sources {
 			f.Add(s, 120)
+		}
+	}
+	// The pinned sources, labels of XY points and bars among them.
+	pinned, _ := filepath.Glob("testdata/pinned/*.mmd")
+	for _, path := range pinned {
+		if data, err := os.ReadFile(path); err == nil {
+			f.Add(string(data), 60)
 		}
 	}
 	f.Fuzz(func(t *testing.T, src string, cols int) {

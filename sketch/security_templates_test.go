@@ -402,3 +402,265 @@ var mindmapTemplates = []func(p string) string{
 		return "%%{init: {\"mindmap\": {\"maxNodeWidth\": \"" + p + "\"}, \"themeVariables\": {\"fontFamily\": \"" + p + "\"}}}%%\nmindmap\n  root"
 	},
 }
+
+var xychartTemplates = []func(p string) string{
+	func(p string) string { return "xychart\n  title \"" + p + "\"\n  line [1, 2]" },
+	func(p string) string { return "xychart\n  title " + p + "\n  line [1, 2]" },
+	func(p string) string { return "xychart\n  x-axis \"" + p + "\" [\"" + p + "\", \"b\"]\n  bar [1, 2]" },
+	func(p string) string { return "xychart\n  x-axis " + p + " [" + p + ", b]\n  bar [1, 2]" },
+	func(p string) string { return "xychart\n  x-axis \"" + p + "\" 1 --> 5\n  line [1, 2]" },
+	func(p string) string { return "xychart\n  x-axis " + p + " --> " + p + "\n  line [1, 2]" },
+	func(p string) string { return "xychart\n  y-axis \"" + p + "\"\n  line [1, 2]" },
+	func(p string) string { return "xychart\n  y-axis \"" + p + "\" 0 --> 10\n  bar [1, 2]" },
+	func(p string) string { return "xychart\n  y-axis " + p + " --> " + p + "\n  bar [1, 2]" },
+	func(p string) string { return "xychart\n  line \"" + p + "\" [1, 2]\n  bar \"" + p + "\" [2, 1]" },
+	func(p string) string { return "xychart\n  line " + p + " [1, 2]" },
+	func(p string) string { return "xychart\n  line [1 \"" + p + "\", 2 \"" + p + "\"]" },
+	func(p string) string {
+		return "xychart horizontal\n  x-axis [\"" + p + "\", \"b\"]\n  line \"" + p + "\" [1 \"" + p + "\", 2]\n  bar [3, 4]"
+	},
+	func(p string) string { return "xychart\n  line [" + p + ", 2]" },
+	func(p string) string { return "xychart\n  bar [1, " + p + "]" },
+	func(p string) string { return "xychart " + p + "\n  line [1, 2]" },
+	func(p string) string { return "xychart\n  accTitle: " + p + "\n  accDescr: " + p + "\n  line [1, 2]" },
+	func(p string) string { return "xychart\n  accDescr {\n " + p + "\n }\n  line [1, 2]" },
+	func(p string) string { return "---\ntitle: \"" + p + "\"\n---\nxychart\n  line [1, 2]" },
+	func(p string) string {
+		return "---\nconfig:\n  xyChart:\n    width: \"" + p + "\"\n    height: \"" + p + "\"\n    chartOrientation: \"" + p + "\"\n    showDataLabel: \"" + p + "\"\n    showTitle: \"" + p + "\"\n    xAxis:\n      showLabel: \"" + p + "\"\n      showTick: \"" + p + "\"\n    yAxis: \"" + p + "\"\n---\nxychart\n  title t\n  x-axis x [a, b]\n  y-axis y\n  bar \"s\" [1, 2]"
+	},
+	func(p string) string { return "---\nconfig:\n  xyChart: \"" + p + "\"\n---\nxychart\n  line [1, 2]" },
+	func(p string) string {
+		return "---\nconfig:\n  xyChart:\n    xAxis: [\"" + p + "\"]\n    yAxis:\n      \"" + p + "\": true\n---\nxychart\n  line [1, 2]"
+	},
+	func(p string) string {
+		return "%%{init: {\"xyChart\": {\"width\": \"" + p + "\", \"showDataLabel\": true}, \"themeVariables\": {\"xyChart\": {\"plotColorPalette\": \"" + p + "\"}}}}%%\nxychart\n  bar [1, 2]"
+	},
+	func(p string) string { return "xychart\n  %% " + p + "\n  line [1, 2]" },
+}
+
+var timelineTemplates = []func(p string) string{
+	func(p string) string { return "timeline\n  title " + p + "\n  2001 : a" },
+	func(p string) string { return "timeline\n  " + p },
+	func(p string) string { return "timeline\n  " + p + " : event" },
+	func(p string) string { return "timeline\n  2001 : " + p },
+	func(p string) string { return "timeline\n  2001 : a : " + p + " : b" },
+	func(p string) string { return "timeline\n  2001 : a\n       : " + p },
+	func(p string) string { return "timeline\n  section " + p + "\n  2001 : a" },
+	func(p string) string { return "timeline\n  section " + p },
+	func(p string) string {
+		return "timeline TD\n  title " + p + "\n  section " + p + "\n  " + p + " : " + p
+	},
+	func(p string) string { return "timeline TD\n  x" + p + " : y" + p + " : z" + p },
+	func(p string) string { return "timeline " + p + "\n  2001 : a" },
+	func(p string) string { return "timeline\n  accTitle: " + p + "\n  accDescr: " + p + "\n  2001 : a" },
+	func(p string) string { return "timeline\n  accDescr {\n " + p + "\n }\n  2001 : a" },
+	func(p string) string { return "timeline\n  2001 : a<br>" + p + "<br/>b" },
+	func(p string) string { return "timeline\n  2001 : <b>" + p + "</b> <i>" + p },
+	func(p string) string { return "timeline\n  2001 : fa:fa-" + p + " x" },
+	func(p string) string { return "timeline\n  %% " + p + "\n  2001 : a # " + p },
+	func(p string) string { return "---\ntitle: \"" + p + "\"\n---\ntimeline\n  2001 : a" },
+	func(p string) string {
+		return "---\nconfig:\n  timeline:\n    disableMulticolor: \"" + p + "\"\n---\ntimeline\n  2001 : a\n  2002 : b"
+	},
+	func(p string) string { return "---\nconfig:\n  timeline: \"" + p + "\"\n---\ntimeline\n  2001 : a" },
+	func(p string) string {
+		return "%%{init: {\"timeline\": {\"disableMulticolor\": \"" + p + "\", \"padding\": \"" + p + "\"}, \"themeVariables\": {\"cScale0\": \"" + p + "\"}}}%%\ntimeline\n  2001 : a"
+	},
+}
+
+var quadrantTemplates = []func(p string) string{
+	func(p string) string { return "quadrantChart\n  title " + p + "\n  A: [0.5, 0.5]" },
+	func(p string) string { return "quadrantChart\n  x-axis " + p + " --> " + p },
+	func(p string) string {
+		return "quadrantChart\n  x-axis \"" + p + "\" --> \"" + p + "\"\n  A: [0.5, 0.5]"
+	},
+	func(p string) string { return "quadrantChart\n  y-axis \"" + p + "\" --> \"" + p + "\"" },
+	func(p string) string { return "quadrantChart\n  y-axis " + p + "\n  A: [0.5, 0.5]" },
+	func(p string) string { return "quadrantChart\n  x-axis \"" + p + "\" -->" },
+	func(p string) string { return "quadrantChart\n  quadrant-1 " + p + "\n  quadrant-2 \"" + p + "\"" },
+	func(p string) string {
+		return "quadrantChart\n  quadrant-3 \"`" + p + "`\"\n  quadrant-4 \"`**" + p + "**`\"\n  A: [0.1, 0.9]"
+	},
+	func(p string) string { return "quadrantChart\n  " + p + ": [0.5, 0.5]" },
+	func(p string) string { return "quadrantChart\n  \"" + p + "\": [0.5, 0.5]" },
+	func(p string) string { return "quadrantChart\n  \"`" + p + "`\": [0.5, 0.5]" },
+	func(p string) string { return "quadrantChart\n  A:::" + p + ": [0.5, 0.5]" },
+	func(p string) string { return "quadrantChart\n  A:::k: [0.5, 0.5]\n  classDef " + p + " color: #f00" },
+	func(p string) string { return "quadrantChart\n  A:::k: [0.5, 0.5]\n  classDef k color: " + p },
+	func(p string) string { return "quadrantChart\n  A:::k: [0.5, 0.5]\n  classDef k " + p + ": 3" },
+	func(p string) string { return "quadrantChart\n  A: [0.5, 0.5] color: " + p },
+	func(p string) string {
+		return "quadrantChart\n  A: [0.5, 0.5] radius: " + p + ", stroke-width: " + p + ", stroke-color: " + p
+	},
+	func(p string) string { return "quadrantChart\n  A: [0.5, 0.5] " + p },
+	func(p string) string { return "quadrantChart\n  A: [" + p + ", 0.5]" },
+	func(p string) string { return "quadrantChart\n  A: [0.5, " + p + "]" },
+	func(p string) string {
+		return "quadrantChart\n  accTitle: " + p + "\n  accDescr: " + p + "\n  A: [0.5, 0.5]"
+	},
+	func(p string) string { return "quadrantChart\n  accDescr {\n " + p + "\n }\n  A: [0.5, 0.5]" },
+	func(p string) string { return "---\ntitle: \"" + p + "\"\n---\nquadrantChart\n  A: [0.5, 0.5]" },
+	func(p string) string {
+		return "---\nconfig:\n  quadrantChart:\n    chartWidth: \"" + p + "\"\n    chartHeight: \"" + p + "\"\n    pointRadius: \"" + p + "\"\n    quadrantPadding: \"" + p + "\"\n    xAxisPosition: \"" + p + "\"\n    yAxisPosition: \"" + p + "\"\n---\nquadrantChart\n  x-axis a --> b\n  y-axis c --> d\n  A: [0.5, 0.5]"
+	},
+	func(p string) string {
+		return "---\nconfig:\n  quadrantChart: \"" + p + "\"\n---\nquadrantChart\n  A: [0.5, 0.5]"
+	},
+	func(p string) string {
+		return "%%{init: {\"quadrantChart\": {\"chartWidth\": \"" + p + "\", \"titlePadding\": \"" + p + "\"}, \"themeVariables\": {\"quadrant1Fill\": \"" + p + "\"}}}%%\nquadrantChart\n  title t\n  A: [0.5, 0.5]"
+	},
+	func(p string) string { return "quadrantChart " + p + "\n  A: [0.5, 0.5]" },
+	func(p string) string { return "quadrantChart\n  %% " + p + "\n  A: [0.5, 0.5]" },
+}
+
+var journeyTemplates = []func(p string) string{
+	func(p string) string { return "journey\n  title " + p + "\n  Task: 5: Me" },
+	func(p string) string { return "journey\n  " + p + ": 5: Me" },
+	func(p string) string { return "journey\n  " + p },
+	func(p string) string { return "journey\n  Task: " + p },
+	func(p string) string { return "journey\n  Task: " + p + ": Me" },
+	func(p string) string { return "journey\n  Task: 5: " + p },
+	func(p string) string { return "journey\n  Task: 5: Me, " + p + ", You" },
+	func(p string) string { return "journey\n  Task: 5: Me: " + p },
+	func(p string) string { return "journey\n  section " + p + "\n  Task: 5: Me" },
+	func(p string) string { return "journey\n  section " + p },
+	func(p string) string {
+		return "journey\n  title " + p + "\n  section " + p + "\n  x" + p + ": 3: y" + p + ", z" + p
+	},
+	func(p string) string { return "journey " + p + "\n  Task: 5: Me" },
+	func(p string) string { return "journey\n  accTitle: " + p + "\n  accDescr: " + p + "\n  Task: 5: Me" },
+	func(p string) string { return "journey\n  accDescr {\n " + p + "\n }\n  Task: 5: Me" },
+	func(p string) string { return "journey\n  a<br>" + p + "<br/>b: 5: Me<br>" + p },
+	func(p string) string { return "journey\n  fa:fa-" + p + " x: 5: fa:fa-" + p },
+	func(p string) string { return "journey\n  %% " + p + "\n  Task: 5: Me # " + p },
+	func(p string) string { return "---\ntitle: \"" + p + "\"\n---\njourney\n  Task: 5: Me" },
+	func(p string) string {
+		return "---\nconfig:\n  journey:\n    actorColours: [\"" + p + "\"]\n    sectionFills: [\"" + p + "\"]\n    taskFontFamily: \"" + p + "\"\n---\njourney\n  section S\n  Task: 5: Me"
+	},
+	func(p string) string { return "---\nconfig:\n  journey: \"" + p + "\"\n---\njourney\n  Task: 5: Me" },
+	func(p string) string {
+		return "%%{init: {\"journey\": {\"width\": \"" + p + "\", \"titleColor\": \"" + p + "\"}, \"themeVariables\": {\"fillType0\": \"" + p + "\"}}}%%\njourney\n  Task: 5: Me"
+	},
+}
+
+var kanbanTemplates = []func(p string) string{
+	func(p string) string { return "kanban\n  " + p + "\n    card" },
+	func(p string) string { return "kanban\n  todo\n    " + p },
+	func(p string) string { return "kanban\n  todo[" + p + "]\n    a[" + p + "]" },
+	func(p string) string { return "kanban\n  " + p + "[Todo]\n    " + p + "[Card]" },
+	func(p string) string {
+		return "kanban\n  todo(" + p + ")\n    a((" + p + "))\n    b{{" + p + "}}\n    c))" + p + "(("
+	},
+	func(p string) string { return "kanban\n  todo[\"" + p + "\"]\n    a[\"" + p + "\"]" },
+	func(p string) string { return "kanban\n  todo[\"`" + p + "`\"]\n    a[\"`**" + p + "**\n" + p + "`\"]" },
+	func(p string) string { return "kanban\n  todo\n    a@{ label: \"" + p + "\" }" },
+	func(p string) string { return "kanban\n  todo\n    a@{ label: '" + p + "' }" },
+	func(p string) string { return "kanban\n  todo\n    a@{ assigned: \"" + p + "\" }" },
+	func(p string) string { return "kanban\n  todo\n    a@{ ticket: \"" + p + "\" }" },
+	func(p string) string { return "kanban\n  todo\n    a@{ priority: \"" + p + "\" }" },
+	func(p string) string { return "kanban\n  todo\n    a@{ icon: \"" + p + "\" }" },
+	func(p string) string { return "kanban\n  todo\n    a@{ shape: \"" + p + "\" }" },
+	func(p string) string { return "kanban\n  todo\n    a@{ " + p + ": 1 }" },
+	func(p string) string { return "kanban\n  todo\n    a@{ " + p + " }" },
+	func(p string) string {
+		return "kanban\n  todo\n    a@{\n      assigned: " + p + "\n      ticket: " + p + "\n      priority: " + p + "\n    }"
+	},
+	func(p string) string {
+		return "kanban\n  todo@{ label: \"" + p + "\", ticket: \"" + p + "\", assigned: \"" + p + "\", priority: \"" + p + "\", icon: \"" + p + "\" }\n    a"
+	},
+	func(p string) string { return kanbanBase + "kanban\n  todo\n    a@{ ticket: \"" + p + "\" }" },
+	func(p string) string {
+		return "---\nconfig:\n  kanban:\n    ticketBaseUrl: \"" + p + "\"\n---\nkanban\n  todo\n    a@{ ticket: T-1 }"
+	},
+	func(p string) string {
+		return "---\nconfig:\n  kanban:\n    ticketBaseUrl: \"" + p + "#TICKET#\"\n---\nkanban\n  todo\n    a@{ ticket: \"" + p + "\" }"
+	},
+	func(p string) string {
+		return "---\nconfig:\n  kanban:\n    ticketBaseUrl: \"#TICKET#\"\n---\nkanban\n  todo\n    a@{ ticket: \"" + p + "\" }"
+	},
+	func(p string) string {
+		return "%%{init: {\"kanban\": {\"ticketBaseUrl\": \"" + p + "\", \"sectionWidth\": \"" + p + "\"}}}%%\nkanban\n  todo\n    a@{ ticket: T-1 }"
+	},
+	func(p string) string { return "kanban\n  todo\n  ::icon(" + p + ")\n    a\n    ::icon(" + p + ")" },
+	func(p string) string { return "kanban\n  todo\n  :::" + p + "\n    a\n    :::" + p + " " + p },
+	func(p string) string { return "kanban\n  todo\n    a %% " + p + "\n    b[c] %% " + p },
+	func(p string) string { return "kanban\n  todo\n    fa:fa-" + p + " x" },
+	func(p string) string { return "kanban " + p + "\n  todo" },
+	func(p string) string { return "---\ntitle: \"" + p + "\"\n---\nkanban\n  todo\n    a" },
+}
+
+var gitTemplates = []func(q, p string) string{
+	func(q, p string) string { return "gitGraph\n commit id: " + q },
+	func(q, p string) string {
+		return "gitGraph\n commit id: " + q + " msg: " + q + " tag: " + q + " tag: " + q + " type: HIGHLIGHT"
+	},
+	func(q, p string) string { return "gitGraph\n commit " + q },
+	func(q, p string) string {
+		return "gitGraph\n commit\n branch " + q + "\n commit\n checkout " + q + "\n commit"
+	},
+	func(q, p string) string {
+		return "gitGraph\n commit\n branch " + q + " order: 2\n commit\n switch main\n commit\n merge " + q + " id: " + q + " tag: " + q + " type: REVERSE"
+	},
+	func(q, p string) string {
+		return "gitGraph\n commit id: " + q + "\n branch b\n commit\n cherry-pick id: " + q
+	},
+	func(q, p string) string {
+		return "gitGraph\n commit id: \"a\"\n branch b\n commit id: \"c\"\n checkout main\n commit\n cherry-pick id: \"c\" tag: " + q
+	},
+	func(q, p string) string {
+		return "gitGraph\n commit id:\"z\"\n branch b\n commit id:\"a\"\n checkout main\n commit\n merge b id:\"m\"\n checkout b\n cherry-pick id:\"m\" parent:\"a\" tag: " + q
+	},
+	func(q, p string) string {
+		return "gitGraph TB:\n commit id: " + q + " tag: " + q + "\n branch " + q + "\n commit"
+	},
+	func(q, p string) string {
+		return "gitGraph BT:\n commit id: " + q + " tag: " + q + "\n branch " + q + "\n commit"
+	},
+	func(q, p string) string { return "gitGraph\n commit\n branch " + p + "\n commit" },
+	func(q, p string) string { return "gitGraph\n title " + p + "\n commit" },
+	func(q, p string) string { return "gitGraph\n accTitle: " + p + "\n accDescr: " + p + "\n commit" },
+	func(q, p string) string { return "gitGraph\n accDescr {\n " + p + "\n }\n commit" },
+	func(q, p string) string { return "gitGraph " + p + ":\n commit" },
+	func(q, p string) string { return "gitGraph\n commit type: " + p },
+	func(q, p string) string { return "gitGraph\n commit\n branch b order: " + p },
+	func(q, p string) string {
+		return "---\ntitle: " + q + "\nconfig:\n  gitGraph:\n    mainBranchName: " + q + "\n    mainBranchOrder: " + q + "\n    showBranches: " + q + "\n    rotateCommitLabel: " + q + "\n---\ngitGraph\n commit id: \"" + gitStrip(p) + "\""
+	},
+	func(q, p string) string {
+		return "%%{init: {\"gitGraph\": {\"mainBranchName\": " + q + ", \"showCommitLabel\": " + q + ", \"parallelCommits\": " + q + "}}}%%\ngitGraph\n commit\n branch b\n commit"
+	},
+}
+
+var sankeyTemplates = []func(p string) string{
+	func(p string) string { return "sankey\n" + p + ",b,1\n" },
+	func(p string) string { return "sankey\na," + p + ",1\n" },
+	func(p string) string { return "sankey\na,b," + p + "\n" },
+	func(p string) string { return "sankey\n" + sankeyQuoted(p) + ",b,1\n" + sankeyBody },
+	func(p string) string { return "sankey\na," + sankeyQuoted(p) + ",1\n" + sankeyQuoted(p) + ",c,2\n" },
+	func(p string) string { return "sankey\na,b," + sankeyQuoted(p) + "\n" },
+	func(p string) string { return "sankey-beta\n\"" + p + "\",\"" + p + "2\",1\n" },
+	func(p string) string { return "sankey " + p + "\n" + sankeyBody },
+	func(p string) string { return "sankey\n%% " + p + "\n" + sankeyBody },
+	func(p string) string { return "---\ntitle: " + jsonText(p) + "\n---\nsankey\n" + sankeyBody },
+	func(p string) string {
+		return "---\nconfig:\n  sankey:\n    prefix: " + jsonText(p) + "\n    suffix: " + jsonText(p) + "\n---\nsankey\n" + sankeyBody
+	},
+	func(p string) string {
+		return "---\nconfig:\n  sankey:\n    linkColor: " + jsonText(p) + "\n---\nsankey\n" + sankeyBody
+	},
+	func(p string) string {
+		return "---\nconfig:\n  sankey:\n    nodeColors:\n      a: " + jsonText(p) + "\n      " + jsonText(p) + ": red\n---\nsankey\n" + sankeyBody
+	},
+	func(p string) string {
+		return "---\nconfig:\n  sankey:\n    nodeAlignment: " + jsonText(p) + "\n    labelStyle: " + jsonText(p) + "\n    showValues: " + jsonText(p) + "\n---\nsankey\n" + sankeyBody
+	},
+	func(p string) string {
+		return "---\nconfig:\n  sankey:\n    width: " + jsonText(p) + "\n    height: " + jsonText(p) + "\n    nodeWidth: " + jsonText(p) + "\n    nodePadding: " + jsonText(p) + "\n---\nsankey\n" + sankeyBody
+	},
+	func(p string) string {
+		return "---\nconfig:\n  sankey: " + jsonText(p) + "\n---\nsankey\n" + sankeyBody
+	},
+	func(p string) string {
+		return "%%{init: {\"sankey\": {\"prefix\": " + jsonText(p) + ", \"linkColor\": " + jsonText(p) + ", \"nodeColors\": {\"a\": " + jsonText(p) + "}}, \"themeVariables\": {\"fontFamily\": " + jsonText(p) + "}}}%%\nsankey\n" + sankeyBody
+	},
+}

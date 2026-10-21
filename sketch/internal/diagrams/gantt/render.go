@@ -230,7 +230,11 @@ func renderGantt(model *GanttDb, config types.Config, options types.RenderOption
 		width := math.Ceil(math.Max(title.Width, 1) + 2*pad)
 		height := math.Ceil(math.Max(title.Height, 1) + 2*pad)
 		content := svg.LabelSvg(title, width/2, pad+title.Height/2, ` class="pele-title" font-weight="var(--_tw)"`, nil)
-		return types.Rendered{SVG: svg.SvgDocument("gantt", width, height, size, options, acc, content), Width: width, Height: height, Links: []types.LinkInfo{}}
+		rendered := types.Rendered{SVG: svg.SvgDocument("gantt", width, height, size, options, acc, content), Width: width, Height: height, Links: []types.LinkInfo{}}
+		if options.Geometry != nil {
+			rendered.Geometry = &types.Geometry{Width: width, Height: height, Gantt: &types.GeoGantt{Title: title.Plain(), Today: math.NaN()}}
+		}
+		return rendered
 	}
 
 	sectionLabels := map[string]text.Label{}
@@ -436,6 +440,8 @@ func renderGantt(model *GanttDb, config types.Config, options types.RenderOption
 	// Excluded days, as Mermaid marks them: a day at a time from the first task's start, and not at all
 	// when the chart spans more than five years.
 	var excluded strings.Builder
+	// The excluded spans as times, for the geometry.
+	var excludedSpans [][2]float64
 	if (len(model.excludes) > 0 || len(model.includes) > 0) && add(js.NewDate(start, loc), 6, "y").T > stop {
 		var from, to *js.Date
 		flush := func() {
@@ -449,6 +455,9 @@ func renderGantt(model *GanttDb, config types.Config, options types.RenderOption
 			ex0 := math.Max(left, p.x(dayStart.T))
 			ex1 := math.Min(right, p.x(dayEnd.T))
 			if ex1 > ex0 {
+				if options.Geometry != nil {
+					excludedSpans = append(excludedSpans, [2]float64{math.Max(start, dayStart.T), math.Min(stop, dayEnd.T)})
+				}
 				excluded.WriteString(`<rect x="` + num(ex0) + `" y="` + num(plotTop) + `" width="` + num(ex1-ex0) + `" height="` + num(plotHeight) + `"/>`)
 			}
 			from, to = nil, nil
@@ -577,5 +586,44 @@ func renderGantt(model *GanttDb, config types.Config, options types.RenderOption
 		content = append(content, `<g class="pele-vert-labels" font-size="`+num(labelSize)+`">`, vertLabels.String(), `</g>`)
 	}
 
-	return types.Rendered{SVG: svg.SvgDocument("gantt", width, height, size, options, acc, content...), Width: width, Height: height, Links: links}
+	rendered := types.Rendered{SVG: svg.SvgDocument("gantt", width, height, size, options, acc, content...), Width: width, Height: height, Links: links}
+	if options.Geometry != nil {
+		rendered.Geometry = ganttGeometry(title, start, stop, rowSection, bars, ticks, tickLabel, sortedVerts, now, model.todayMarker != "off", width, height)
+		rendered.Geometry.Gantt.Excluded = excludedSpans
+	}
+	return rendered
+}
+
+// ganttGeometry is the chart as lists, for drawing it some other way.
+func ganttGeometry(title text.Label, start, stop float64, rows []string, bars []Bar, ticks []float64, tickLabel func(float64) string,
+	verts []*GanttTask, now float64, today bool, width, height float64) *types.Geometry {
+	g := &types.GeoGantt{Title: title.Plain(), Start: start, Stop: stop, Today: math.NaN()}
+	for _, row := range rows {
+		g.Rows = append(g.Rows, text.DecodeEntities(row))
+	}
+	for _, bar := range bars {
+		task := bar.task
+		t := types.GeoTask{Label: strings.Join(bar.label.Plain(), " "), Row: bar.row, Scheduled: scheduled(task),
+			Milestone: task.milestone, Crit: task.crit, Done: task.done, Active: task.active}
+		if t.Scheduled {
+			end := task.endTime
+			// A milestone sits where the SVG puts it, at the middle of its own
+			// times; a bar runs to where excluded days pushed its end.
+			if task.renderEndTime != nil && !task.milestone {
+				end = task.renderEndTime
+			}
+			t.Start, t.End = task.startTime.T, end.T
+		}
+		g.Tasks = append(g.Tasks, t)
+	}
+	for _, t := range ticks {
+		g.Ticks = append(g.Ticks, types.GeoTick{T: t, Label: tickLabel(t)})
+	}
+	for _, task := range verts {
+		g.Verts = append(g.Verts, types.GeoTick{T: task.startTime.T, Label: text.DecodeEntities(RE_BREAK.ReplaceAllString(task.task, " "))})
+	}
+	if today && now >= start && now <= stop && stop > start {
+		g.Today = now
+	}
+	return &types.Geometry{Width: width, Height: height, Gantt: g}
 }

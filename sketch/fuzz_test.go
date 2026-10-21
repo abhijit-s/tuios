@@ -18,11 +18,15 @@ func FuzzRender(f *testing.F) {
 		}
 	}
 	for _, templates := range [][]func(string) string{flowchartTemplates, sequenceTemplates, stateTemplates,
-		classTemplates, erTemplates, ganttTemplates, mindmapTemplates} {
+		classTemplates, erTemplates, ganttTemplates, mindmapTemplates, xychartTemplates, timelineTemplates, quadrantTemplates, journeyTemplates, kanbanTemplates, sankeyTemplates} {
 		for _, template := range templates {
 			f.Add(template(PAYLOADS[1]))
 			f.Add(template("a&b"))
 		}
+	}
+	for _, template := range gitTemplates {
+		f.Add(template(`"`+PAYLOADS[1]+`"`, PAYLOADS[1]))
+		f.Add(template(`"a&b"`, "a&b"))
 	}
 	f.Fuzz(func(t *testing.T, src string) {
 		// Large inputs only slow the search down; the limits cover them.

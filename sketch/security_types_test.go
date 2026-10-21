@@ -1,6 +1,6 @@
 package sketch
 
-// Ported from pele tests/render/{sequence,state,class,er,gantt,mindmap}-security.test.ts,
+// Ported from pele tests/render/{sequence,state,class,er,gantt,mindmap,xychart,timeline,quadrant,journey,kanban,git,sankey}-security.test.ts,
 // the inert part of tests/render/pie.test.ts and tests/support/corpus.ts at
 // 8603bf3313add9143cd417015d4a6bd6c522dada. The template lists are in
 // security_templates_test.go, written by scripts/security-templates.py.
@@ -31,6 +31,7 @@ func jsonText(s string) string {
 const (
 	ganttHead  = "gantt\n  dateFormat YYYY-MM-DD\n"
 	ganttTasks = "  section S\n  A task :a1, 2014-01-01, 30d\n  Another :after a1, 20d\n"
+	kanbanBase = "---\nconfig:\n  kanban:\n    ticketBaseUrl: 'https://example.com/browse/#TICKET#'\n---\n"
 )
 
 var reNaN = regexp.MustCompile(`NaN|Infinity`)
@@ -433,5 +434,342 @@ func TestHugeCharCodes(t *testing.T) {
 	for _, ref := range []string{"&#1e20;", "&#18446744073709551722;", "&#-1;", "&#1e400;", "&#106.5;", "&#65642;"} {
 		inertTry(t, "flowchart LR\n  A --> B\n  click A \""+ref+"avascript:alert(1)\"", RenderOptions{}, false)
 		inertTry(t, "flowchart LR\n  A --> B\n  click A \""+ref+"\"", RenderOptions{}, false)
+	}
+}
+
+func TestXyChartOutputIsInert(t *testing.T) {
+	rendered := 0
+	for _, src := range corpusOf(t, "xychart") {
+		if inertTry(t, src, RenderOptions{}, false) {
+			rendered++
+		}
+	}
+	if rendered < len(corpusOf(t, "xychart")) {
+		t.Fatalf("%d of the xychart corpus rendered", rendered)
+	}
+	hostile(t, xychartTemplates, 250, RenderOptions{}, false)
+	hostileOptions(t, "xychart\n  accTitle: t\n  line \"s\" [1, 2]")
+	huge := strings.Repeat("9", 400)
+	for _, chart := range []string{
+		"xychart\n  line [" + huge + ", 1]",
+		"xychart\n  bar [-" + huge + ", " + huge + "]\n  line [1, 2]",
+		"xychart\n  y-axis " + huge + " --> -" + huge + "\n  bar [1, 2]",
+		"xychart\n  y-axis 0 --> " + huge + "\n  bar [1, 2]",
+		"xychart\n  x-axis " + huge + " --> " + huge + "\n  line [1, 2]\n  bar [1, 2]",
+		"xychart\n  x-axis -" + huge + " --> 3\n  line [1, 2]",
+		"xychart\n  y-axis 5 --> 5\n  bar [5, 5]",
+		"xychart\n  y-axis 9 --> 1\n  x-axis 9 --> 1\n  bar [5, 3]\n  line [2, 8]",
+		"xychart\n  bar [0, 0, 0]",
+		"xychart\n  line [7]",
+		"xychart\n  line [0.0000001, 0.0000002]",
+		"xychart\n  bar [99999999999999999999, 1]\n  line [-99999999999999999999]",
+		"xychart horizontal\n  x-axis 5 --> 5\n  bar [1]",
+	} {
+		if !inertTry(t, chart, RenderOptions{}, false) {
+			t.Fatalf("%q did not render", trimSrc(chart))
+		}
+	}
+	for _, value := range []string{"1e999", "-1", "0", "0.0001", "99999999", "NaN", ".inf", "-.inf", "[1]", "{a: 1}", "null"} {
+		src := "---\nconfig:\n  xyChart:\n    width: " + value + "\n    height: " + value + "\n    showDataLabel: true\n---\nxychart\n  x-axis x [a, b]\n  bar \"s\" [1, 2]"
+		if !inertTry(t, src, RenderOptions{}, false) {
+			t.Fatalf("size %s: did not render", value)
+		}
+	}
+	mutate(t, corpusOf(t, "xychart"), []string{"\"", "[", "]", ",", "\n", " --> ", "line ", "bar ", "x-axis ", "y-axis ", "title ",
+		"-", ".", "9999999999"}, 3, 4000, RenderOptions{}, false)
+	// pele checks that these leave Object.prototype alone. Go has no prototypes; they must render.
+	for _, src := range []string{
+		"xychart\n  x-axis \"__proto__\" [\"__proto__\", \"constructor\", \"toString\"]\n  bar \"__proto__\" [1, 2, 3]\n  line \"constructor\" [3 \"__proto__\", 2, 1]",
+		"---\nconfig:\n  xyChart:\n    __proto__:\n      polluted: true\n    constructor: 1\n---\nxychart\n  line [1, 2]",
+	} {
+		if !inertTry(t, src, RenderOptions{}, false) {
+			t.Fatalf("%q did not render", src)
+		}
+	}
+}
+
+func TestTimelineOutputIsInert(t *testing.T) {
+	rendered := 0
+	for _, src := range corpusOf(t, "timeline") {
+		if inertTry(t, src, RenderOptions{}, true) {
+			rendered++
+		}
+	}
+	if rendered < len(corpusOf(t, "timeline")) {
+		t.Fatalf("%d of the timeline corpus rendered", rendered)
+	}
+	hostile(t, timelineTemplates, 500, RenderOptions{}, true)
+	out, err := Render("timeline\n  title <script>alert(1)</script>\n  section \"><img src=x onerror=alert(1)>\n  <svg onload=alert(1)> : </text><script>x</script>", RenderOptions{})
+	if err != nil || strings.Contains(out.Data, "<script") || strings.Contains(out.Data, "<img") ||
+		!strings.Contains(out.Data, "&lt;script&gt;") || !strings.Contains(out.Data, `data-id="&quot;&gt;&lt;img src=x onerror=alert(1)&gt;"`) {
+		t.Fatalf("timeline markup is not escaped: %v\n%s", err, out.Data)
+	}
+	for _, payload := range PAYLOADS {
+		if !inertTry(t, "timeline\n  accTitle: t\n  accDescr: d\n  2001 : a", RenderOptions{IDPrefix: types.Ptr(payload), FontFamily: payload}, true) {
+			t.Fatal("hostile id prefix and font: did not render")
+		}
+	}
+	count := 4000
+	if testing.Short() {
+		count /= 8
+	}
+	if n := mutate(t, corpusOf(t, "timeline"), []string{":", " : ", "\n", "title ", "section ", "accTitle: ", "accDescr {", "}", "<br>",
+		" TD", "#", "%%"}, 3, 4000, RenderOptions{}, true); n <= count/10 {
+		t.Fatalf("%d of %d mutated timelines rendered", n, count)
+	}
+	// pele checks that these leave Object.prototype alone. Go has no prototypes; they must render.
+	for _, src := range []string{
+		"timeline\n  section __proto__\n  __proto__ : constructor : toString\n  constructor : __proto__\n  section constructor\n  hasOwnProperty",
+		"---\nconfig:\n  timeline:\n    __proto__:\n      polluted: true\n---\ntimeline\n  2001 : a",
+	} {
+		if !inertTry(t, src, RenderOptions{}, true) {
+			t.Fatalf("%q did not render", src)
+		}
+	}
+}
+
+func TestQuadrantOutputIsInert(t *testing.T) {
+	rendered := 0
+	for _, src := range corpusOf(t, "quadrant") {
+		if inertTry(t, src, RenderOptions{}, false) {
+			rendered++
+		}
+	}
+	if rendered < len(corpusOf(t, "quadrant")) {
+		t.Fatalf("%d of the quadrant corpus rendered", rendered)
+	}
+	hostile(t, quadrantTemplates, 250, RenderOptions{}, false)
+	hostileOptions(t, "quadrantChart\n  accTitle: t\n  A: [0.5, 0.5]")
+	keys := []string{"chartWidth", "chartHeight", "titlePadding", "quadrantPadding", "xAxisLabelPadding", "yAxisLabelPadding",
+		"quadrantTextTopPadding", "pointTextPadding", "pointRadius"}
+	for _, value := range []string{"1e999", "-1", "0", "0.0001", "99999999", "NaN", ".inf", "-.inf", "[1]", "{a: 1}", "true", "null"} {
+		config := make([]string, len(keys))
+		for i, key := range keys {
+			config[i] = "    " + key + ": " + value
+		}
+		src := "---\nconfig:\n  quadrantChart:\n" + strings.Join(config, "\n") +
+			"\n---\nquadrantChart\n  title t\n  x-axis a --> b\n  y-axis c --> d\n  quadrant-1 q\n  A: [0.5, 0.5]"
+		if !inertTry(t, src, RenderOptions{}, false) {
+			t.Fatalf("settings of %s: did not render", value)
+		}
+	}
+	huge := strings.Repeat("9", 400)
+	for _, src := range []string{
+		"quadrantChart\n  A: [0.5, 0.5] radius: " + huge + ", stroke-width: " + huge + "px",
+		"quadrantChart\n  A: [0x5, 0e9]\n  B: [0,5, 0 5]\n  C: [055, 0b1]",
+	} {
+		if !inertTry(t, src, RenderOptions{}, false) {
+			t.Fatalf("%q did not render", trimSrc(src))
+		}
+	}
+	mutate(t, corpusOf(t, "quadrant"), []string{"\"", "`", ":", ":::", ": [", "]", "\n", ", ", "classDef ", "color: #", "radius: ",
+		"-->"}, 3, 4000, RenderOptions{}, false)
+	// pele checks that class names like __proto__ leave Object.prototype alone and find no
+	// class that was not defined.
+	out, err := Render("quadrantChart\n  __proto__:::__proto__: [0.5, 0.5]\n  constructor:::constructor: [0.1, 0.1]\n  toString:::toString: [0.2, 0.2]\n"+
+		"  classDef constructor radius: 3\n  classDef hasOwnProperty color: #f00", RenderOptions{})
+	if err != nil || strings.Count(out.Data, "<circle") != 3 || strings.Count(out.Data, ` r="3"`) != 1 {
+		t.Fatalf("classes named after Object properties: %v\n%s", err, out.Data)
+	}
+}
+
+func TestJourneyOutputIsInert(t *testing.T) {
+	corpus := append(corpusOf(t, "journey"),
+		"journey\n  title Day\n  section Work\n    Make tea: 5: Me\n    Do work: 1: Me, Cat\n  section Home\n    Sit down: 4: Me\n",
+		"journey\n  accTitle: a\n  accDescr { b }\n  First: 3\n  section S\n  One<br>two: 2: A, B, C\n")
+	for _, src := range corpus {
+		if !inertTry(t, src, RenderOptions{}, true) {
+			t.Fatalf("%q did not render", trimSrc(src))
+		}
+	}
+	// A semicolon is a syntax error in a journey, so hostile text is also tried with its semicolons removed.
+	noSemicolons := func(p string) string { return strings.ReplaceAll(p, ";", "") }
+	hostile(t, journeyTemplates, 500, RenderOptions{}, true, noSemicolons)
+	out, err := Render("journey\n  title <script>alert(1)</script>\n  section \"><img src=x onerror=alert(1)>\n  <svg onload=alert(1)>: 5: </text><script>x</script>, \"onload=\"alert(1)", RenderOptions{})
+	if err != nil || strings.Contains(out.Data, "<script") || strings.Contains(out.Data, "<img") ||
+		!strings.Contains(out.Data, "&lt;script&gt;alert(1)&lt;/script&gt;") ||
+		!strings.Contains(out.Data, `data-id="&quot;&gt;&lt;img src=x onerror=alert(1)&gt;"`) ||
+		!strings.Contains(out.Data, "<title>&lt;/text&gt;&lt;script&gt;x&lt;/script&gt;</title>") ||
+		!strings.Contains(out.Data, `data-id="&quot;onload=&quot;alert(1)"`) {
+		t.Fatalf("journey markup is not escaped: %v\n%s", err, out.Data)
+	}
+	for _, payload := range PAYLOADS {
+		if !inertTry(t, "journey\n  accTitle: t\n  accDescr: d\n  Task: 5: Me", RenderOptions{IDPrefix: types.Ptr(payload), FontFamily: payload}, true) {
+			t.Fatal("hostile id prefix and font: did not render")
+		}
+	}
+	fragments := []string{":", ": 5", ": 3: Me", ",", "\n", "title ", "section ", "accTitle: ", "accDescr {", "}", "<br>", "#", "%%"}
+	for _, p := range PAYLOADS {
+		if strings.Contains(p, ";") {
+			fragments = append(fragments, noSemicolons(p))
+		}
+	}
+	count := 4000
+	if testing.Short() {
+		count /= 8
+	}
+	if n := mutate(t, corpus, fragments, 3, 4000, RenderOptions{}, true); n <= count/20 {
+		t.Fatalf("%d of %d mutated journeys rendered", n, count)
+	}
+	// pele checks that these leave Object.prototype alone. Go has no prototypes; they must render.
+	out, err = Render("journey\n  section __proto__\n  constructor: 5: __proto__, constructor, toString, hasOwnProperty\n  __proto__: 1: valueOf\n", RenderOptions{})
+	if err != nil || strings.Count(out.Data, `class="pele-legend-item"`) != 5 || !strings.Contains(out.Data, `data-id="__proto__"`) {
+		t.Fatalf("names like __proto__: %v\n%s", err, out.Data)
+	}
+	if !inertTry(t, "---\nconfig:\n  journey:\n    __proto__:\n      polluted: true\n---\njourney\n  Task: 5: Me", RenderOptions{}, true) {
+		t.Fatal("a config with __proto__ did not render")
+	}
+}
+
+func TestKanbanOutputIsInert(t *testing.T) {
+	// A host with an icon for every name, so that each name a diagram gives reaches the output.
+	opt := RenderOptions{Icons: func(string) string { return `<path d="M0,0"/>` }}
+	for _, src := range corpusOf(t, "kanban") {
+		if !inertTry(t, src, opt, false) {
+			t.Fatalf("%q did not render", trimSrc(src))
+		}
+	}
+	hostile(t, kanbanTemplates, 400, opt, false)
+	for _, payload := range PAYLOADS {
+		for _, base := range []string{payload, payload + "#TICKET#", "#TICKET#"} {
+			config := Config{"kanban": map[string]any{"ticketBaseUrl": base}}
+			for _, ticket := range []string{"T-1", "javascript:alert(1)", " JaVaScRiPt:alert(1)", "data:text/html,x", "$&", "$'"} {
+				o := opt
+				o.Config = config
+				out, err := Render("kanban\n  todo\n    a@{ ticket: \""+ticket+"\" }", o)
+				if err != nil {
+					t.Fatalf("%q %q: %v", base, ticket, err)
+				}
+				if problem := inertProblem(out.Data); problem != "" {
+					t.Fatalf("%q %q: output is not inert: %s", base, ticket, problem)
+				}
+				for _, link := range out.Links {
+					if regexp.MustCompile(`(?i)^\s*(?:javascript|vbscript|data)\s*:`).MatchString(link.Href) {
+						t.Fatalf("%q %q: links to %q", base, ticket, link.Href)
+					}
+				}
+			}
+		}
+	}
+	out, err := Render(kanbanBase+"kanban\n  a<b>\"&[<i onload=x>\"&]\n  :::a\"b <c> d=e\n    c@{ ticket: '\"><x>&', assigned: 'x < y \"&' }", opt)
+	if err != nil || !strings.Contains(out.Data, `data-id="a&lt;b&gt;&quot;&amp;"`) ||
+		!strings.Contains(out.Data, `class="pele-cluster pele-column a b c d e"`) ||
+		!strings.Contains(out.Data, `>x &lt; y &quot;&amp;</text>`) ||
+		strings.Contains(out.Data, "<i") || strings.Contains(out.Data, "<x>") ||
+		len(out.Links) == 0 || out.Links[0].Href != "https://example.com/browse/%22%3E%3Cx%3E&" {
+		t.Fatalf("kanban text, ids, metadata and classes are not escaped: %v %v\n%s", err, out.Links, out.Data)
+	}
+	for _, payload := range PAYLOADS {
+		o := opt
+		o.IDPrefix, o.FontFamily = types.Ptr(payload), payload
+		if !inertTry(t, "kanban\n  todo\n    a@{ icon: x, ticket: y }", o, false) {
+			t.Fatal("hostile id prefix and font: did not render")
+		}
+	}
+	mutate(t, corpusOf(t, "kanban"), []string{"\"", "[", "]", "(", ")", "\n", "\n    ", ":::", "::icon(", "@{ ", " }", "@{ ticket: \"",
+		"@{ label: \"", "assigned: ", "priority: High", ", "}, 3, 4000, opt, false)
+	// pele checks that these leave Object.prototype alone. Go has no prototypes; they must render.
+	for _, src := range []string{
+		"kanban\n  __proto__\n    constructor@{ __proto__: [polluted], constructor: 1, label: x }\n    :::__proto__\n    toString[hasOwnProperty]",
+		"kanban\n  todo\n    a@{\n      __proto__:\n        polluted: 1\n    }",
+	} {
+		if !inertTry(t, src, opt, false) {
+			t.Fatalf("%q did not render", src)
+		}
+	}
+}
+
+// gitStrip is p.replace(/["\\\n]/g, ”), for a commit id in double quotes.
+func gitStrip(p string) string {
+	return strings.NewReplacer(`"`, "", `\`, "", "\n", "").Replace(p)
+}
+
+func TestGitOutputIsInert(t *testing.T) {
+	// A string in double quotes cannot hold a double quote or a line break, so the payload is tried
+	// as written, in single quotes, and with its quotes escaped.
+	quoted := func(p string) []string {
+		return []string{`"` + p + `"`, `'` + p + `'`, `"` + strings.NewReplacer(`"`, `\"`, `\`, `\\`).Replace(p) + `"`}
+	}
+	rendered, turn := 0, 0
+	for _, payload := range PAYLOADS {
+		forms := quoted(payload)
+		for _, template := range gitTemplates {
+			if inertTry(t, template(forms[turn%len(forms)], payload), RenderOptions{}, false) {
+				rendered++
+			}
+			turn++
+		}
+	}
+	if rendered <= 300 {
+		t.Fatalf("%d hostile sources rendered, want more than 300", rendered)
+	}
+	out, err := Render("gitGraph\n commit id: \"<script>alert(1)</script>\" tag: \"\\\"><img src=x onerror=alert(1)>\"\n branch \"</text><script>\"\n commit", RenderOptions{})
+	if err != nil || strings.Contains(out.Data, "<script") || strings.Contains(out.Data, "<img") || !strings.Contains(out.Data, "&lt;script&gt;alert(1)&lt;/script&gt;") {
+		t.Fatalf("git markup is not escaped: %v\n%s", err, out.Data)
+	}
+	corpus := corpusOf(t, "git")
+	for _, src := range corpus {
+		if !inertTry(t, src, RenderOptions{}, false) {
+			t.Fatalf("%q did not render", trimSrc(src))
+		}
+	}
+	mutate(t, corpus, []string{"\"", "'", "\n", "commit ", "branch ", "merge ", "id: \"", "tag: \"", "title ", "TB:", "cherry-pick id: \""}, 11, 2000, RenderOptions{}, false)
+	hostileOptions(t, "gitGraph\n accTitle: t\n accDescr: d\n commit tag: \"v1\"\n branch b\n commit\n checkout main\n merge b")
+}
+
+const sankeyBody = "a,b,2\nb,c,1\n"
+
+func sankeyQuoted(p string) string { return `"` + strings.ReplaceAll(p, `"`, `""`) + `"` }
+
+func TestSankeyOutputIsInert(t *testing.T) {
+	corpus := corpusOf(t, "sankey")
+	for _, src := range corpus {
+		if !inertTry(t, src, RenderOptions{}, false) {
+			t.Fatalf("%q did not render", trimSrc(src))
+		}
+	}
+	hostile(t, sankeyTemplates, 450, RenderOptions{}, false)
+	out, err := Render("sankey\n<script>alert(1)</script>,\"<img src=x onerror=alert(1)>\",1\n", RenderOptions{})
+	if err != nil || strings.Contains(out.Data, "<script") || strings.Contains(out.Data, "<img") ||
+		!strings.Contains(out.Data, `data-id="&lt;script&gt;alert(1)&lt;/script&gt;"`) {
+		t.Fatalf("sankey markup is not escaped: %v\n%s", err, out.Data)
+	}
+	for _, payload := range PAYLOADS {
+		sankey := map[string]any{"prefix": payload, "suffix": payload, "linkColor": payload, "nodeAlignment": payload, "labelStyle": payload,
+			"nodeColors": map[string]any{"a": payload, "b": "red;" + payload}, "width": payload, "height": payload}
+		if !inertTry(t, "sankey\n"+sankeyBody, RenderOptions{IDPrefix: types.Ptr(payload), FontFamily: payload, Config: Config{"sankey": sankey}}, false) {
+			t.Fatalf("hostile sankey options %q: did not render", payload)
+		}
+	}
+	for _, value := range []float64{0, -1, 1e-9, 1e9, math.Inf(1), math.Inf(-1), math.NaN()} {
+		sankey := map[string]any{"width": value, "height": value, "nodeWidth": value, "nodePadding": value}
+		if !inertTry(t, "sankey\n"+sankeyBody, RenderOptions{Config: Config{"sankey": sankey}}, false) {
+			t.Fatalf("sankey config value %v: did not render", value)
+		}
+		size := 16.0
+		switch {
+		case value == 0:
+			size = 1
+		case math.Abs(value) <= 1e6 && !math.IsNaN(value) && value != 0:
+			size = math.Abs(value)
+		}
+		pad := 8.0
+		if !math.IsNaN(value) && !math.IsInf(value, 0) {
+			pad = math.Mod(math.Abs(value), 100)
+		}
+		if !inertTry(t, "sankey\n"+sankeyBody, RenderOptions{FontSize: &size, Padding: &pad}, false) {
+			t.Fatalf("sankey font size %v and padding %v: did not render", size, pad)
+		}
+	}
+	count := 3000
+	if testing.Short() {
+		count /= 8
+	}
+	if n := mutate(t, corpus, []string{"\"", "\"\"", ",", "\n", "a,b,1", "1e308", "-1", "NaN", "sankey\n", "linkColor: ", "prefix: "}, 3, 3000, RenderOptions{}, false); n <= count/8 {
+		t.Fatalf("%d of %d mutated sankey diagrams rendered", n, count)
+	}
+	// pele checks that these leave Object.prototype alone. Go has no prototypes; it must render.
+	if !inertTry(t, "---\nconfig:\n  sankey:\n    nodeColors:\n      __proto__: red\n      constructor: blue\n---\nsankey\n__proto__,constructor,1\nconstructor,toString,2\nhasOwnProperty,__proto__,3\n", RenderOptions{}, false) {
+		t.Fatal("names like __proto__ did not render")
 	}
 }

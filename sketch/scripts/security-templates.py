@@ -4,8 +4,12 @@
 import re, sys
 pele = sys.argv[1]
 names = {'sequence': 'sequenceTemplates', 'state': 'stateTemplates', 'class': 'classTemplates',
-         'er': 'erTemplates', 'gantt': 'ganttTemplates', 'mindmap': 'mindmapTemplates'}
-exprs = {'p': 'p', 'json(p)': 'jsonText(p)', 'HEAD': 'ganttHead', 'TASKS': 'ganttTasks'}
+         'er': 'erTemplates', 'gantt': 'ganttTemplates', 'mindmap': 'mindmapTemplates',
+         'xychart': 'xychartTemplates', 'timeline': 'timelineTemplates', 'quadrant': 'quadrantTemplates',
+         'journey': 'journeyTemplates', 'kanban': 'kanbanTemplates', 'git': 'gitTemplates',
+         'sankey': 'sankeyTemplates'}
+exprs = {'p': 'p', 'json(p)': 'jsonText(p)', 'HEAD': 'ganttHead', 'TASKS': 'ganttTasks', 'BASE': 'kanbanBase', 'q': 'q', 'BODY': 'sankeyBody', 'quoted(p)': 'sankeyQuoted(p)',
+         "p.replace(/[\"\\\\\\n]/g, '')": 'gitStrip(p)'}
 
 def lit(s):
     out, i = [], 0
@@ -32,9 +36,12 @@ for typ, var in names.items():
     src = open(f'{pele}/tests/render/{typ}-security.test.ts').read()
     block = src[src.index('const TEMPLATES'):]
     block = block[:block.index('\n];')]
-    bodies = re.findall(r'\(p\) =>\s*`((?:[^`\\]|\\.)*)`', block, re.S)
-    print(f'var {var} = []func(p string) string{{')
+    # git's templates take the payload quoted (q) and as written (p).
+    two = typ == 'git'
+    bodies = re.findall(r'\((?:_?q, p|_?q|p)\) =>\s*`((?:[^`\\]|\\.)*)`', block, re.S)
+    sig = 'q, p string' if two else 'p string'
+    print(f'var {var} = []func({sig}) string{{')
     for b in bodies:
-        print(f'\tfunc(p string) string {{ return {go(b)} }},')
+        print(f'\tfunc({sig}) string {{ return {go(b)} }},')
     print('}\n')
     print(f'// {typ}: {len(bodies)} templates', file=sys.stderr)

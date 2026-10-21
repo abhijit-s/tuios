@@ -3,8 +3,10 @@
 // to cells at a scale where every label fits, and writes the labels as real
 // text. It is not a port of pele: pele draws only SVG.
 //
-// Flowcharts and sequence diagrams have a text drawing. Other types give
-// ErrUnsupported.
+// Flowcharts, sequence diagrams, state diagrams, class diagrams, ER diagrams,
+// pie charts, mindmaps, gantt charts, timelines, XY charts, quadrant charts,
+// user journeys, kanban boards, git graphs and sankey diagrams have a text
+// drawing. Other types give ErrUnsupported.
 package text
 
 import (
@@ -40,7 +42,9 @@ type Options struct {
 
 // Draw draws a parsed diagram as lines of text.
 func Draw(d *sketch.Diagram, opt Options) ([]string, error) {
-	if d.Type != "flowchart" && d.Type != "sequence" {
+	switch d.Type {
+	case "flowchart", "sequence", "state", "class", "er", "pie", "mindmap", "gantt", "timeline", "xychart", "quadrantChart", "journey", "kanban", "gitGraph", "sankey":
+	default:
 		return nil, ErrUnsupported
 	}
 	lines, err := draw(d, opt, sketch.RenderOptions{})
@@ -61,9 +65,36 @@ func draw(d *sketch.Diagram, opt Options, ro sketch.RenderOptions) ([]string, er
 		return nil, err
 	}
 	var c *canvas
-	if d.Type == "flowchart" {
+	switch d.Type {
+	case "flowchart":
 		c, err = drawFlowchart(layout, opt)
-	} else {
+	case "state":
+		c, err = drawState(layout, opt)
+	case "class":
+		c, err = drawClass(layout, opt)
+	case "er":
+		c, err = drawER(layout, opt)
+	case "pie":
+		c, err = drawPie(layout, opt)
+	case "mindmap":
+		c, err = drawMindmap(layout, opt)
+	case "gantt":
+		c, err = drawGantt(layout, opt)
+	case "timeline":
+		c, err = drawTimeline(layout, opt)
+	case "xychart":
+		c, err = drawXY(layout, opt)
+	case "quadrantChart":
+		c, err = drawQuadrant(layout, opt)
+	case "journey":
+		c, err = drawJourney(layout, opt)
+	case "kanban":
+		c, err = drawKanban(layout, opt)
+	case "gitGraph":
+		c, err = drawGit(layout, opt)
+	case "sankey":
+		c, err = drawSankey(layout, opt)
+	default:
 		c, err = drawSequence(layout, opt)
 	}
 	if err != nil {
@@ -82,7 +113,18 @@ const (
 	roleFrame
 	roleTitle
 	roleHead
+	roleCrit
+	// roleSeries is the first of six roles, one per data series of a chart.
+	roleSeries
 )
+
+// seriesRoles is the count of series roles; series past it take them again.
+const seriesRoles = 6
+
+// seriesRole is the role of series i, counting from 0.
+func seriesRole(i int) uint8 {
+	return roleSeries + uint8(((i%seriesRoles)+seriesRoles)%seriesRoles)
+}
 
 var roleSGR = [...]string{
 	roleNone:  "",
@@ -93,6 +135,16 @@ var roleSGR = [...]string{
 	roleFrame: "90",
 	roleTitle: "1",
 	roleHead:  "",
+	roleCrit:  "31",
+	// The series take the hues of the SVG's first six series colours, at 16
+	// colours: blue, orange as yellow, green, red, teal as cyan, and magenta.
+	// The blue is the bright one: plain blue is hard to read on a dark ground.
+	roleSeries:     "94",
+	roleSeries + 1: "33",
+	roleSeries + 2: "32",
+	roleSeries + 3: "31",
+	roleSeries + 4: "36",
+	roleSeries + 5: "35",
 }
 
 // Directions of the strokes in a cell, for joining lines.
@@ -397,4 +449,22 @@ func widest(lines []string) int {
 		w = max(w, width(l))
 	}
 	return w
+}
+
+// fit cuts s to at most w cells, ending it in "…" when it is cut.
+func fit(s string, w int) string {
+	if width(s) <= w {
+		return s
+	}
+	if w <= 0 {
+		return ""
+	}
+	n := 0
+	for i, r := range s {
+		if n+runeWidth(r) > w-1 {
+			return s[:i] + "…"
+		}
+		n += runeWidth(r)
+	}
+	return s
 }

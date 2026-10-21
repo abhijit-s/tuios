@@ -3171,6 +3171,59 @@ builds it), so it adds 114,688 and 100,336 bytes. It links no new package.
 This uses the plugin system allowance. The new budgets leave 4,198 and 4,134
 bytes of room.
 
+The budgets went to 42,254,600 and 39,486,500 for native plugins:
+`tuios-plugin.toml`, the owner table that places a plugin's processes, the
+grants they are held to on the verbs, the client protocol and the herdr
+socket, the machine-local admin approval, and the check table of the herdr
+socket methods. On main at 66961010 the binaries measured 42,209,442 and
+39,447,666 bytes. With native plugins they measured 42,250,402 and
+39,482,338 (Go 1.26.10, a shallow clone, as CI builds it), so they add
+40,960 and 34,672 bytes. It links no new package. This uses the plugin
+system allowance. The new budgets leave 4,198 and 4,162 bytes of room.
+
+The budgets went to 42,275,100 and 39,503,200 for the admin approval by the
+person, the hash of the files a plugin's commands name, the plugin reaper
+and the git cancel. On main at bfc9d0f2 the binaries measured 42,250,402
+and 39,482,338 bytes. With the change they measured 42,270,882 and
+39,499,010 (Go 1.26.10, a shallow clone, as CI builds it), so it adds
+20,480 and 16,672 bytes. No new package is linked. The new budgets leave
+4,218 and 4,190 bytes of room.
+
+Each plugin command now runs under a reaper, a tuios process that leads its
+session until nothing the command started is left. One reaper holds 2.7 MB
+of private memory, measured on Linux from a release build flushed to disk.
+Its program pages, about 17 MB, are the daemon's own binary and shared with
+it. The runner starts the reaper with `GODEBUG=disablethp=1`: with
+transparent huge pages set to `always`, the Go heap faults in as 2 MB pages,
+and a reaper then held 5 to 7 MB. The plugin command gets the GODEBUG it
+would have had. A reaper wakes only when a process it waits for ends: 0
+context switches in 8 idle seconds. The daemon runs no timer for it. On
+macOS a reaper whose command has ended while something it started still
+runs looks at its process group once a second.
+
+The budgets went to 42,369,200 (linux/amd64) and 39,587,200 (darwin/arm64)
+when tuios.dev/sketch began to draw state, class, ER, pie, mindmap and gantt
+diagrams as text. The renderers of those types also keep their geometry when
+a caller asks for it. No dependency was added. The build before it measured
+42,270,882 and 39,499,010 bytes (Go 1.26.10, a clean clone, as CI builds it).
+The change measured 42,365,090 and 39,583,074, so it adds 94,208 and 84,064
+bytes. The binary stays under the 45 MB ceiling. The new budgets leave 4,110
+and 4,126 bytes of room.
+
+The budgets went to 42,692,872 and 39,855,240 when tuios.dev/sketch began
+to draw XY charts, timelines and quadrant charts, the first of the 25 pele
+types it did not draw, each with a text drawing. The build before it measured
+42,365,090 and 39,583,074 bytes (Go 1.26.10, a clean clone, as CI builds it).
+The change measured 42,688,674 and 39,851,042, so it adds 323,584 and 267,968
+bytes. No dependency was added. The new budgets leave 4,198 bytes of room.
+
+The budgets went to 43,049,224 and 40,158,968 when sketch began to draw user
+journeys, kanban boards, git graphs and sankey diagrams, as pictures and as
+text. The build before it measured 42,688,674 and 39,851,042 bytes (Go
+1.26.10, a clean clone, as CI builds it). The change measured 43,045,026 and
+40,154,770, so it adds 356,352 and 303,728 bytes. No dependency was added. The
+new budgets leave 4,198 bytes of room.
+
 To raise a budget, do it on purpose in its own commit: run
 `scripts/binary-size.sh` on the Go version in go.mod, set the new budget a
 little above the printed size in the `budget` function of that script, and say

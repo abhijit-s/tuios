@@ -911,6 +911,91 @@ sandbox: the build and the plugin run with your rights.
 The daemon never fetches and never builds. It only reads `plugins.lock` and
 the checkouts.
 
+**Native plugins.** A folder with `tuios-plugin.toml` is a native plugin.
+It runs the same commands as a herdr plugin, and it says which pane grants
+its processes hold when they call tuios:
+
+```toml
+schema = 1
+id = "example.status"
+name = "Status"
+version = "0.1.0"
+min_tuios = "0.9.0"            # optional
+platforms = ["linux", "macos"]
+
+[permissions]
+grants = ["read"]              # read, write, fan or admin
+
+[[build]]
+command = ["go", "build", "-o", "bin/status", "."]
+
+[[process]]
+id = "main"
+run = "startup"                # startup, action or pane
+command = ["bin/status"]
+```
+
+- `run = "action"` and `run = "pane"` take the keys of `[[actions]]` and
+  `[[panes]]` in a herdr manifest: `title`, `description`, `contexts`,
+  `placement`, `width` and `height`.
+- tuios refuses a key it does not know. It refuses `[[wasm]]` and
+  `run = "event"`, which a later tuios runs.
+- A plugin cannot hold `respond`. `admin` needs `--grant admin` on
+  `tuios plugins install`.
+- With `[herdr] manifest = "herdr-plugin.toml"`, the commands come from the
+  herdr manifest, and `tuios-plugin.toml` adds only the grants. The ids must
+  match. In a folder with both files and no `[herdr]` table,
+  `tuios-plugin.toml` wins.
+
+The processes of a native plugin hold the grants you approved at
+`tuios plugins install`, in every session. A native plugin that you link or
+put in a folder, and did not install, holds no grants. A herdr plugin holds
+the default grants of `[agents.permissions]`. A pane that a native plugin
+opens holds no more than the plugin.
+
+tuios knows a plugin's process by its process session, which the kernel
+records. tuios runs each plugin command under a small tuios process, the
+reaper, which leads the session and stays until nothing the command started
+is left. A process that the plugin starts is the plugin's too, also after
+its parent exits and with its environment changed. A process that starts a
+new session leaves the plugin. This check stops mistakes and misled tools.
+It does not stop a program that tries to escape. No plugin process can act
+as the person.
+
+A native plugin holds `admin` only when you approved it on this machine.
+`tuios plugins install --grant admin` asks each tuios daemon that runs
+whether the command runs outside its panes and plugins. It does not start a
+daemon to ask. Then it records the approval in the state folder.
+`plugins.lock` alone never gives `admin`. A plugin installed from a folder
+is checked against its approved manifest too. After you change its
+manifest, install it again.
+
+The approval covers the manifest and the files that the plugin's commands
+name as arguments, such as `bin/status` or `probe.sh`. When one of them
+changes, the plugin loses `admin` at its next start, until you approve it
+again. The approval does not cover:
+
+- files that those files load, such as a sourced `lib.sh`, a Python module
+  or `node_modules`;
+- an argument that is not a plain file name, such as
+  `sh -c "./probe.sh --flag"`, `go run .` or `python -m pkg`;
+- programs on your `PATH`, config and data files, and files written while
+  the plugin runs;
+- a command that already runs when one of its files changes.
+
+tuios reads the approval only when you own the file and its folder, and
+nobody else can write them.
+
+The approval stops a lock file from another machine, a hand edit, a changed
+plugin, and a pane or plugin that runs `tuios plugins install --grant admin`,
+also with its pane variables cut or with `--server`. It does not stop a
+process that leaves its pane with `setsid`, a command run over `ssh`, a
+process that points `XDG_RUNTIME_DIR` somewhere else, or a program that
+writes the approval file itself. Any program that runs as you can do the
+last, as it can write `config.toml`.
+On Windows and the BSDs, the kernel does not tell tuios which process
+calls. There tuios does not run the commands of a native plugin yet.
+
 **Where tuios finds plugins.** tuios looks in five places, in this order:
 
 1. The folders and manifests that `[plugins] dirs` in `config.toml` names.

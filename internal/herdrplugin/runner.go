@@ -8,8 +8,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -79,6 +83,17 @@ type Runner struct {
 	procs    map[string]map[*exec.Cmd]*procGroup
 	stopped  bool
 	wg       sync.WaitGroup
+	// owners are the plugins whose commands lead each process session, by
+	// the session id, which is the leader's pid. With a reaper the leader
+	// is the reaper, which lives until nothing the command started is left,
+	// so what a command leaves behind is still its plugin's. native counts
+	// the native plugins among them.
+	owners map[int]*Plugin
+	native atomic.Int32
+	// Reaper, when set, is the argv that runs a command under a reaper:
+	// the tuios binary and ReaperArg (reaper.go). Without it the command
+	// leads its own session, and its entry goes when it exits.
+	Reaper []string
 	// OnPID, when set, is told each process the runner starts and ends, so
 	// the daemon can tell a plugin's process from a person's.
 	OnPID func(pid int, running bool)
@@ -86,7 +101,7 @@ type Runner struct {
 
 // NewRunner returns an empty runner.
 func NewRunner() *Runner {
-	return &Runner{perPlug: map[string]int{}, procs: map[string]map[*exec.Cmd]*procGroup{}}
+	return &Runner{perPlug: map[string]int{}, procs: map[string]map[*exec.Cmd]*procGroup{}, owners: map[int]*Plugin{}}
 }
 
 // ResolveProgram finds a command's program as herdr does: a relative path
@@ -142,6 +157,8 @@ func (r *Runner) Start(j Job) (LogEntry, *Error) {
 		return refuse("plugin_host_stopped", "the plugin host is stopping")
 	case r.inFlight >= MaxInFlight:
 		return refuse("plugin_command_limit_reached", fmt.Sprintf("maximum concurrent plugin commands reached (%d)", MaxInFlight))
+	case j.Plugin.Format == FormatTuios && !kernelPlacesCallers:
+		return refuse("plugin_unsupported_platform", "tuios cannot hold a native plugin to its grants on "+runtime.GOOS+" yet, so it does not run its commands")
 	case r.perPlug[j.Plugin.PluginID] >= MaxPerPlugin:
 		return refuse("plugin_command_limit_reached", fmt.Sprintf("plugin %s already runs %d commands", j.Plugin.PluginID, MaxPerPlugin))
 	}
@@ -150,10 +167,17 @@ func (r *Runner) Start(j Job) (LogEntry, *Error) {
 		return refuse(perr.Code, perr.Msg)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
+	argv := append([]string{program}, j.Command[1:]...)
+	if len(r.Reaper) > 0 {
+		argv = append(slices.Clone(r.Reaper), argv...)
+	}
 	//tuios:allow-exec detach sets CREATE_NO_WINDOW with the flags the job needs
-	cmd := exec.Command(program, j.Command[1:]...) //nolint:gosec // an enabled plugin's own manifest names the command
+	cmd := exec.Command(argv[0], argv[1:]...) //nolint:gosec // an enabled plugin's own manifest names the command
 	cmd.Dir = j.Plugin.PluginRoot
 	cmd.Env = append(cleanEnv(os.Environ()), j.Env...)
+	if len(r.Reaper) > 0 {
+		cmd.Env = reaperEnv(cmd.Env)
+	}
 	cmd.Stdin = nil
 	var stdout, stderr capBuffer
 	stdout.cap, stderr.cap = OutputCap, OutputCap
@@ -163,7 +187,24 @@ func (r *Runner) Start(j Job) (LogEntry, *Error) {
 	// and frees its slot.
 	cmd.WaitDelay = waitDelay
 	detach(cmd)
-	if err := cmd.Start(); err != nil {
+	// The reaper says on fd 3 when the command itself exits.
+	var status, statusW *os.File
+	if len(r.Reaper) > 0 {
+		var err error
+		if status, statusW, err = os.Pipe(); err != nil {
+			cancel()
+			return refuse("plugin_command_failed", err.Error())
+		}
+		cmd.ExtraFiles = []*os.File{statusW}
+	}
+	err := cmd.Start()
+	if statusW != nil {
+		_ = statusW.Close()
+	}
+	if err != nil {
+		if status != nil {
+			_ = status.Close()
+		}
 		cancel()
 		return refuse("plugin_command_failed", err.Error())
 	}
@@ -181,6 +222,9 @@ func (r *Runner) Start(j Job) (LogEntry, *Error) {
 		r.procs[j.Plugin.PluginID] = map[*exec.Cmd]*procGroup{}
 	}
 	r.procs[j.Plugin.PluginID][cmd] = group
+	// Still under r.mu, which Owner takes: the command cannot be asked
+	// about before it is entered here.
+	r.setOwner(cmd.Process.Pid, j.Plugin)
 	r.pushLocked(e)
 	r.wg.Add(1)
 	onPID := r.OnPID
@@ -188,6 +232,19 @@ func (r *Runner) Start(j Job) (LogEntry, *Error) {
 	if onPID != nil {
 		onPID(cmd.Process.Pid, true)
 	}
+
+	// The session's leader is reaped in a goroutine of its own. The owner
+	// entry goes before the pid is free again (waitExited), so it never
+	// names a process that got the pid later.
+	pid := cmd.Process.Pid
+	reaped := make(chan error, 1)
+	go func() {
+		waitExited(pid)
+		r.mu.Lock()
+		r.dropOwner(pid)
+		r.mu.Unlock()
+		reaped <- cmd.Wait()
+	}()
 
 	go func() {
 		defer r.wg.Done()
@@ -201,43 +258,107 @@ func (r *Runner) Start(j Job) (LogEntry, *Error) {
 				}
 			}()
 		}
-		werr := cmd.Wait()
-		// Stop the timeout before anything else: once Wait has reaped the
-		// command, its process group id may name another group.
-		cancel()
-		if onPID != nil {
-			onPID(cmd.Process.Pid, false)
+		code, text, done, failed := -1, "", false, false
+		var werr error
+		if status != nil {
+			// The command exits first. What it left keeps the reaper and
+			// the output open, as it did the command's: read the output a
+			// moment longer, then end the run and free its slot.
+			b, _ := io.ReadAll(status)
+			_ = status.Close()
+			if c, t, ok := strings.Cut(strings.TrimSpace(string(b)), "\t"); ok {
+				code, _ = strconv.Atoi(c)
+				text = t
+				select {
+				case werr = <-reaped:
+					done = true
+				case <-time.After(waitDelay):
+				}
+			}
 		}
+		if text == "" {
+			werr, done = <-reaped, true
+			code = cmd.ProcessState.ExitCode()
+			if werr != nil {
+				text, failed = werr.Error(), true
+			}
+		}
+		// Stop the timeout before anything else: once the leader is
+		// reaped, its process group id may name another group.
+		cancel()
 		end := time.Now().UnixMilli()
 		out, errOut := stdout.String(), stderr.String()
 		r.mu.Lock()
-		defer r.mu.Unlock()
 		r.inFlight--
 		r.perPlug[j.Plugin.PluginID]--
-		delete(r.procs[j.Plugin.PluginID], cmd)
-		group.release()
 		for i := range r.logs {
 			if r.logs[i].LogID != e.LogID {
 				continue
 			}
 			l := &r.logs[i]
 			l.FinishedMS, l.Stdout, l.Stderr = &end, &out, &errOut
-			code := cmd.ProcessState.ExitCode()
 			if code >= 0 {
 				l.ExitCode = &code
 			}
 			l.Status = StatusSucceeded
-			if werr != nil {
+			if code != 0 || failed {
 				l.Status = StatusFailed
 				if code < 0 {
-					msg := werr.Error()
+					msg := text
 					l.Error = &msg
 				}
 			}
 		}
+		r.mu.Unlock()
+		if !done {
+			werr = <-reaped
+		}
+		_ = werr
+		if onPID != nil {
+			onPID(pid, false)
+		}
+		r.mu.Lock()
+		delete(r.procs[j.Plugin.PluginID], cmd)
+		group.release()
+		r.mu.Unlock()
 	}()
 	return e, nil
 }
+
+// setOwner enters the plugin of session sid. r.mu is held.
+func (r *Runner) setOwner(sid int, p *Plugin) {
+	r.dropOwner(sid)
+	r.owners[sid] = p
+	if p.Format == FormatTuios {
+		r.native.Add(1)
+	}
+}
+
+// dropOwner forgets session sid. r.mu is held.
+func (r *Runner) dropOwner(sid int) {
+	if p, ok := r.owners[sid]; ok {
+		delete(r.owners, sid)
+		if p.Format == FormatTuios {
+			r.native.Add(-1)
+		}
+	}
+}
+
+// Owner is the plugin whose command leads process session sid, or nil. The
+// caller reads sid from the kernel (procinfo.SessionID). A process that
+// starts a session of its own leaves its plugin.
+func (r *Runner) Owner(sid int) *Plugin {
+	if sid <= 0 {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.owners[sid]
+}
+
+// NativeRunning reports whether a native plugin's processes may be running,
+// so a call has to be checked against its grants.
+func (r *Runner) NativeRunning() bool { return r.native.Load() > 0 }
 
 func (r *Runner) pushLocked(e LogEntry) {
 	r.logs = append(r.logs, e)

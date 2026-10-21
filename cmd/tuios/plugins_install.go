@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -21,7 +22,9 @@ import (
 
 	"github.com/Gaurav-Gosain/tuios/internal/config"
 	"github.com/Gaurav-Gosain/tuios/internal/herdrplugin"
+	"github.com/Gaurav-Gosain/tuios/internal/release"
 	"github.com/Gaurav-Gosain/tuios/internal/review"
+	"github.com/Gaurav-Gosain/tuios/internal/session"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 )
@@ -37,6 +40,8 @@ const buildTimeout = 10 * time.Minute
 type installOpts struct {
 	ref, subdir                     string
 	yes, noEnable, noBuild, replace bool
+	// grants are the grants the person typed with --grant.
+	grants []string
 }
 
 func newPluginsInstallCommand() *cobra.Command {
@@ -69,6 +74,7 @@ tuios shows what the plugin runs and asks first. A plugin runs with your rights.
 	f.BoolVar(&o.noEnable, "no-enable", false, "Install and build, but do not enable")
 	f.BoolVar(&o.noBuild, "no-build", false, "Do not run the build commands")
 	f.BoolVar(&o.replace, "replace", false, "Replace an installed plugin with the same id from another source")
+	f.StringSliceVar(&o.grants, "grant", nil, "Give the admin grant to a plugin that asks for it")
 	return cmd
 }
 
@@ -145,10 +151,19 @@ func parsePluginSource(arg string, o installOpts) (pluginSource, error) {
 	return s, herdrplugin.CheckSubdir(s.subdir)
 }
 
+// gitTimeout bounds one git command, so a remote that stops answering
+// does not hold the install lock until Ctrl-C.
+const gitTimeout = 5 * time.Minute
+
 // git runs the system git. Only the transports a plugin source may name
 // are allowed.
 func git(dir string, args ...string) (string, error) {
-	out, err := review.Git(context.Background(), dir, []string{"GIT_ALLOW_PROTOCOL=https:ssh:git:file"}, args...)
+	ctx, cancel := context.WithTimeout(context.Background(), gitTimeout)
+	defer cancel()
+	out, err := review.Git(ctx, dir, []string{"GIT_ALLOW_PROTOCOL=https:ssh:git:file"}, args...)
+	if ctx.Err() != nil {
+		return "", fmt.Errorf("git %s did not finish in %s. Check the network and the source, then try again", args[0], gitTimeout)
+	}
 	if err != nil {
 		if _, lerr := exec.LookPath("git"); lerr != nil {
 			return "", errors.New("tuios plugins install needs git, and git is not on your PATH. Install git, then try again")
@@ -288,6 +303,17 @@ func (in *installer) fetch(url, ref, subdir string) (string, *herdrplugin.LockEn
 // approved before.
 func (in *installer) finish(e herdrplugin.LockEntry, p *herdrplugin.Plugin, fetched string) error {
 	out := in.out
+	e.Format, e.Grants = cmp.Or(p.Format, "herdr"), p.Grants
+	if err := checkNativeAsks(p, in.o); err != nil {
+		return err
+	}
+	if slices.Contains(e.Grants, "admin") {
+		// Ask before anything is built. It is asked again before the
+		// approval is written.
+		if err := confirmPerson(); err != nil {
+			return err
+		}
+	}
 	hash := herdrplugin.TrustHash(e.Source, p, e.Grants)
 	changed := e.Approved != "" && e.Approved != hash
 	rel := ""
@@ -362,6 +388,16 @@ func (in *installer) finish(e herdrplugin.LockEntry, p *herdrplugin.Plugin, fetc
 		st.Commit, st.Dir, st.Built = e.Commit, rel, built
 		if err := herdrplugin.WriteState(in.dirs.StatePath(), in.state); err != nil {
 			return fail(err)
+		}
+	}
+	if slices.Contains(e.Grants, "admin") {
+		// checkNativeAsks made sure the person typed --grant admin. The
+		// daemon confirms that the person runs this command.
+		if err := confirmPerson(); err != nil {
+			return err
+		}
+		if err := herdrplugin.ApproveAdmin(in.dirs.AdminApprovalsPath(), p, e.Approved); err != nil {
+			return err
 		}
 	}
 	lock, err := herdrplugin.ReadLock(in.dirs.LockPath())
@@ -610,7 +646,7 @@ func shownArgv(argv ...string) string {
 func installPlan(p *herdrplugin.Plugin, e herdrplugin.LockEntry, folder string, o installOpts) string {
 	var b strings.Builder
 	f := func(format string, a ...any) { fmt.Fprintf(&b, format, a...) }
-	f("\nInstall %s %s (herdr plugin)\n  from    %s", p.PluginID, shownArgv(p.Version), shownSource(e.Source))
+	f("\nInstall %s %s (%s plugin)\n  from    %s", p.PluginID, shownArgv(p.Version), cmp.Or(p.Format, "herdr"), shownSource(e.Source))
 	if e.Commit != "" {
 		ref := e.Ref
 		if ref == "" {
@@ -660,7 +696,14 @@ func installPlan(p *herdrplugin.Plugin, e herdrplugin.LockEntry, folder string, 
 	if b.Len() == n {
 		f("  nothing\n")
 	}
-	f("\nIt can call tuios with the default pane grants.\n")
+	switch {
+	case p.Format != herdrplugin.FormatTuios:
+		f("\nIt can call tuios with the default pane grants.\n")
+	case len(p.Grants) == 0:
+		f("\nIt can call tuios only for what every pane may do.\n")
+	default:
+		f("\nIt can call tuios in every session with these grants: %s.\n", strings.Join(p.Grants, ", "))
+	}
 	if !o.noEnable {
 		f("tuios enables the plugin after the install.\n")
 	}
@@ -775,4 +818,47 @@ func (in *installer) installPinned(e herdrplugin.LockEntry) error {
 	}
 	e.Tree = got.Tree
 	return in.finish(e, p, fetched)
+}
+
+// checkNativeAsks refuses a native plugin that needs a newer tuios, or that
+// asks for admin when the person did not type --grant admin.
+func checkNativeAsks(p *herdrplugin.Plugin, o installOpts) error {
+	if p.MinTuios != "" {
+		if newer, ok := release.Newer(version, p.MinTuios); ok && newer {
+			return fmt.Errorf("%s needs tuios %s or later. This is tuios %s. Update tuios first", p.PluginID, p.MinTuios, version)
+		}
+	}
+	if slices.Contains(p.Grants, "admin") && !slices.Contains(o.grants, "admin") {
+		return fmt.Errorf("%s asks for the admin grant, which reaches every pane and verb. To give it, run the command again with --grant admin", p.PluginID)
+	}
+	return nil
+}
+
+// confirmPerson asks each daemon of this user that runs whether the
+// caller is outside its panes and plugins: the kernel check that
+// attach-presence and plugin.enable make. Every daemon that answers must
+// agree, so a pane cannot pick a daemon that does not know it, and no
+// daemon is started for the question, since a new one has no panes and
+// proves nothing. This stops a pane or a plugin that runs the command, also
+// with its pane variables cut or under --server. It does not stop a process
+// that leaves its pane (setsid, ssh to this machine), one that points
+// XDG_RUNTIME_DIR somewhere else, or one that writes the approval file
+// itself: anything that runs as the user can. See approval.go.
+func confirmPerson() error {
+	socks := liveDaemonSockets()
+	if len(socks) == 0 {
+		return errors.New("tuios asks its daemon to confirm that you run this command, and no daemon runs. Start tuios, then run the command again")
+	}
+	for _, sock := range socks {
+		client, err := session.DialVerbClientAt(sock, version)
+		if err != nil {
+			return fmt.Errorf("tuios could not ask the daemon at %s to confirm that you run this command: %w", sock, err)
+		}
+		_, err = client.CallWithTimeout("attach-presence", nil, 5*time.Second)
+		_ = client.Close()
+		if err != nil {
+			return fmt.Errorf("only you, from a terminal outside tuios, can give a plugin the admin grant. The daemon said: %w", err)
+		}
+	}
+	return nil
 }

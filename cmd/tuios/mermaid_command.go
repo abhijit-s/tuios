@@ -59,9 +59,9 @@ A Markdown file gives each of its mermaid code blocks.
 
 In a terminal that shows kitty graphics, the diagram is a picture. In other
 terminals it is drawn with box-drawing characters and its labels as text. A
-diagram type with no text drawing yet, or one too wide for the terminal, is
-written as its source. When the output is not a terminal, the command writes
-SVG.
+diagram type with no text drawing yet is written as its source. A drawing
+wider than the terminal is written at its full width. When the output is not a
+terminal, the command writes SVG.
 
 With --watch the diagram fills the terminal and is drawn again each time the
 file is saved. In a terminal with kitty graphics it moves to the new layout:
@@ -71,7 +71,7 @@ recording: the diagram of FILE, or a built-in one. Press q to quit and r to
 start the demo again.
 
 The colours come from your tuios theme, or from --theme or [mermaid] theme. tuios.dev/sketch draws the diagrams. It
-is a Go port of pele and draws flowcharts, sequence diagrams, state diagrams, class diagrams, ER diagrams, pie charts, mindmaps and gantt charts now.`,
+is a Go port of pele and draws flowcharts, sequence diagrams, state diagrams, class diagrams, ER diagrams, pie charts, mindmaps, gantt charts, XY charts, timelines, quadrant charts, user journeys, kanban boards, git graphs and sankey diagrams now.`,
 		Example: `  # Draw a diagram here
   tuios mermaid flow.mmd
 
@@ -230,6 +230,41 @@ func mermaidTheme(flag string) (*sketch.Theme, error) {
 	return mermaid.ThemeFor(name, theme.UI(), theme.GetANSIPalette(), theme.TerminalBg(), theme.TerminalFg())
 }
 
+// diagramKinds are the names the help text and the docs give each diagram type.
+var diagramKinds = map[sketch.Type]string{
+	"xychart":       "XY charts",
+	"quadrantChart": "quadrant charts",
+	"state":         "state diagrams",
+	"class":         "class diagrams",
+	"er":            "ER diagrams",
+	"pie":           "pie charts",
+	"mindmap":       "mindmaps",
+	"gantt":         "gantt charts",
+	"flowchart":     "flowcharts",
+	"sequence":      "sequence diagrams",
+	"timeline":      "timelines",
+	"journey":       "user journeys",
+	"kanban":        "kanban boards",
+	"gitGraph":      "git graphs",
+	"sankey":        "sankey diagrams",
+	"block":         "block diagrams",
+	"architecture":  "architecture diagrams",
+	"requirement":   "requirement diagrams",
+	"c4":            "C4 diagrams",
+	"packet":        "packet diagrams",
+	"radar":         "radar charts",
+	"treemap":       "treemaps",
+}
+
+// diagramKind is the plural name of a diagram type for a message, such as
+// "XY charts". A type with no name in diagramKinds gives "<id> diagrams".
+func diagramKind(t sketch.Type) string {
+	if name, ok := diagramKinds[t]; ok {
+		return name
+	}
+	return string(t) + " diagrams"
+}
+
 // numbered is the output file for diagram i of n: name, or name-2.ext and so on.
 func numbered(name string, i, n int) string {
 	if n == 1 {
@@ -259,7 +294,16 @@ func writeMermaid(out sketch.SVG, src string, i, n int, format string, o mermaid
 			cols = o.cols
 		}
 		if d, err := sketch.Parse(src, sketch.ParseOptions{}); err == nil {
-			lines, err := sketchtext.Draw(d, sketchtext.Options{Cols: cols, Color: tty && profile >= colorprofile.ANSI})
+			color := tty && profile >= colorprofile.ANSI
+			lines, err := sketchtext.Draw(d, sketchtext.Options{Cols: cols, Color: color})
+			if errors.Is(err, sketchtext.ErrTooWide) {
+				// Drawn at its full width: the terminal wraps or cuts the lines.
+				// The note comes once that drawing is known to work.
+				lines, err = sketchtext.Draw(d, sketchtext.Options{Color: color})
+				if err == nil {
+					fmt.Fprintf(os.Stderr, "diagram %d: the text drawing is wider than %d columns.\n", i+1, cols)
+				}
+			}
 			if err == nil {
 				for _, line := range lines {
 					if _, err := fmt.Fprintln(stdout, line); err != nil {
@@ -268,8 +312,15 @@ func writeMermaid(out sketch.SVG, src string, i, n int, format string, o mermaid
 				}
 				return nil
 			}
+			// No text drawing for this type, or none that fits: say so on
+			// stderr, so that piped output stays the source alone.
+			switch {
+			case errors.Is(err, sketchtext.ErrUnsupported):
+				fmt.Fprintf(os.Stderr, "diagram %d: %s have no text drawing. The source follows.\n", i+1, mermaid.TermSafe(diagramKind(d.Type)))
+			case errors.Is(err, sketchtext.ErrTooLarge):
+				fmt.Fprintf(os.Stderr, "diagram %d: the text drawing is too large. The source follows.\n", i+1)
+			}
 		}
-		// No text drawing for this type, or none that fits: the source.
 		_, err := fmt.Fprintln(stdout, mermaid.TermSafe(strings.TrimRight(src, "\n")))
 		return err
 	}

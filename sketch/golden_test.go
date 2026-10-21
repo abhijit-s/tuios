@@ -19,10 +19,17 @@ var done = map[string]bool{
 	"er":        true,
 	"flowchart": true,
 	"gantt":     true,
+	"git":       true,
+	"journey":   true,
+	"kanban":    true,
 	"mindmap":   true,
 	"pie":       true,
+	"quadrant":  true,
+	"sankey":    true,
 	"sequence":  true,
 	"state":     true,
+	"timeline":  true,
+	"xychart":   true,
 }
 
 // goldenNow is the time gen.mjs renders with, for gantt.
