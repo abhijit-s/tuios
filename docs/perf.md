@@ -3216,6 +3216,13 @@ text. The build before it measured 42,688,674 and 39,851,042 bytes (Go
 40,154,770, so it adds 356,352 and 303,728 bytes. No dependency was added. The
 new budgets leave 4,198 bytes of room.
 
+The budgets went to 43,053,200 and 40,175,400 when send_to_workspace_1 to 9
+got default keys in the terminal and GUI tables, help rows and the
+terminal-safe prefix. The build before it measured 43,045,026 and 40,154,770
+bytes (Go 1.26.10). The change measured 43,049,122 and 40,171,346, so it adds
+4,096 and 16,576 bytes. No dependency was added. The new budgets leave about 4
+KB of room.
+
 To raise a budget, do it on purpose in its own commit: run
 `scripts/binary-size.sh` on the Go version in go.mod, set the new budget a
 little above the printed size in the `budget` function of that script, and say
