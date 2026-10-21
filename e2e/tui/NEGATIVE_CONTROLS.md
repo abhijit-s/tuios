@@ -8616,8 +8616,8 @@ Upstream main, which has no fix, passes every case but `crash`: with no `Session
 | A pid recorded without its start time: `readHarnessProc` marks every pid timed, so one that does not read is taken for exited | `unreadable-pid` ("a harness pid this machine cannot read was taken for exited: the pane is {State:none ...}") | **caught** |
 
 Not covered end to end: a pid given to another process between the harness exiting and the detector looking, which the start time comparison in `harnessProc.exited` tells apart. A test cannot make the system hand a chosen pid to a new process. Nor Windows and other platforms that read no processes, where no start time is recorded and a report claim stays until it is cleared.
+
 ## A hook report lands only on the pane its harness runs in
-### A hook report lands only on the pane its harness runs in
 
 `TestAgentReportOnlyFromTheHarnessInThePane` (in
 `harness_integrations_test.go`) runs the real Claude Code hook under a
