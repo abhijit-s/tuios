@@ -1,6 +1,6 @@
 package sketch
 
-// Ported from pele tests/render/{sequence,state,class,er,gantt,mindmap,xychart,timeline,quadrant,journey,kanban,git,sankey}-security.test.ts,
+// Ported from pele tests/render/{sequence,state,class,er,gantt,mindmap,xychart,timeline,quadrant,journey,kanban,git,sankey,block,architecture,requirement}-security.test.ts,
 // the inert part of tests/render/pie.test.ts and tests/support/corpus.ts at
 // 8603bf3313add9143cd417015d4a6bd6c522dada. The template lists are in
 // security_templates_test.go, written by scripts/security-templates.py.
@@ -11,6 +11,7 @@ import (
 	"errors"
 	"math"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -770,6 +771,155 @@ func TestSankeyOutputIsInert(t *testing.T) {
 	}
 	// pele checks that these leave Object.prototype alone. Go has no prototypes; it must render.
 	if !inertTry(t, "---\nconfig:\n  sankey:\n    nodeColors:\n      __proto__: red\n      constructor: blue\n---\nsankey\n__proto__,constructor,1\nconstructor,toString,2\nhasOwnProperty,__proto__,3\n", RenderOptions{}, false) {
+		t.Fatal("names like __proto__ did not render")
+	}
+}
+
+func TestBlockOutputIsInert(t *testing.T) {
+	corpus := corpusOf(t, "block")
+	for _, src := range corpus {
+		if !inertTry(t, src, RenderOptions{}, true) {
+			t.Fatalf("%q did not render", trimSrc(src))
+		}
+	}
+	rendered := 0
+	var never []string
+	for _, template := range blockTemplates {
+		before := rendered
+		for _, payload := range PAYLOADS {
+			if inertTry(t, template(payload), RenderOptions{}, true) {
+				rendered++
+			}
+		}
+		if rendered == before {
+			never = append(never, template("#"))
+		}
+	}
+	if rendered <= 700 {
+		t.Fatalf("%d hostile sources rendered, want more than 700", rendered)
+	}
+	// These positions take only digits or direction words, or hold text the grammar always rejects.
+	want := []string{
+		"block\n  a<[\"x\"]>(#)",
+		"block\n  a[\"`#`\"]",
+		"block\n  block:g:#\n    a\n  end",
+		"block\n  a:# b",
+		"block\n  a space:# b",
+		"block\n  a\n  accDescr {\n #\n }",
+		"block\n  accTitle: #\n  a",
+	}
+	if !slices.Equal(never, want) {
+		t.Fatalf("templates that never rendered: %q, want %q", never, want)
+	}
+	for _, payload := range PAYLOADS {
+		if !inertTry(t, "block\n  a space b\n  a -- \"x\" --> b", RenderOptions{IDPrefix: types.Ptr(payload), FontFamily: payload}, true) {
+			t.Fatalf("hostile block options %q: did not render", payload)
+		}
+	}
+	count := 4000
+	if testing.Short() {
+		count /= 8
+	}
+	if n := mutate(t, corpus, []string{"\"", "[\"", "\"]", "<[\"", "\"]>(right)", "\n", ":", " --> ", " -- \"", "\" --> ", "style a fill:",
+		"classDef a ", "class a ", "block:", "end", "space:9", "columns 2"}, 3, 4000, RenderOptions{}, true); n <= count/20 {
+		t.Fatalf("%d of %d mutated block diagrams rendered", n, count)
+	}
+	// Coordinates stay finite when blocks have no size.
+	zero := "---\nconfig:\n  block:\n    padding: 0\n---\n"
+	for _, body := range []string{
+		"block\n  columns 1\n  block:g\n    classDef x fill:red\n  end\n  a\n  g --> a\n  a --> g\n  g --> g",
+		"block\n  block:g\n    space\n  end\n  block:h\n    space\n  end\n  g --> h\n  h -- \"x\" --> g",
+		"block\n  columns 1\n  block:g\n    classDef x fill:red\n  end\n  block:h\n    classDef x fill:red\n  end\n  g --> h",
+		"block\n  space\n  block:g\n    space:0\n  end\n  g --> g",
+	} {
+		if !inertTry(t, zero+body, RenderOptions{}, true) || !inertTry(t, body, RenderOptions{}, true) {
+			t.Fatalf("%q did not render", body)
+		}
+	}
+	out, err := Render("block\n  a[\"</text><script>alert(1)</script>\"]\n  classDef x fill:url(javascript:alert(1)),stroke:red\n  class a x", RenderOptions{})
+	if err != nil || strings.Contains(out.Data, "<script") || strings.Contains(out.Data, "url(") || !strings.Contains(out.Data, "stroke:red") {
+		t.Fatalf("block markup is not escaped: %v\n%s", err, out.Data)
+	}
+	// pele checks that these leave Object.prototype alone. Go has no prototypes; they must render.
+	for _, src := range []string{
+		"block\n  __proto__ constructor toString\n  classDef __proto__ fill:red\n  class constructor,__proto__ __proto__\n  style __proto__ fill:blue\n  __proto__ --> constructor",
+		"block\n  class __proto__ polluted\n  style constructor fill:red\n  a",
+	} {
+		if !inertTry(t, src, RenderOptions{}, true) {
+			t.Fatalf("%q did not render", src)
+		}
+	}
+}
+
+const archHead = "architecture-beta\n"
+
+func TestArchitectureOutputIsInert(t *testing.T) {
+	corpus := corpusOf(t, "architecture")
+	for _, src := range corpus {
+		if !inertTry(t, src, RenderOptions{}, false) {
+			t.Fatalf("%q did not render", trimSrc(src))
+		}
+	}
+	hostile(t, architectureTemplates, 300, RenderOptions{}, false)
+	src := archHead + "accTitle: t\ngroup g(cloud)[G]\nservice a(server)[A] in g\nservice b \"x\"[B]\na:R -[l]-> L:b"
+	for _, payload := range PAYLOADS {
+		if !inertTry(t, src, RenderOptions{IDPrefix: types.Ptr(payload), FontFamily: payload}, false) {
+			t.Fatalf("hostile architecture options %q: did not render", payload)
+		}
+	}
+	for _, value := range []string{"0", "-1", "1e308", ".inf", ".nan", "1e-9", "99999999", "[1]", "{a: 1}", "null", "true"} {
+		src := "---\nconfig:\n  architecture:\n    iconSize: " + value + "\n    fontSize: " + value + "\n    padding: " + value + "\n---\n" +
+			archHead + "group g[G]\nservice a \"t\"[A] in g\nservice b[B]\na:R -[l]-> L:b"
+		if !inertTry(t, src, RenderOptions{}, false) {
+			t.Fatalf("architecture settings of %s: did not render", value)
+		}
+	}
+	mutate(t, corpus, []string{"\"", "[", "]", "(", ")", "\n", " in ", "{group}", ":R --> L:", "service ", "group ", "junction ", "title ", "-[", "]-"},
+		3, 4000, RenderOptions{}, false)
+	// Ids that name object internals are plain ids.
+	out, err := Render(archHead+"group __proto__(cloud)[P]\ngroup constructor[C] in __proto__\nservice toString(server)[A] in __proto__\n"+
+		"service hasOwnProperty[B] in constructor\njunction valueOf\ntoString:R -- L:hasOwnProperty\nhasOwnProperty:B -- T:valueOf\n"+
+		"align row toString hasOwnProperty", RenderOptions{})
+	if err != nil || strings.Count(out.Data, `class="pele-cluster"`) != 2 || strings.Count(out.Data, `class="pele-node `) != 3 ||
+		!strings.Contains(out.Data, `data-id="__proto__"`) {
+		t.Fatalf("ids like __proto__: %v\n%s", err, out.Data)
+	}
+}
+
+const requirementBody = "requirement a {\nid: 1\n}\nelement b {\ntype: t\n}\n"
+
+// TestRequirementOutputIsInert leaves out pele's test of a model filled in directly, which
+// the parser would not allow: the model is not reachable from this package.
+func TestRequirementOutputIsInert(t *testing.T) {
+	corpus := corpusOf(t, "requirement")
+	for _, src := range corpus {
+		if !inertTry(t, src, RenderOptions{}, false) {
+			t.Fatalf("%q did not render", trimSrc(src))
+		}
+	}
+	hostile(t, requirementTemplates, 550, RenderOptions{}, false)
+	out, err := Render("requirementDiagram\nrequirement \"<script>alert(1)</script>\" {\ntext: \"<img src=x onerror=alert(1)>\"\n}\n", RenderOptions{})
+	if err != nil || strings.Contains(out.Data, "<script") || strings.Contains(out.Data, "<img") ||
+		!strings.Contains(out.Data, `data-id="&lt;script&gt;alert(1)&lt;/script&gt;"`) {
+		t.Fatalf("requirement markup is not escaped: %v\n%s", err, out.Data)
+	}
+	for _, payload := range PAYLOADS {
+		if !inertTry(t, "requirementDiagram\naccTitle: t\n"+requirementBody+"a - contains -> b\n", RenderOptions{IDPrefix: types.Ptr(payload), FontFamily: payload}, false) {
+			t.Fatalf("hostile requirement options %q: did not render", payload)
+		}
+	}
+	count := 4000
+	if testing.Short() {
+		count /= 8
+	}
+	if n := mutate(t, corpus, []string{"\"", "{", "}", ":", ":::", "\n", "style a fill:", "classDef c ", "class a ", " - contains -> ", "accTitle: "},
+		3, 4000, RenderOptions{}, false); n <= count/20 {
+		t.Fatalf("%d of %d mutated requirement diagrams rendered", n, count)
+	}
+	// pele checks that this leaves Object.prototype alone. Go has no prototypes; it must render.
+	if !inertTry(t, "requirementDiagram\nrequirement __proto__ {\nid: constructor\n}\nelement constructor {\ntype: toString\n}\n"+
+		"__proto__ - contains -> constructor\nclassDef __proto__ fill:red\nclass __proto__,constructor __proto__,toString\n"+
+		"__proto__:::constructor\nstyle __proto__ fill:red\n", RenderOptions{}, false) {
 		t.Fatal("names like __proto__ did not render")
 	}
 }

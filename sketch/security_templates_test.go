@@ -664,3 +664,175 @@ var sankeyTemplates = []func(p string) string{
 		return "%%{init: {\"sankey\": {\"prefix\": " + jsonText(p) + ", \"linkColor\": " + jsonText(p) + ", \"nodeColors\": {\"a\": " + jsonText(p) + "}}, \"themeVariables\": {\"fontFamily\": " + jsonText(p) + "}}}%%\nsankey\n" + sankeyBody
 	},
 }
+
+var blockTemplates = []func(p string) string{
+	func(p string) string { return "block\n  " + p },
+	func(p string) string { return "block\n  a " + p + " b" },
+	func(p string) string { return "block\n  a[\"" + p + "\"]" },
+	func(p string) string {
+		return "block\n  a(\"" + p + "\") b([\"" + p + "\"]) c[[\"" + p + "\"]] d[(\"" + p + "\")]"
+	},
+	func(p string) string {
+		return "block\n  a((\"" + p + "\")) b(((\"" + p + "\"))) c>\"" + p + "\"] d{\"" + p + "\"} e{{\"" + p + "\"}}"
+	},
+	func(p string) string {
+		return "block\n  a[/\"" + p + "\"/] b[\\\"" + p + "\"\\] c[/\"" + p + "\"\\] d[\\\"" + p + "\"/]"
+	},
+	func(p string) string { return "block\n  a<[\"" + p + "\"]>(right) b<[\"" + p + "\"]>(x, y)" },
+	func(p string) string { return "block\n  a<[\"x\"]>(" + p + ")" },
+	func(p string) string { return "block\n  a[\"`" + p + "`\"]" },
+	func(p string) string { return "block\n  block:g[\"" + p + "\"]\n    a\n  end" },
+	func(p string) string { return "block\n  block:" + p + "\n    a\n  end" },
+	func(p string) string { return "block\n  block:g:" + p + "\n    a\n  end" },
+	func(p string) string { return "block\n  a space b\n  a -- \"" + p + "\" --> b" },
+	func(p string) string {
+		return "block\n  a space b\n  a == \"" + p + "\" ==> b\n  b -. \"" + p + "\" .-> a\n  a -- \"" + p + "\" --> a"
+	},
+	func(p string) string { return "block\n  a space b\n  a " + p + " b" },
+	func(p string) string { return "block\n  a:" + p + " b" },
+	func(p string) string { return "block\n  a space:" + p + " b" },
+	func(p string) string { return "block\n  columns " + p + "\n  a b" },
+	func(p string) string { return "block\n  a b\n  class a " + p },
+	func(p string) string { return "block\n  a b\n  class " + p + " hot" },
+	func(p string) string { return "block\n  a b\n  classDef " + p + " fill:red\n  class a " + p },
+	func(p string) string { return "block\n  a b\n  classDef hot fill:" + p + "\n  class a hot" },
+	func(p string) string { return "block\n  a b\n  classDef hot " + p + "\n  class a,b hot" },
+	func(p string) string {
+		return "block\n  a b\n  classDef hot color:" + p + ",stroke:" + p + ",font-family:" + p + ",font-size:" + p + "\n  class a hot"
+	},
+	func(p string) string { return "block\n  a b\n  classDef default " + p + ":red,fill:" + p },
+	func(p string) string { return "block\n  a b\n  style a fill:" + p },
+	func(p string) string { return "block\n  a b\n  style a " + p },
+	func(p string) string { return "block\n  a b\n  style a " + p + ":red;" + p },
+	func(p string) string {
+		return "block\n  a b\n  style a color:" + p + ",stroke:" + p + ",stroke-dasharray:" + p
+	},
+	func(p string) string { return "block\n  a b\n  style " + p + " fill:red" },
+	func(p string) string {
+		return "block\n  block:g\n    a\n  end\n  style g fill:" + p + ",color:" + p + "\n  class g " + p
+	},
+	func(p string) string { return "block\n  a[\"fa:fa-" + p + " x\"]" },
+	func(p string) string { return "block\n  a\n  accDescr {\n " + p + "\n }" },
+	func(p string) string { return "block\n  accTitle: " + p + "\n  a" },
+	func(p string) string { return "block\n  %% " + p + "\n  a" },
+	func(p string) string {
+		return "---\ntitle: \"" + p + "\"\nconfig:\n  block:\n    padding: \"" + p + "\"\n---\nblock\n  a b"
+	},
+	func(p string) string {
+		return "%%{init: {\"block\": {\"padding\": \"" + p + "\"}, \"themeVariables\": {\"fontFamily\": \"" + p + "\"}}}%%\nblock\n  a b"
+	},
+	func(p string) string { return "block " + p + "\n  a" },
+	func(p string) string { return "block-beta\n  " + p + "[\"" + p + "\"] --> " + p },
+}
+
+var architectureTemplates = []func(p string) string{
+	func(p string) string { return archHead + "service a(server)[" + p + "]" },
+	func(p string) string { return archHead + "service a(server)[\"" + p + "\"]" },
+	func(p string) string { return archHead + "service a(server)['" + p + "']" },
+	func(p string) string { return archHead + "service a \"" + p + "\"[A]" },
+	func(p string) string { return archHead + "service a '" + p + "'" },
+	func(p string) string { return archHead + "service a(" + p + ")[A]" },
+	func(p string) string { return archHead + "service " + p },
+	func(p string) string { return archHead + "group g(cloud)[" + p + "]\nservice a in g" },
+	func(p string) string { return archHead + "group g(cloud)[\"" + p + "\"]\nservice a[" + p + "] in g" },
+	func(p string) string { return archHead + "group g(" + p + ")[G]" },
+	func(p string) string { return archHead + "group " + p },
+	func(p string) string { return archHead + "group g\nservice a in " + p },
+	func(p string) string { return archHead + "junction " + p },
+	func(p string) string { return archHead + "service a\nservice b\na:R -[" + p + "]-> L:b" },
+	func(p string) string { return archHead + "service a\nservice b\na:R -[\"" + p + "\"]- L:b" },
+	func(p string) string { return archHead + "service a\nservice b\na:B <-['" + p + "']-> T:b" },
+	func(p string) string { return archHead + "service a\nservice b\na:" + p + " -- L:b" },
+	func(p string) string { return archHead + "service a\nservice b\n" + p + ":R -- L:b" },
+	func(p string) string { return archHead + "service a\nservice b\na" + p + ":R -- L:b{group}" },
+	func(p string) string { return archHead + "service a\nservice b\nalign row a " + p },
+	func(p string) string { return archHead + "service a\nservice b\nalign " + p + " a b" },
+	func(p string) string { return archHead + "title " + p + "\nservice a" },
+	func(p string) string { return archHead + "accTitle: " + p + "\naccDescr: " + p + "\nservice a" },
+	func(p string) string { return archHead + "accDescr {\n " + p + "\n }\nservice a" },
+	func(p string) string { return "architecture-beta " + p + "\nservice a" },
+	func(p string) string { return archHead + "%% " + p + "\nservice a" },
+	func(p string) string {
+		return "---\ntitle: \"" + p + "\"\nconfig:\n  architecture:\n    iconSize: \"" + p + "\"\n    fontSize: \"" + p + "\"\n    padding: \"" + p + "\"\n---\n" + archHead + "group g[G]\nservice a[A] in g"
+	},
+	func(p string) string {
+		return "%%{init: {\"architecture\": {\"iconSize\": \"" + p + "\"}, \"themeVariables\": {\"fontFamily\": \"" + p + "\"}}}%%\n" + archHead + "service a[A]"
+	},
+	func(p string) string {
+		return "---\nconfig:\n  architecture: \"" + p + "\"\n---\n" + archHead + "service a[A]"
+	},
+}
+
+var requirementTemplates = []func(p string) string{
+	func(p string) string { return "requirementDiagram\nrequirement " + p + " {\nid: 1\n}\n" },
+	func(p string) string { return "requirementDiagram\nrequirement \"" + p + "\" {\nid: 1\n}\n" },
+	func(p string) string { return "requirementDiagram\nelement " + p + " {\ntype: t\n}\n" },
+	func(p string) string {
+		return "requirementDiagram\nelement \"" + p + "\" {\ntype: t\n}\n\"" + p + "\" - contains -> \"" + p + "\"\n"
+	},
+	func(p string) string {
+		return "requirementDiagram\nrequirement a {\nid: " + p + "\ntext: " + p + "\n}\n"
+	},
+	func(p string) string {
+		return "requirementDiagram\nrequirement a {\nid: \"" + p + "\"\ntext: \"" + p + "\"\n}\n"
+	},
+	func(p string) string {
+		return "requirementDiagram\nrequirement a {\nrisk: " + p + "\nverifymethod: " + p + "\n}\n"
+	},
+	func(p string) string {
+		return "requirementDiagram\nelement b {\ntype: " + p + "\ndocref: " + p + "\n}\n"
+	},
+	func(p string) string {
+		return "requirementDiagram\nelement b {\ntype: \"" + p + "\"\ndocRef: \"" + p + "\"\n}\n"
+	},
+	func(p string) string { return "requirementDiagram\n" + requirementBody + "a - " + p + " -> b\n" },
+	func(p string) string { return "requirementDiagram\n" + requirementBody + "a - contains -> " + p + "\n" },
+	func(p string) string {
+		return "requirementDiagram\n" + requirementBody + "\"" + p + "\" <- traces - a\n"
+	},
+	func(p string) string { return "requirementDiagram\nrequirement a:::" + p + " {\nid: 1\n}\n" },
+	func(p string) string {
+		return "requirementDiagram\nrequirement a:::\"" + p + "\" {\nid: 1\n}\nelement b:::\"" + p + "\",\"" + p + "\" {\n}\n"
+	},
+	func(p string) string { return "requirementDiagram\n" + requirementBody + "a:::" + p + "\n" },
+	func(p string) string { return "requirementDiagram\n" + requirementBody + "a:::\"" + p + "\"\n" },
+	func(p string) string { return "requirementDiagram\n" + requirementBody + "class a " + p + "\n" },
+	func(p string) string { return "requirementDiagram\n" + requirementBody + "class a,b \"" + p + "\"\n" },
+	func(p string) string { return "requirementDiagram\n" + requirementBody + "class \"" + p + "\" c\n" },
+	func(p string) string {
+		return "requirementDiagram\n" + requirementBody + "classDef " + p + " fill:red\nclass a " + p + "\n"
+	},
+	func(p string) string {
+		return "requirementDiagram\n" + requirementBody + "classDef \"" + p + "\" fill:red\nclass a \"" + p + "\"\n"
+	},
+	func(p string) string {
+		return "requirementDiagram\n" + requirementBody + "classDef c fill:" + p + "\nclass a c\n"
+	},
+	func(p string) string {
+		return "requirementDiagram\n" + requirementBody + "classDef c " + p + ":red\nclass a c\n"
+	},
+	func(p string) string { return "requirementDiagram\n" + requirementBody + "style a fill:" + p + "\n" },
+	func(p string) string { return "requirementDiagram\n" + requirementBody + "style a " + p + "\n" },
+	func(p string) string {
+		return "requirementDiagram\n" + requirementBody + "style a color:" + p + ",stroke:" + p + ",font-family:" + p + "\n"
+	},
+	func(p string) string {
+		return "requirementDiagram\n" + requirementBody + "style \"" + p + "\" fill:red\n"
+	},
+	func(p string) string {
+		return "requirementDiagram\naccTitle: " + p + "\naccDescr: " + p + "\n" + requirementBody
+	},
+	func(p string) string { return "accTitle: " + p + "\nrequirementDiagram\n" + requirementBody },
+	func(p string) string { return "requirementDiagram\naccDescr {\n " + p + "\n }\n" + requirementBody },
+	func(p string) string { return "requirementDiagram\ndirection " + p + "\n" + requirementBody },
+	func(p string) string { return "requirementDiagram\n" + p + " direction LR\n" + requirementBody },
+	func(p string) string { return "requirementDiagram\n# " + p + "\n" + requirementBody },
+	func(p string) string { return "requirementDiagram\n%% " + p + "\n" + requirementBody },
+	func(p string) string { return "requirementDiagram " + p + "\n" + requirementBody },
+	func(p string) string {
+		return "---\ntitle: \"" + p + "\"\nconfig:\n  requirement:\n    fontSize: \"" + p + "\"\n  theme: \"" + p + "\"\n---\nrequirementDiagram\n" + requirementBody
+	},
+	func(p string) string {
+		return "%%{init: {\"requirement\": {\"rect_fill\": \"" + p + "\"}, \"themeVariables\": {\"fontFamily\": \"" + p + "\"}}}%%\nrequirementDiagram\n" + requirementBody
+	},
+}
