@@ -1274,22 +1274,24 @@ func (m *OS) cockpitTabs(e sidebarAgentEntry, r ckRow) []string {
 	if m.GetRenderWidth() < ckWide {
 		side = []string{"Checkpoints", "Live"}
 	}
-	if !m.threadReadsTranscript(e) {
+	// Changes waits for a transcript page: a pane the daemon turns out to have
+	// no file for would lose the tab again, and a ] pressed meanwhile would
+	// land on it and then fall back to Thread.
+	t := m.Inbox.threads.byKey[agentKey(e)]
+	if !m.threadReadsTranscript(e) || t == nil || !t.read {
 		if side == nil {
 			return nil
 		}
 		return append([]string{"Thread"}, side...)
 	}
 	n := 0
-	if t := m.Inbox.threads.byKey[agentKey(e)]; t != nil {
-		for i := len(t.entries) - 1; i >= 0; i-- {
-			en := t.entries[i]
-			if en.Kind == "text" && en.Role == "user" {
-				break
-			}
-			if en.Kind == "tool_call" && en.Diff != nil {
-				n++
-			}
+	for i := len(t.entries) - 1; i >= 0; i-- {
+		en := t.entries[i]
+		if en.Kind == "text" && en.Role == "user" {
+			break
+		}
+		if en.Kind == "tool_call" && en.Diff != nil {
+			n++
 		}
 	}
 	changes := "Changes"
