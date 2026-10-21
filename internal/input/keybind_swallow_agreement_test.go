@@ -145,7 +145,7 @@ func TestAltGrTextReachesThePane(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			o := osWithBindings(t, func(*config.KeybindingsConfig) {})
-			if got := handleTerminalModeBinds(tc.msg, o); got != tc.want {
+			if got, _ := handleTerminalModeBinds(tc.msg, o); got != tc.want {
 				t.Errorf("handleTerminalModeBinds took the key: %v, want %v", got, tc.want)
 			}
 		})
