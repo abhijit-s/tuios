@@ -9123,17 +9123,20 @@ cross builds compile that path. The fixed build passes
 
 ## Palette runs actions
 
-`TestPaletteRunsTheActionItFinds` types `#new_window` into the palette, presses `Enter`, and waits for the dock and the daemon's `list-windows` to show two windows with the palette closed and no keybind manager on screen. Then it types `#toggle_zoom`, presses `ctrl+e`, and waits for the keybind manager open on Toggle zoom, with the daemon still listing two windows. Frames are saved under the test's artifact directory: the `#` search with the `ctrl+e rebind` hint, the screen after `Enter`, and the manager after `ctrl+e`.
+`TestPaletteRunsTheActionItFinds` types `#new_window` into the palette, presses `Enter`, and waits for the dock and the daemon's `list-windows` to show two windows with the palette closed and no keybind manager on screen. Then it types `#toggle_zoom`, presses `ctrl+e`, and waits for the keybind manager open on Toggle zoom, with the daemon still listing two windows. Frames are saved under the test's artifact directory: the `#` search with the `^e rebind` hint, the screen after `Enter`, and the manager after `ctrl+e`.
+
+`TestPaletteViewOnlyActionSaysSoInFull` types `#file_delete_forever`, an action only the rail reads, presses `Enter`, and waits for the keybind manager and the notice in the dock. It wants the notice whole, `file_delete_forever works only in its own view.`, with no ellipsis on its line, at the suite's terminal size. The frame is saved as `view-only-notice`.
 
 Run on 2026-10-21.
 
 | Wiring | Cut | Tests that fail | Verdict |
 | --- | --- | --- | --- |
 | Enter on an action row runs the action | the row's action skips `runPaletteAction` and opens the keybind manager, as it did before | `TestPaletteRunsTheActionItFinds` ("enter on the new_window row: window count never reached 2 (last 1)") | **caught** |
+| The view-only notice fits the dock | the two-sentence notice put back ("... runs only in its own view. Its keys are listed here.") | `TestPaletteViewOnlyActionSaysSoInFull` ("the notice is cut off in the dock: \"... file_delete_forever runs only in its own view. Its…  more ...\"") | **caught** |
 
 `TestPaletteTokenSearchesActions` and `TestUnbindingFromTheOverlayReachesTheConfigFile` reached the manager with `Enter` on an action row. That was the behaviour this changes, so they press `ctrl+e` now. With the fix every test matching `Palette|Keybind|Rebind|Unbind` passes (34 of 34).
 
-Not covered end to end: `Enter` on an action that only its own view reads, which opens the keybind manager with a notice, and an action run from the palette in terminal mode.
+The footer hint is spelt `^e rebind`, the way the keybind manager spells `^r` and `^d`. Not covered end to end: an action run from the palette in terminal mode.
 ## send_to_workspace keys
 
 `TestSendToWorkspaceKeyStaysHere` starts a session with three panes on workspace 1, writes no keybindings, and presses the shipped default for `send_to_workspace_2` (`ctrl+opt+2` on macOS, `ctrl+alt+2` elsewhere) as the CSI u sequence a Kitty keyboard terminal sends, first in terminal mode and then `ctrl+alt+3` in window mode. It reads the moved pane's workspace from `list-windows --json`, the workspace the daemon and the client show, and the focused pane. `TestSendToWorkspaceKeyYieldsATakenKey` binds `switch_workspace_2 = ["ctrl+alt+2"]` the way a config written before the default could, and wants `keybinds doctor` to list the yield, `ctrl+alt+2` to switch, and the free `ctrl+alt+3` to still move a pane. Each test saves the screen and `list-windows --json` under `artifactDir`.
