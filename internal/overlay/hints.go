@@ -223,5 +223,6 @@ func ShortKey(key string) string {
 // footerSep is the gap between two hints in a panel footer.
 const footerSep = 3
 
-// dialogSep is the gap between two hints in a dialog's border.
-const dialogSep = 2
+// dialogSep is the gap between two hints in a dialog's border, the panel
+// footer's gap, so a dialog's hints read as apart as a panel's.
+const dialogSep = footerSep

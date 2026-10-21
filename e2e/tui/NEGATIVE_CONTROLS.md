@@ -8974,3 +8974,21 @@ Run on 2026-10-21 on macOS, against a build with the fix line cut, built to a se
 | `new_workspace` from the empty workspace on screen did nothing | yes | `handleNewWorkspace` returns early again when `o.CurrentWorkspace != ws` | `TestNewWorkspaceStaysOnTheEmptyWorkspaceOnScreen` ("left panes by workspace map[1:1], want one on 1 and one on 2") | **caught** |
 
 `TestTmuxStyleActionsRunWhenBound` passes on the cut build too: from workspace 1 the switch lands on its target. The fixed build passes 37 tests: every `TestNewWorkspace*`, `TestTmuxStyle*`, `TestWorkspace*` and `TestEmptyWorkspace*` test, and `TestReloadWithABadKeyAppliesTheRest`.
+Not covered end to end: the pid reuse check in `leftBehind` (it needs pid
+wraparound), the git timeout, and Windows and the BSDs, where the runner
+refuses a native plugin's commands (`plugin_unsupported_platform`). The
+cross builds compile that path. The fixed build passes
+`TestNativePluginGrants`, `TestPluginsInstallFromGit` and every
+`TestHerdrPlugin*` 3 of 3.
+
+## The rename dialog has room
+
+The rename micro-dialog was 28 cells inside its borders, with its field pressed between the title and the hints, and a dialog's hints sat two cells apart where a panel's sit three. `renameDialogWidth` is 44, a blank row sits above and below the field, and `dialogSep` is the panel footer's gap. The test is `TestRenameDialogHasRoom` in `rename_dialog_room_test.go`, which measures the dialog on screen and saves the frame as `rename-dialog-room` when `TUIOS_E2E_FRAMES` is set.
+
+Run on 2026-10-21 on macOS against upstream main at e6cdf591d, with each fix cut from a build of its own.
+
+| Fix | Cut | Tests that fail | Verdict |
+|---|---|---|---|
+| A wider dialog | `renameDialogWidth` back to 28 | `TestRenameDialogHasRoom` ("the rename dialog is 28 cells inside its borders, want 44") | **caught** |
+
+The blank rows and the hint gap are asserted by the same test, on the rows around the field and on the three cells either side of each hint in the bottom border. The fixed build passes it with the rename and dialog tests: `TestAgentStateIndicatorRenders`, `TestSessionPickerRenameReachesLs`, `TestRailRightClickRenamesTheSessionUnderThePointer` and the `TestAggregateView*` tests.

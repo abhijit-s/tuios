@@ -1,14 +1,17 @@
 package app
 
 import (
+	"strings"
+
 	"github.com/Gaurav-Gosain/tuios/internal/overlay"
 	"github.com/Gaurav-Gosain/tuios/internal/theme"
 )
 
 // renameDialogWidth is the micro-dialog's preferred inner width: a name and a
-// cursor, and nothing that would make it a panel. It is the least that keeps
-// all three hints in the border once their modifiers are shortened.
-const renameDialogWidth = 31
+// cursor, and nothing that would make it a panel. At 31 a working name filled
+// the field and the frame sat tight around it; 44 sits between the accent
+// picker and the file dialogs, and keeps all three hints in the border.
+const renameDialogWidth = 44
 
 // renameHintClear is the clear hint's index in renameHints, which is how its
 // drawn rect is found to make it pressable.
@@ -51,10 +54,14 @@ func (m *OS) renderRenameDialog() (string, overlay.Geometry, int, int, bool) {
 	// Sigil, a space, the field, and one cell of right pad, so the cursor never
 	// sits against the frame.
 	field := fieldTail(printableRunes(m.RenameBuffer), max(inner-4, 1))
-	body := overlay.Style(pal.Canvas).Render(" ") +
-		overlay.Style(pal.Canvas).Foreground(pal.AccentBright).Bold(true).Render(overlay.Sigil()) +
-		overlay.Style(pal.Canvas).Foreground(pal.Fg).Render(field) +
-		overlay.Cursor(" ", pal.Canvas, pal.Fg)
+	line := overlay.Fill(overlay.Style(pal.Canvas).Render(" ")+
+		overlay.Style(pal.Canvas).Foreground(pal.AccentBright).Bold(true).Render(overlay.Sigil())+
+		overlay.Style(pal.Canvas).Foreground(pal.Fg).Render(field)+
+		overlay.Cursor(" ", pal.Canvas, pal.Fg), inner, pal.Canvas)
+	// A blank row above and below keeps the field off the title and the hints,
+	// which the frame otherwise pressed against it.
+	blank := dialogBodyLine("", inner, pal.Fg, pal.Canvas)
+	body := strings.Join([]string{blank, line, blank}, "\n")
 
 	content, geo := overlay.Dialog{
 		Title: m.RenameDialogTitle(),
