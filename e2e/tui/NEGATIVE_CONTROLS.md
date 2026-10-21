@@ -8695,7 +8695,7 @@ built, ran the test, and restored the file byte for byte (same SHA-1).
 The fixed build passes it three runs in a row (`-count=3`).
 ```sh
 TUIOS_E2E=1 TUIOS_E2E_BIN=/path/to/tuios \
-  go test -count=1 -run '^(TestQuiesceLosesNoBytes|TestExitDuringQuiesceKeepsStatus|TestSelfExecAdoptsPanes|TestPaneCellFollowsOneClient|TestOmarchyThemeSwitchIsFollowed|TestHandoffRefusedWhileHostedPaneRuns|TestHandoffRefusedByPaneNotReadingInput)$' .
+  go test -count=1 -run '^(TestQuiesceLosesNoBytes|TestQuiesceAfterBurstDoesNotWait|TestExitDuringQuiesceKeepsStatus|TestSelfExecAdoptsPanes|TestPaneCellFollowsOneClient|TestOmarchyThemeSwitchIsFollowed|TestKittyUploadReply|TestKittyUploadReplyTwoClients|TestHandoffRefusedWhileHostedPaneRuns|TestHandoffRefusedByPaneNotReadingInput)$' .
 ```
 
 `TestOpenCodeV2PluginReportsOnlyItsSession` and
@@ -8721,13 +8721,27 @@ Run on 2026-10-20, each against a build of the final tree with the fix line or l
 | A workspace with a pane on its way counted as empty, so `Alt+2 Alt+3` ended on 2 | yes | the `paneRequests` check cut from `newWorkspaceSlot` | `TestEmptyWorkspaceFastSwitches` ("Alt+2 Alt+3: workspace 3 has 0 panes, want 1") | **caught** |
 
 The fixed build passes the three new tests and the targeted run (`TestWorkspace`, `TestHerdr`, `TestEmptyWorkspace`, `TestXpanes`, `TestDockWorkspace`, `TestCloseWorkspace`, `TestLiveness`, the pane-move, attach, option-key, subscribe, Inbox and agent-state tests: 101 passed). The Collie herdr fixture keeps `tab_not_found` for `tab.close` on a tab whose last pane closed: herdr 0.9.5 removes a tab with its last pane (`Workspace::close_pane` in `src/workspace.rs`), so an emptied workspace keeps no name and no tab.
-The two reply-forwarder rows were run on 2026-10-19 on macOS arm64 against pr/live-handoff-1. Without either wake (the head before the fix) both tests fail on every run, 3 of 3 each, as they did in CI shards 5 and 8. With both, the two tests and `TestKittyUploadReply` passed 3 runs of 3.
+
+### The reply forwarder and the read gate's wait
+
+- The reply forwarder sends the emulator's replies only when woken, and the emulator wakes it through `OnResponse` each time it queues one. `TestPaneCellFollowsOneClient` (a mode 2048 report queued by a cell size change), `TestOmarchyThemeSwitchIsFollowed` (a mode 2031 report queued by a colour scheme switch) and `TestKittyUploadReply`/`TestKittyUploadReplyTwoClients` (kitty upload answers, those for a file queued from a goroutine once the file has been looked at) each need a reply that no output of the program follows.
+- `TestQuiesceAfterBurstDoesNotWait`: a pane prints 8 MiB as fast as `yes` can, then nothing. Twenty quiesces of it must return without error well inside the 10 s quiesce deadline, with `read_while_quiesced` 0. A reader whose wait reported output when there was none would be blocked in read holding `readMu`, and the quiesce would wait on the quiet program.
+
+Each control cuts one change, rebuilds, runs the tests, and restores the file, checked byte for byte with sha256. Run on 2026-10-21 against pr/live-handoff-1, on macOS arm64 (Darwin 27, Go 1.26.10) and, for the Linux row, in Docker (Linux 6.8 arm64, Alpine) with binaries cross-built on the Mac.
+
+| Control | How | Test that fails | Verdict |
+| --- | --- | --- | --- |
+| `OnResponse` is never set | drop `pty.terminal.OnResponse(pty.wakeResponses)` and its `if` from `startPTY` | `TestKittyUploadReply/daemon` and `TestKittyUploadReplyTwoClients`, 2 runs of 2: every upload "got no answer" (the standalone half, with no daemon, passes); `TestPaneCellFollowsOneClient` and `TestOmarchyThemeSwitchIsFollowed`, 2 runs of 2 | **caught** |
+| The kqueue wait reports output without waiting (macOS) | `return false, nil` at the top of the waiter in `newGateWaiter`, `pty_gate_kqueue.go` | `TestQuiesceAfterBurstDoesNotWait`, 2 runs of 2: "quiescing the pane that went quiet after a burst failed after 20.002s: call test-quiesce did not return within 20s" | **caught** |
+| The poll wait reports output without waiting (Linux) | `return false, nil` at the top of `pollGate`, `pty_gate_poll.go` | `TestQuiesceAfterBurstDoesNotWait`, 2 runs of 2, the same failure after 20.002s and 20.029s | **caught** |
+
+With the changes in place, on macOS `TestQuiesceAfterBurstDoesNotWait` passed 3 runs of 3 (17 to 23 ms for the twenty quiesces) and the four reply tests 3 runs of 3; on Linux `TestQuiesceAfterBurstDoesNotWait` and `TestQuiesceLosesNoBytes` passed 3 runs of 3 (2 ms).
 
 ### Refusals: hosted panes and a pane that does not read its input
 
 - `TestHandoffRefusedWhileHostedPaneRuns`: a pane opened with `open-pane`, as another machine's daemon opens one, is running when a handoff is asked for. The handoff must be refused with an error that names the panes run for another machine, the daemon must answer hello on its old image, and the hosted pane's process must still run. The positive half: after `close-pane` the same handoff goes through to a new image.
 - `TestHandoffRefusedByPaneNotReadingInput`: a pane in raw mode sends 6000 DA1 queries and never reads its input, so the replies fill the terminal's input queue and the write of the next one blocks. The handoff must answer within twice the 10 s quiesce deadline, refused with an error saying the program is not reading its input, and the daemon must answer hello on its old image. The positive half: after the stuck window is closed the handoff goes through to a new image.
-- `TestReadGateNeverReportsOutputAfterAFailedPoll` (`internal/session/pty_gate_unix_test.go`, a kept unit test: a deterministic hang regression, since a real poll cannot be made to fail on two valid descriptors): with the gate's poll failing with ENOMEM, `wait` must report neither output nor a wake. Its positive half: an EINTR is retried and the output already on the master is reported.
+- `TestReadGateNeverReportsOutputAfterAFailedWait` (`internal/session/pty_gate_unix_test.go`, a kept unit test: a deterministic hang regression, since a real wait cannot be made to fail on two valid descriptors): with the gate's wait failing with ENOMEM, whether or not it also says the wake pipe is readable, `wait` must report neither output nor a wake. Its positive half: an EINTR is retried and the output already on the master is reported.
 
 Each control cuts one change from the fix, rebuilds, runs the test twice, and restores the file, checked byte for byte with sha256. Run on 2026-10-20 on macOS arm64 (Darwin 27, Go 1.26.9) against pr/live-handoff-1.
 
@@ -8735,10 +8749,10 @@ Each control cuts one change from the fix, rebuilds, runs the test twice, and re
 | --- | --- | --- | --- |
 | Hosted panes are not refused | drop the `shutHostedPanes` check and its undo from `handoffRun.prepare` | `TestHandoffRefusedWhileHostedPaneRuns`, 2 runs of 2: "the handoff went ahead with a hosted pane open, which closes its terminal at the exec" (the artifact records the hosted process gone after it) | **caught** |
 | The reply flush ignores the deadline | flush under `respMu` inline in `Quiesce`, as before the fix | `TestHandoffRefusedByPaneNotReadingInput`, 2 runs of 2: "the handoff hung on the pane that does not read its input: call test-handoff did not return within 20s" | **caught** |
-| A failed poll reads as output | drop `pollErr = err` from `readGate.wait` | `TestReadGateNeverReportsOutputAfterAFailedPoll`, 2 runs of 2: "the gate reported output after poll failed with ENOMEM, so the reader would block in read holding readMu" | **caught** |
+| A failed wait reads as an answer | skip the `if waitErr != nil` return in `readGate.wait` (run on 2026-10-21, Go 1.26.10) | `TestReadGateNeverReportsOutputAfterAFailedWait`, 2 runs of 2: "the gate reported output after the wait failed with ENOMEM, so the reader would block in read holding readMu" and "the gate reported a wake after the wait failed with ENOMEM, so the reader would stop for good" | **caught** |
 
 ```sh
-go test -count=1 -run '^TestReadGateNeverReportsOutputAfterAFailedPoll$' ./internal/session/
+go test -count=1 -run '^TestReadGateNeverReportsOutputAfterAFailedWait$' ./internal/session/
 ```
 
 ### Follow-ups: a harness pid the caller runs under, and a busy protocol pane
