@@ -6,7 +6,6 @@ import (
 	"strings"
 
 	"github.com/Gaurav-Gosain/tuios/internal/overlay"
-	"github.com/Gaurav-Gosain/tuios/internal/theme"
 )
 
 // sessionCloseInnerWidth is the dialog's preferred inner width, sized so the
@@ -20,7 +19,7 @@ const sessionCloseInnerWidth = 54
 // A dialog rather than a panel because it is one focused question with two
 // answers, which is exactly what the micro-dialog is for.
 func (m *OS) renderSessionClose() (string, overlay.Geometry, []overlayRowHit) {
-	pal := theme.UI()
+	pal := m.overlayUI()
 	bg := pal.Canvas
 	width := overlay.DialogFitWidth(sessionCloseInnerWidth, m.GetRenderWidth())
 	m.SessionCloseSelected = clampInt(m.SessionCloseSelected, 0, sessionCloseRowCount-1)

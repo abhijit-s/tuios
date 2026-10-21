@@ -11,7 +11,6 @@ import (
 	"github.com/Gaurav-Gosain/tuios/internal/listnav"
 	"github.com/Gaurav-Gosain/tuios/internal/overlay"
 	"github.com/Gaurav-Gosain/tuios/internal/sessiontree"
-	"github.com/Gaurav-Gosain/tuios/internal/theme"
 )
 
 // listOverlay configures the shared search-and-list overlay used by the command
@@ -93,7 +92,7 @@ func (m *OS) listOverlayLayout(cfg listOverlay) (width, rows int, hints []overla
 // renderListOverlay renders cfg into a panel and returns the string, geometry
 // and hit rows.
 func (m *OS) renderListOverlay(cfg listOverlay) (string, overlay.Geometry, []overlayRowHit) {
-	pal := theme.UI()
+	pal := m.overlayUI()
 	bg := pal.Surface
 
 	cfg.Width, cfg.MaxVisible, cfg.Hints = m.listOverlayLayout(cfg)
@@ -193,7 +192,7 @@ func (m *OS) renderListOverlay(cfg listOverlay) (string, overlay.Geometry, []ove
 // simpleOverlayPanel renders a plain informational panel (no list) for overlay
 // sub-states such as confirmations or empty/unavailable messages.
 func (m *OS) simpleOverlayPanel(title string, bodyLines []string, hints []overlay.Hint) (string, overlay.Geometry, []overlayRowHit) {
-	pal := theme.UI()
+	pal := m.overlayUI()
 	bg := pal.Surface
 	width := m.panelWidth(simplePanelWidth)
 	// A message narrower than the panel is one line; a longer one wraps rather
