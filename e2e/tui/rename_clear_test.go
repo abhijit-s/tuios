@@ -151,12 +151,19 @@ func renameField(s tuitest.Screen) (string, bool) {
 		for right < len(title) && title[right] != '╮' {
 			right++
 		}
-		field := []rune(s.Line(r + 1))
-		if right >= len(field) {
-			return "", false
+		// The field is the row inside the frame that starts with the sigil;
+		// blank rows sit above and below it.
+		for y := r + 1; y < min(r+5, rows); y++ {
+			field := []rune(s.Line(y))
+			if right >= len(field) {
+				return "", false
+			}
+			text := strings.TrimSpace(string(field[left+1 : right]))
+			if strings.HasPrefix(text, "›") || strings.HasPrefix(text, ">") {
+				return strings.TrimSpace(strings.TrimPrefix(strings.TrimPrefix(text, "›"), ">")), true
+			}
 		}
-		text := strings.TrimSpace(string(field[left+1 : right]))
-		return strings.TrimSpace(strings.TrimPrefix(strings.TrimPrefix(text, "›"), ">")), true
+		return "", false
 	}
 	return "", false
 }

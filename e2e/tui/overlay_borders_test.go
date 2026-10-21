@@ -202,11 +202,13 @@ func renameBox(s tuitest.Screen) (overlayBox, bool) {
 		if tx < 0 {
 			continue
 		}
-		hx := rowCol(s, y+2, "esc cancel")
-		if hx < 0 {
-			continue
+		// The hints are in the bottom border, a few rows down: the field has
+		// a blank row above and below it.
+		for b := y + 2; b < min(y+6, rows); b++ {
+			if hx := rowCol(s, b, "esc cancel"); hx >= 0 {
+				return overlayBox{x0: tx - 2, x1: hx + len("esc cancel") + 2, y0: y, y1: b}, true
+			}
 		}
-		return overlayBox{x0: tx - 2, x1: hx + len("esc cancel") + 2, y0: y, y1: y + 2}, true
 	}
 	return overlayBox{}, false
 }

@@ -108,7 +108,8 @@ func paletteInterior(s tuitest.Screen, b overlayBox) []cellProbe {
 // renameInterior is the rename dialog's interior probes: the padding cell right
 // of the left edge on the field row, and the sigil that fronts the field.
 func renameInterior(_ tuitest.Screen, b overlayBox) []cellProbe {
-	return []cellProbe{{"padding", b.x0 + 1, b.y0 + 1}, {"body text", b.x0 + 2, b.y0 + 1}}
+	field := (b.y0 + b.y1) / 2
+	return []cellProbe{{"padding", b.x0 + 1, field}, {"body text", b.x0 + 2, field}}
 }
 
 // wantFrameColours fails unless every frame cell of b checked carries ink on
