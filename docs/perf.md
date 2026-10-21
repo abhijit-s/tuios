@@ -3224,6 +3224,13 @@ text. The build before it measured 42,688,674 and 39,851,042 bytes (Go
 40,154,770, so it adds 356,352 and 303,728 bytes. No dependency was added. The
 new budgets leave 4,198 bytes of room.
 
+The budgets went to 43,057,400 and 40,175,600 when enter on an action row of
+the command palette began to run the action, with ctrl+e opening the keybind
+manager on it. The build before it measured 43,045,026 and 40,154,770 bytes
+(Go 1.26.10). The change measured 43,053,218 and 40,171,490, so it adds 8,192
+and 16,720 bytes. No dependency was added. The new budgets leave 4,182 and
+4,110 bytes of room.
+
 To raise a budget, do it on purpose in its own commit: run
 `scripts/binary-size.sh` on the Go version in go.mod, set the new budget a
 little above the printed size in the `budget` function of that script, and say

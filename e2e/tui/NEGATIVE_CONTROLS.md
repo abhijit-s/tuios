@@ -9093,3 +9093,17 @@ refuses a native plugin's commands (`plugin_unsupported_platform`). The
 cross builds compile that path. The fixed build passes
 `TestNativePluginGrants`, `TestPluginsInstallFromGit` and every
 `TestHerdrPlugin*` 3 of 3.
+
+## Palette runs actions
+
+`TestPaletteRunsTheActionItFinds` types `#new_window` into the palette, presses `Enter`, and waits for the dock and the daemon's `list-windows` to show two windows with the palette closed and no keybind manager on screen. Then it types `#toggle_zoom`, presses `ctrl+e`, and waits for the keybind manager open on Toggle zoom, with the daemon still listing two windows. Frames are saved under the test's artifact directory: the `#` search with the `ctrl+e rebind` hint, the screen after `Enter`, and the manager after `ctrl+e`.
+
+Run on 2026-10-21.
+
+| Wiring | Cut | Tests that fail | Verdict |
+| --- | --- | --- | --- |
+| Enter on an action row runs the action | the row's action skips `runPaletteAction` and opens the keybind manager, as it did before | `TestPaletteRunsTheActionItFinds` ("enter on the new_window row: window count never reached 2 (last 1)") | **caught** |
+
+`TestPaletteTokenSearchesActions` and `TestUnbindingFromTheOverlayReachesTheConfigFile` reached the manager with `Enter` on an action row. That was the behaviour this changes, so they press `ctrl+e` now. With the fix every test matching `Palette|Keybind|Rebind|Unbind` passes (34 of 34).
+
+Not covered end to end: `Enter` on an action that only its own view reads, which opens the keybind manager with a notice, and an action run from the palette in terminal mode.
