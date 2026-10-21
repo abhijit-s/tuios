@@ -4355,3 +4355,8 @@ an earlier rotation, a build without the poll before each read used 1 to 1.5
 ms per MB less: the poll is one more syscall per read. The rest of the gap to
 main is not split here. The client receives about a quarter more batches per
 file, so the branch's reads are smaller.
+
+Part 8 moves the wake into the emulator: each pane sets `OnResponse` to wake
+the forwarder, so a reply queued anywhere wakes it, and vtWriter neither
+wakes it nor takes the replies. A chunk that queues no reply still costs no
+wake.
