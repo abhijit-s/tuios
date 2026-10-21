@@ -8631,6 +8631,18 @@ Upstream main, which has no fix, passes every case but `crash`: with no `Session
 
 Not covered end to end: a pid given to another process between the harness exiting and the detector looking, which the start time comparison in `harnessProc.exited` tells apart. A test cannot make the system hand a chosen pid to a new process. Nor Windows and other platforms that read no processes, where no start time is recorded and a report claim stays until it is cleared.
 
+### Follow-up: an outside report keeps the harness pid's start time
+
+A case joins the test for the maintainer's note on #929. `outside-same-pid` runs the stand-in claude to rest through the real hook, so its pid is recorded timed. Then the test process, which is no ancestor of it, reports `working` for the pane with `tuios call set-agent-state`, naming the same `harness_pid` and conversation. The stand-in then leaves with no `SessionEnd`, and the shell has the pane again. Run on 2026-10-21 on macOS against upstream main at 25245bdb. The fixed build passes all nine cases.
+
+Upstream main fails the new case: "the agents section still lists the pane after its agent left it, with the shell running". The outside report recorded the pid again without its start time, so its exit was never taken for the harness's.
+
+| Control: what was cut | Tests that fail | Verdict |
+| --- | --- | --- |
+| A recorded pid re-recorded: the `old.pid == pid && old.timed` early return in `setAgentHarnessPID` disabled | `outside-same-pid` ("the agents section still lists the pane after its agent left it, with the shell running") | **caught** |
+
+The early returns in `callerRunsHarness` and in `verbSetAgentState` change no outcome, only skip an ancestry walk whose answer is not used, so they have no control.
+
 ## A hook report lands only on the pane its harness runs in
 
 `TestAgentReportOnlyFromTheHarnessInThePane` (in
@@ -8953,18 +8965,6 @@ stay set, as for the other herdr steps.
 The fixed build passes `TestHerdrPluginTrustAndHooks` and
 `TestPluginsInstallFromGit` 3 of 3.
 
-### Follow-up: an outside report keeps the harness pid's start time
-
-A case joins the test for the maintainer's note on #929. `outside-same-pid` runs the stand-in claude to rest through the real hook, so its pid is recorded timed. Then the test process, which is no ancestor of it, reports `working` for the pane with `tuios call set-agent-state`, naming the same `harness_pid` and conversation. The stand-in then leaves with no `SessionEnd`, and the shell has the pane again. Run on 2026-10-21 on macOS against upstream main at 25245bdb. The fixed build passes all nine cases.
-
-Upstream main fails the new case: "the agents section still lists the pane after its agent left it, with the shell running". The outside report recorded the pid again without its start time, so its exit was never taken for the harness's.
-
-| Control: what was cut | Tests that fail | Verdict |
-| --- | --- | --- |
-| A recorded pid re-recorded: the `old.pid == pid && old.timed` early return in `setAgentHarnessPID` disabled | `outside-same-pid` ("the agents section still lists the pane after its agent left it, with the shell running") | **caught** |
-
-The early returns in `callerRunsHarness` and in `verbSetAgentState` change no outcome, only skip an ancestry walk whose answer is not used, so they have no control.
-
 ### Opt+N from the splash stays on workspace 1
 
 With no pane in any workspace, the splash of workspace 1 is the empty workspace on screen, and `Alt+2` stays on it, as `Alt+N` to an unused number does from any empty workspace on screen. A pane opened on 2 from the splash would leave 1 empty below it, and nothing a person does would close that up. `TestUnreadableKeyKeepsTheRestOfTheFile`, `TestDoctorMatchesTheAppWithBadKeys`, `TestReloadWithABadKeyAppliesTheRest` and `TestMacConfigWorksOnLinux` prove a configured workspace key is bound by where it goes, so each opens a pane on 1 first (`openPaneOnTheSplash`), and the key then lands on 2. The test is `TestWorkspaceSwitchFromTheSplashStaysOnIt` in `workspace_renumber_test.go`: `Alt+2` and then `n` from the splash, and the pane opens on 1.
@@ -9152,14 +9152,3 @@ Run on 2026-10-21, macOS, each cut built into its own binary and the source put 
 | The default key exists | the plain upstream build, before this change | `TestSendToWorkspaceKeyStaysHere` ("ctrl+alt+2 in terminal mode: pane ... is on workspace 1, want 2"), `TestSendToWorkspaceKeyYieldsATakenKey` ("keybinds doctor lists []") | **caught** |
 
 The fixed build passes both tests 3 of 3. Not covered end to end: a legacy terminal, which cannot send `ctrl+alt+N` for most digits, and the GUI default `ctrl+alt+N` in `[keybindings.gui]`, which no test presses.
-### Follow-up: an outside report keeps the harness pid's start time
-
-A case joins the test for the maintainer's note on #929. `outside-same-pid` runs the stand-in claude to rest through the real hook, so its pid is recorded timed. Then the test process, which is no ancestor of it, reports `working` for the pane with `tuios call set-agent-state`, naming the same `harness_pid` and conversation. The stand-in then leaves with no `SessionEnd`, and the shell has the pane again. Run on 2026-10-21 on macOS against upstream main at 25245bdb. The fixed build passes all nine cases.
-
-Upstream main fails the new case: "the agents section still lists the pane after its agent left it, with the shell running". The outside report recorded the pid again without its start time, so its exit was never taken for the harness's.
-
-| Control: what was cut | Tests that fail | Verdict |
-| --- | --- | --- |
-| A recorded pid re-recorded: the `old.pid == pid && old.timed` early return in `setAgentHarnessPID` disabled | `outside-same-pid` ("the agents section still lists the pane after its agent left it, with the shell running") | **caught** |
-
-The early returns in `callerRunsHarness` and in `verbSetAgentState` change no outcome, only skip an ancestry walk whose answer is not used, so they have no control.
