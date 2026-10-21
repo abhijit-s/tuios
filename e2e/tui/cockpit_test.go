@@ -812,6 +812,18 @@ func TestCockpitLiveBoxAfterDaemonRestart(t *testing.T) {
 	alive(t, term, "after the restart under the agents view")
 }
 
+// waitSpawnRead waits for an open spawn sheet to finish reading its folder
+// and the agents. Start refuses until then and says to try again, and each n
+// opens a sheet that reads them anew, running git in the folder.
+func waitSpawnRead(t *testing.T, term *tuitest.Terminal) {
+	t.Helper()
+	if err := term.WaitFor(func(s tuitest.Screen) bool {
+		return !strings.Contains(s.Text(), "Reading the folder")
+	}, uiTimeout); err != nil {
+		t.Fatalf("the spawn sheet never read its folder: %v\n%s", err, term.Snapshot())
+	}
+}
+
 // TestCockpitSideTabs is the side column's pieces as focus tabs on a screen
 // narrower than it: Checkpoints lists them, and Pane shows the live pane.
 func TestCockpitSideTabs(t *testing.T) {
@@ -941,6 +953,7 @@ func TestCockpitSpawnSheet(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitText(t, term, "the sheet again", "Where it works")
+	waitSpawnRead(t, term)
 	if err := term.SendKeys("Read the README."); err != nil {
 		t.Fatal(err)
 	}
@@ -1008,6 +1021,7 @@ func TestCockpitSpawnSheet(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitText(t, term, "the sheet for a refused start", "Where it works")
+	waitSpawnRead(t, term)
 	if err := term.SendKeys("Fail on purpose."); err != nil {
 		t.Fatal(err)
 	}
