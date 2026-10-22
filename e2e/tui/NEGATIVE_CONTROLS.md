@@ -9517,6 +9517,8 @@ Run on 2026-10-22 on macOS. The test is `TestAgentStateClearsWhenTheLastWordWasA
 | `applyAgentReport` rebuilds the claim without `sawProcess` (the build of `upstream/main` the fix sits on) | `progress-cleared-on-exit`, three runs of three ("the pane kept agent state idle (source osc, harness claude-code) with the agent gone and its shell in the foreground") | **caught** |
 
 Not covered: a `none` report ending `sawProcess` (no case sends one before a later inferred state at the shell), and the other two places a claim is rebuilt or dropped, the end of a screen blocker and a tier yielding its claim, which can lose `sawProcess` the same way in the moment before an exit.
+Not covered: a `none` report ending `sawProcess` (no case sends one before a later inferred state at the shell). The other two places a claim is rebuilt or dropped, the end of a screen blocker and a tier yielding its claim, are covered under "A claim handed back as the agent exits".
+## Agent signals on an exited agent's pane
 
 ## Agent listing after SessionEnd
 
@@ -9543,3 +9545,23 @@ The test is `TestSelfExecKeepsAgentClaims` in `handoff_agent_claims_test.go`. A 
 | Harness processes not restored, claims restored | the same ("…still {State:done … Source:report Harness:claude-code …}, listed=true") | **caught** |
 
 Not covered: the shared-server guards (`agentSharedGuards`), carried with the claims, which no case reads after the handoff; a claim held by the detector or a herdr reporter across the handoff; and a manifest from an image that carried no claims, which reads with none, as before.
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| ctrl+u does nothing in the rename dialog | The `ctrl+u` case in `handleRenameMode` | Removed | `TestRenameDialogClears`: `ctrl+u left the dialog open with an empty field: field never read ""` | **caught** |
+| ctrl+c always cancels the rename | The empty-buffer branch of the `ctrl+c` case | Always `EndRename` | `TestRenameDialogClears`: `ctrl+c with text left the dialog open with an empty field: field never read ""` | **caught** |
+| ctrl+c never cancels the rename | The same branch | Always `RenameClear` | `TestRenameDialogClears`: `ctrl+c on an empty field did not close the dialog` | **caught** |
+| The clear hint is not pressable | `renameClearHit` recorded in `renderOverlays` | Never recorded | `TestRenameDialogClears`: `a click on the clear hint left the dialog open with an empty field: field never read ""` | **caught** |
+| ctrl+u does nothing in the help search | The `ctrl+u` check in `handleHelpOverlayKey` | Never taken | `TestRenameDialogClears`: `ctrl+u did not clear the help search query` | **caught** |
+
+## A claim handed back as the agent exits
+
+Run on 2026-10-23 on macOS against upstream main at 404ee6b4. The test is `TestAgentClaimHandedBackAsTheAgentExits` in `agent_claim_handback_exit_test.go`. A program named `claude` (`testdata/fakeclaude`) runs in a pane whose state a tier other than the detector set first, so the detector does not own the claim and clears it at the shell only because it saw the agent process. The agent draws a screen the screen tier reads, then wipes it and exits at once, so the look that finds the screen empty hands the screen tier's claim back after the agent has gone. In `blocker-released-on-exit` the pane is at `idle` from the OSC tier, the agent draws a Claude Code permission prompt, and the screen tier lends itself the pane at `needs_input` until the wipe ends the loan (`releaseAgentBlockerOverride`). In `screen-idle-yielded-on-exit` the pane is at `working` from the stall tier, the agent draws its empty prompt box, and the screen tier takes the pane at `idle` until the wipe yields it (`yieldAgentClaim`). The detector runs every four seconds and the exit lands between two passes: at one second a pass landed between the exit and the look on every run of `blocker-released-on-exit`, which cleared the pane while the screen tier held it and passed without the fix. The test fails unless it reads the handed-back claim (idle from a tier other than the screen) before `none`. Each read of `get-agent-state` is saved as `agent-state-trace.json`, with the pane as `pane.txt`, under the test's artifact directory (`TUIOS_E2E_FRAMES` when set).
+
+With the fix both cases pass three runs of three; the trace of `blocker-released-on-exit` reads `needs_input` from `screen`, then `idle` from `osc`, then `none`, and the trace of `screen-idle-yielded-on-exit` reads `idle` from `screen`, then `idle` from `detect`, then `none`. Each control is a text replacement in the branch's checkout, built to a separate binary and put back before the next. Each control fails only its own case.
+
+| Control: what was cut | Tests that fail | Verdict |
+| --- | --- | --- |
+| `releaseAgentBlockerOverride` hands back the displaced claim without `sawProcess` | `blocker-released-on-exit`, three runs of three ("the pane kept agent state idle (source osc, harness claude-code) with the agent gone and its shell in the foreground") | **caught** |
+| `yieldAgentClaim` keeps a claim only for `auto`, and deletes one that carries only `sawProcess` | `screen-idle-yielded-on-exit`, three runs of three ("the pane kept agent state idle (source report, harness ) with the agent gone and its shell in the foreground") | **caught** |
+
+Not covered: `yieldAgentClaim` carrying `sawProcess` on an `auto` claim. The detector clears a claim it owns when the agent leaves whether or not the mark is set, so the mark on such a claim has no reader, and the change only keeps it for a later hand-over.
