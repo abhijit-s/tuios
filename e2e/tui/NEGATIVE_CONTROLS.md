@@ -9565,3 +9565,15 @@ With the fix both cases pass three runs of three; the trace of `blocker-released
 | `yieldAgentClaim` keeps a claim only for `auto`, and deletes one that carries only `sawProcess` | `screen-idle-yielded-on-exit`, three runs of three ("the pane kept agent state idle (source report, harness ) with the agent gone and its shell in the foreground") | **caught** |
 
 Not covered: `yieldAgentClaim` carrying `sawProcess` on an `auto` claim. The detector clears a claim it owns when the agent leaves whether or not the mark is set, so the mark on such a claim has no reader, and the change only keeps it for a later hand-over.
+
+## The detector's mark on a pane nothing holds
+
+Run on 2026-10-23 on macOS against `fix/claim-keeps-saw-process-2` at c544dac8. The test is `TestAgentDetectorMarksAnUnclaimedPaneAtItsOwnRank` in `agent_detect_unclaimed_test.go`. A pane is attributed to `claude-code` at `working` from the stall tier, a script under `sh` (which the detector does not take for an agent) draws Claude Code's empty prompt box, and the screen tier takes the pane at `idle`. The script wipes the box and exits, and the look that finds the screen empty yields the screen tier's claim: it was neither `auto` nor marked `sawProcess`, so it is deleted and the pane keeps `idle` with no claim. A program named `claude` (`testdata/fakeclaude`) then runs in the pane, the detector sees it, and the test reports `working` from the OSC tier, which has to be applied, and then lets the agent exit, after which the pane has to clear to `none`. Each read of `get-agent-state` is saved as `agent-state-trace.json`, with the pane as `pane.txt`, under the test's artifact directory (`TUIOS_E2E_FRAMES` when set).
+
+With the fix the test passes four runs of four; the trace reads `working` from `stall`, `idle` from `screen`, `idle` with no claim (printed as `report`), `idle` from `detect` once the detector has seen the agent, `working` from `osc`, then `none`. The control is a text replacement in the branch's checkout, built to a separate binary and put back.
+
+| Control: what was cut | Tests that fail | Verdict |
+| --- | --- | --- |
+| `detectionPass` marks `sawProcess` on the zero claim of a pane nothing holds, rather than on a claim at `AgentSourceDetect` (the build of the branch the fix sits on) | three runs of three ("an OSC-tier report was not applied to a pane no tier held while the agent ran: read idle (source report, harness ), set-agent-state said \"Not applied: a higher-ranked source owns this pane. It still reports idle.\"") | **caught** |
+
+Not covered: the other ways a pane can be left with a state and no claim before the detector first sees an agent in it. A transcript join dropped (`DropAgentTranscript`) yields the same way the screen tier does; a program's records ending clear the state to `none` before they yield, and the detector then takes a pane at `none` as its own.
