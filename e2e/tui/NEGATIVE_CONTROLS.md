@@ -9332,3 +9332,15 @@ holds the judge's reach (a security boundary test). Run on 2026-10-21.
 A session that takes the judge's old name after its session ended reaches
 nothing: the record names a session ID, which no new session has. The test
 keeps that case as a regression.
+
+## An agent whose last word was a progress clear
+
+Run on 2026-10-22 on macOS. The test is `TestAgentStateClearsWhenTheLastWordWasAProgressClear` in `agent_osc_exit_test.go`. A program named `claude` (`testdata/fakeclaude`) runs in a pane whose state an OSC-tier source holds (`set-agent-state working --source osc --harness claude-code`), so the detector does not own the claim and clears it at the shell only because it saw the agent process. The agent then exits to the shell, in `exit-without-a-report` with nothing more, and in `progress-cleared-on-exit` after clearing its progress bar with OSC 9;4;0, which is how Claude Code leaves a pane. Each read of `get-agent-state` is saved as `agent-state-trace.json`, with the pane as `pane.txt`, under the test's artifact directory (`TUIOS_E2E_FRAMES` when set).
+
+`exit-without-a-report` is the positive half: it passes before and after the fix, so the detector did see the process. With the fix both cases pass three runs in a row; the trace of `progress-cleared-on-exit` reads `idle`, source `osc`, for a quarter second after the clear and then `none`.
+
+| Control: what was cut | Tests that fail | Verdict |
+| --- | --- | --- |
+| `applyAgentReport` rebuilds the claim without `sawProcess` (the build of `upstream/main` the fix sits on) | `progress-cleared-on-exit`, three runs of three ("the pane kept agent state idle (source osc, harness claude-code) with the agent gone and its shell in the foreground") | **caught** |
+
+Not covered: a `none` report ending `sawProcess` (no case sends one before a later inferred state at the shell), and the other two places a claim is rebuilt or dropped, the end of a screen blocker and a tier yielding its claim, which can lose `sawProcess` the same way in the moment before an exit.
