@@ -72,7 +72,11 @@ fi
 # ── 1. cross-compile ─────────────────────────────────────────────────────
 NEW="$ROOT/.install-tuios-remote.build"
 if [ "${TUIOS_SKIP_BUILD:-0}" != "1" ]; then
-  buildversion="dev+${SHA}"
+  # The release the build is based on, kept after "dev+" so tuios still reads
+  # it as a source build: a version that parses as a release would be offered
+  # updates, and hosts sync would fetch that release instead of building this.
+  base="$(git describe --tags --abbrev=0 --match 'v[0-9]*' --exclude '*-*' 2>/dev/null)"
+  buildversion="dev+${base:+${base#v}.}${SHA}"
   commit="$(git rev-parse HEAD 2>/dev/null || echo unknown)"
   if [ -n "$(git status --porcelain 2>/dev/null)" ]; then
     buildversion="$buildversion-dirty"
