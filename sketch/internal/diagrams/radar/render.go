@@ -133,7 +133,7 @@ func draw(model *RadarModel, config types.Config, options types.RenderOptions, w
 		label := text.LayoutLabel(axes[i].label, false, measurer, small, 4000, 0)
 		at := float64(radius*labelFactor) + 6
 		// Each label hangs off its axis on the side away from the center.
-		cx := u.x * at
+		cx := float64(u.x * at)
 		if u.x > 0.01 {
 			cx += label.Width / 2
 		} else if u.x < -0.01 {
@@ -141,7 +141,7 @@ func draw(model *RadarModel, config types.Config, options types.RenderOptions, w
 		} else {
 			cx += 0
 		}
-		cy := u.y * at
+		cy := float64(u.y * at)
 		if u.y > 0.01 {
 			cy += label.Height / 2
 		} else if u.y < -0.01 {
@@ -191,7 +191,7 @@ func draw(model *RadarModel, config types.Config, options types.RenderOptions, w
 	for _, label := range legend {
 		legendWidth = math.Max(legendWidth, label.Width)
 	}
-	legendHeight := float64(len(legend)) * ROW
+	legendHeight := float64(float64(len(legend)) * ROW)
 	legendX := x1 + GAP
 	legendTop := -legendHeight / 2
 	if tight {
@@ -253,7 +253,7 @@ func draw(model *RadarModel, config types.Config, options types.RenderOptions, w
 		Links:  []types.LinkInfo{},
 	}
 	if options.Geometry != nil {
-		geo := &types.GeoRadar{Title: title.Plain(), Min: min, Max: max}
+		geo := &types.GeoRadar{Title: title.Plain(), Min: min, Max: max, Ticks: radarTicks(ticks), Polygon: graticule != "circle"}
 		for _, axis := range axes {
 			geo.Axes = append(geo.Axes, axis.label)
 		}
@@ -265,4 +265,13 @@ func draw(model *RadarModel, config types.Config, options types.RenderOptions, w
 		rendered.Geometry = &types.Geometry{Width: totalWidth, Height: totalHeight, Radar: geo}
 	}
 	return rendered
+}
+
+// radarTicks is the count of graticule rings for a text drawing: the ticks
+// option, from 0 to 20.
+func radarTicks(ticks float64) int {
+	if !(ticks >= 1) {
+		return 0
+	}
+	return int(math.Min(ticks, 20))
 }

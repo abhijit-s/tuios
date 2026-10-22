@@ -1078,7 +1078,11 @@ func (d *Daemon) verbSendText(cs *connState, params json.RawMessage) (any, *verb
 		} else if idx, err := findWindowStateIndex(sess.GetState().Windows, window); err == nil {
 			window = sess.GetState().Windows[idx].ID
 		}
-		if _, err := submitPrompt(d.ctx, pty, p.Text, d.inputProfileFor(sess, window)); err != nil {
+		// The pane is checked again right before the submit key: it can
+		// come to a prompt while the paste is taken in, and the Enter
+		// would answer it.
+		ctx := withSubmitGuard(d.ctx, func() *verbError { return d.recheckTyping(cs, "send-text", sess, window) })
+		if _, err := submitPrompt(ctx, pty, p.Text, d.inputProfileFor(sess, window)); err != nil {
 			return nil, ptyWriteError(err)
 		}
 		return map[string]any{"type": "ok"}, nil
@@ -1111,6 +1115,10 @@ func paneBusyError(err error) *verbError {
 // take: busy when the pane has not read the last large input, internal
 // otherwise.
 func promptWriteError(err error) *verbError {
+	if ve := (*verbError)(nil); errors.As(err, &ve) {
+		// A submit guard refused (withSubmitGuard).
+		return ve
+	}
 	if errors.Is(err, errPaneInputBusy) {
 		return paneBusyError(err)
 	}
@@ -1118,6 +1126,10 @@ func promptWriteError(err error) *verbError {
 }
 
 func ptyWriteError(err error) *verbError {
+	if ve := (*verbError)(nil); errors.As(err, &ve) {
+		// A submit guard refused (withSubmitGuard).
+		return ve
+	}
 	if errors.Is(err, errPaneInputBusy) {
 		return paneBusyError(err)
 	}

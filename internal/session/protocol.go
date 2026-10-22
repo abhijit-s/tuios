@@ -188,6 +188,11 @@ const (
 	// state and the version, or a mark that it closed. The daemon sends it
 	// only to a client whose hello set TMLSurfaces. See tml_surface.go.
 	MsgTMLSurface
+	// MsgPluginApprovals lists the native plugins that wait for the
+	// person's approval on this machine (PluginApprovalsPayload). An empty
+	// list closes the client's dialog. The daemon sends it only to a client
+	// whose hello set PluginApprovals. See plugin_approval.go.
+	MsgPluginApprovals
 )
 
 // DaemonUpgradingPayload is the body of MsgDaemonUpgrading: the version the
@@ -326,6 +331,10 @@ type HelloPayload struct {
 	// MsgTMLSurface. The daemon sends it to no other client. See
 	// tml_surface.go.
 	TMLSurfaces bool `json:"tml_surfaces,omitzero"`
+	// PluginApprovals says the client asks the person about native plugins
+	// that wait for approval: it reads MsgPluginApprovals. The daemon sends
+	// it to no other client. See plugin_approval.go.
+	PluginApprovals bool `json:"plugin_approvals,omitzero"`
 }
 
 // WelcomePayload is sent by server in response to Hello.

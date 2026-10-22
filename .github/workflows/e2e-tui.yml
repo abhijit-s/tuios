@@ -4,19 +4,29 @@ name: End-to-end TUI regressions
 # No terminal is needed: the harness allocates the pty itself, so this runs on a
 # stock runner with no xvfb or tmux.
 
+# A draft pull request skips the shards. Marking it ready for review starts a
+# run, and every push after that runs them. The other workflows still run on a
+# draft. A skipped shard shows as "skipping", never as "pass".
 on:
   push:
     branches: [main]
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
   workflow_dispatch:
+    inputs:
+      skip_if_tested:
+        description: Skip the shards when this commit already passed them as a pull request head
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
-# A newer push to the same branch or pull request supersedes the run in
-# progress.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  # A pull request's group is its ref, so a newer push cancels the run in
+  # progress. Every other run (main, the nightly, a manual run) gets a group of
+  # its own and is never cancelled or replaced while it waits.
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
   cancel-in-progress: true
 
 # The shard count and the time each shard may take. shardplan packs the tests
@@ -29,6 +39,39 @@ env:
   E2E_SHARD_LIMIT: 11m
 
 jobs:
+  # ff-merge lands the exact commit that passed as the pull request head, so
+  # the push to main would run the same suite on the same tree again. This job
+  # looks for that pull request run. When it finds one, the shards pass at once
+  # with a note that links it. When it finds none, or the API fails, the shards
+  # run in full.
+  tested:
+    name: e2e-tui already tested
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.skip_if_tested)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      url: ${{ steps.find.outputs.url }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: scripts
+
+      - name: Find a pull request run that passed every shard on this commit
+        id: find
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          url=$(scripts/e2e-tested.sh "$GITHUB_REPOSITORY" "$GITHUB_SHA" "$E2E_SHARDS" || true)
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+          if [ -n "$url" ]; then
+            echo "This commit passed every shard as a pull request head: $url" | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No pull request run passed every shard on this commit. The shards run in full." | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
+
   shard-plan:
     name: e2e-tui shard plan
     runs-on: ubuntu-latest
@@ -36,12 +79,10 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v7
+      - uses: ./.github/actions/setup-go
         with:
           go-version-file: e2e/tui/go.mod
-          cache-dependency-path: |
-            go.sum
-            e2e/tui/go.sum
+          cache-id: e2e-plan
 
       - name: Check that every shard fits its time
         working-directory: e2e/tui
@@ -78,12 +119,26 @@ jobs:
       matrix:
         shard: [1, 2, 3, 4, 5, 6, 7, 8, 9]
     name: e2e-tui (shard ${{ matrix.shard }} of ${{ strategy.job-total }})
+    needs: tested
+    # tested is skipped on a pull request, so the shards must not wait for its
+    # success. A draft skips the shards.
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || !github.event.pull_request.draft) }}
     timeout-minutes: 20
+    env:
+      TESTED_URL: ${{ needs.tested.outputs.url }}
 
     steps:
-      - uses: actions/checkout@v7
+      - name: Already passed on the pull request
+        if: env.TESTED_URL != ''
+        run: |
+          echo "::notice title=e2e already passed::This commit passed every shard as a pull request head: $TESTED_URL"
+          echo "Not run again. This commit passed every shard as a pull request head: $TESTED_URL" >> "$GITHUB_STEP_SUMMARY"
 
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@v7
+        if: env.TESTED_URL == ''
+
+      - uses: ./.github/actions/setup-go
+        if: env.TESTED_URL == ''
         with:
           # The nested e2e module asks for a newer Go than the root module, and
           # this job needs both: it builds cmd/tuios from the root and then runs
@@ -93,14 +148,14 @@ jobs:
           # toolchain when the tests ran, which setup-go now prevents by pinning
           # GOTOOLCHAIN to what it installed.
           go-version-file: e2e/tui/go.mod
-          cache-dependency-path: |
-            go.sum
-            e2e/tui/go.sum
+          cache-id: e2e
 
       - name: Build the binary under test
+        if: env.TESTED_URL == ''
         run: go build -o "$RUNNER_TEMP/tuios" ./cmd/tuios
 
       - name: Run this shard of the end-to-end suite
+        if: env.TESTED_URL == ''
         working-directory: e2e/tui
         env:
           TUIOS_E2E: "1"
@@ -135,7 +190,10 @@ jobs:
           fi
           echo "$names" | wc -l | xargs printf 'shard %s of %s runs %s tests\n' "$SHARD" "$SHARDS"
           start=$SECONDS
-          go test -count=1 -timeout 18m -v -run "^($(echo "$names" | paste -sd'|' -))$" ./...
+          # A failure of tests listed in .github/flaky-tests.txt, and only of
+          # those, gets one retry of those tests. Anything else fails the shard.
+          status=0
+          go test -count=1 -timeout 18m -v -run "^($(echo "$names" | paste -sd'|' -))$" ./... 2>&1 | tee "$RUNNER_TEMP/e2e.log" || status=$?
           # A shard that ran over the limit still passes, but says so, so the
           # drift shows before it reaches the timeout.
           took=$((SECONDS - start))
@@ -143,10 +201,13 @@ jobs:
           if [ "$took" -gt "$limit" ]; then
             echo "::warning title=Slow e2e shard::Shard $SHARD ran ${took}s, over the $E2E_SHARD_LIMIT limit. Refresh e2e/tui/shardplan/durations.txt or add a shard."
           fi
+          if [ "$status" -ne 0 ]; then
+            ../../scripts/retry-flaky.sh "$RUNNER_TEMP/e2e.log" ./...
+          fi
 
       - name: Reap any surviving daemons
         # The harness tears down its own process groups, but a hard job failure
         # can leave one behind, and a leaked daemon would poison a self-hosted
         # runner. Never fail the job on this.
-        if: always()
+        if: always() && env.TESTED_URL == ''
         run: pkill -f "$RUNNER_TEMP/tuios" || true

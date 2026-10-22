@@ -232,9 +232,15 @@ type Plugin struct {
 	// Grants are the pane grants a native manifest asks for.
 	Grants []string `json:"grants,omitempty"`
 	// Held are the grants a native plugin's processes hold now: the
-	// approved ones from plugins.lock, or none. nil for a herdr plugin,
+	// approved ones, or none. nil for a herdr plugin,
 	// which holds the default grants.
 	Held []string `json:"held_grants,omitempty"`
+	// Trust is the trust hash of a native plugin that this machine's
+	// approval must name (TrustOf).
+	Trust string `json:"trust_hash,omitempty"`
+	// Approval is the answer on this machine for a native plugin:
+	// ApprovalAllowed, ApprovalWaiting or ApprovalDenied.
+	Approval string `json:"approval,omitempty"`
 }
 
 // rawManifest is herdr-plugin.toml as written. Unknown keys are ignored, as
@@ -378,6 +384,14 @@ func parseRaw(raw *rawManifest) (*Plugin, *Error) {
 	var perr *Error
 	if p.Name, perr = nonEmpty(*raw.Name, "invalid_plugin_name", "plugin name is required"); perr != nil {
 		return nil, perr
+	}
+	// The name is shown in the approval dialog, the install question and
+	// the listings. A control or bidi character is dropped, so the name
+	// cannot hide or move text, and it is cut to MaxNameRunes, so it
+	// cannot push the grants off the screen.
+	p.Name = ShownName(p.Name)
+	if p.Name == "" {
+		return nil, errf("invalid_plugin_name", "plugin name is required")
 	}
 	if p.Version, perr = nonEmpty(*raw.Version, "invalid_plugin_version", "plugin version is required"); perr != nil {
 		return nil, perr

@@ -53,15 +53,25 @@ func (d *Daemon) nativePluginsRun() bool {
 
 // pluginAuthority places a caller in a native plugin and says what it
 // holds, or returns nil for any other caller.
+//
+// The kernel's answer comes first. A caller the kernel places in no plugin
+// is placed by the plugin token it presented (plugin_token.go), which only
+// narrows: such a caller would otherwise be held to nothing new.
 func (d *Daemon) pluginAuthority(cs *connState) *paneAuth {
-	if !d.nativePluginsRun() {
+	bound := cs.pluginBound.Load()
+	if bound == nil && !d.nativePluginsRun() {
 		return nil
 	}
-	p := d.pluginOfPeer(cs)
-	if p == nil || p.Format != herdrplugin.FormatTuios {
+	if p := d.pluginOfPeer(cs); p != nil {
+		if p.Format != herdrplugin.FormatTuios {
+			return nil
+		}
+		return &paneAuth{window: unplacedWindow, via: "plugin", plugin: p.PluginID, grants: grantsFromNames(p.Held)}
+	}
+	if bound == nil {
 		return nil
 	}
-	return &paneAuth{window: unplacedWindow, via: "plugin", plugin: p.PluginID, grants: grantsFromNames(p.Held)}
+	return &paneAuth{window: unplacedWindow, via: "plugin-token", plugin: *bound, grants: d.boundPluginGrants(*bound)}
 }
 
 // checkPluginGrants holds a call from a native plugin to its grants, across
@@ -69,6 +79,12 @@ func (d *Daemon) pluginAuthority(cs *connState) *paneAuth {
 func (d *Daemon) checkPluginGrants(verb string, pa *paneAuth, params json.RawMessage, deny func(string) *verbError) (json.RawMessage, *verbError) {
 	if verb == "respond" {
 		return nil, deny("a plugin cannot answer a prompt. Only the person or a pane given respond does that")
+	}
+	if verb == "queue-prompt" || verb == "send-review" {
+		// The queue types later, as the pane that queued, and a plugin has
+		// no pane: delivery would drop the entry. Refused, so the plugin
+		// is told now.
+		return nil, deny(verb + " queues for later, and a plugin cannot queue. Use send-text or ask-agent")
 	}
 	if !pa.grants.Has(GrantAdmin) {
 		var need Grants

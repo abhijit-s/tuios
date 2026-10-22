@@ -18,8 +18,12 @@ func (r rect) union(o rect) rect {
 type point struct{ x, y int }
 
 // Shapes drawn with rounded corners, and shapes drawn as a diamond.
-var roundShapes = map[string]bool{"rounded": true, "stadium": true, "circle": true, "dbl-circ": true, "ellipse": true, "cyl": true, "lin-cyl": true, "h-cyl": true, "delay": true, "cloud": true}
 var pointShapes = map[string]bool{"diam": true, "hex": true}
+
+// slantShapes have slanted sides, and need a cell more on each side for
+// each row past the first. cylShapes have a rim under their top edge.
+var slantShapes = map[string]bool{"lean-r": true, "lean-l": true, "trap-b": true, "trap-t": true}
+var cylShapes = map[string]bool{"cyl": true, "lin-cyl": true}
 var dotShapes = map[string]bool{"sm-circ": true, "f-circ": true, "fr-circ": true, "cross-circ": true}
 
 // graphKind is what a diagram type changes in the drawing of a graph of
@@ -72,14 +76,12 @@ func scaleOf(l *sketch.Layout, kind *graphKind) (sx, sy float64) {
 		if kind.size != nil && (dotShapes[n.Shape] || n.Shape == "fork") {
 			continue
 		}
-		need := float64(widest(n.Label) + 4)
-		if pointShapes[n.Shape] {
-			need += 2
-		}
+		dw, dh := shapeRoom(n.Shape, len(n.Label), len(n.Label)+2)
+		need := float64(widest(n.Label) + 4 + dw)
 		if n.Group {
 			need = float64(widest(n.Label) + 6)
 		}
-		tall := float64(len(n.Label) + 2)
+		tall := float64(len(n.Label) + 2 + dh)
 		if w, h, ok := kind.sizeOf(n); ok {
 			need, tall = float64(w), float64(h)
 		}
@@ -190,12 +192,11 @@ func drawGraph(l *sketch.Layout, opt Options, kind *graphKind) (*canvas, error) 
 		if kind.tight {
 			w = widest(n.Label) + 4
 		}
-		if pointShapes[n.Shape] {
-			w = max(w, widest(n.Label)+6)
-		}
 		// As tall as the text needs, or as the ends on a side need: a taller
-		// box only spreads the drawing.
-		h := len(n.Label) + 2
+		// box only spreads the drawing. A shape takes the room its outline
+		// needs past that: see shapeRoom.
+		_, dh := shapeRoom(n.Shape, len(n.Label), len(n.Label)+2)
+		h := len(n.Label) + 2 + dh
 		sized := false
 		if kw, kh, ok := kind.sizeOf(&l.Nodes[i]); ok {
 			w, h, sized = max(col(n.W), kw), kh, true
@@ -207,6 +208,14 @@ func drawGraph(l *sketch.Layout, opt Options, kind *graphKind) (*canvas, error) 
 			if list := ends[[2]int{i, sd}]; span(list, false) > len(list) {
 				w = max(w, span(list, false)+2)
 			}
+		}
+		if !sized {
+			if h%2 == 0 && (pointShapes[n.Shape] || n.Shape == "odd") {
+				// A point is on one middle row.
+				h++
+			}
+			dw, _ := shapeRoom(n.Shape, len(n.Label), h)
+			w = max(w, widest(n.Label)+4+dw)
 		}
 		if !sized && (dotShapes[n.Shape] || n.Shape == "fork") {
 			w, h = 3, 1
@@ -269,10 +278,41 @@ func drawGraph(l *sketch.Layout, opt Options, kind *graphKind) (*canvas, error) 
 	}
 
 	// Each end gets a cell of its own along its side, in the layout's order.
+	// Edges that arrive on one side with the same head, the same stroke and
+	// no text beside it share one end, so they join into one arrow instead of
+	// a row of heads side by side.
 	placed := map[[2]int]point{}
 	for key, list := range ends {
 		node, sd := key[0], key[1]
 		b := boxes[node]
+		var joined []int
+		var joinedAt float64
+		head, stroke := "", ""
+		same := true
+		for _, e := range list {
+			if !e.last || e.text > 0 {
+				continue
+			}
+			end, st := l.Edges[e.edge].End, l.Edges[e.edge].Stroke
+			if head != "" && (end != head || st != stroke) {
+				same = false
+			}
+			head, stroke = end, st
+			joined = append(joined, e.edge)
+			joinedAt += e.at
+		}
+		if len(joined) > 1 && same && head != "" {
+			joinedAt /= float64(len(joined))
+			rest := list[:0:0]
+			for _, e := range list {
+				if !e.last || e.text > 0 {
+					rest = append(rest, e)
+				}
+			}
+			list = append(rest, graphEnd{edge: joined[0], last: true, at: joinedAt})
+		} else {
+			joined = nil
+		}
 		slices.SortStableFunc(list, func(a, b graphEnd) int {
 			switch {
 			case a.at < b.at:
@@ -287,6 +327,11 @@ func drawGraph(l *sketch.Layout, opt Options, kind *graphKind) (*canvas, error) 
 		if sd == 1 || sd == 3 {
 			lo, hi = b.y0+1, b.y1-1
 			scale = row
+			if pointShapes[l.Nodes[node].Shape] {
+				// Edges meet a hexagon or a decision at its point.
+				lo = (b.y0 + b.y1) / 2
+				hi = lo
+			}
 		}
 		prev := lo - 1
 		gap := 1
@@ -309,6 +354,11 @@ func drawGraph(l *sketch.Layout, opt Options, kind *graphKind) (*canvas, error) 
 				idx = 1
 			}
 			placed[[2]int{e.edge, idx}] = at
+			if e.last && len(joined) > 0 && e.edge == joined[0] {
+				for _, other := range joined[1:] {
+					placed[[2]int{other, 1}] = at
+				}
+			}
 		}
 	}
 
@@ -404,16 +454,28 @@ func drawGraph(l *sketch.Layout, opt Options, kind *graphKind) (*canvas, error) 
 		c.vline(b.x1, b.y0, b.y1, weight, roleFrame)
 	}
 
-	// Edges.
+	// Edges. An edge from an actor of a use case diagram takes the actor's
+	// series colour, so each actor's edges can be told apart where they run
+	// side by side.
+	actor := map[int]uint8{}
+	for i, n := range l.Nodes {
+		if n.Shape == "actor" {
+			actor[i] = seriesRole(len(actor))
+		}
+	}
 	toward := [4]uint8{down, left, up, right}
 	outward := [4]uint8{up, right, down, left}
 	for _, p := range paths {
 		if p.invisible || p.self {
 			continue
 		}
+		role := uint8(roleLine)
+		if r, ok := actor[p.from]; ok {
+			role = r
+		}
 		// The first cell joins the box it leaves. A group's frame is a line, so
 		// it gets a junction where the edge leaves it.
-		c.stroke(p.pts[0].x+dx, p.pts[0].y+dy, toward[p.startSide], p.weight, roleLine)
+		c.stroke(p.pts[0].x+dx, p.pts[0].y+dy, toward[p.startSide], p.weight, role)
 		if l.Nodes[p.from].Group {
 			in := [4]point{{0, 1}, {-1, 0}, {0, -1}, {1, 0}}[p.startSide]
 			c.stroke(p.pts[0].x+dx+in.x, p.pts[0].y+dy+in.y, outward[p.startSide], light, roleFrame)
@@ -423,9 +485,9 @@ func drawGraph(l *sketch.Layout, opt Options, kind *graphKind) (*canvas, error) 
 			b := point{p.pts[k].x + dx, p.pts[k].y + dy}
 			switch {
 			case a.x == b.x:
-				c.vline(a.x, a.y, b.y, p.weight, roleLine)
+				c.vline(a.x, a.y, b.y, p.weight, role)
 			case a.y == b.y:
-				c.hline(a.x, b.x, a.y, p.weight, roleLine)
+				c.hline(a.x, b.x, a.y, p.weight, role)
 			case p.axes[k] == 0:
 				mid := (a.y + b.y) / 2
 				if k == len(p.pts)-1 {
@@ -434,9 +496,9 @@ func drawGraph(l *sketch.Layout, opt Options, kind *graphKind) (*canvas, error) 
 						mid = b.y + 1
 					}
 				}
-				c.vline(a.x, a.y, mid, p.weight, roleLine)
-				c.hline(a.x, b.x, mid, p.weight, roleLine)
-				c.vline(b.x, mid, b.y, p.weight, roleLine)
+				c.vline(a.x, a.y, mid, p.weight, role)
+				c.hline(a.x, b.x, mid, p.weight, role)
+				c.vline(b.x, mid, b.y, p.weight, role)
 			default:
 				mid := (a.x + b.x) / 2
 				if k == len(p.pts)-1 {
@@ -445,9 +507,9 @@ func drawGraph(l *sketch.Layout, opt Options, kind *graphKind) (*canvas, error) 
 						mid = b.x + 1
 					}
 				}
-				c.hline(a.x, mid, a.y, p.weight, roleLine)
-				c.vline(mid, a.y, b.y, p.weight, roleLine)
-				c.hline(mid, b.x, b.y, p.weight, roleLine)
+				c.hline(a.x, mid, a.y, p.weight, role)
+				c.vline(mid, a.y, b.y, p.weight, role)
+				c.hline(mid, b.x, b.y, p.weight, role)
 			}
 		}
 	}
@@ -459,6 +521,18 @@ func drawGraph(l *sketch.Layout, opt Options, kind *graphKind) (*canvas, error) 
 		}
 		if kind.node == nil || !kind.node(c, move(boxes[i]), &l.Nodes[i]) {
 			drawNode(c, move(boxes[i]), n.Shape, n.Label)
+		}
+		if r, ok := actor[i]; ok {
+			// The stick figure in the actor's colour.
+			b := move(boxes[i])
+			top := b.y0 + (b.y1-b.y0+1-len(n.Label))/2
+			for y := top; y < top+3; y++ {
+				for x := b.x0; x <= b.x1; x++ {
+					if q := c.at(x, y); q != nil && q.r != 0 && q.r != ' ' {
+						q.role = r
+					}
+				}
+			}
 		}
 	}
 	// Group titles, on the top line.
@@ -652,35 +726,16 @@ func drawNode(c *canvas, b rect, shape string, label []string) {
 			c.put(x, b.y0, '━', roleBox)
 		}
 		return
-	case shape == "text":
+	case shape == "text", shape == "actor":
 	default:
-		tl, tr, bl, br := '┌', '┐', '└', '┘'
-		sideL, sideR := '│', '│'
-		if roundShapes[shape] {
-			tl, tr, bl, br = '╭', '╮', '╰', '╯'
-		}
-		if pointShapes[shape] {
-			tl, tr, bl, br = '╱', '╲', '╲', '╱'
-		}
-		for x := b.x0 + 1; x < b.x1; x++ {
-			c.put(x, b.y0, '─', roleBox)
-			c.put(x, b.y1, '─', roleBox)
-		}
-		for y := b.y0 + 1; y < b.y1; y++ {
-			l, r := sideL, sideR
-			if pointShapes[shape] && y == (b.y0+b.y1)/2 {
-				l, r = '<', '>'
-			}
-			c.put(b.x0, y, l, roleBox)
-			c.put(b.x1, y, r, roleBox)
-		}
-		c.put(b.x0, b.y0, tl, roleBox)
-		c.put(b.x1, b.y0, tr, roleBox)
-		c.put(b.x0, b.y1, bl, roleBox)
-		c.put(b.x1, b.y1, br, roleBox)
+		outline(c, b, shape)
 	}
-	h := b.y1 - b.y0 + 1
-	top := b.y0 + (h-len(label))/2
+	y0, h := b.y0, b.y1-b.y0+1
+	if cylShapes[shape] && h >= 4 {
+		// The text goes under the rim.
+		y0, h = b.y0+1, h-1
+	}
+	top := y0 + (h-len(label))/2
 	for k, line := range label {
 		w := width(line)
 		x := b.x0 + (b.x1-b.x0+1-w)/2

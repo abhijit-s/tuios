@@ -153,6 +153,8 @@ type GeoBlock struct {
 type GeoPie struct {
 	Title  []string
 	Slices []GeoSlice
+	// ShowData says the source asked for the values beside the labels.
+	ShowData bool
 }
 
 type GeoSlice struct {
@@ -363,8 +365,10 @@ type GeoFlowNode struct {
 type GeoFlow struct {
 	// Source and Target are indexes into Nodes.
 	Source, Target int
-	// Value is the flow as written, with the prefix and the suffix.
+	// Value is the flow as written, with the prefix and the suffix, and
+	// Size the number.
 	Value string
+	Size  float64
 	// SourceY and TargetY are the middle of the band where it leaves its source
 	// and where it enters its target, in SVG units.
 	SourceY, TargetY float64
@@ -397,6 +401,10 @@ type GeoRadar struct {
 	Curves []GeoCurve
 	// Min and Max are the values at the centre and at the rim.
 	Min, Max float64
+	// Ticks is the count of graticule rings, and Polygon says they are
+	// polygons through the axes instead of circles.
+	Ticks   int
+	Polygon bool
 }
 
 type GeoCurve struct {
@@ -512,6 +520,14 @@ type GeoEventCard struct {
 type GeoVenn struct {
 	Title   []string
 	Regions []GeoVennRegion
+	// Circles are the sets' circles as the SVG places them, in the order of
+	// their series colours.
+	Circles []GeoVennCircle
+}
+
+type GeoVennCircle struct {
+	Set     string
+	X, Y, R float64
 }
 
 type GeoVennRegion struct {
@@ -519,6 +535,8 @@ type GeoVennRegion struct {
 	Size  float64
 	Label string
 	Texts []string
+	// X and Y are where the SVG centres the region's label and texts.
+	X, Y float64
 }
 
 // GeoWardley is a wardley map as lists. Evolution and visibility are percentages.

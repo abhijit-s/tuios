@@ -22,6 +22,7 @@ import (
 	"github.com/Gaurav-Gosain/tuios/internal/hooks"
 	"github.com/Gaurav-Gosain/tuios/internal/memtrim"
 	"github.com/Gaurav-Gosain/tuios/internal/pastebuf"
+	"github.com/Gaurav-Gosain/tuios/internal/procinfo"
 	"github.com/google/uuid"
 )
 
@@ -188,6 +189,11 @@ type Daemon struct {
 	// pluginsWaiting is true while config.toml enables a plugin the person
 	// has not applied.
 	pluginsWaiting atomic.Bool
+	// pluginAsks are the native plugins that wait for the person's
+	// approval, as the attached clients were last told. See
+	// plugin_approval.go.
+	pluginAsksMu sync.Mutex
+	pluginAsks   []PluginApprovalAsk
 	// notify sends the Inbox's push notifications ([notify]). See
 	// daemon_notify.go.
 	notify *pushNotifier
@@ -572,6 +578,9 @@ type connState struct {
 	// tmlSurfaces says the client's hello set TMLSurfaces: it draws TML
 	// surfaces and reads MsgTMLSurface. Guarded by mu. See tml_surface.go.
 	tmlSurfaces bool
+	// pluginAsks says the client's hello set PluginApprovals: it reads
+	// MsgPluginApprovals. Guarded by mu. See plugin_approval.go.
+	pluginAsks bool
 	// tmlOut holds the TML pushes not yet written to this client: one per
 	// surface, the newest. See tml_surface.go.
 	tmlOut tmlOutbox
@@ -694,6 +703,11 @@ type connState struct {
 	// start time (peerChanged).
 	peerStart   uint64
 	peerStartOK bool
+	// peerEnv is the peer's environment, read once at accept (pinPeer)
+	// for paneOrigin and the plugin token. peerEnvOK is false when it
+	// could not be read.
+	peerEnv   procinfo.Env
+	peerEnvOK bool
 	// paneOnly marks a call a pane on another machine sent through its report
 	// channel (hosted_calls.go). It is a pane by construction, whatever the
 	// pid says, so it can never act as the person.
@@ -710,6 +724,10 @@ type connState struct {
 	paneBound  atomic.Pointer[string]
 	panePlaced atomic.Pointer[string]
 	paneView   atomic.Pointer[paneAuth]
+	// pluginBound is the native plugin this connection presented the
+	// token of with pane-grants, nil when it presented none. See
+	// plugin_token.go.
+	pluginBound atomic.Pointer[string]
 	// hostedEnded, on a paneOnly call, is closed when the report channel the
 	// call came on ends. A wait-for stops on it, so a wait does not outlive
 	// the channel that would carry its answer. nil means it never ends.

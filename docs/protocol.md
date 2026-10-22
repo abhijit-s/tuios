@@ -159,8 +159,11 @@ connection it opens from a pane. It is absent from an older daemon.
 `upgrade` is present only on an image that took its panes over in a live upgrade (see [daemon-upgrade](#daemon-upgrade)), and says what the handoff measured: `from` (the build the panes came from), `panes`, `manifest_bytes`, `preflight_ms`, `quiesce_ms`, `capture_ms`, `pending_max`, `pending_total` (bytes the programs wrote while their panes were stopped), `stopped_at` (Unix nanoseconds), `apply_ms`, `apply_heap_start`, `apply_peak_heap_inuse`, `apply_heap_end`, `paused_ms`, `fallback`, set when the new binary could not take the panes over and the binary that was running took them back, and `recovered`, set with `fallback` when the new image died before it was up and the handoff's keeper started the binary that was running in its place, under the keeper's pid.
 
 `load` is the machine's load: `cores`, `load1` (the one-minute load
-average), `mem_pct` (memory in use, Linux only) and `agents_working`. The
-daemon reads the system at most every 5 seconds. A linked daemon reads it off
+average), `mem_pct` (memory in use, Linux only), `agents_working` and
+`load_ok`. `load_ok` is false when the daemon could not read the load, as on
+Windows and FreeBSD: `load1` is then 0 and means nothing. It is absent from a
+daemon from before the field, whose `load1` was read. The daemon reads the
+system at most every 5 seconds. A linked daemon reads it off
 the hello its heartbeat sends, so `list-hosts` can report each host's load
 with no call of its own. It is absent from an older daemon.
 
@@ -197,7 +200,7 @@ is an answer, and each entry says which.
 The agents view draws them as rows.
 
 **list-hosts reports each host's load.** A host row gains `cores`, `load1`,
-`mem_pct`, `agents_working`, `load_at` and `rtt_ms`, from the last hello on the
+`mem_pct`, `agents_working`, `load_ok`, `load_at` and `rtt_ms`, from the last hello on the
 link: the handshake, then the heartbeat. A link that carries traffic is not
 pinged, so its heartbeat now pings once the load is older than a minute. The
 fields are absent until a hello from the host carried a load.

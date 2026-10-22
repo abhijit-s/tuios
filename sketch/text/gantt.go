@@ -4,6 +4,7 @@ import (
 	"math"
 	"strings"
 
+	"tuios.dev/plot"
 	"tuios.dev/sketch"
 	"tuios.dev/sketch/internal/types"
 )
@@ -11,10 +12,12 @@ import (
 // Gantt charts: each section is a group of rows under its name, and each task
 // a bar on a date axis with tick labels under it. The bar's glyph says its
 // state, so that it reads without colour too: █ a task, ▒ an active one, ░ a
-// done one, ▓ a critical one, ▚ a critical active one and ▘ a critical done
+// done one, ▓ a critical one, ■ a critical active one and □ a critical done
 // one. Critical tasks are red as well. A milestone is ◆, and excluded days
-// are dotted. Vertical markers and the today line run down the chart. A
-// legend under the axis names the glyphs the chart uses.
+// are dotted. A blank line parts each row of tasks from the next, so bars on
+// rows next to each other do not run together. Vertical markers and the
+// today line run down the chart. A legend under the axis names the glyphs
+// the chart uses.
 
 // ganttKinds are the glyphs of the legend, in its order, with their names.
 var ganttKinds = [...]struct {
@@ -26,8 +29,8 @@ var ganttKinds = [...]struct {
 	{'▒', "active", roleBox},
 	{'░', "done", roleLine},
 	{'▓', "critical", roleCrit},
-	{'▚', "critical, active", roleCrit},
-	{'▘', "critical, done", roleCrit},
+	{'■', "critical, active", roleCrit},
+	{'□', "critical, done", roleCrit},
 	{'◆', "milestone", roleBox},
 	{'·', "excluded", roleFrame},
 }
@@ -125,6 +128,10 @@ func drawGantt(l *sketch.Layout, opt Options) (*canvas, error) {
 			for _, part := range wrap(s, labelW) {
 				lines = append(lines, line{label: part, section: true, row: -1})
 			}
+		}
+		if i > 0 && len(lines) > 0 && !lines[len(lines)-1].section {
+			// A blank line between two rows of tasks.
+			lines = append(lines, line{row: -1})
 		}
 		firstLine[i] = len(lines)
 		parts := wrap(rowLabel[i], labelW-2)
@@ -251,11 +258,13 @@ func drawGantt(l *sketch.Layout, opt Options) (*canvas, error) {
 			c.put(x0+col((t.Start+t.End)/2), y, '◆', role)
 			continue
 		}
-		// A bar covers every cell it reaches into, and at least one.
-		a := col(t.Start)
-		b := min(max(int(math.Ceil(at(t.End)))-1, a), plotW-1)
-		for x := a; x <= b; x++ {
-			c.put(x0+x, y, glyph, role)
+		// A bar is tuios.dev/plot's span: it covers every cell it reaches
+		// into, and at least one.
+		bar := plot.Span{Start: t.Start, End: t.End, Min: g.Start, Max: g.Stop, Fill: string(glyph)}.Draw(plotW, plot.Blocks)
+		for x := 0; x < bar.W; x++ {
+			if cell := bar.At(x, 0); cell.Text != "" {
+				c.put(x0+x, y, glyph, role)
+			}
 		}
 	}
 

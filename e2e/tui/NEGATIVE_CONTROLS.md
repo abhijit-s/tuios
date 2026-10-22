@@ -8486,6 +8486,16 @@ not reattach. Run on 2026-10-18 on branch `feat/reattach-after-daemon-restart`.
 | The restart does not say "restart" | `runRestart`: `kill-server` without `--restart` | `TestRestartTheDaemonFromTheVersionNotice` ("the second client quit (code 1) instead of reattaching") | **caught** |
 | The client is deaf to "stop" | `beginDaemonReconnect`: the goodbye check cut | `TestPlainKillServerEndsClientsAtOnce` ("the client did not quit within 1 s of a plain kill-server") | **caught** |
 
+## Git's timeout test measured from after its own deadline
+
+`TestGitTimeoutHoldsWithAHungChild` in `internal/review` failed on CI with "Git returned after 499.38ms". The test made the 500 ms context first and read the clock after it. The deadline counts from inside `WithTimeout`, so a pause between the two lines made a Git that returned on time read as early. The test now reads the clock before it makes the context. Run on 2026-10-22.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| The clock starts after the context, so a descheduled test reads the deadline as early | n/a, injected: a scheduling gap made deterministic | the old order, with a 5 ms sleep between `WithTimeout` and `time.Now()` | `TestGitTimeoutHoldsWithAHungChild`, 10 of 10 runs ("Git returned after 495.3ms") | **caught** |
+
+The same 5 ms sleep between the clock and the context in the fixed test passes 10 of 10 runs. The fixed test passes 30 of 30 runs.
+
 ## Restart follow-ups
 
 `TestHostsSyncRestartWithYes` now attaches a client on the fake host before
@@ -8508,6 +8518,17 @@ daemon that reads the attach and never answers. Run on 2026-10-20 on branch
 The two halves of the live box fix each cover the bug alone in this test, so
 the test guards the pair. Both stay: the forget drops a pane id that can
 match again after a restore, and the follow does not wait for a key.
+
+## xpanes -ss interval, measured from the fork
+
+`TestXpanesDefaultModeWithoutAClient` checks that `--interval 0.3` spaces the `-ss` panes. It read the time each pane's `date` ran, which adds however long the scheduler took to exec it, and a CI runner measured 210 ms. The panes now write the start time of their own process from `/proc/PID/stat`. The daemon forks a pane before `new-window` answers, and xpanes sleeps the interval after that answer, so the forks are at least the interval apart. Off Linux the test still reads `date`. Run on 2026-10-22.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| The exec of pane x is late, which the old test read as a short interval | n/a, injected: a scheduling delay made deterministic | the command sleeps 100 ms before it stamps, in pane x only, with the old `date` stamp | `TestXpanesDefaultModeWithoutAClient`, 5 of 5 runs ("started 199.9ms apart") | **caught**, the flake |
+| xpanes does not wait between `-ss` panes | the `time.Sleep(interval)` in the `-ss` loop of `cmd/tuios/xpanes_command.go` | branch cut | `TestXpanesDefaultModeWithoutAClient` with the fix, 3 of 3 runs ("started 0s apart") | **caught** |
+
+The fixed test with the same 100 ms delay in pane x passes 5 of 5 runs, and passes 25 of 25 runs without it.
 
 ## The cockpit's spawn sheet
 
@@ -8616,6 +8637,16 @@ An a=t of a file under i=0 is held by a kept unit test, not here: `TestUnnamedTr
 | Every file a=t under i=0 keeps an entry the byte bound never evicts | The `andPlace \|\| cmd.ImageID != 0` guard on `keepFileMedium` | Replaced with `true` | `TestUnnamedTransmitIsNotKept` ("100 a=t under i=0 left 100 kept entries, want none") | **caught** |
 | A fix that keeps nothing for any a=t | Same guard | Replaced with `andPlace` | `TestUnnamedTransmitIsNotKept` ("an a=t under i=7 left 0 kept entries, want 1") | **caught** |
 | A fix that keeps nothing under i=0 | Same guard | Replaced with `cmd.ImageID != 0` | `TestUnnamedTransmitIsNotKept` ("an a=T under i=0 left 1 kept entries, want 2") | **caught** |
+
+## The risk test's cut, independent of the temp folder name
+
+`TestRiskInWorktree` needs the Inbox line to cut the Edit's path inside the worktree's path. The line shows 91 runes of the path. The isolation root was `t.TempDir()`, whose random part has 1 to 10 digits. With 7 digits the cut fell just after the worktree's path, and the precondition failed on CI. The root is now padded to 45 runes, so the cut falls 10 runes before the end of the worktree's path. A longer temp folder makes the worktree's path longer than the line, and the cut still falls inside it. Run on 2026-10-22.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| A temp folder with a 7-digit random part moves the cut past the worktree's path | n/a, injected: the CI failure's folder | the root forced to `/tmp/TestRiskInWorktree3910109/001`, the folder of the CI failure, in the old test | `TestRiskInWorktree`, 5 of 5 runs ("precondition: ... does not stop inside") | **caught**, the flake |
+
+The fixed test with the same forced folder passes 5 of 5 runs. `TestRiskInWorktreeRedacted` fails with the forced folder on both builds, as it must: the forced name has no run for the redaction to hide. Both tests pass 25 of 25 runs with the fix.
 
 ## Agent row after exit
 
@@ -8901,6 +8932,18 @@ Run on 2026-10-20 on Linux. The control is the build of `origin/main` at e5334a8
 | The rejoin removed: `FilterMouseMotion` without its `rejoinSplitMouse` call (`origin/main`) | `standalone`, `daemon` ("the pane never landed on the left half at full height") | **caught** |
 
 Not covered end to end: the keys typed while the pointer is held past the edge. A drag ignores them in this fixture, and a check that the screen held still passed on both builds, so it was removed. The release is what this fixture catches. Not covered either: negative y, the wheel, a report split between two reads, and a report too long for the hold. A throwaway probe checked them: each is rejoined or dropped whole, and keys held for a report that never ends are typed in order.
+## The touch suite read the board on fixed timers
+
+`touch.spec.mjs:397` (a long press opens the pane menu), `:448` (drag a floating pane) and `:480` (drag a tiled pane) failed on CI with no menu, an unmoved pane, or panes not yet tiled. The board helpers waited a fixed 1.4 s after a close, 2.5 s after a new pane and 1.5 s after the tiling chord, and read the screen once. A CI run of the suite 25 times with the screen dumped at each step failed once: the first new pane came up tiled, the tiling chord had not been drawn when the board was read, and the second pane came up tiled too. In the failures of #733, #955 and #987 the reset had left two panes, and the gestures reached the one the test did not read. The helpers now wait for the board: a close waits for a pane to go, a new pane waits until it is drawn, every reading waits until the buffer stops changing, and the reset checks there is exactly one pane. The gestures wait for the menu, the move or the tiles instead of a fixed time. Run on 2026-10-22.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| A slow runner draws a new pane after the fixed wait ends | n/a, injected: a slow runner | a `tuios-web` whose new-pane handlers sleep 3 s, with the old spec | `:361` (the tap test), `:448` ("the drag did not move the pane down") and `:480` ("two tiled panes should draw two corners on the box edge"), the CI messages | **caught**, the flake |
+
+The final spec passes 2 of 2 runs on the slow build and 25 of 25 runs of the whole suite on a plain build, with no browser or `tuios-web` left running. A build whose every third new pane opens two drives the recovery path: 3 of 3 runs pass, each after 3 page reloads. On the plain build the reset met the desync below in 3 of the 25 runs and recovered each time.
+
+The desync is not settled. About one run in 20, the client drew the splash while the daemon still held a pane on the same workspace: `list-windows` listed two panes after one new pane. Closing panes does not clear it, because the client does not know the pane is there. The reset now reloads the page, which attaches again and reads every pane from the daemon, and logs the screen. The original CI frames, where a pane from the previous test survived the reset, look the same.
+
 ## tuios plugins install
 
 `TestPluginsInstallFromGit` installs a probe plugin from a bare repository
@@ -9275,6 +9318,15 @@ form. Run on 2026-10-21 and 2026-10-22.
 | The fan ID is saved | `fan_id` left out of the saved JSON | `TestReview984RestoreAcrossRestart`, `TestReview984RestoreSquatFirst` (the pane's fan reaches the person's restored sessions) | **caught**. The tests pass the saved state through JSON, as the state file holds it. Without that step the cut passed |
 | The new-agent form refuses a name a fan does not take | the `FanNameChar` check in `spawnStart` skipped | `TestCockpitSpawnSheet` (waiting for the refused branch) | **caught** |
 
+### Fan follow-ups: one name check, and a load that was not read
+
+Review round 4 of #984 and #986. Run on 2026-10-22.
+
+| Wiring | Cut | Tests that fail | Verdict |
+| --- | --- | --- | --- |
+| The form and the daemon check a name by git's branch rules, HEAD and a leading / too | the `HEAD` and leading `/` rules taken out of `FanNameRefOK` | `TestFanNameRefOKAnswersAsGit` (`FanNameRefOK("HEAD") = true, git says false`, and the same for `/x`) | **caught** |
+| A load the daemon could not read ranks as unknown | the sheet's local row takes `loadOK` true for any load with cores | `TestSpawnRankTakesOnlyALoadTheDaemonRead` ("a load the daemon could not read ranks as known") | **caught** |
+
 ## A fan's lead by its session ID
 
 `TestFanLeadIsHeldByID` in `internal/session` (a security boundary test): the
@@ -9329,6 +9381,7 @@ holds the judge's reach (a security boundary test). Run on 2026-10-21.
 | The second k reads the attempts again | the second k keeps at once | `TestCockpitFanCompare` ("a second k after a new ignored file did not warn again") | **caught** |
 | A list git could not read keeps nothing | the view ignores `ignored_error` | `TestCockpitFanCompare` ("a list git could not read did not stop the keep") | **caught** |
 | Keep stashes the other attempts' changes | the view sends keep-fan with `stash` false | `TestCockpitFanCompare` ("k k did not keep B alone": A and C stay, dirty) | **caught** |
+| The click on an attempt waits for the fan's final row (a flake fix) | the click goes where `cache-2` was before the done reports moved the fan, which is what a slow runner did | `TestCockpitFanCompare` ("an attempt's row does not offer c to compare", the failure seen in CI). Before the done reports, the wait's condition is false; 20 runs with the wait pass | **caught** |
 | The judge reads only the verbs judging needs | `judgeReadVerbs` dropped from the read reach in `paneAuthority`, so the judge reaches every read verb | `TestFanJudgeReach` ("command-history on an attempt from the judge": the judge reads the attempt's history) | **caught** |
 | keep-fan holds the ignored files to the names shown | the `IgnoredHash` compare in `checkKeepAsShown` removed | `TestCockpitFanCompare` ("keep-fan went ahead over an ignored file swapped for another": a count would match too) | **caught** |
 
@@ -9360,3 +9413,107 @@ Upstream main, which has no fix, fails `osc-tier-exit-bar` and `osc-tier-exit-ti
 | The harness of a pane with no agent in it still read: `agentHarnessOf` returns the remembered harness whatever `agentInPane` says | `osc-tier-exit-title` ("spin, a program that is not an agent, made the pane an agent: state working (source osc, harness claude-code)") | **caught** |
 
 Not covered end to end: a notification (OSC 9 or 777) sent by a program that is not an agent in such a pane, which goes through the same `agentHarnessOf` gate as the title, and a harness pid recorded by `report-agent-session` on a pane at `none`, which `agentInPane` still counts while the process runs.
+## Plugin approval
+
+`TestNativePluginApproval` links a native plugin that asks for `write` and
+enables it. It must wait and run nothing. A pane runs `tuios plugins approve`
+with its pane variables cut and must be refused. A client attaches at
+truecolor, the dialog shows, and esc keeps the plugin waiting. A second
+client at 16 colours allows it. The plugin's startup then types into an
+ordinary shell pane (it must work), types into a pane on `needs_input`, and
+calls `respond`, `set-pane-grants`, `list-sessions` and `plugin.approve`
+(each must be refused). A changed grant in the manifest must ask again.
+
+Run on 2026-10-22, each control against the PR head with one change, one
+run each:
+
+| Claim | Control | Test that failed | Result |
+|---|---|---|---|
+| A plugin with `write` types into an ordinary pane that holds more | the plugin branch in `typingRefusal` cut, so the pane rule holds it | `TestNativePluginApproval` ("ordinary exited 1, want 0"; "the shell pane does not show what the plugin typed") | **caught** |
+| The prompt rule holds a plugin | the `needs_input` check skipped for plugins | `TestNativePluginApproval` ("prompt exited 0, want x") | **caught** |
+| A plugin with no approval does not run | `applyApproval` lets a plugin with no approval through | `TestNativePluginApproval` ("plugins list does not say the plugin waits") | **caught** |
+| Only the person answers | `herdrPluginTrust` cut from `plugin.approve` | `TestNativePluginApproval` ("a pane answered for the person (exit 0)") | **caught** |
+
+### After the review of #1006
+
+The review found that the plugin token never bound, that Tab then Enter in
+the dialog allowed a plugin, that `approve` asked one daemon only, and that
+the submit key of `send-text` was not checked. New tests:
+`TestPluginTokenHoldsTheCaller`, `TestPluginApprovalAsksEveryDaemon`,
+`TestPluginApprovalDialogFits`, the unit test
+`TestPluginApprovalTakesOnlyTheTypedWord` (internal/app) and
+`TestThePluginTokenHoldsTheCaller` (internal/session), and new cases in
+`TestNativePluginApproval`: Up, Up, Enter, Tab, Enter in the dialog,
+`send-keys`, `run`, `send-text` with submit into a pane that comes to a
+prompt during the paste, `queue-prompt`, an answer for an old trust hash,
+and an Allow without admin.
+
+Run on 2026-10-22, one change each, one run each:
+
+| Claim | Control | Test that failed | Result |
+|---|---|---|---|
+| A process with a plugin's token is the plugin on the herdr socket | `bindPeerPluginToken` returns at once | `TestPluginTokenHoldsTheCaller` ("disable over the herdr socket with the token: <nil>") | **caught** |
+| `pane-grants` takes the plugin token | `plugin_id` and `plugin_token` dropped from the verb's parameters | `TestPluginTokenHoldsTheCaller` ("read, which the plugin holds ... exit status 1") | **caught** |
+| No key on a row allows | Enter on the Allow row allows | `TestNativePluginApproval` ("Enter on Allow did not ask for the word") | **caught** |
+| Keys as the dialog opens answer nothing | `pluginApprovalSettled` always true | `TestPluginApprovalTakesOnlyTheTypedWord` ("keys in the first half second answered the dialog") | **caught** |
+| `approve` asks every daemon first | `confirmPerson` cut from `approve` | `TestPluginApprovalAsksEveryDaemon` ("a pane approved a plugin", "a pane wrote an approval") | **caught** |
+| The submit key is checked again | the submit guard of `send-text` returns nil | `TestNativePluginApproval` ("submit exited 0", "the submit key answered the prompt") | **caught** |
+| A long name cannot push the answers off | `ShownName` keeps the name whole and the title line wraps | `TestPluginApprovalDialogFits` ("the dialog lost \"Not now\" on a 24-row screen") | **caught** |
+| A shadowed copy is not asked about | the shadow filter in `pluginAsksOf` cut | `TestPluginApprovalDialogFits` ("the dialog asks about the shadowed copy") | **caught** |
+| A plugin cannot queue | the queue refusal in `checkPluginGrants` cut | `TestNativePluginApproval` ("queue.out lacks \"a plugin cannot queue\"") | **caught** |
+
+The title-wrap control alone, with `ShownName` still cutting the name, was
+not caught: the cut to 64 characters already keeps the dialog on screen.
+
+
+### After the second review of #1006
+
+New test `TestPluginStopHoldsItsProcesses`: a plugin starts two children
+with its token cut from their environment. Each connects, then one calls
+`setpgid` and the other `setsid`. After a disable, the `setpgid` child must
+be gone, and the `setsid` child's open connection must still be refused as
+the plugin. New cases: `ask-agent` and `run` at panes that come to a prompt
+during the paste, Up then Enter in the dialog, keys sent through the client,
+and a token caller with no `TUIOS_SOCKET`.
+
+Run on 2026-10-22, one change each, one run each:
+
+| Claim | Control | Test that failed | Result |
+|---|---|---|---|
+| A connection the kernel placed in a plugin stays the plugin's | the bind at accept in `pinPeer` cut | `TestPluginStopHoldsItsProcesses` ("a connection of the stopped plugin was not held to it") | **caught** |
+| Stopping a plugin kills its whole session | `procGroup.kill` kills the group only | `TestPluginStopHoldsItsProcesses` ("the child that called setpgid outlived the disable") | **caught** |
+| Deny takes a second Enter or click | Deny answers at once | `TestPluginApprovalTakesOnlyTheTypedWord` ("one click on Deny answered") | **caught** |
+| Keys sent through the client do not reach the dialog | the `ProcessingRemoteKeys` check cut | `TestPluginApprovalTakesOnlyTheTypedWord` ("keys sent through the client allowed the plugin") | **caught** |
+| `ask-agent` checks the target before its submit key | the ask-agent submit guard returns nil | `TestNativePluginApproval` ("askrace exited 0"; "the submit key of ask-agent answered the prompt") | **caught** |
+| `run` checks the target before its submit key | the run submit guard returns nil | `TestNativePluginApproval` ("the submit key of run answered the prompt") | **caught** |
+| A plugin's connection is never the person | `pluginBound` cut from `mayActAsHuman` | `TestPluginTokenHoldsTheCaller` ("disable over the herdr socket with the token and no TUIOS_SOCKET: <nil>") | **caught** |
+
+The last control passed at first: the test's token caller also carried
+`TUIOS_SOCKET`, which places it as automation by itself. The case with the
+socket variable cut was added, and the control then failed it.
+
+### Keys a tape presses (re-review of #1006)
+
+`TestNativePluginApproval` now runs `tuios tape exec` with
+`Press a l l o w Enter`, and `tuios send-keys` with the same keys, while
+the dialog is open. Neither may allow the plugin, and the dialog must stay
+open. The other ways keys reach the input handler without the person:
+`send-keys` (RemoteKeyMsg, held by `ProcessingRemoteKeys`) and a tape's
+`Press` (PressKeys, held by `pressingTapeKeys`). A tape's `Type` and
+`send-text` write to a pane, and `Action` runs an action by name, which the
+dialog does not take.
+
+| Claim | Control | Test that failed | Result |
+|---|---|---|---|
+| Keys a tape presses do not answer the dialog | the `pressingTapeKeys` check cut | `TestNativePluginApproval` ("a tape's Press of allow and Enter let the plugin run") | **caught** |
+## An agent whose last word was a progress clear
+
+Run on 2026-10-22 on macOS. The test is `TestAgentStateClearsWhenTheLastWordWasAProgressClear` in `agent_osc_exit_test.go`. A program named `claude` (`testdata/fakeclaude`) runs in a pane whose state an OSC-tier source holds (`set-agent-state working --source osc --harness claude-code`), so the detector does not own the claim and clears it at the shell only because it saw the agent process. The agent then exits to the shell, in `exit-without-a-report` with nothing more, and in `progress-cleared-on-exit` after clearing its progress bar with OSC 9;4;0, which is how Claude Code leaves a pane. Each read of `get-agent-state` is saved as `agent-state-trace.json`, with the pane as `pane.txt`, under the test's artifact directory (`TUIOS_E2E_FRAMES` when set).
+
+`exit-without-a-report` is the positive half: it passes before and after the fix, so the detector did see the process. With the fix both cases pass three runs in a row; the trace of `progress-cleared-on-exit` reads `idle`, source `osc`, for a quarter second after the clear and then `none`.
+
+| Control: what was cut | Tests that fail | Verdict |
+| --- | --- | --- |
+| `applyAgentReport` rebuilds the claim without `sawProcess` (the build of `upstream/main` the fix sits on) | `progress-cleared-on-exit`, three runs of three ("the pane kept agent state idle (source osc, harness claude-code) with the agent gone and its shell in the foreground") | **caught** |
+
+Not covered: a `none` report ending `sawProcess` (no case sends one before a later inferred state at the shell), and the other two places a claim is rebuilt or dropped, the end of a screen blocker and a tier yielding its claim, which can lose `sawProcess` the same way in the moment before an exit.
