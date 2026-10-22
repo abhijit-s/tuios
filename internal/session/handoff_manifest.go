@@ -76,6 +76,13 @@ type handoffSession struct {
 	// a subagent change was last put on a window. See handoff_subagents.go.
 	Subagents       map[string]handoffPaneSubagents `json:"subagents,omitempty"`
 	SubagentShownAt int64                           `json:"subagent_shown_at,omitempty"`
+	// AgentClaims, AgentHarnessPIDs and AgentSharedGuards are who owns each
+	// window's agent state and what clears it. An image that predates them
+	// reads none, and the carried states are held by nobody, as before. See
+	// handoff_agent_claims.go.
+	AgentClaims       map[string]handoffAgentClaim  `json:"agent_claims,omitempty"`
+	AgentHarnessPIDs  map[string]handoffHarnessProc `json:"agent_harness_pids,omitempty"`
+	AgentSharedGuards map[string]handoffSharedGuard `json:"agent_shared_guards,omitempty"`
 }
 
 // handoffReportColors is a session's report colours, as the client pushed

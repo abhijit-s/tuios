@@ -638,6 +638,7 @@ func (s *Session) handoffRecord() handoffSession {
 	rec.WorkspaceTrail = slices.Clone(s.workspaceTrail)
 	rec.Subagents = s.handoffSubagentsLocked()
 	rec.SubagentShownAt = s.subagentShownAt
+	rec.AgentClaims, rec.AgentHarnessPIDs, rec.AgentSharedGuards = s.handoffAgentClaimsLocked()
 	s.stateMu.RUnlock()
 	s.ptysMu.RLock()
 	rec.ReportColors = handoffReportColors{Bg: s.reportBgHex, Fg: s.reportFgHex, Palette: s.reportPalHex}

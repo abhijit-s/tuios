@@ -9531,3 +9531,15 @@ Upstream main fails both cases two runs of two, with the pane at `none`, source 
 `TestAgentSignalsOnAnExitedAgentsPane` read the kept harness as its precondition ("want none still attributed to claude-code"), and failed its four exit cases (`hook-exit`, `osc-tier-exit-bar`, `osc-tier-exit-title`, `restart-after-exit`) on the fixed build until that check read `none` with no harness. With the harness gone, its exit cases no longer reach the `agentInPane` gate: the control "`agentHarnessOf` returns the remembered harness whatever `agentInPane` says" (from "Agent signals on an exited agent's pane") passes all six cases on the fixed build, run once on 2026-10-23. The gate stays for a pane carried at `none` with a harness from a daemon without this fix.
 
 Not covered: a pane carried at `none` with a harness from a daemon without the fix, which keeps its row until a `none` report or the detector clears it (`tuios set-agent-state none -w <pane>` does).
+
+## Agent claims across a live handoff
+
+The test is `TestSelfExecKeepsAgentClaims` in `handoff_agent_claims_test.go`. A stand-in `claude` (`testdata/fakeclaude`) runs in a shell pane through the real `tuios agent-hook claude-code`, starts, works a turn and ends it, so the pane is at `done` with source `report` and the hook has recorded the stand-in as its harness process. The panes are handed over with `test-handoff`, and the pane must read the same after it. The stand-in then exits with no `SessionEnd`, as a crashed Claude Code does, and the shell has the pane again: within ten seconds the pane must read `none` and leave `list-agents`, and stay so for four more seconds. The test saves `handoff.json` with the trace, the hook log and the pane. Each control is a text replacement in the branch's checkout, built to a separate binary and put back. Run on 2026-10-23 on macOS against `integ/2026-10-21t`. The fixed build passes.
+
+| Control: what was cut | Tests that fail | Verdict |
+| --- | --- | --- |
+| Nothing restored: the call to `restoreAgentClaimsLocked` in `adoptState` removed | `TestSelfExecKeepsAgentClaims` ("ASSERTION: the agent exited after the handoff and the pane is still {State:done Message:Done. Source:report Harness: AgentSession:522be9ad-… BlockedBy:}, listed=true") | **caught** |
+| Claims not restored, harness processes restored | the same ("…still {State:done … Source:report Harness: …}, listed=true") | **caught** |
+| Harness processes not restored, claims restored | the same ("…still {State:done … Source:report Harness:claude-code …}, listed=true") | **caught** |
+
+Not covered: the shared-server guards (`agentSharedGuards`), carried with the claims, which no case reads after the handoff; a claim held by the detector or a herdr reporter across the handoff; and a manifest from an image that carried no claims, which reads with none, as before.

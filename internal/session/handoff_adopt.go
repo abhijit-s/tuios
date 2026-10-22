@@ -554,6 +554,7 @@ func (s *Session) adoptState(st *SessionState, rec handoffSession) (pruneDue, fl
 		s.renumberSessionRecordsLocked(newOf)
 	}
 	s.restoreSubagentsLocked(rec.Subagents, rec.SubagentShownAt)
+	s.restoreAgentClaimsLocked(rec)
 	s.noteStateChangeLocked()
 	return s.subagentTimersLocked()
 }
