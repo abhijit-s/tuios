@@ -9190,13 +9190,16 @@ The `ctrl+alt+4` row passes on both builds; it is the positive control. `TestSen
 
 ## A pane whose session name is gone
 
-Run on 2026-10-22 on branch `fix/stale-session-own-pane`. `TestHookFromPaneWhoseSessionNameIsGone` renames alpha to omega, lets a new alpha take the name and kills it, so the pane's TUIOS_SESSION (alpha) names nothing. A call from outside the pane naming alpha and the pane must be refused, and the real `tuios agent-hook claude-code` run inside the pane must set the pane in omega to working.
+`TestHookFromPaneWhoseSessionNameIsGone` renames alpha to omega, lets a new alpha take the name and kills it, so the pane's TUIOS_SESSION (alpha) names no session under any name. A call from outside the pane naming alpha and the pane must be refused, so must the same call made with its own token from a second pane in omega, and the real `tuios agent-hook claude-code` run inside the pane must set the pane in omega to working. Run on 2026-10-22, macOS.
 
 | Control | Build | Where the test fails | Verdict |
 | --- | --- | --- | --- |
+| No fix | main before this change | "the hook did not reach the pane after its session name was gone: state \"none\"" | **caught** |
 | The `followOwnPane` call cut from `admitVerb` | mutant of this branch | "the hook did not reach the pane after its session name was gone: state \"none\"" | **caught** |
-| The placement check cut from `followOwnPane` (any caller is followed) | mutant of this branch | "a call from outside the pane naming the gone session was not refused: <nil>" | **caught** |
-| The positive half | this branch | none: the outside call is refused with `session_not_found` and the hook sets the pane to working | **guard** |
+| The placement check cut from `followOwnPane` (any caller is followed) | mutant of this branch | "a call from outside the pane naming the gone session was not refused: <nil>", and "a call from a second pane naming the gone session and the first pane was not refused", whose capture shows `{"applied":true,...,"type":"agent_state_set"}` | **caught** |
+| The verb skip cut from `followOwnPane` | mutant of this branch | not an e2e control: `TestFollowOwnPaneLeavesKillAndNewSession` in `internal/session` fails with "kill-session was rewritten to {\"session\":\"omega\",...}" and the same for new-session | **caught** |
+| The positive half | this branch | none: the outside call and the second pane's call are refused with `session_not_found` and the hook sets the pane to working | **guard** |
+
 The early returns in `callerRunsHarness` and in `verbSetAgentState` change no outcome, only skip an ancestry walk whose answer is not used, so they have no control.
 
 ## Workspace name on hover with no {name} in the tab format (#927)
