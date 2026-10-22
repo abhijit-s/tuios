@@ -874,6 +874,7 @@ tuios fan keep [<host>:]<session> [--stash | --force] [--merge [--squash | --ff-
 tuios fan compare [[<host>:]<session>] [--no-changes] [--json]
 tuios fan verify [<host>:]<session> [--timeout <duration>] [--no-wait] [--json] -- <command>...
 tuios fan diff <session-a> <session-b> [--stat]
+tuios fan verdict [<host>:]<session> --pick <session> --summary <text> [--reason <text>]... [--note <session>=<text>]... [--json]
 ```
 
 **Flags:**
@@ -881,7 +882,9 @@ tuios fan diff <session-a> <session-b> [--stat]
 - `--prompt <prompt>`: One session's prompt, repeated once per session, in place of the prompt argument. The count is then how many there are
 - `--env NAME` or `--env NAME=VALUE`: Pass your value of a variable, or set one, for every agent. Repeatable. `PATH` is always sent, so the agents are found where your shell finds them
 - `--grants <grant>[,<grant>...]`: What every agent may do through tuios, as for `start-agent`
-- `--repo <dir>`, `--base <ref>`, `--name <stem>`, `--wait`, `--json`
+- `--name <stem>`: The fan's name, which its branches start with. A name that is already a fan in the repository is refused. Omitted, the name comes from the prompt and moves on to a free one
+- `--join <session>`: Add the attempts to the fan of this session, on purpose, instead of starting a new fan. Your pane must reach that session
+- `--repo <dir>`, `--base <ref>`, `--wait`, `--json`
 
 **Examples:**
 ```bash
@@ -895,6 +898,17 @@ tuios fan verify api-fan-add-retry-backoff-http -- go test ./...
 tuios fan diff api-fan-add-retry-backoff-http api-fan-add-retry-backoff-http-2
 tuios fan keep api-fan-add-retry-backoff-http-2 --stash
 ```
+
+`tuios fan verdict` records a judge's pick among the attempts: the attempt
+it recommends, the verdict, its reasons and a note on each attempt. The
+agents view shows it on the fan's row and in the comparison (`c` on an
+attempt), where `k` keeps the recommended attempt. In that comparison, `j`
+starts a judge: an agent in a session of its own that reads the attempts and
+reports with this command. Only that judge's pane, or a call from outside
+every pane, records a verdict. The judge can read the attempts and nothing
+more: tuios refuses it typing into their panes, commands in their sessions and
+agents there. It runs in the main checkout as a program with your rights to
+files, and its prompt asks it to change none.
 
 The branches are a stem, then `stem-2`, `stem-3`. The stem is `fan/` and the
 first words of the prompt, or `--name`. Each prompt is typed once its agent
@@ -4945,7 +4959,7 @@ two seconds after the end. Press `r` to start again and `q` to quit.
 
 The live view sends no frames and uses no CPU while nothing moves.
 tuios.dev/sketch draws the diagrams. It is a Go port of pele
-and draws flowcharts, sequence diagrams, state diagrams, class diagrams, ER diagrams, pie charts, mindmaps, gantt charts, XY charts, timelines, quadrant charts, user journeys, kanban boards, git graphs, sankey diagrams, block diagrams, architecture diagrams and requirement diagrams now. A diagram of another type gives
+and draws flowcharts, sequence diagrams, state diagrams, class diagrams, ER diagrams, pie charts, mindmaps, gantt charts, XY charts, timelines, quadrant charts, user journeys, kanban boards, git graphs, sankey diagrams, block diagrams, architecture diagrams, requirement diagrams, C4 diagrams, packet diagrams, radar charts, treemaps, info diagrams, tree views, Ishikawa diagrams, Cynefin diagrams, event models, Venn diagrams, Wardley maps, railroad diagrams, use case diagrams, agent flows and swimlane diagrams now. A diagram of another type gives
 an error and its source. The command exits 1 when a diagram cannot be drawn.
 
 ---

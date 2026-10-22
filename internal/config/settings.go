@@ -345,8 +345,9 @@ type Settings struct {
 	// the historic rendering.
 	DockWorkspaceTabFormat string
 
-	// DockWorkspaceTooltip pops the whole name of a workspace whose pill had to cut
-	// it short. Off, a long name stays truncated with no way to read the rest.
+	// DockWorkspaceTooltip pops the whole name of a workspace whose pill does not
+	// show it: the pill had to cut it short, or the tab format has no {name}.
+	// Off, the name stays cut or hidden with no way to read it from the dock.
 	DockWorkspaceTooltip bool
 
 	// DockWorkspaceLabelMax caps a workspace pill's label in cells. 0 draws the
@@ -357,6 +358,12 @@ type Settings struct {
 	// workspace tabs and minimized-window pills. On by default. Off, each is a
 	// flat filled cell, for anyone who reads a row of caps as a row of beads.
 	DockPillCaps bool
+
+	// DockModeSplitLetter shows the next split's direction, V or H, after the
+	// tiling icon in the mode pill. On by default. Off, the pill is the icon
+	// alone. With the default icons that is as wide as the leader's pill, so
+	// pressing the leader no longer moves the workspace tabs.
+	DockModeSplitLetter bool
 
 	// DockPrefixIndicator is where an armed leader shows: "pill" colours the
 	// dock's mode pill, "badge" draws the floating PREFIX badge. The badge is
@@ -885,6 +892,7 @@ func DefaultSettings() Settings {
 		DockWorkspaceTooltip:        true,
 		DockWorkspaceLabelMax:       12,
 		DockPillCaps:                true,
+		DockModeSplitLetter:         true,
 		DockPrefixIndicator:         DefaultDockPrefixIndicator,
 		BorderGradientAngle:         DefaultBorderGradientAngle,
 		HideWindowButtons:           false,

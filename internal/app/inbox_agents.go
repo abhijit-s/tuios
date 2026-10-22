@@ -137,6 +137,12 @@ func (m *OS) applyInboxAgentsTick(msg inboxAgentsTickMsg) tea.Cmd {
 	}
 	m.tickStats.AgentsTicks++
 	a.tickStop = nil
+	// The machines block shows each machine's load, which no push carries:
+	// the minute tick that moves the ages on reads the hosts again, while
+	// the view is open and has hosts. No timer of its own.
+	if m.ShowInbox && m.ckManyMachines() {
+		return tea.Batch(m.InboxAgentsTick(), refreshFederationCmd())
+	}
 	return m.InboxAgentsTick()
 }
 
@@ -159,7 +165,7 @@ func (m *OS) inboxAgentsList() []sidebarAgentEntry {
 	if a.listAt == key {
 		return a.list
 	}
-	all := m.agentEntries(m.BuildSessionTree().Sessions)
+	all := append(m.agentEntries(m.BuildSessionTree().Sessions), m.remoteAgentEntries()...)
 	kept := all[:0]
 	for _, e := range all {
 		if m.agentsKeep(e) {
@@ -168,6 +174,40 @@ func (m *OS) inboxAgentsList() []sidebarAgentEntry {
 	}
 	a.list, a.listAt = m.agentsSort(kept), key
 	return a.list
+}
+
+// remoteAgentRowsMax bounds the agent rows of one host, as the daemon bounds
+// what it passes on.
+const remoteAgentRowsMax = 256
+
+// remoteAgentEntries are the agent panes of the other machines' sessions, as
+// their daemons last listed them. The rail draws a machine's sessions alone;
+// the agents view draws each agent there as a row of its own.
+//
+// A host is held to remoteAgentRowsMax rows, whatever its daemon sent.
+func (m *OS) remoteAgentEntries() []sidebarAgentEntry {
+	var out []sidebarAgentEntry
+	for _, h := range m.FederationHosts {
+		if h.Name == m.attachedMachine() {
+			continue
+		}
+		n := 0
+		for _, s := range h.Sessions {
+			for _, a := range s.Agents {
+				if n == remoteAgentRowsMax {
+					break
+				}
+				n++
+				out = append(out, sidebarAgentEntry{
+					SessionID: s.Name, SessionLabel: firstNonEmptyStr(s.DisplayName, s.Name),
+					WindowID: a.ID, Title: a.Title, State: a.State, StateAt: a.StateAt,
+					Harness: a.Harness, Message: a.Message, AgentKind: a.Kind, Meta: a.Meta,
+					Subagents: a.Subagents, WindowIndex: -1, Foreign: true, Host: h.Name,
+				})
+			}
+		}
+	}
+	return out
 }
 
 // agentsKeep reports whether a row passes the selector and the search.

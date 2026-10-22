@@ -240,6 +240,9 @@ type Daemon struct {
 	// prompt each window was answered on, so two clients answering the same
 	// prompt get one answer through and the other refused. See verb_respond.go.
 	responds respondSlots
+	// fanReserved holds the names of the fans being made now, so two calls
+	// cannot both take one as new. See reserveFan.
+	fanReserved fanReservations
 	// fanVerifies holds the verify-fan checks running now, one per fan
 	// session. See verb_fan_compare.go.
 	fanVerifies fanVerifyRuns
@@ -1347,6 +1350,10 @@ func (d *Daemon) onSessionDeleted(s *Session) {
 	// and it runs on the manager's delete hook, so every path that kills a
 	// session takes the files with it.
 	d.stash.forget(s.ID)
+	// And the sessions it started no longer name it.
+	d.forgetLauncher(s)
+	// And the attempts it judged no longer name it.
+	d.forgetFanJudge(s.ID)
 	d.broadcastToSession(s.ID, MsgSessionEnded, &SessionEndedPayload{
 		SessionName: s.Name(),
 		Reason:      "the session was terminated",

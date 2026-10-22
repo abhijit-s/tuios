@@ -670,7 +670,7 @@ var optionSpecs = []Option{
 	},
 	{
 		Path: "appearance.dock_workspace_tooltip", Type: OptionBool, Section: "dock",
-		Description: "Pop a truncated workspace name in full on hover",
+		Description: "Show the workspace name on hover when the pill cuts the name or does not show it",
 		Default:     "true",
 	},
 	{
@@ -702,6 +702,11 @@ var optionSpecs = []Option{
 		Path: "appearance.dock_mode_icon_tiling", Type: OptionString, Section: "dock",
 		Description: "Icon in the mode pill while tiling is on. An empty value shows no icon. default uses the icon of the glyph set",
 		Default:     DockModeIconDefault, DefaultClears: true, Icon: true,
+	},
+	{
+		Path: "appearance.dock_mode_split_letter", Type: OptionBool, Section: "dock",
+		Description: "Show V or H after the tiling icon in the mode pill. The letter is the direction of the next split",
+		Default:     "true",
 	},
 	{
 		Path: "appearance.dock_compact", Type: OptionBool, Section: "dock",

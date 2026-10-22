@@ -2990,6 +2990,10 @@ built in until tuios has native plugins. Then the heavy optional parts, the
 diagram types among them, move out of the binary, and the ceiling comes down
 again.
 
+The ceiling is now 50 MB until the plugin system can move rarely used parts
+out. The last pele types that sketch ports, use case diagrams, agent flows and
+swimlanes among them, take tuios past 45 MB.
+
 The budgets went to 39,522,568 (linux/amd64) and 37,028,734 (darwin/arm64) for
 `tuios mermaid` and tuios.dev/sketch: the Go port of pele with flowcharts,
 sketch/raster and two Arimo subsets. The build before it measured 38,510,754
@@ -3244,6 +3248,44 @@ build before it measured 43,045,026 and 40,154,770 bytes (Go 1.26.10, a clean
 clone, as CI builds it). The change measured 43,516,066 and 40,558,706, so it
 adds 471,040 and 403,936 bytes. No dependency was added. The new budgets leave
 4,198 bytes of room.
+
+The budgets went to 43,524,360 and 40,579,592 when the scrolling layout began
+to put a pane made by the daemon after the focused column (#952). The build
+before it measured 43,516,066 and 40,558,706 bytes. The change measured
+43,520,162 and 40,575,394, so it adds 4,096 and 16,688 bytes: about one page
+on each, the code itself is far smaller. No dependency
+was added. The new budgets leave 4,198 bytes of room.
+
+The budgets went to 43,565,320 and 40,612,744 when TML surfaces got their new
+chrome: the popup dialog and its scrim, the owner tag, thin bars in plot,
+and charts and path columns in loom that give way before text. The build
+before it measured 43,520,162 and 40,575,394 bytes (Go 1.26.10, as CI builds
+it). The change measured 43,561,122 and 40,608,546, so it adds 40,960 and
+33,152 bytes. No dependency was added. The new budgets leave 4,198 bytes of
+room.
+
+The budgets went to 43,970,824 and 40,952,776 when sketch began to draw C4
+diagrams, packet diagrams, radar charts and treemaps, as pictures and as text.
+The build before it measured 43,561,122 and 40,608,546 bytes (Go 1.26.10, as
+CI builds it). The change measured 43,966,626 and 40,948,578, so it adds
+405,504 and 340,032 bytes. No dependency was added. The new budgets leave
+4,198 bytes of room.
+
+The budgets went to 44,859,656 and 41,732,232 when sketch began to draw info
+diagrams, tree views, Ishikawa diagrams, Cynefin diagrams, event models, Venn
+diagrams, Wardley maps and railroad diagrams, as pictures and as text. The
+build before it measured 43,966,626 and 40,948,578 bytes (Go 1.26.10, as CI
+builds it). The change measured 44,855,458 and 41,728,034, so it adds 888,832
+and 779,456 bytes. No dependency was added. The new budgets leave 4,198 bytes
+of room.
+
+The budgets went to 45,715,720 and 42,492,680 when sketch began to draw use
+case diagrams, agent flows and swimlane diagrams, the last of the pele diagram
+types, as pictures and as text. The build before it measured 44,855,458 and
+41,728,034 bytes (Go 1.26.10, as CI builds it). The change measured 45,711,522
+and 42,488,482, so it adds 856,064 and 760,448 bytes. No dependency was added.
+The binary stays under the 50 MB ceiling. The new budgets leave 4,198 bytes of
+room.
 
 To raise a budget, do it on purpose in its own commit: run
 `scripts/binary-size.sh` on the Go version in go.mod, set the new budget a

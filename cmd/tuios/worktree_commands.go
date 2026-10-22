@@ -35,6 +35,7 @@ type worktreeRow struct {
 	Path         string   `json:"path"`
 	Base         string   `json:"base"`
 	Group        string   `json:"group"`
+	FanID        string   `json:"fan_id"`
 	Managed      bool     `json:"managed"`
 	Gone         bool     `json:"gone"`
 	State        string   `json:"state"`
@@ -245,7 +246,7 @@ branch that already exists here is refused, so nothing is overwritten.`,
 // newFanCommand builds `tuios fan` and `tuios fan keep`.
 func newFanCommand() *cobra.Command {
 	var fanAgents, fanEnv, fanPrompts, fanGrants []string
-	var fanRepo, fanBase, fanName, fanHost string
+	var fanRepo, fanBase, fanName, fanHost, fanJoin string
 	var fanWait, fanJSON, fanClone bool
 	fanCmd := &cobra.Command{
 		Use:   "fan <count> <prompt>",
@@ -338,7 +339,7 @@ pull HOST:SESSION' brings its work here.`,
 			}
 			return runFan(fanOptions{
 				host: fanHost, count: count, agents: fanAgents, prompt: prompt, prompts: fanPrompts, env: env,
-				explicitEnv: len(fanEnv) > 0, repo: fanRepo, base: fanBase, name: fanName, clone: fanClone,
+				explicitEnv: len(fanEnv) > 0, repo: fanRepo, base: fanBase, name: fanName, join: fanJoin, clone: fanClone,
 				grants: fanGrants,
 			}, fanWait, fanJSON)
 		},
@@ -349,6 +350,7 @@ pull HOST:SESSION' brings its work here.`,
 	fanCmd.Flags().StringVar(&fanRepo, "repo", "", "A directory inside the repository (default: the current directory)")
 	fanCmd.Flags().StringVar(&fanBase, "base", "", "Ref every branch starts from (default: HEAD)")
 	fanCmd.Flags().StringVar(&fanName, "name", "", "Branch stem (default: fan/ and the first words of the prompt)")
+	fanCmd.Flags().StringVar(&fanJoin, "join", "", "Add the attempts to the fan of this session instead of starting a new fan")
 	fanCmd.Flags().BoolVar(&fanWait, "wait", false, "Return only when every prompt is sent or given up on")
 	fanCmd.Flags().BoolVar(&fanJSON, "json", false, "Output result as JSON")
 	fanCmd.Flags().StringVar(&fanHost, "host", "", "Run the fan-out on this machine from the [hosts] table")
@@ -403,7 +405,7 @@ its siblings there.`,
 	keepCmd.Flags().BoolVar(&keepFFOnly, "ff-only", false, "With --merge: only fast-forward")
 	keepCmd.Flags().StringVar(&keepInto, "into", "", "With --merge: the branch to merge into (default: the base the session was made from)")
 
-	fanCmd.AddCommand(keepCmd, newFanCompareCommand(), newFanDiffCommand(), newFanVerifyCommand())
+	fanCmd.AddCommand(keepCmd, newFanCompareCommand(), newFanDiffCommand(), newFanVerifyCommand(), newFanVerdictCommand())
 	return fanCmd
 }
 
@@ -748,6 +750,8 @@ type fanOptions struct {
 	// env is an error rather than a reason to send without it.
 	explicitEnv      bool
 	repo, base, name string
+	// join is a session of the fan to add attempts to.
+	join string
 	// grants is --grants, nil when it was not passed.
 	grants []string
 }
@@ -819,6 +823,9 @@ func runFan(o fanOptions, wait, jsonOutput bool) error {
 	}
 	if o.name != "" {
 		params["name"] = o.name
+	}
+	if o.join != "" {
+		params["join"] = o.join
 	}
 	if len(o.grants) > 0 {
 		params["grants"] = o.grants
@@ -1066,7 +1073,7 @@ func runFanKeepLoop(host, winner string, stash, force, jsonOutput bool) error {
 	var outcomes []fanKeepOutcome
 	left := 0
 	for _, r := range rows {
-		if r.Group != kept.Group || r.Repo != kept.Repo || r.Session == winner {
+		if r.Group != kept.Group || r.FanID != kept.FanID || r.Repo != kept.Repo || r.Session == winner {
 			continue
 		}
 		raw, err := client.CallWithTimeout("remove-worktree", map[string]any{

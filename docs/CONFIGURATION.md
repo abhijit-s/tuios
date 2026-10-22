@@ -1061,7 +1061,10 @@ dock_mode_icon_tiling = ""
 - The pill adds one space on each side of the icon. You do not need to add
   spaces.
 - While tiling is on, the pill also shows the next split direction, `V` or
-  `H`.
+  `H`. Set `appearance.dock_mode_split_letter = false` to show the tiling icon
+  alone. With the default icons, the pill then has the same width as the pill
+  of the leader key, so the workspace tabs do not move when you press the
+  leader key.
 
 To remove the whole mode pill, remove `"mode"` from the `left` list in the
 `[dock]` table. See [The dock's components](#the-docks-components).
@@ -1106,6 +1109,20 @@ A dock too narrow for even one pill keeps the current workspace's tab, cut to
 whatever room is left, so the workspaces always have something to click. You
 can also set it on the settings page, in the Appearance section. The change
 applies at once.
+
+## Workspace name on hover
+
+`appearance.dock_workspace_tooltip` shows the workspace name above a pill
+when you hover it. The name shows when the pill cuts the name short. It also
+shows when `appearance.dock_workspace_tab_format` has no `{name}`, for
+example with number-only tabs. A workspace with no name shows its number,
+but only when the tab format has no `{index}`. The option is on by default.
+
+```toml
+[appearance]
+dock_workspace_tab_format = "{index}"
+dock_workspace_tooltip = true
+```
 
 ## Compact dock
 

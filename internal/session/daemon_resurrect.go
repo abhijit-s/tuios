@@ -103,6 +103,13 @@ func (d *Daemon) restoreSessionOffers(state *SessionState) (*Session, []resumeOf
 	if existing := d.manager.GetSession(state.Name); existing != nil {
 		return existing, nil, nil
 	}
+	// A fan's judge does not survive a restart: its pane comes back as a
+	// fresh shell, which must not keep the judge's reach.
+	if wt := state.Worktree; wt != nil && (wt.JudgeSession != "" || wt.JudgeWindow != "") {
+		w := *wt
+		w.JudgeSession, w.JudgeWindow = "", ""
+		state.Worktree = &w
+	}
 
 	// A session whose windows were all closed leaves a state file behind, and
 	// restoring it produced a session with nothing in it that no surface tells
@@ -415,6 +422,11 @@ func restoredWorktree(saved *WorktreeInfo) *WorktreeInfo {
 		return nil
 	}
 	wt := *saved
+	// A record from before launched_from_id names its lead by name alone,
+	// which another session may hold now. It reaches nothing, so drop it.
+	if wt.LaunchedFromID == "" {
+		wt.LaunchedFrom = ""
+	}
 	if PromptWaiting(wt.PromptStatus) {
 		wt.PromptStatus = PromptNotSent
 		wt.PromptNote = "The daemon restarted before the prompt was typed. Send the prompt with send-text."

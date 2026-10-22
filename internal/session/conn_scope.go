@@ -315,6 +315,12 @@ var verbScopes = map[string]scopeKind{
 	"list-queued":    scopeRead,
 	"get-approval":   scopeRead,
 	"review-note":    scopeWrite,
+	// set-fan-verdict writes a judge's pick on the fan's attempts. It needs
+	// the fan grant, and the handler takes it only from the fan's judge pane
+	// or from outside every pane.
+	"set-fan-verdict": scopeLaunch,
+	// judge-fan starts an agent, which is a launch.
+	"judge-fan":      scopeLaunch,
 	"send-review":    scopeWrite,
 	"queue-prompt":   scopeWrite,
 	"cancel-queued":  scopeWrite,
@@ -508,26 +514,33 @@ func (d *Daemon) sessionNameByID(id string) string {
 	return ""
 }
 
-// callerSession is the session of the pane the caller on cs runs in, "" when it
-// runs in none or cannot be placed.
-func (d *Daemon) callerSession(cs *connState) string {
+// callerSession is the session of the pane the caller on cs runs in, nil when
+// it runs in none or cannot be placed.
+//
+// A caller that needs both the name and the ID reads them from this one
+// session, so a rename between two lookups cannot pair one session's name with
+// another's ID.
+func (d *Daemon) callerSession(cs *connState) *Session {
 	if cs == nil {
-		return ""
+		return nil
 	}
 	if sc := cs.scope.Load(); sc != nil {
-		return d.sessionNameByID(sc.sessionID)
+		if sc.sessionID == "" {
+			return nil
+		}
+		return d.manager.GetSessionByID(sc.sessionID)
 	}
 	// A connection that presented its pane's token is in that pane.
 	if w := cs.paneBound.Load(); w != nil {
-		return d.sessionOfWindow(*w)
+		return d.sessionHoldingWindow(*w)
 	}
 	if cs.viaLink || cs.paneOnly || cs.peerPID <= 0 {
-		return ""
+		return nil
 	}
 	if _, win := d.peerPane(cs); win != "" {
-		return d.sessionOfWindow(win)
+		return d.sessionHoldingWindow(win)
 	}
-	return ""
+	return nil
 }
 
 // sessionInScope reports whether a connection whose pane is in session own may
@@ -556,18 +569,21 @@ func (d *Daemon) sessionInScope(own, target string) bool {
 	if tw == nil {
 		return false
 	}
-	if tw.LaunchedFrom == own {
+	o := d.manager.GetSession(own)
+	// The session that started this one, by its ID alone: a name is free
+	// once its session ends, and another session could take it. A record
+	// from before the ID names no launcher that reaches it.
+	if tw.LaunchedFromID != "" && o != nil && o.ID == tw.LaunchedFromID {
 		return true
 	}
 	if tw.Group == "" || !tw.Managed {
 		return false
 	}
-	o := d.manager.GetSession(own)
 	if o == nil {
 		return false
 	}
 	ow := o.Worktree()
-	return ow != nil && ow.Managed && ow.Group == tw.Group && ow.RepoRoot == tw.RepoRoot
+	return ow != nil && ow.Managed && sameFan(ow, tw)
 }
 
 // scopeSessionNames lists the sessions own reaches, sorted.
@@ -828,4 +844,19 @@ func (d *Daemon) holdToPane(verb string, kind scopeKind, params json.RawMessage,
 		return nil, newVerbError(ErrVerbInternal, "could not encode params")
 	}
 	return out, nil
+}
+
+// forgetLauncher clears the launcher of every session that names s as the
+// session that started it. It runs when s ends, so a later session that
+// takes its name reaches none of them.
+func (d *Daemon) forgetLauncher(s *Session) {
+	for _, o := range d.manager.AllSessions() {
+		wt := o.Worktree()
+		if wt == nil || wt.LaunchedFromID != s.ID {
+			continue
+		}
+		moved := *wt
+		moved.LaunchedFrom, moved.LaunchedFromID = "", ""
+		_ = o.SetWorktree(&moved)
+	}
 }

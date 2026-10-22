@@ -1,6 +1,8 @@
 package session
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -8,6 +10,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Gaurav-Gosain/tuios/internal/plural"
@@ -281,6 +284,7 @@ func (d *Daemon) verbListWorktrees(_ *connState, params json.RawMessage) (any, *
 			"path":          wt.Path,
 			"base":          wt.Base,
 			"group":         wt.Group,
+			"fan_id":        wt.FanID,
 			"managed":       wt.Managed,
 			"gone":          wt.Gone,
 			"state":         state,
@@ -490,6 +494,7 @@ func (d *Daemon) verbFan(cs *connState, params json.RawMessage) (any, *verbError
 		Prompts      []string          `json:"prompts"`
 		Base         string            `json:"base"`
 		Name         string            `json:"name"`
+		Join         string            `json:"join"`
 		ReadyTimeout int               `json:"ready_timeout"`
 		Env          map[string]string `json:"env"`
 		Grants       []string          `json:"grants"`
@@ -577,12 +582,31 @@ func (d *Daemon) verbFan(cs *connState, params json.RawMessage) (any, *verbError
 		}
 	}
 	stem := strings.TrimSpace(p.Name)
-	if stem == "" {
+	if verr := fanStemPlain(stem); verr != nil {
+		return nil, verr
+	}
+	if join := strings.TrimSpace(p.Join); join != "" && stem == "" {
+		// The fan to join names itself.
+		if s := d.manager.GetSession(join); s != nil {
+			if wt := s.Worktree(); wt != nil {
+				stem = wt.Group
+			}
+		}
+	}
+	named := stem != ""
+	if !named {
 		stem = fanStem(promptFor(0))
 	}
 	if err := worktree.ValidBranch(stem); err != nil {
 		return nil, invalidParam("name", err.Error())
 	}
+	stem, fanID, release, verr := d.reserveFan(cs, root, stem, named, strings.TrimSpace(p.Join))
+	if verr != nil {
+		return nil, verr
+	}
+	// The name is held from the check until the call's sessions exist, so
+	// two calls cannot both take it as new.
+	defer release()
 	branches := fanBranches(root, stem, p.Count)
 	if len(branches) < p.Count {
 		return nil, invalidParam("name", "could not find "+strconv.Itoa(p.Count)+" free branch names from "+stem)
@@ -590,14 +614,19 @@ func (d *Daemon) verbFan(cs *connState, params json.RawMessage) (any, *verbError
 	readyTimeout := durationOr(p.ReadyTimeout, fanDefaultReadyTimeout)
 	// The session of the pane that asked, so a connection restricted to that
 	// session reaches the agents it started. See conn_scope.go.
-	launchedFrom := d.callerSession(cs)
+	launchedFrom, launchedFromID := "", ""
+	if s := d.callerSession(cs); s != nil {
+		launchedFrom, launchedFromID = s.Name(), s.ID
+	}
 
 	sessions := make([]map[string]any, 0, p.Count)
 	for i, branch := range branches {
 		launch, prompt := launches[i%len(launches)], promptFor(i)
 		out, verr := d.createWorktreeSession(cs, root, branch, strings.TrimSpace(p.Base), "", launch.argv, env, grants, func(info *WorktreeInfo) {
 			info.Group = stem
+			info.FanID = fanID
 			info.LaunchedFrom = launchedFrom
+			info.LaunchedFromID = launchedFromID
 			info.Prompt = prompt
 			info.PromptStatus = PromptPending
 			info.Agent = launch.spec
@@ -635,6 +664,7 @@ func (d *Daemon) verbFan(cs *connState, params json.RawMessage) (any, *verbError
 	out := map[string]any{
 		"type":      "fan_started",
 		"group":     stem,
+		"fan_id":    fanID,
 		"repo":      filepath.Base(root),
 		"repo_root": root,
 		"agent":     launches[0].harness,
@@ -678,4 +708,152 @@ func (d *Daemon) deliverFanPrompt(sess *Session, windowID, harness, text string,
 	// took it. See prompt_gate.go.
 	status, note, at := d.typeFirstPrompt(sess, windowID, text)
 	sess.setPromptStatus(status, note, at)
+}
+
+// fanReservations hold the names of the fans being made now, by canonical
+// repository root and stem, from the check until the sessions exist.
+type fanReservations struct {
+	mu    sync.Mutex
+	names map[string]bool
+}
+
+// fanKey is the key of the fan stem in the repository at root.
+func fanKey(root, stem string) string { return canonRoot(root) + "\x00" + stem }
+
+// newFanID is a random ID for a new fan. Every session of the fan saves it,
+// a join copies it, and the fan's sessions are the ones that share it, so a
+// fan made later under the same name is never taken for this one, also
+// across a restart.
+func newFanID() string {
+	var b [12]byte
+	_, _ = rand.Read(b[:])
+	return hex.EncodeToString(b[:])
+}
+
+// sameFan reports whether a and b are sessions of one fan: the same group,
+// repository and fan ID. Two records from before the ID match by name.
+func sameFan(a, b *WorktreeInfo) bool {
+	return a != nil && b != nil && a.Group != "" && a.Group == b.Group &&
+		a.RepoRoot == b.RepoRoot && a.FanID == b.FanID
+}
+
+// reachedNames keeps the names of the sessions the caller on cs reaches. A
+// refusal lists a fan's sessions only to a caller that could list them
+// anyway.
+func (d *Daemon) reachedNames(cs *connState, names []string) []string {
+	var out []string
+	for _, n := range names {
+		if d.callerReachesSession(cs, n) {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+// fanMembers are the sessions of the fan stem in the repository at root.
+func (d *Daemon) fanMembers(root, stem string) []*Session {
+	var out []*Session
+	for _, s := range d.manager.AllSessions() {
+		if wt := s.Worktree(); wt != nil && wt.Group == stem && canonRoot(wt.RepoRoot) == canonRoot(root) {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// reserveFan decides the fan a call makes or joins, and holds its name until
+// release. A fan's sessions reach each other (sessionInScope), so joining
+// one is never implicit:
+//
+//   - A name that is no fan yet starts a new fan.
+//   - A name that is already a fan, or is being made by another call now,
+//     is refused for every caller, the person included, unless the call
+//     names a session of that fan with join and the caller reaches it.
+//   - A name the caller did not give, the one fan makes from the prompt, is
+//     moved on to a free one: name-2, name-3.
+//
+// join with no fan of that name is refused too, so a join never starts one.
+//
+// It returns the fan's name and ID: a new ID for a new fan, the joined
+// session's for a join.
+func (d *Daemon) reserveFan(cs *connState, root, stem string, named bool, join string) (string, string, func(), *verbError) {
+	r := &d.fanReserved
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.names == nil {
+		r.names = map[string]bool{}
+	}
+	key := func(st string) string { return fanKey(root, st) }
+	taken := func(st string) bool { return r.names[key(st)] || len(d.fanMembers(root, st)) > 0 }
+	switch {
+	case join != "":
+		var names []string
+		var joined *Session
+		for _, m := range d.fanMembers(root, stem) {
+			names = append(names, m.Name())
+			if m.Name() == join {
+				joined = m
+			}
+		}
+		in := joined != nil
+		if !in {
+			return "", "", nil, hintedVerbError(ErrVerbInvalidParams, "join names "+echoName(join)+", which is not a session of the fan "+echoName(stem)+" in this repository", &VerbHint{
+				Param: "join", Available: d.reachedNames(cs, names),
+				Detail: "Nothing was made. join takes a session of the fan to add attempts to.",
+			})
+		}
+		if !d.callerReachesSession(cs, join) {
+			return "", "", nil, newVerbError(ErrVerbForbidden, "the caller cannot reach "+echoName(join)+", so it cannot add attempts to its fan")
+		}
+		// Joining an existing fan holds no reservation: the fan exists.
+		return stem, joined.Worktree().FanID, func() {}, nil
+	case taken(stem) && named:
+		var names []string
+		for _, m := range d.fanMembers(root, stem) {
+			names = append(names, m.Name())
+		}
+		return "", "", nil, hintedVerbError(ErrVerbFanExists, "a fan named "+echoName(stem)+" already exists in this repository", &VerbHint{
+			Param: "name", Available: d.reachedNames(cs, names),
+			Detail: "Nothing was made. Choose another name for a new fan. To add attempts to this fan on purpose, pass join with one of its sessions (tuios fan --join SESSION).",
+		})
+	case taken(stem):
+		base := stem
+		for i := 2; taken(stem); i++ {
+			if i > 99 {
+				return "", "", nil, invalidParam("name", "no free fan name from "+base)
+			}
+			stem = base + "-" + strconv.Itoa(i)
+		}
+	}
+	k := key(stem)
+	r.names[k] = true
+	return stem, newFanID(), func() {
+		r.mu.Lock()
+		delete(r.names, k)
+		r.mu.Unlock()
+	}, nil
+}
+
+// fanStemPlain refuses a fan name with a character outside A-Z, a-z, 0-9 and
+// / . _ -, the characters the name fan makes from a prompt already keeps to.
+// Anything wider lets a name read on screen as another fan's: a zero-width
+// space, a blank letter such as the Hangul filler, or a letter from another
+// script that looks like a Latin one.
+func fanStemPlain(stem string) *verbError {
+	for _, r := range stem {
+		if !FanNameChar(r) {
+			return invalidParam("name", fmt.Sprintf("the fan name %s has the character U+%04X. A fan name can have only the letters A to Z and a to z, the digits 0 to 9, and / . _ -. Nothing was made.", strconv.QuoteToASCII(stem), r))
+		}
+	}
+	return nil
+}
+
+// FanNameChar reports whether a fan name may hold r: A-Z, a-z, 0-9 or
+// / . _ -. The cockpit's new-agent form checks a name by it before start.
+func FanNameChar(r rune) bool {
+	switch {
+	case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		return true
+	}
+	return r == '/' || r == '.' || r == '_' || r == '-'
 }

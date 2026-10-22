@@ -8871,6 +8871,15 @@ The test reads the daemon's peak memory (VmHWM), not its resident set at the end
 | The new-window yes keyed on the command cut to 40 cells | "b asked no question" (the second command ran on the first yes) | **caught** |
 | The first click on a pane's popup presses its button | "the first click on a pane's popup pressed its button" | **caught** |
 
+### The owner first on the popup's frame, and a name that is not unique
+
+The frame step of `TestTMLOwnerComesFirstAndCannotBeForged` and `TestTMLOwnerNameMustBeUnique` in `tml_label_test.go`. Run on 2026-10-21 on Linux, each control built and put back before the next.
+
+| Control: what was cut | Tests that fail | Verdict |
+| --- | --- | --- |
+| The popup's frame draws the title before the owner | "the frame does not read the owner first" ("╭─ Deploy prod? - from tuios… · from agent ╮") | **caught** |
+| `tmlNameIsOwnersAlone` always true, so a copied name stands alone | "IdLike: want from pane 8bc5c232 (pane 0123abcd) · IdLike" | **caught** |
+
 ### The question whole or not at all, and the window name in the yes
 
 `TestTMLQuestionWaitsForRoom` and the name step of `TestTMLNewWindowYesCoversOneCommand` in `tml_label_test.go`. Run on 2026-10-20, the same way.
@@ -9188,3 +9197,138 @@ Run on 2026-10-22 on branch `fix/stale-session-own-pane`. `TestHookFromPaneWhose
 | The `followOwnPane` call cut from `admitVerb` | mutant of this branch | "the hook did not reach the pane after its session name was gone: state \"none\"" | **caught** |
 | The placement check cut from `followOwnPane` (any caller is followed) | mutant of this branch | "a call from outside the pane naming the gone session was not refused: <nil>" | **caught** |
 | The positive half | this branch | none: the outside call is refused with `session_not_found` and the hook sets the pane to working | **guard** |
+The early returns in `callerRunsHarness` and in `verbSetAgentState` change no outcome, only skip an ancestry walk whose answer is not used, so they have no control.
+
+## Workspace name on hover with no {name} in the tab format (#927)
+
+`TestDockIndexTabShowsTheNameOnHover` sets
+`dock_workspace_tab_format = "{index}"`, names workspace 1, opens a pane on
+workspace 2 and hovers the "1" pill. It runs with `dock_workspace_tooltip` on
+and off.
+
+Run on 2026-10-21 against `origin/main`: the `tooltip on` case fails with
+"hovering an index-only pill never showed the workspace name". The
+`tooltip off` case passes there, which is right. A review run repeated the
+control with the same result, at truecolor and at 16 colours.
+## The split letter in the mode pill (#931)
+
+`TestDockModeIconsFollowTheConfig/split-letter` turns tiling on and presses the
+leader key, with and without `dock_mode_split_letter = false`. It reads the
+column of the workspace readout before and after the leader.
+
+Run on 2026-10-21 against `origin/main`, which has no option: the `off` case
+fails with "the mode pill shows a split letter: true, want false". The
+`default` case passes on both builds, and it shows the two-cell move that the
+`off` case must not have.
+## Scrolling layout: a new column in a daemon session (#952)
+
+`TestScrollingNewColumnOpensBesideFocus` starts a daemon session in the
+scrolling layout with three columns, steps the focus to the first with alt+p,
+and runs `NewWindow`. It reads the strip order from `list-windows --json`. It
+then splits the new pane and closes the split, and checks the order and the
+focus after each step. Last, it focuses the first column, switches to BSP and opens
+a pane, which must split the focused pane and not the target of the old split.
+
+Run on 2026-10-21.
+
+| Cut | Result |
+| --- | --- |
+| The fix removed (`scrollColumnsFromState` appends an unnamed pane at the end) | **caught**: "the new pane is not in the column after the focused one", the new pane last of four |
+| Only the closed-pane pass in `adoptScrollColumns` removed | **caught**: "after the focused column closed: the focus is on" the column to the right, want the one to the left |
+| Only the `CancelPendingSplit` call in the scrolling branch of `adoptSyncedWindows` removed | **caught**: "the pane after the switch to BSP split NEW, the target of the old split, not the focused ONE" |
+| The fix in place | passes, 3 of 3 |
+
+`TUIOS_E2E_FRAMES` saves `new-pane` and `after-close` frames.
+## A fan joined from outside
+
+`TestFanRefusesJoiningAnotherGroup` and `TestFanNameIsHeldWhileItIsMade` in
+`internal/session` (security boundary tests). A taken fan name is refused
+for every caller unless the call names a session of the fan with `join` and
+reaches it. An outsider that makes a name first does not catch the person's
+later fan. Two calls with one new name at the same time make one fan. Run
+on 2026-10-21.
+
+| Wiring | Cut | Tests that fail | Verdict |
+| --- | --- | --- | --- |
+| Joining a fan is explicit: a taken name is refused for every caller, the person included | the `fan_exists` refusal removed | `TestFanRefusesJoiningAnotherGroup` (the taken name is not refused) | **caught** |
+| A new name is held from the check until its sessions exist | the reservation left out of `taken` | `TestFanNameIsHeldWhileItIsMade` ("fan/raceb: the outsider's repo-fan-raceb-2 joined the person's repo-fan-raceb") | **caught** |
+| A name with a character that does not print is refused | the `fanStemPrintable` check skipped | `TestFanRefusesJoiningAnotherGroup` (a name with a zero-width space makes a fan) | **caught** |
+
+### Plain fan names, refusals and restored fans
+
+The follow-up to the review of #972. `TestFanRefusesJoiningAnotherGroup`
+now also checks the name characters and what a refusal lists, and
+`TestRestoredFanStaysItsOwnFan`, `TestReview984RestoreAcrossRestart` and
+`TestReview984RestoreSquatFirst` (security boundary tests) check that a fan
+is told by its saved fan ID. `TestCockpitSpawnSheet` checks the new-agent
+form. Run on 2026-10-21 and 2026-10-22.
+
+| Wiring | Cut | Tests that fail | Verdict |
+| --- | --- | --- | --- |
+| A fan name keeps to A-Z, a-z, 0-9 and / . _ - | `FanNameChar` takes every character above ASCII but the three the old check refused | `TestFanRefusesJoiningAnotherGroup` (the name with a Hangul filler makes a fan) | **caught** |
+| A refusal lists the fan's sessions only to a caller that reaches them | `reachedNames` keeps every name | `TestFanRefusesJoiningAnotherGroup` ("the fan_exists refusal listed the fan's sessions to an outsider") | **caught** |
+| A fan's sessions are the ones with its fan ID | `sameFan` compares the group and repository alone | `TestRestoredFanStaysItsOwnFan`, `TestReview984RestoreAcrossRestart` and `TestReview984RestoreSquatFirst` ("the pane's fan reaches the person's restored repo-fan-saved") | **caught** |
+| A join copies the fan ID | join gives the new session a new ID | `TestFanRefusesJoiningAnotherGroup` ("the group has 2 sessions, want 5"), `TestRestoredFanStaysItsOwnFan` | **caught** |
+| The fan ID is saved | `fan_id` left out of the saved JSON | `TestReview984RestoreAcrossRestart`, `TestReview984RestoreSquatFirst` (the pane's fan reaches the person's restored sessions) | **caught**. The tests pass the saved state through JSON, as the state file holds it. Without that step the cut passed |
+| The new-agent form refuses a name a fan does not take | the `FanNameChar` check in `spawnStart` skipped | `TestCockpitSpawnSheet` (waiting for the refused branch) | **caught** |
+
+## A fan's lead by its session ID
+
+`TestFanLeadIsHeldByID` in `internal/session` (a security boundary test): the
+session that ran `fan` reaches its attempts by that session's ID. After a
+restart without it, and after it ends, a session that takes its name reaches
+none of them. Run on 2026-10-21.
+
+| Wiring | Cut | Tests that fail | Verdict |
+| --- | --- | --- | --- |
+| Reach checks the lead's session ID | the ID check skipped, so the name decides | `TestFanLeadIsHeldByID` ("compare-fan from a new session of the lead's name after a restart": expected error) | **caught** |
+| The attempts stop naming a lead that ended | the `forgetLauncher` call removed | `TestFanLeadIsHeldByID` ("the attempt still names its ended lead") | **caught** |
+| A record from before the ID reaches nothing by name | `sessionInScope` passes a record with no ID whose name matches | `TestReview978LegacyRecord` ("a session named like the lead of an older record does compare-fan") | **caught** |
+| A restore drops a lead named without an ID | the clearing in `restoredWorktree` removed | `TestReview978LegacyRecord` ("a restored record from before the ID still names its lead") | **caught** |
+| Both of the above | both cuts together, the review's repro | `TestReview978LegacyRecord` (after the restart, a session of the dead lead's name does compare-fan and send-text) | **caught** |
+
+## The cockpit of frame (a)
+
+`TestCockpitFrameA` builds frame (a) of the cockpit design: twelve agents on
+three machines, a held approval, three branches with pull requests, a fan of
+three and two subagents. Run on 2026-10-21.
+
+| Wiring | Cut | Tests that fail | Verdict |
+| --- | --- | --- | --- |
+| A host's session listing carries its agent panes | the build before this change, where a remote session carries its rolled-up state alone | `TestCockpitFrameA` ("the cockpit never showed the agents of all three machines") | **caught** |
+| The attempts of a fan sit under one row for the fan | `buildCockpitRows` uses the group's rows without `ckGatherFans` | `TestCockpitFrameA` ("the fleet lacks the pull requests, the fan or the machines") | **caught** |
+
+## Machine load in the link heartbeat
+
+The hello a link's heartbeat sends carries the far machine's load, and
+`list-hosts` reports it. Run on 2026-10-21.
+
+| Wiring | Cut | Tests that fail | Verdict |
+| --- | --- | --- | --- |
+| The daemon's hello carries its load | `verbHello` sends the load under another name | `TestHostsCommandReportsALinkEndToEnd` ("the listing does not show the host's load", "build reports cores 0"), `TestCockpitFrameA` ("the machines block does not show build's load and round trip") | **caught** |
+
+## Fan comparison and judge
+
+`TestCockpitFanCompare` opens the comparison of frame (g) on the fan of frame
+(a), runs one check with `tuios fan verify`, starts the judge stub with `j`,
+and keeps its pick with `k` twice. `TestFanJudgeReach` in `internal/session`
+holds the judge's reach (a security boundary test). Run on 2026-10-21.
+
+| Wiring | Cut | Tests that fail | Verdict |
+| --- | --- | --- | --- |
+| Only the judge's pane reaches the attempts | `judgeReaches` compares the session ID alone, so any pane of the judge's session reaches them | `TestFanJudgeReach` ("compare-fan from another pane of the judge's session": expected error) | **caught** |
+| Only the judge pane or the person records a verdict | the handler's `judgeReaches` check removed | `TestFanJudgeReach` ("set-fan-verdict from an attempt": expected error) | **caught** |
+| judge-fan records the judge only once start-agent made it | the record written before start-agent | `TestFanJudgeReach` ("a failed judge-fan left a judge on repo-fan-retry") | **caught** |
+| The record goes when the judge's session ends | the `forgetFanJudge` call removed from `onSessionDeleted` | `TestFanJudgeReach` ("repo-fan-retry still names the ended judge") | **caught** |
+| The first k names the ignored files a keep deletes | compare-fan sends no `ignored` list | `TestCockpitFanCompare` ("the first k did not name the ignored file a keep deletes") | **caught** |
+| The judge holds read alone | `fanJudgeGrants` back to `read,fan` | `TestFanJudgeReach` ("fan into the attempts' group from the judge": the judge joins the fan by its stem) | **caught** |
+| A restart clears the judge record | the clearing in `restoreSessionOffers` removed | `TestFanJudgeReach` ("repo-fan-retry names a judge after a restart") | **caught** |
+| The second k reads the attempts again | the second k keeps at once | `TestCockpitFanCompare` ("a second k after a new ignored file did not warn again") | **caught** |
+| A list git could not read keeps nothing | the view ignores `ignored_error` | `TestCockpitFanCompare` ("a list git could not read did not stop the keep") | **caught** |
+| Keep stashes the other attempts' changes | the view sends keep-fan with `stash` false | `TestCockpitFanCompare` ("k k did not keep B alone": A and C stay, dirty) | **caught** |
+| The judge reads only the verbs judging needs | `judgeReadVerbs` dropped from the read reach in `paneAuthority`, so the judge reaches every read verb | `TestFanJudgeReach` ("command-history on an attempt from the judge": the judge reads the attempt's history) | **caught** |
+| keep-fan holds the ignored files to the names shown | the `IgnoredHash` compare in `checkKeepAsShown` removed | `TestCockpitFanCompare` ("keep-fan went ahead over an ignored file swapped for another": a count would match too) | **caught** |
+
+A session that takes the judge's old name after its session ended reaches
+nothing: the record names a session ID, which no new session has. The test
+keeps that case as a regression.

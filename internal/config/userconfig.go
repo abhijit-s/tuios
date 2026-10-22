@@ -395,10 +395,11 @@ type AppearanceConfig struct {
 	MaxFPS                 FPSLimit `toml:"max_fps"`                   // Maximum render FPS: 0 uses 60, "auto" follows the display, otherwise 10 to 240
 	DockWorkspaceTabs      *bool    `toml:"dock_workspace_tabs"`       // Clickable workspace strip in the dock (default: true)
 	DockWorkspaceTabFormat string   `toml:"dock_workspace_tab_format"` // Format string for workspace tabs: {index}, {name} (default: "{name}")
-	DockWorkspaceTooltip   *bool    `toml:"dock_workspace_tooltip"`    // Pop a truncated workspace name in full on hover (default: true)
+	DockWorkspaceTooltip   *bool    `toml:"dock_workspace_tooltip"`    // Show the workspace name on hover when the pill cuts or omits it (default: true)
 	DockWorkspaceLabelMax  *int     `toml:"dock_workspace_label_max"`  // Cell cap on a workspace pill's label; 0 draws the whole name (default: 12)
 	DockPrefixIndicator    string   `toml:"dock_prefix_indicator"`     // Where an armed leader shows: pill (default) or badge
 	DockPillCaps           *bool    `toml:"dock_pill_caps"`            // Rounded caps on every dock pill (default: true; false draws flat pills)
+	DockModeSplitLetter    *bool    `toml:"dock_mode_split_letter"`    // V or H after the tiling icon in the mode pill (default: true)
 	DockModeIconWindow     *string  `toml:"dock_mode_icon_window"`     // Mode pill icon in window mode; "" draws none (default: the glyph set's)
 	DockModeIconTerminal   *string  `toml:"dock_mode_icon_terminal"`   // Mode pill icon in terminal mode; "" draws none (default: the glyph set's)
 	DockModeIconTiling     *string  `toml:"dock_mode_icon_tiling"`     // Mode pill icon while tiling is on; "" draws none (default: the glyph set's)
@@ -1614,8 +1615,11 @@ const (
 	ActionInboxShowSnoozed = "inbox_show_snoozed"
 	ActionInboxDenyReason  = "inbox_deny_reason"
 	ActionInboxNewAgent    = "inbox_new_agent"
-	ActionInboxDetailDown  = "inbox_detail_down"
-	ActionInboxDetailUp    = "inbox_detail_up"
+	// ActionInboxCompare opens the comparison of the attempts of the fan
+	// under the cursor.
+	ActionInboxCompare    = "inbox_compare"
+	ActionInboxDetailDown = "inbox_detail_down"
+	ActionInboxDetailUp   = "inbox_detail_up"
 	// The approval card's keys, the keys that open and close the focus on a
 	// narrow screen, help, and the bulk marks.
 	ActionInboxAllow       = "inbox_allow"
@@ -1697,6 +1701,7 @@ func getDefaultInboxKeybinds() map[string][]string {
 		ActionInboxShowSnoozed: {"S"},
 		ActionInboxDenyReason:  {"R"},
 		ActionInboxNewAgent:    {"n"},
+		ActionInboxCompare:     {"c"},
 		ActionInboxDetailDown:  {"J", "ctrl+d"},
 		ActionInboxDetailUp:    {"K", "ctrl+u"},
 		ActionInboxAllow:       {"a"},
@@ -2624,6 +2629,9 @@ func ApplyAppearanceConfig(cfg *UserConfig, s *Settings) {
 	}
 	if cfg.Appearance.DockPillCaps != nil {
 		s.DockPillCaps = *cfg.Appearance.DockPillCaps
+	}
+	if cfg.Appearance.DockModeSplitLetter != nil {
+		s.DockModeSplitLetter = *cfg.Appearance.DockModeSplitLetter
 	}
 	// A typo or an empty value lands on the default, and a key removed from
 	// the file goes back to it on reload.
@@ -3634,6 +3642,8 @@ var yieldingDefaults = map[string]bool{
 	"send_to_workspace_7": true,
 	"send_to_workspace_8": true,
 	"send_to_workspace_9": true,
+	// c, new with the fan comparison.
+	"inbox_compare": true,
 }
 
 // windowModeTables is every binding the user's config holds in the tables
