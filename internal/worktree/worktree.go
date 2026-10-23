@@ -222,6 +222,124 @@ func Changes(path string) (int, error) {
 	return n, nil
 }
 
+// statusEntries reads `git status --porcelain -z --untracked-files=all
+// --ignored=matching` in the worktree at path and returns the ignored and the
+// untracked paths it lists, the status markers stripped. -z ends every record
+// at NUL and keeps git from quoting, so a path with a space or a non-ASCII
+// character survives the round trip. Splitting on a newline would cut such a
+// path in half, and a quoted name would lstat as its quoted form and fail the
+// walk a clean worktree never fails.
+func statusEntries(path string) (ignored, untracked []string, err error) {
+	out, err := run(path, "status", "--porcelain", "-z", "--untracked-files=all", "--ignored=matching")
+	if err != nil {
+		return nil, nil, err
+	}
+	for record := range strings.SplitSeq(out, "\x00") {
+		if entry, ok := strings.CutPrefix(record, "!! "); ok {
+			ignored = append(ignored, entry)
+		} else if entry, ok := strings.CutPrefix(record, "?? "); ok {
+			untracked = append(untracked, entry)
+		}
+	}
+	return ignored, untracked, nil
+}
+
+// Ignored scans the paths a removal would take unsaved: git never stashes
+// them, and git worktree remove deletes them without --force. --ignored=matching
+// reports a matched directory as one entry however many files sit in it, so the
+// entry is walked to count the files a person deleting the worktree is owed.
+func Ignored(path string) (int, error) {
+	entries, _, err := statusEntries(path)
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, entry := range entries {
+		c, err := countFiles(filepath.Join(path, entry))
+		if err != nil {
+			return 0, err
+		}
+		n += c
+	}
+	return n, nil
+}
+
+// NestedRepo reports the first ignored or untracked path in a worktree that
+// holds a git repository — a .git of its own — whose history no stash and no
+// count can save: git worktree remove deletes it with everything around it.
+// Empty when there is none. Untracked paths are in the scan because --stash
+// saves their files but not a nested repository's .git.
+func NestedRepo(path string) (string, error) {
+	ignored, untracked, err := statusEntries(path)
+	if err != nil {
+		return "", err
+	}
+	for _, entry := range append(ignored, untracked...) {
+		nested, err := findNestedRepo(filepath.Join(path, entry))
+		if err != nil {
+			return "", err
+		}
+		if nested {
+			return entry, nil
+		}
+	}
+	return "", nil
+}
+
+// countFiles counts the files under dir, descending into nothing named .git:
+// a nested repository's internals are not the worktree's files, and the
+// removal deletes them either way.
+//
+// ponytail: walks every ignored and untracked directory in full; the removal
+// reads and deletes them all anyway, so a lazy walk is the same order of cost.
+func countFiles(dir string) (int, error) {
+	n := 0
+	err := filepath.WalkDir(dir, func(p string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			if d.Name() == ".git" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		n++
+		return nil
+	})
+	return n, err
+}
+
+// findNestedRepo reports whether dir holds a .git anywhere below it, stopping
+// at the first one. A .git directory is a repository; a .git file (a linked
+// worktree's) points at one just as well.
+func findNestedRepo(dir string) (bool, error) {
+	found := false
+	err := filepath.WalkDir(dir, func(p string, d os.DirEntry, err error) error {
+		if err != nil || found {
+			return err
+		}
+		if d.Name() == ".git" {
+			found = true
+			return filepath.SkipAll
+		}
+		return nil
+	})
+	return found, err
+}
+
+// OwnCommits counts the commits the worktree's HEAD holds that no branch,
+// tag or remote holds. On a branch they are the branch's own commits, and
+// keeping the branch keeps them; on a detached HEAD nothing holds them once
+// the worktree is gone.
+func OwnCommits(path string) (int, error) {
+	out, err := run(path, "rev-list", "--count", "HEAD", "--not", "--branches", "--tags", "--remotes")
+	if err != nil {
+		return 0, err
+	}
+	return strconv.Atoi(strings.TrimSpace(out))
+}
+
 // Ahead counts the commits on the worktree's HEAD that base does not have.
 func Ahead(path, base string) (int, error) {
 	out, err := run(path, "rev-list", "--count", base+"..HEAD")

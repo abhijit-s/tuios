@@ -22,6 +22,10 @@ const (
 	QuitKillGoNext
 	// QuitKillAndQuit kills the current session and quits the client.
 	QuitKillAndQuit
+	// QuitDeleteWorktree removes the current session's worktree, then the
+	// session, then this client. Offered only when the session sits in a
+	// worktree; the delete fails loud rather than quitting on a failure.
+	QuitDeleteWorktree
 	// QuitStandalone quits a non-daemon client (there is no session to keep).
 	QuitStandalone
 	// QuitCancel closes the menu and does nothing.
@@ -127,6 +131,11 @@ func (m *OS) buildQuitMenuItems(others []string, busy bool) []QuitMenuItem {
 	} else {
 		items = append(items, QuitMenuItem{Label: "Kill and quit", Key: "x", Kind: QuitKillAndQuit, Warn: busy})
 	}
+	// The attached session's worktree can go with it. Warn unconditionally:
+	// the row takes a directory, not just a session, whatever is running.
+	if m.sessionWorktreeInfo(m.SessionName) != nil {
+		items = append(items, QuitMenuItem{Label: "Delete worktree and quit", Key: "w", Kind: QuitDeleteWorktree, Warn: true})
+	}
 	return items
 }
 
@@ -168,6 +177,12 @@ func (m *OS) QuitMenuActivate(idx int) tea.Cmd {
 		return nil
 	case QuitKillGoNext:
 		return m.KillSessionGoNext(next)
+	case QuitDeleteWorktree:
+		// One confirmation, one place that shows the toll: the row opens the
+		// close dialog, whose delete-worktree row does the deleting — the
+		// same answer any other close of this session gets. A dialog that is
+		// dismissed leaves the client running.
+		return m.OpenSessionClose()
 	case QuitKillAndQuit, QuitStandalone:
 		m.QuitSession()
 		return tea.Quit

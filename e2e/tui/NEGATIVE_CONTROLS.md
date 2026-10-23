@@ -9497,6 +9497,7 @@ With the fix the test passes four runs of four; the trace reads `working` from `
 | `detectionPass` marks `sawProcess` on the zero claim of a pane nothing holds, rather than on a claim at `AgentSourceDetect` (the build of the branch the fix sits on) | three runs of three ("an OSC-tier report was not applied to a pane no tier held while the agent ran: read idle (source report, harness ), set-agent-state said \"Not applied: a higher-ranked source owns this pane. It still reports idle.\"") | **caught** |
 
 Not covered: the other ways a pane can be left with a state and no claim before the detector first sees an agent in it. A transcript join dropped (`DropAgentTranscript`) yields the same way the screen tier does; a program's records ending clear the state to `none` before they yield, and the detector then takes a pane at `none` as its own.
+Not covered: a `none` report ending `sawProcess` (no case sends one before a later inferred state at the shell). The other two places a claim is rebuilt or dropped, the end of a screen blocker and a tier yielding its claim, are covered under "A claim handed back as the agent exits".
 ## Agent signals on an exited agent's pane
 
 The test is `TestAgentSignalsOnAnExitedAgentsPane` in `agent_progress_exited_test.go`. A pane whose agent has left keeps the harness it was attributed to; a program that is not an agent then runs in it: `mise`, a script that draws an OSC 9;4 progress bar and clears it, or `spin`, a script that puts a braille spinner in the window title, the shape of Claude Code's working title. The pane has to stay at `none` through the run and four seconds after, read every 200ms; each case saves `agent-state-trace.json`, `pane.txt` and the hook log. The agent leaves either through the real `tuios agent-hook claude-code` (a stand-in `claude` from `testdata/fakeclaude` ends a turn, sends `SessionEnd` and exits) or through a reporter at the OSC tier that says `working` and then `none`, naming `claude-code`. The positive cases run a stand-in `claude` with no hooks, found by the foreground-process detector, that clears its own bar (`idle` from `osc`) or sets its own spinner title (`working` from `osc`), in a fresh pane and in a pane an earlier agent left. Each control is a text replacement in the branch's checkout, built to a separate binary and put back. Run on 2026-10-22 on macOS against upstream main at 585f6778.
@@ -9894,3 +9895,153 @@ it fails with "git started by childproc ran the repository's core.fsmonitor".
 Repeat with `TUIOS_E2E=1 TUIOS_E2E_BIN=/path/to/tuios go test -count=1
 -run '^(TestAPaneCannotMarkAnotherPaneToAnswerItsPrompt|TestADaemonChildCannotMarkAnotherPane)$' -v .`
 from `e2e/tui`.
+## Live handoff
+
+`e2e/tui/live_handoff_test.go` drives the daemon live upgrade of `docs/design/live-handoff.md` against real daemons. The daemon runs with `TUIOS_TEST_HANDOFF=1`, which registers the test-only verbs `test-quiesce` and `test-handoff`. Each test writes what it measured to `handoff.json` under `artifactDir`.
+
+### PR 2: quiesce, gated exit wait, adopted pane
+
+- `TestQuiesceLosesNoBytes`: a pane prints a numbered counter as fast as `sh` can. It is quiesced and resumed 100 times, 5 ms each. The stream must not move while the pane is quiesced (`read_while_quiesced` is 0), and the counter in the daemon's scrollback must be contiguous. The positive half: the counter moved between the first and the last capture, so the pane was producing the whole time.
+- `TestExitDuringQuiesceKeepsStatus`: a kept-open pane prints `ready`, then sleeps and exits 7 during a 3.5 s hold between the manifest write and the exec, with no output unread. The new image must report 7. The positive half: a pane that exited 5 before the handoff, reaped by the old image and written down as exited, reads 5 after it.
+- `TestSelfExecAdoptsPanes`: two command panes print `pid-$$`. After a handoff to the same binary the daemon's pid is unchanged, its image id (hello's `instance`) is new, every pane's pid is unchanged, and a pane told to exit 9 after the handoff reads 9. Its subtest lets a child fork while the descriptors are exposed, then runs `kill-server` and `start-server`.
+
+Each control is a build that cuts one line, run on 2026-10-17 on macOS arm64 (Darwin 27, Go 1.26.9) against the branch feat/live-handoff-impl.
+
+| Control | How | Test that fails | Verdict |
+| --- | --- | --- | --- |
+| The reader ignores the gate | drop the `if p.quiesced { ... }` block from `readOutput` | `TestQuiesceLosesNoBytes`: "the pane's reader took 1070643 bytes while it was quiesced" | **caught** |
+| `monitorExit` is a plain wait | drop the `peekExit` call and `p.reap.enter()`/`leave()` from `monitorExit` | `TestExitDuringQuiesceKeepsStatus`: "the pane that exited during the handoff reads -1, want 7" | **caught** |
+| Close-on-exec left on the masters | drop `r.fds = append(r.fds, rec.FD)` in `writeManifest` | `TestSelfExecAdoptsPanes`: "the daemon never answered from a new image within 20s: ... a stale socket is left over" (the new image found no master to adopt) | **caught** |
+| No `syscall.ForkLock` around the exposed span | drop `syscall.ForkLock.Lock()` and its unlock from `execHandoff` | `TestSelfExecAdoptsPanes/fork_in_the_exposed_window`: "start-server after kill-server failed, so something kept the start lock" | **caught** |
+
+```sh
+TUIOS_E2E=1 TUIOS_E2E_BIN=/path/to/tuios \
+  go test -count=1 -run '^(TestQuiesceLosesNoBytes|TestQuiesceAfterBurstDoesNotWait|TestExitDuringQuiesceKeepsStatus|TestSelfExecAdoptsPanes|TestPaneCellFollowsOneClient|TestOmarchyThemeSwitchIsFollowed|TestKittyUploadReply|TestKittyUploadReplyTwoClients|TestHandoffRefusedWhileHostedPaneRuns|TestHandoffRefusedByPaneNotReadingInput)$' .
+```
+
+### The reply forwarder and the read gate's wait
+
+- The reply forwarder sends the emulator's replies only when woken, and the emulator wakes it through `OnResponse` each time it queues one. `TestPaneCellFollowsOneClient` (a mode 2048 report queued by a cell size change), `TestOmarchyThemeSwitchIsFollowed` (a mode 2031 report queued by a colour scheme switch) and `TestKittyUploadReply`/`TestKittyUploadReplyTwoClients` (kitty upload answers, those for a file queued from a goroutine once the file has been looked at) each need a reply that no output of the program follows.
+- `TestQuiesceAfterBurstDoesNotWait`: a pane prints 8 MiB as fast as `yes` can, then nothing. Twenty quiesces of it must return without error well inside the 10 s quiesce deadline, with `read_while_quiesced` 0. A reader whose wait reported output when there was none would be blocked in read holding `readMu`, and the quiesce would wait on the quiet program.
+
+Each control cuts one change, rebuilds, runs the tests, and restores the file, checked byte for byte with sha256. Run on 2026-10-21 against pr/live-handoff-1, on macOS arm64 (Darwin 27, Go 1.26.10) and, for the Linux row, in Docker (Linux 6.8 arm64, Alpine) with binaries cross-built on the Mac.
+
+| Control | How | Test that fails | Verdict |
+| --- | --- | --- | --- |
+| `OnResponse` is never set | drop `pty.terminal.OnResponse(pty.wakeResponses)` and its `if` from `startPTY` | `TestKittyUploadReply/daemon` and `TestKittyUploadReplyTwoClients`, 2 runs of 2: every upload "got no answer" (the standalone half, with no daemon, passes); `TestPaneCellFollowsOneClient` and `TestOmarchyThemeSwitchIsFollowed`, 2 runs of 2 | **caught** |
+| The kqueue wait reports output without waiting (macOS) | `return false, nil` at the top of the waiter in `newGateWaiter`, `pty_gate_kqueue.go` | `TestQuiesceAfterBurstDoesNotWait`, 2 runs of 2: "quiescing the pane that went quiet after a burst failed after 20.002s: call test-quiesce did not return within 20s" | **caught** |
+| The poll wait reports output without waiting (Linux) | `return false, nil` at the top of `pollGate`, `pty_gate_poll.go` | `TestQuiesceAfterBurstDoesNotWait`, 2 runs of 2, the same failure after 20.002s and 20.029s | **caught** |
+
+With the changes in place, on macOS `TestQuiesceAfterBurstDoesNotWait` passed 3 runs of 3 (17 to 23 ms for the twenty quiesces) and the four reply tests 3 runs of 3; on Linux `TestQuiesceAfterBurstDoesNotWait` and `TestQuiesceLosesNoBytes` passed 3 runs of 3 (2 ms).
+
+### Refusals: hosted panes and a pane that does not read its input
+
+- `TestHandoffRefusedWhileHostedPaneRuns`: a pane opened with `open-pane`, as another machine's daemon opens one, is running when a handoff is asked for. The handoff must be refused with an error that names the panes run for another machine, the daemon must answer hello on its old image, and the hosted pane's process must still run. The positive half: after `close-pane` the same handoff goes through to a new image.
+- `TestHandoffRefusedByPaneNotReadingInput`: a pane in raw mode sends 6000 DA1 queries and never reads its input, so the replies fill the terminal's input queue and the write of the next one blocks. The handoff must answer within twice the 10 s quiesce deadline, refused with an error saying the program is not reading its input, and the daemon must answer hello on its old image. The positive half: after the stuck window is closed the handoff goes through to a new image.
+- `TestReadGateNeverReportsOutputAfterAFailedWait` (`internal/session/pty_gate_unix_test.go`, a kept unit test: a deterministic hang regression, since a real wait cannot be made to fail on two valid descriptors): with the gate's wait failing with ENOMEM, whether or not it also says the wake pipe is readable, `wait` must report neither output nor a wake. Its positive half: an EINTR is retried and the output already on the master is reported.
+
+Each control cuts one change from the fix, rebuilds, runs the test twice, and restores the file, checked byte for byte with sha256. Run on 2026-10-20 on macOS arm64 (Darwin 27, Go 1.26.9) against pr/live-handoff-1.
+
+| Control | How | Test that fails | Verdict |
+| --- | --- | --- | --- |
+| Hosted panes are not refused | drop the `shutHostedPanes` check and its undo from `handoffRun.prepare` | `TestHandoffRefusedWhileHostedPaneRuns`, 2 runs of 2: "the handoff went ahead with a hosted pane open, which closes its terminal at the exec" (the artifact records the hosted process gone after it) | **caught** |
+| The reply flush ignores the deadline | flush under `respMu` inline in `Quiesce`, as before the fix | `TestHandoffRefusedByPaneNotReadingInput`, 2 runs of 2: "the handoff hung on the pane that does not read its input: call test-handoff did not return within 20s" | **caught** |
+| A failed wait reads as an answer | skip the `if waitErr != nil` return in `readGate.wait` (run on 2026-10-21, Go 1.26.10) | `TestReadGateNeverReportsOutputAfterAFailedWait`, 2 runs of 2: "the gate reported output after the wait failed with ENOMEM, so the reader would block in read holding readMu" and "the gate reported a wake after the wait failed with ENOMEM, so the reader would stop for good" | **caught** |
+
+```sh
+go test -count=1 -run '^TestReadGateNeverReportsOutputAfterAFailedWait$' ./internal/session/
+```
+## Deleting a worktree from the close-confirmation dialog
+
+`TestSidebarCloseDeletesWorktree` takes the third row of the close dialog on
+a worktree session and asserts the daemon removed the directory, kept the
+branch and killed the session; it also covers a worktree whose directory was
+already gone. Run on 2026-10-20, against the commit before the dialog row was
+added (50972f48), built with `git archive`.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| Selecting the close dialog's delete row removed nothing | The whole wiring: the third row, its draw, and the `SessionCloseRowDeleteWorktree` branch of `SessionCloseActivate` | The build before the feature | `TestSidebarCloseDeletesWorktree` ("the feat/one close dialog offered no worktree delete") | **caught** |
+
+The pre-feature run was recorded after the green run on the fixed build. The
+first red run against the intermediate tree (dialog row present, activation
+absent, c9f3e252) failed one step later, at "no notification said the
+worktree was deleted" — the row was offered and did nothing, which is the
+other half of the control.
+
+## Kill-and-quit confirms on a worktree session
+
+`TestSidebarKillQuitConfirmsOnWorktree` asserts that the attached session
+row menu's "Kill session and quit" raises the close confirmation on a
+worktree session and stays instant on a plain one. Run on 2026-10-21,
+against c9f3e252 (dialog row in, gate absent), built with `git archive`.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| Kill-and-quit on a worktree session quit outright, leaving the worktree behind | The `sessionMenu` gate routing the row to `prefix_close_session` | The build before the gate | `TestSidebarKillQuitConfirmsOnWorktree` ("kill-and-quit on a worktree session did not confirm") | **caught** |
+
+## The dwell's quit follows the deleted session, not the client
+
+`TestQuitMenuDeleteFollowsASwitchDuringTheDwell` takes the quit menu's
+delete row and, inside the dwell before the client quits, switches to
+another session; the dwell's quit must kill the deleted session by name and
+leave the client in the one it switched to. Run on 2026-10-21, against a
+build of the fix's own commit with the name check reverted to an untargeted
+quit, built with `git archive`.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| The dwell's quit killed whatever session the client had switched to during the dwell | The `worktreeRemoveQuitMsg` name check in `update.go` | The build with the check reverted | `TestQuitMenuDeleteFollowsASwitchDuringTheDwell` ("the dwell's quit did not follow the deleted session: child exited") | **caught** |
+
+## The worktree-delete review controls
+
+Two regressions found in review of the worktree-deletion PR. Run on
+2026-10-21, against working-tree builds with the fix reverted, built with
+`go build`: the note suppression short-circuited to `false &&` in the
+SessionKilledMsg handler; the detached-HEAD refusal removed from the verb and
+the dialog.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| The kill's own "Killed session" note replaced the deletion note — the one record of where the stashed changes went — and made `TestSidebarCloseDeletesWorktree` flake at the already-gone and dirty steps | The `pendingWorktreeKill` suppression in `update.go` | Build with the suppression short-circuited | `TestSidebarCloseDeletesWorktree` ("the kill's own note replaced the deletion note"), deterministically on all three deletions | **caught** |
+| remove-worktree deleted a worktree whose detached HEAD held commits no branch has, without a word — the removal leaves those commits unreachable | The `OwnCommits` refusal in the verb, and the dialog's refusal line and toll | Build from before the fix | `TestSidebarCloseRefusesDetachedWorktree` ("the close dialog said nothing about the detached HEAD") | **caught** |
+
+## Agent listing after SessionEnd
+
+The test is `TestListAgentsDropsAPaneWhoseAgentEnded` in `agent_leftover_harness_test.go`. `session-end` runs a stand-in `claude` (`testdata/fakeclaude`) through the real `tuios agent-hook claude-code`: it starts, works a turn, ends it, sends `SessionEnd` and exits, and the shell has the pane again. `reported-none` sends `set-agent-state working --harness claude-code` and then `set-agent-state none --harness claude-code` from outside the pane with no agent process, the shape of herdr's `pane.release_agent`, then leaves a note with `set-agent-state idle -m`, which has to list the pane again. Each case first waits for the pane to be listed, then for `list-agents` (without `--all`) to drop it, and reads it every 250ms for four more seconds; `session-end` also checks the conversation id is kept. Each case saves `trace.txt` and `pane.txt`. The control is upstream main without the fix, built to a separate binary. Run on 2026-10-23 on macOS against upstream main at 85cb48c9.
+
+Upstream main fails both cases two runs of two, with the pane at `none`, source `report`, harness `claude-code`, and the conversation id kept, which is the row the live daemon kept for over forty hours. The fixed build passes both.
+
+| Control: what was cut | Tests that fail | Verdict |
+| --- | --- | --- |
+| The fix removed (upstream main): `harnessAfterReport` keeps the harness a `none` report names | `session-end` ("after SessionEnd, with the shell back: list-agents still says listed=true for <window>, want false"), `reported-none` ("after none naming the harness: list-agents still says listed=true for <window>, want false") | **caught** |
+
+`TestAgentSignalsOnAnExitedAgentsPane` read the kept harness as its precondition ("want none still attributed to claude-code"), and failed its four exit cases (`hook-exit`, `osc-tier-exit-bar`, `osc-tier-exit-title`, `restart-after-exit`) on the fixed build until that check read `none` with no harness. With the harness gone, its exit cases no longer reach the `agentInPane` gate: the control "`agentHarnessOf` returns the remembered harness whatever `agentInPane` says" (from "Agent signals on an exited agent's pane") passes all six cases on the fixed build, run once on 2026-10-23. The gate stays for a pane carried at `none` with a harness from a daemon without this fix.
+
+Not covered: a pane carried at `none` with a harness from a daemon without the fix, which keeps its row until a `none` report or the detector clears it (`tuios set-agent-state none -w <pane>` does).
+
+## A claim handed back as the agent exits
+
+Run on 2026-10-23 on macOS against upstream main at 404ee6b4. The test is `TestAgentClaimHandedBackAsTheAgentExits` in `agent_claim_handback_exit_test.go`. A program named `claude` (`testdata/fakeclaude`) runs in a pane whose state a tier other than the detector set first, so the detector does not own the claim and clears it at the shell only because it saw the agent process. The agent draws a screen the screen tier reads, then wipes it and exits at once, so the look that finds the screen empty hands the screen tier's claim back after the agent has gone. In `blocker-released-on-exit` the pane is at `idle` from the OSC tier, the agent draws a Claude Code permission prompt, and the screen tier lends itself the pane at `needs_input` until the wipe ends the loan (`releaseAgentBlockerOverride`). In `screen-idle-yielded-on-exit` the pane is at `working` from the stall tier, the agent draws its empty prompt box, and the screen tier takes the pane at `idle` until the wipe yields it (`yieldAgentClaim`). The detector runs every four seconds and the exit lands between two passes: at one second a pass landed between the exit and the look on every run of `blocker-released-on-exit`, which cleared the pane while the screen tier held it and passed without the fix. The test fails unless it reads the handed-back claim (idle from a tier other than the screen) before `none`. Each read of `get-agent-state` is saved as `agent-state-trace.json`, with the pane as `pane.txt`, under the test's artifact directory (`TUIOS_E2E_FRAMES` when set).
+
+With the fix both cases pass three runs of three; the trace of `blocker-released-on-exit` reads `needs_input` from `screen`, then `idle` from `osc`, then `none`, and the trace of `screen-idle-yielded-on-exit` reads `idle` from `screen`, then `idle` from `detect`, then `none`. Each control is a text replacement in the branch's checkout, built to a separate binary and put back before the next. Each control fails only its own case.
+
+| Control: what was cut | Tests that fail | Verdict |
+| --- | --- | --- |
+| `releaseAgentBlockerOverride` hands back the displaced claim without `sawProcess` | `blocker-released-on-exit`, three runs of three ("the pane kept agent state idle (source osc, harness claude-code) with the agent gone and its shell in the foreground") | **caught** |
+| `yieldAgentClaim` keeps a claim only for `auto`, and deletes one that carries only `sawProcess` | `screen-idle-yielded-on-exit`, three runs of three ("the pane kept agent state idle (source report, harness ) with the agent gone and its shell in the foreground") | **caught** |
+
+Not covered: `yieldAgentClaim` carrying `sawProcess` on an `auto` claim. The detector clears a claim it owns when the agent leaves whether or not the mark is set, so the mark on such a claim has no reader, and the change only keeps it for a later hand-over.
+
+## Pasting into input boxes
+
+`TestPasteIntoInputBoxes` attaches a real client to a daemon session whose pane shows the prompt `PST> `, and opens each input from terminal mode, where a paste nothing claims is typed into the focused pane: the window rename (ctrl+b r), the session rename (ctrl+r in the session switcher), the workspace rename (ctrl+b w r), the command palette, the help's search line, the session switcher's filter and the settings search. Each gets a bracketed paste holding a line break (and, for the window rename, a tab and a trailing CRLF), and must show it on one line with single spaces while the pane, read whole with `capture-pane`, shows none of its words, before and after the input closes. The window rename is committed and read back from `list-windows`. The help's list, which takes no text, must drop a paste. The rename also takes the paste key, ctrl+shift+v and ctrl+v, whose OSC 52 clipboard read a stand-in host terminal answers. Each control is a build of the branch with the wiring cut, running only this test. Run on 2026-10-23 on macOS against upstream main at b8160edd.
+
+Without the fix, the inputs opened by a prefix chord (window and workspace rename) drop the paste, since the chord leaves terminal mode, and the rest send it to the shell, which runs each pasted line as a command.
+
+| Control: what was cut | Tests that fail | Verdict |
+| --- | --- | --- |
+| The fix removed (`internal/input/handler.go` and `internal/app/keyboard_enhancements.go` as on upstream main) | All ten subtests: `window_rename` and `workspace_rename` ("the field never showed the paste on one line"), `session_rename`, `command_palette`, `help_search`, `session_switcher`, `settings_search` ("a paste into the … reached the pane, which shows \"sr1\"", and so on), `help_list_drops_it` ("a paste into the help's list reached the pane, which shows \"hl1\""), both `rename_paste_key_*` ("the paste key's clipboard went into the field: field never read \"CLIP name\"") | **caught** |
+| The drop for anything else that owns the keyboard: `pasteTakenByOverlay` ends with the overlays it named before instead of `OverlayOwnsKeyboard` | `help_list_drops_it` ("a paste into the help's list reached the pane, which shows \"hl1\"") | **caught** |
+
+Not covered end to end: the other one-line fields `textFieldPaste` lists (launcher, workspace switcher, aggregate view, keybind manager filter, theme picker and editor, glyph, effect and layout pickers, host picker, settings inline edit, file and worktree dialogs, tape name, accent hex, scrollback browser and copy-mode search), and the paste key in any field but the rename.

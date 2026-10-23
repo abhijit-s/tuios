@@ -14,15 +14,17 @@ import (
 const sessionCloseInnerWidth = 54
 
 // renderSessionClose draws the close confirmation: the question, what closing
-// would take down counted as the frame is built, and the two rows.
+// would take down counted as the frame is built, and the answer rows — two, or
+// three when the target session sits in a worktree.
 //
-// A dialog rather than a panel because it is one focused question with two
+// A dialog rather than a panel because it is one focused question with a few
 // answers, which is exactly what the micro-dialog is for.
 func (m *OS) renderSessionClose() (string, overlay.Geometry, []overlayRowHit) {
 	pal := m.overlayUI()
 	bg := pal.Canvas
 	width := overlay.DialogFitWidth(sessionCloseInnerWidth, m.GetRenderWidth())
-	m.SessionCloseSelected = clampInt(m.SessionCloseSelected, 0, sessionCloseRowCount-1)
+	rows := m.sessionCloseRowCount()
+	m.SessionCloseSelected = clampInt(m.SessionCloseSelected, 0, rows-1)
 
 	toll := m.SessionTollFor(m.SessionCloseTarget)
 	var members []string
@@ -66,7 +68,28 @@ func (m *OS) renderSessionClose() (string, overlay.Geometry, []overlayRowHit) {
 		m.sessionCloseRow(SessionCloseRowCancel, width, pal),
 		m.sessionCloseRow(SessionCloseRowClose, width, pal),
 	)
-	firstRow := len(body) - sessionCloseRowCount
+	// Cancel and Close are the last two rows so far; the space lines above them
+	// vary, so the first row is counted back from the end.
+	firstRow := len(body) - SessionCloseRowDeleteWorktree
+	// The worktree toll line sits between the Close row and the delete row,
+	// so the delete row's rect moves down one when it is drawn.
+	tollLineDrawn := false
+	if rows > SessionCloseRowDeleteWorktree {
+		if line := m.worktreeTollLine(); line != "" {
+			// The delete row's own toll, warn-coloured when it names the
+			// refusal: commits a detached HEAD holds are the one thing on the
+			// line that the row will not do.
+			t := m.SessionCloseWorktreeToll
+			lineColor := pal.FgDim
+			if t != nil && t.Own > 0 {
+				lineColor = pal.Warn
+			}
+			body = append(body, overlay.Fill(overlay.Style(bg).Render(" ")+
+				overlay.Style(bg).Foreground(lineColor).Render(overlay.Truncate(line, max(width-1, 1))), width, bg))
+			tollLineDrawn = true
+		}
+		body = append(body, m.sessionCloseRow(SessionCloseRowDeleteWorktree, width, pal))
+	}
 
 	content, geo := overlay.Dialog{
 		Title: m.sessionCloseTitle(),
@@ -79,10 +102,13 @@ func (m *OS) renderSessionClose() (string, overlay.Geometry, []overlayRowHit) {
 	}.Render(pal)
 
 	// One rect per drawn row, in drawn order, so a click answers the dialog the
-	// user is looking at.
-	hits := make([]overlayRowHit, 0, sessionCloseRowCount)
-	for i := range sessionCloseRowCount {
+	// user is looking at. A row that is not drawn has no rect.
+	hits := make([]overlayRowHit, 0, rows)
+	for i := range rows {
 		y := geo.BodyY + firstRow + i
+		if tollLineDrawn && i == SessionCloseRowDeleteWorktree {
+			y++
+		}
 		hits = append(hits, overlayRowHit{
 			Rect: overlay.Rect{X0: 0, Y0: y, X1: geo.Width, Y1: y + 1},
 			Idx:  i,
@@ -91,13 +117,19 @@ func (m *OS) renderSessionClose() (string, overlay.Geometry, []overlayRowHit) {
 	return content, geo, hits
 }
 
-// sessionCloseRow draws one answer.
+// sessionCloseRow draws one answer. The delete row is destructive like the
+// Close row: it is the more destructive of the two, and it is the answer
+// nobody should reach by walking past it without looking.
 func (m *OS) sessionCloseRow(idx, width int, pal overlay.Palette) string {
 	label := "Cancel"
-	if idx == SessionCloseRowClose {
-		label = m.sessionCloseLabel()
+	destructive := false
+	switch idx {
+	case SessionCloseRowClose:
+		label, destructive = m.sessionCloseLabel(), true
+	case SessionCloseRowDeleteWorktree:
+		label, destructive = "Delete worktree too", true
 	}
-	return dialogAnswerRow(label, m.SessionCloseSelected == idx, idx == SessionCloseRowClose, width, pal)
+	return dialogAnswerRow(label, m.SessionCloseSelected == idx, destructive, width, pal)
 }
 
 // dialogAnswerRow draws one answer of a confirmation. The destructive row

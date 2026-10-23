@@ -4,10 +4,13 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -38,6 +41,17 @@ const (
 	// uncommitted changes and the caller did not say what to do with them.
 	// Nothing was removed. The remedy is stash or force, and the hint says so.
 	ErrVerbWorktreeDirty = "worktree_dirty"
+	// ErrVerbWorktreeDetached reports a removal refused because the worktree
+	// sits on a detached HEAD holding commits no branch, tag or remote has.
+	// Removing the worktree would leave those commits unreachable. Nothing was
+	// removed; force removes them anyway.
+	ErrVerbWorktreeDetached = "worktree_detached"
+	// ErrVerbWorktreeNested reports a removal refused because an ignored or
+	// untracked path in the worktree holds a git repository of its own. git
+	// worktree remove deletes it with everything around it, and no stash can
+	// save a nested repository's history. Nothing was removed; force removes
+	// it anyway.
+	ErrVerbWorktreeNested = "worktree_nested"
 	// ErrVerbGitFailed reports a git command that failed, with git's own
 	// message. It is final: the repository is as it was.
 	ErrVerbGitFailed = "git_failed"
@@ -247,6 +261,7 @@ func (d *Daemon) verbListWorktrees(_ *connState, params json.RawMessage) (any, *
 	var p struct {
 		Repo    string `json:"repo"`
 		Group   string `json:"group"`
+		Session string `json:"session"`
 		Changes bool   `json:"changes"`
 	}
 	if verr := decodeParams(params, &p); verr != nil {
@@ -262,6 +277,12 @@ func (d *Daemon) verbListWorktrees(_ *connState, params json.RawMessage) (any, *
 			continue
 		}
 		if p.Group != "" && wt.Group != p.Group {
+			continue
+		}
+		// One session only. The counts under changes walk ignored and
+		// untracked trees — node_modules included — and the close dialog is
+		// the only caller that needs them, for one worktree it names.
+		if p.Session != "" && s.Name != p.Session {
 			continue
 		}
 		states := make([]string, 0, len(s.Windows))
@@ -313,6 +334,20 @@ func (d *Daemon) verbListWorktrees(_ *connState, params json.RawMessage) (any, *
 			} else {
 				row["changes"] = -1
 			}
+			// What the close dialog says the delete row will take. Ignored is
+			// the part nothing saves, counted in files, not in the entries git
+			// lists; own_commits is the part the delete refuses. -1 is a
+			// failed read, not a count.
+			if n, err := worktree.Ignored(wt.Path); err == nil {
+				row["ignored"] = n
+			} else {
+				row["ignored"] = -1
+			}
+			if n, err := worktree.OwnCommits(wt.Path); err == nil {
+				row["own_commits"] = n
+			} else {
+				row["own_commits"] = -1
+			}
 			if wt.Base != "" {
 				if n, err := worktree.Ahead(wt.Path, wt.Base); err == nil {
 					row["ahead"] = n
@@ -357,6 +392,7 @@ func (d *Daemon) verbRemoveWorktree(_ *connState, params json.RawMessage) (any, 
 	}
 	// Resolved now, while the directory is there to resolve.
 	notesRoot := canonRoot(info.Path)
+	killed := false
 
 	out := map[string]any{
 		"type":        "worktree_removed",
@@ -385,6 +421,50 @@ func (d *Daemon) verbRemoveWorktree(_ *connState, params json.RawMessage) (any, 
 			})
 		}
 		out["changes"] = changes
+		if own, err := worktree.OwnCommits(info.Path); err == nil {
+			out["own_commits"] = own
+			if own > 0 && !p.Force {
+				return nil, hintedVerbError(ErrVerbWorktreeDetached,
+					fmt.Sprintf("%s sits on a detached HEAD holding %d %s no branch has. Nothing was removed.", info.Path, own, plural.Word(own, "commit", "commits")),
+					&VerbHint{
+						Param:  "force",
+						Detail: "Commit them onto a branch first, or pass force to remove the worktree and lose the commits.",
+					})
+			}
+		} else {
+			out["own_commits"] = -1
+		}
+		// Ignored files are counted in files, not in the entries git lists: an
+		// ignored directory is one entry however many files it holds. They are
+		// not saved: git never stashes them, and git worktree remove deletes
+		// them without --force. -1 is a count git would not give, so the caller
+		// can tell a failed read from a clean 0.
+		if ignored, err := worktree.Ignored(info.Path); err == nil {
+			out["ignored"] = ignored
+		} else {
+			out["ignored"] = -1
+		}
+		// A nested repository in an ignored or untracked path is the one thing
+		// even a clean read cannot save: the removal deletes its .git, and no
+		// stash holds a nested repository's history.
+		if nested, err := worktree.NestedRepo(info.Path); err != nil {
+			// The check is what stands between the removal and a nested
+			// repository's history, so a failed read fails closed.
+			// The walk of the untracked and ignored paths fails with a
+			// *fs.PathError; git fails with a plain error.
+			detail := "git could not read the worktree's status for the nested repository check. Nothing was removed."
+			if _, walk := errors.AsType[*fs.PathError](err); walk {
+				detail = "tuios could not read the untracked and ignored folders for the nested repository check. Nothing was removed."
+			}
+			return nil, hintedVerbError(ErrVerbGitFailed, err.Error(), &VerbHint{Detail: detail})
+		} else if nested != "" && !p.Force {
+			return nil, hintedVerbError(ErrVerbWorktreeNested,
+				fmt.Sprintf("%s holds a nested git repository at %s. Nothing was removed.", info.Path, nested),
+				&VerbHint{
+					Param:  "force",
+					Detail: "Remove the nested repository first, or pass force to delete it with the worktree, its history included.",
+				})
+		}
 		if changes > 0 && !p.Force && !p.Stash {
 			return nil, hintedVerbError(ErrVerbWorktreeDirty,
 				fmt.Sprintf("%s holds %d uncommitted %s. Nothing was removed.", info.Path, changes, plural.Word(changes, "change", "changes")),
@@ -404,10 +484,31 @@ func (d *Daemon) verbRemoveWorktree(_ *connState, params json.RawMessage) (any, 
 			out["stash_message"] = "tuios: " + info.Branch
 		}
 		discard := changes > 0 && !p.Stash
+		// On Windows the session's shells hold the worktree as their cwd, and
+		// git cannot remove a directory a process sits inside. The stash has
+		// already run, so the session goes first and the removal has the
+		// directory to itself. Everywhere else the session outlives the verb
+		// when it is asked to, so the client can show the note before it kills.
+		if runtime.GOOS == "windows" && !p.KeepSession {
+			if err := d.manager.DeleteSession(sess.Name()); err == nil {
+				killed = true
+			}
+		}
 		if err := worktree.Remove(info.RepoRoot, info.Path, discard); err != nil {
-			return nil, hintedVerbError(ErrVerbGitFailed, err.Error(), &VerbHint{
-				Detail: "git refused to remove the worktree. It is still there.",
-			})
+			msg := "git refused to remove the worktree: " + err.Error() + " It is still there."
+			if stashed, _ := out["stashed"].(bool); stashed {
+				// The stash ran before the remove, so the refusal leaves the
+				// worktree in place but empty: the changes are in git stash,
+				// and this error is the one place that says so.
+				msg += " The changes were already stashed: they are in git stash under the message \"tuios: " + info.Branch + "\"."
+			}
+			if killed {
+				msg += " The session was killed to free the directory for the removal."
+			}
+			// The message carries the whole story — the refusal, the stash, the
+			// kill — and the client prints message and Detail together, so a
+			// Detail that repeats it prints the story twice.
+			return nil, hintedVerbError(ErrVerbGitFailed, msg, nil)
 		}
 		out["discarded"] = discard
 	}
@@ -417,8 +518,8 @@ func (d *Daemon) verbRemoveWorktree(_ *connState, params json.RawMessage) (any, 
 	// git runs in the main checkout, which is still there.
 	d.dropCheckpointsOf(info.RepoRoot, notesRoot)
 
-	out["session_killed"] = false
-	if !p.KeepSession {
+	out["session_killed"] = killed
+	if !killed && !p.KeepSession {
 		if err := d.manager.DeleteSession(sess.Name()); err == nil {
 			out["session_killed"] = true
 		}
