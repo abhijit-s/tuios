@@ -174,12 +174,6 @@ const (
 	// it. The daemon sends it only to a client whose hello set PaneMarks.
 	// See pane_marks.go.
 	MsgPaneMark
-	// MsgDaemonUpgrading tells a TUI client, just before the daemon closes
-	// its connection, that a live upgrade is replacing the daemon's image and
-	// every pane keeps running. The client says so when it exits, rather than
-	// that the daemon was lost. An older client ignores the type and says the
-	// daemon was lost. See handoff.go.
-	MsgDaemonUpgrading
 	// MsgGoodbye is the daemon's last message to a client before it stops:
 	// why it stops. The daemon sends it only to a client whose hello set
 	// Goodbye. See daemon_goodbye.go.
@@ -193,6 +187,12 @@ const (
 	// list closes the client's dialog. The daemon sends it only to a client
 	// whose hello set PluginApprovals. See plugin_approval.go.
 	MsgPluginApprovals
+	// MsgDaemonUpgrading tells a TUI client, just before the daemon closes
+	// its connection, that a live upgrade is replacing the daemon's image and
+	// every pane keeps running. The client says so when it exits, rather than
+	// that the daemon was lost. An older client ignores the type and says the
+	// daemon was lost. See handoff.go.
+	MsgDaemonUpgrading
 )
 
 // DaemonUpgradingPayload is the body of MsgDaemonUpgrading: the version the
