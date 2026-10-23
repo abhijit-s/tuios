@@ -2522,7 +2522,7 @@ none.
 
 Params: `command` (required argv), `session` (optional), `width` and `height`
 (optional, cells such as `"60"` or a share of the pane region such as `"60%"`,
-default `"80%"` and `"60%"`), `name`, `cwd` and `workspace` (all optional),
+default `"80%"` and `"60%"`), `name`, `cwd`, `workspace` and `dim` (all optional),
 `wait`, `capture_stdout` and `timeout` (optional, below), and `scratch` and
 `scratch_name` (optional). `scratch` starts a scratch group, the layout a key
 shows and hides, with its first pane. The pane is not a popup: it is a tiled
@@ -2536,6 +2536,10 @@ group's workspace adds a pane to the group, and one with a scratch workspace
 no group is on fails. `list-windows` marks each pane of a group with
 `"scratch": true` and its `"scratch_name"`. Every group survives a daemon
 restart, hidden, each pane with a new shell and its saved history.
+
+`dim` is `0` to `90`. Omitted, it inherits `appearance.popup_dim`
+(`appearance.modal_dim` for a TML popup); explicit `0` turns it off. Dimming
+applies only while the popup has focus.
 
 The popup's command starts at the size the popup has on the screen: the size
 the caller asked for, in the session's pane region.

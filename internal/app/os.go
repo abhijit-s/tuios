@@ -382,6 +382,8 @@ type OS struct {
 	WorkspaceMasterRatio   map[int]float64               // Stores master ratio per workspace
 	WorkspaceStackRatio    map[int]float64               // Stack ratio per workspace, the only copy (see setWorkspaceStackRatio)
 	WorkspaceMasterSplits  map[int]layout.MasterSplits   // Every other master-stack split per workspace, the only copy (see SyncMasterStackFromGeometry)
+	WorkspaceLayoutMode    map[int]string                // Layout mode chosen per workspace; no entry follows the session's
+	sessionLayoutMode      string                        // The mode the session was created with, the fallback for a workspace the state did not count
 	ShowLogs               bool                          // True when showing log overlay
 	LogMessages            []LogMessage                  // Store log messages
 	LogScrollOffset        int                           // first log row the viewer draws
@@ -1094,13 +1096,15 @@ type OS struct {
 	ScriptAwaitWindows  int
 	ScriptAwaitDeadline time.Time
 	// Tape manager UI
-	ShowTapeManager    bool              // True when showing tape manager overlay
-	TapeManager        *TapeManagerState // Tape manager state
-	TapeRecorder       *tape.Recorder    // Tape recorder for recording sessions
-	TapeRecordingName  string            // Name of current recording
-	TapePrefixActive   bool              // True when Ctrl+B, T was pressed (tape sub-prefix)
-	TuiosPrefixActive  bool              // True when the tuios menu is open (leader, then prefix_tuios's key)
-	LayoutPrefixActive bool              // True when Ctrl+B, L was pressed (layout sub-prefix)
+	ShowTapeManager   bool              // True when showing tape manager overlay
+	TapeManager       *TapeManagerState // Tape manager state
+	TapeRecorder      *tape.Recorder    // Tape recorder for recording sessions
+	TapeRecordingName string            // Name of current recording
+	TapePrefixActive  bool              // True when Ctrl+B, T was pressed (tape sub-prefix)
+	TuiosPrefixActive bool              // True when the tuios menu is open (leader, then prefix_tuios's key)
+	// Menu is the declared menu open now (see config.MenuConfig), "" when none is.
+	Menu               string
+	LayoutPrefixActive bool // True when Ctrl+B, L was pressed (layout sub-prefix)
 	// MouseOff is set by toggle_mouse: the client stops asking the host for
 	// mouse reports, so the host terminal selects text itself, as tmux's
 	// mouse off does.

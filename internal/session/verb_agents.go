@@ -2,7 +2,6 @@ package session
 
 import (
 	"encoding/json"
-	"github.com/Gaurav-Gosain/tuios/internal/config"
 	"maps"
 	"slices"
 	"strconv"
@@ -11,6 +10,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/Gaurav-Gosain/tuios/internal/config"
 	"github.com/Gaurav-Gosain/tuios/internal/harness"
 )
 
@@ -1549,8 +1549,8 @@ func contentLines(s string) int {
 // needs both the count and the lines does not split a ten-thousand-line
 // scrollback twice.
 func countContent(lines []string) int {
-	for i := len(lines) - 1; i >= 0; i-- {
-		if strings.TrimSpace(lines[i]) != "" {
+	for i, line := range slices.Backward(lines) {
+		if strings.TrimSpace(line) != "" {
 			return i + 1
 		}
 	}

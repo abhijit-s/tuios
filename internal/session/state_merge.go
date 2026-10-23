@@ -4,6 +4,7 @@ import (
 	"maps"
 	"slices"
 
+	"github.com/Gaurav-Gosain/tuios/internal/config"
 	"github.com/Gaurav-Gosain/tuios/internal/layout"
 )
 
@@ -171,6 +172,23 @@ func retainDaemonExclusive(incoming, canonical *SessionState) {
 		}
 	}
 
+	// The per-workspace layout modes are unioned on the same terms and for the
+	// same reason. A client only holds an entry for a workspace it has been told
+	// about or chose a layout on, so replacing the set would drop the choice for
+	// every workspace the pushing client never heard of: an older client attached
+	// to the same session would wipe every choice out of the daemon with one
+	// push, and the next client to attach would find none of them.
+	if len(canonical.WorkspaceLayoutModes) > 0 {
+		if incoming.WorkspaceLayoutModes == nil {
+			incoming.WorkspaceLayoutModes = make(map[int]string, len(canonical.WorkspaceLayoutModes))
+		}
+		for ws, mode := range canonical.WorkspaceLayoutModes {
+			if _, ok := incoming.WorkspaceLayoutModes[ws]; !ok {
+				incoming.WorkspaceLayoutModes[ws] = mode
+			}
+		}
+	}
+
 	cwds := make(map[string]string, len(canonical.Windows))
 	// The foreground command is read daemon-side on the detector's poll and no
 	// client ever sends it, so canonical is always the truth: carrying it over by
@@ -214,7 +232,7 @@ func retainDaemonExclusive(incoming, canonical *SessionState) {
 	queued := make(map[string]int)
 	var subagents map[string]int // most sessions have none
 	var subagentLists map[string][]SubagentInfo
-	// The popup mark and the size the popup was asked for are stamped once, when
+	// The popup mark, requested size and dim override are stamped once, when
 	// the daemon creates the window, and nothing ever changes them. So canonical
 	// is always the truth and they are carried over by id the way Cwd is.
 	// Without this one client sync that omits them turns a popup back into an
@@ -222,6 +240,7 @@ func retainDaemonExclusive(incoming, canonical *SessionState) {
 	type popup struct {
 		width   string
 		height  string
+		dim     *config.PopupDim
 		scratch bool
 		name    string
 	}
@@ -291,7 +310,7 @@ func retainDaemonExclusive(incoming, canonical *SessionState) {
 			cwds[w.ID] = cwd
 		}
 		if w.Popup {
-			popups[w.ID] = popup{w.PopupWidth, w.PopupHeight, w.Scratch, w.ScratchName}
+			popups[w.ID] = popup{w.PopupWidth, w.PopupHeight, w.PopupDim, w.Scratch, w.ScratchName}
 		}
 		if w.Scratch {
 			scratches[w.ID] = scratchMark{w.ScratchName, w.Workspace}
@@ -372,6 +391,7 @@ func retainDaemonExclusive(incoming, canonical *SessionState) {
 				w.Workspace = ws
 			}
 		}
+		w.PopupDim = p.dim // A client cannot set, clear or replace the override.
 		if ok {
 			w.Popup = true
 			w.IsFloating = true

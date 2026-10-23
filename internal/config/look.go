@@ -99,6 +99,7 @@ var lookKeys = []string{
 	"appearance.dim_foreground",
 	"appearance.dim_multifocus",
 	"appearance.modal_dim",
+	"appearance.popup_dim",
 	"appearance.session_colors",
 	// Borders and the window frame.
 	"appearance.border_style",
@@ -761,16 +762,24 @@ func (lk *Look) render(source string) ([]byte, error) {
 	b.WriteString("# \"tuios look remove\" deletes it. The next apply replaces it.\n")
 	b.WriteString("# config.toml wins over this file. Change settings there.\n")
 	if lk.Name != "" {
-		b.WriteString(lookHeadName + lookOneLine(lk.Name) + "\n")
+		b.WriteString(lookHeadName)
+		b.WriteString(lookOneLine(lk.Name))
+		b.WriteString("\n")
 	}
 	if source != "" {
-		b.WriteString(lookHeadSource + lookOneLine(source) + "\n")
+		b.WriteString(lookHeadSource)
+		b.WriteString(lookOneLine(source))
+		b.WriteString("\n")
 	}
 	if lk.Theme != nil {
-		b.WriteString(lookHeadTheme + lk.Theme.ID + "\n")
+		b.WriteString(lookHeadTheme)
+		b.WriteString(lk.Theme.ID)
+		b.WriteString("\n")
 	}
 	if lk.Glyphs != nil {
-		b.WriteString(lookHeadGlyphs + lk.Glyphs.ID + "\n")
+		b.WriteString(lookHeadGlyphs)
+		b.WriteString(lk.Glyphs.ID)
+		b.WriteString("\n")
 	}
 	b.WriteString("\n")
 	b.Write(frag)

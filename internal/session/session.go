@@ -245,6 +245,9 @@ type WindowState struct {
 	// PopupDefaultWidth or PopupDefaultHeight.
 	PopupWidth  string `json:"popup_width,omitempty"`
 	PopupHeight string `json:"popup_height,omitempty"`
+	// PopupDim is daemon-owned: nil inherits the client's popup or modal dim;
+	// a present zero disables it. The struct pointer preserves zero over gob.
+	PopupDim *config.PopupDim `json:"popup_dim,omitempty"`
 	// Scratch marks the session's scratch terminal: the one shell the
 	// toggle_scratch key shows as a popup and hides again. A hidden scratch
 	// terminal is Minimized, and every list a user reads leaves it out, the
@@ -545,6 +548,13 @@ type SessionState struct {
 	// client did before the field existed, so an older peer that never sends
 	// it changes nothing.
 	WorkspaceMasterSplits map[int]layout.MasterSplits `json:"workspace_master_splits,omitempty"`
+	// WorkspaceLayoutModes is which tiling layout each workspace chose, keyed by
+	// workspace. A workspace gets an entry when a layout row names it directly,
+	// so a session can run stacked in one workspace and scrolling in another.
+	// Absent, or with no entry for a workspace, means the workspace follows the
+	// session's LayoutMode, which is what every client did before the field
+	// existed, so an older peer that never sends it changes nothing.
+	WorkspaceLayoutModes map[int]string `json:"workspace_layout_modes,omitempty"`
 	// WorkspaceMasterLayout is each workspace's master-stack shape: where the
 	// masters go and how many there are. Only MsgMasterLayout writes it (see
 	// master_layout.go); a push never carries it, and retainDaemonExclusive
@@ -3072,6 +3082,9 @@ func (s *Session) snapshotStateLocked() *SessionState {
 	if s.state.WorkspaceHasCustom != nil {
 		stateCopy.WorkspaceHasCustom = maps.Clone(s.state.WorkspaceHasCustom)
 	}
+	if s.state.WorkspaceLayoutModes != nil {
+		stateCopy.WorkspaceLayoutModes = maps.Clone(s.state.WorkspaceLayoutModes)
+	}
 	stateCopy.PushSeen = maps.Clone(s.pushSeen)
 	stateCopy.LayoutTreeOps = !s.treeOpsOff
 	stateCopy.ScratchWorkspaces = !s.scratchWSOff
@@ -4190,8 +4203,8 @@ func (p *PTY) subscribeLocked(clientID string, fromSeq int64, fromSnapshot bool)
 		// The width the replay begins at. A client resumed here is usually at
 		// it already and skips it; a rolled client, whose screen the resync
 		// below clears, is not.
-		for i := len(p.resizeMarks) - 1; i >= 0; i-- {
-			if m := p.resizeMarks[i]; m.seq <= startSeq {
+		for _, m := range slices.Backward(p.resizeMarks) {
+			if m.seq <= startSeq {
 				send(ptyChunk{width: m.width, height: m.height})
 				break
 			}

@@ -362,6 +362,7 @@ type AppearanceConfig struct {
 	AnimationsEnabled        *bool                   `toml:"animations_enabled,omitempty"` // Deprecated: folded into motion on load (false is none)
 	Motion                   string                  `toml:"motion"`                       // How much moves: none, basic (window slides, copy sweep), full (also fades and the working shimmer) (default: full)
 	ModalDim                 *int                    `toml:"modal_dim"`                    // Percent the screen behind a modal overlay is darkened; 0 is off (default: 30)
+	PopupDim                 *int                    `toml:"popup_dim"`                    // Percent the screen behind a popup is darkened; 0 is off (default: 0)
 	ConfirmQuit              *bool                   `toml:"confirm_quit"`                 // Always show quit confirmation dialog (default: false). When false, only shown if foreground processes are running.
 	WhichKeyEnabled          *bool                   `toml:"whichkey_enabled"`             // Show which-key popup after pressing leader key (default: true)
 	WhichKeyPosition         string                  `toml:"whichkey_position"`            // Which-key popup position: bottom-right, bottom-left, top-right, top-left, center (default: bottom-right)
@@ -957,8 +958,12 @@ type KeybindingsConfig struct {
 	// TuiosPrefix is the tuios menu, the leader then prefix_tuios's key. A
 	// preset puts the tuios features whose keys it takes here. Empty without
 	// a preset.
-	TuiosPrefix  map[string][]string `toml:"tuios_prefix,omitempty"`
-	TerminalMode map[string][]string `toml:"terminal_mode"` // Direct keybinds in terminal mode (no prefix required)
+	TuiosPrefix map[string][]string `toml:"tuios_prefix,omitempty"`
+	// Menus are prefix menus the user declares, each opened by binding the
+	// action open_menu:NAME in any section, so menus nest as deep as the
+	// config does. None ships: see menus.go.
+	Menus        map[string]MenuConfig `toml:"menus,omitempty"`
+	TerminalMode map[string][]string   `toml:"terminal_mode"` // Direct keybinds in terminal mode (no prefix required)
 	// Global binds are consulted in window mode and in terminal mode alike, so
 	// the palette and the launcher answer to one key wherever the user is. They
 	// are a section of their own rather than entries in terminal_mode because
@@ -1057,6 +1062,7 @@ func DefaultConfig() *UserConfig {
 			Glyphs:                   theme.GlyphSetNone,
 			Motion:                   MotionFull,
 			ModalDim:                 new(ModalDimDefault),
+			PopupDim:                 new(PopupDimDefault),
 			PanelPadding:             overlay.DefaultPanelPadding,
 			ClockFormat:              DefaultClockFormat,
 			TilingScheme:             TilingSchemeSpiral,
@@ -2289,6 +2295,12 @@ func fillMissingAppearance(cfg, defaultCfg *UserConfig) {
 		cfg.Appearance.ModalDim = new(min(max(d, 0), ModalDimMax))
 	}
 
+	if cfg.Appearance.PopupDim == nil {
+		cfg.Appearance.PopupDim = new(*defaultCfg.Appearance.PopupDim)
+	} else if d := *cfg.Appearance.PopupDim; d < 0 || d > PopupDimMax {
+		cfg.Appearance.PopupDim = new(min(max(d, 0), PopupDimMax))
+	}
+
 	if cfg.Appearance.BorderStyle == "" {
 		cfg.Appearance.BorderStyle = defaultCfg.Appearance.BorderStyle
 	}
@@ -2840,6 +2852,10 @@ func ApplyAppearanceConfig(cfg *UserConfig, s *Settings) {
 	}
 	if a.ModalDim != nil {
 		s.ModalDim = min(max(*a.ModalDim, 0), ModalDimMax)
+	}
+
+	if a.PopupDim != nil {
+		s.PopupDim = min(max(*a.PopupDim, 0), PopupDimMax)
 	}
 
 	// ConfirmQuit defaults to false (nil means use default)

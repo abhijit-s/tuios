@@ -183,6 +183,7 @@ func (st *SessionState) renumberWorkspaces(newOf map[int]int) {
 	st.WorkspaceMasterSplits = RenumberWorkspaceMap(st.WorkspaceMasterSplits, newOf)
 	st.WorkspaceMasterLayout = RenumberWorkspaceMap(st.WorkspaceMasterLayout, newOf)
 	st.WorkspaceHasCustom = RenumberWorkspaceMap(st.WorkspaceHasCustom, newOf)
+	st.WorkspaceLayoutModes = RenumberWorkspaceMap(st.WorkspaceLayoutModes, newOf)
 	st.WorkspaceScrollColumns = RenumberWorkspaceMap(st.WorkspaceScrollColumns, newOf)
 	st.WorkspaceOrder = nil
 }
@@ -238,6 +239,7 @@ func (s *Session) RenumberWorkspaces(order []int) (map[int]int, error) {
 		if err != nil {
 			return err
 		}
+		state.renumberWorkspaces(newOf)
 		state.WorkspaceOrder = nil
 		// A move is a person's change, so the gaps panes exiting on their
 		// own left close up with it (noteWorkspacesLocked).
@@ -246,7 +248,7 @@ func (s *Session) RenumberWorkspaces(order []int) (map[int]int, error) {
 			return nil
 		}
 		moved = newOf
-		s.renumberLocked(state, newOf)
+		s.renumberRecordsLocked(state, newOf)
 		return nil
 	})
 	return moved, err
@@ -254,13 +256,14 @@ func (s *Session) RenumberWorkspaces(order []int) (map[int]int, error) {
 
 // CompactWorkspaces closes up the gaps between the workspaces that hold panes,
 // so they are numbered 1 to N in the order they have, and reports where each
-// of them that moved went. A workspace with no pane, the one shown included, goes past the
-// last one and loses its name, so a stale name cannot come back on a pane put
-// there later. Scratch workspaces are outside the range and stay where they
-// are.
+// of them that moved went. A workspace with no pane, the one shown included,
+// goes past the last one and loses its name, so a stale name cannot come back
+// on a pane put there later. Scratch workspaces are outside the range and stay
+// where they are.
 //
-// noteWorkspacesLocked closes up only behind a workspace that just went, which
-// leaves the gaps an older build saved. This is the explicit way to close them.
+// noteWorkspacesLocked closes up only on a person's change, behind a workspace
+// that went, which leaves the gaps an older build saved and those a pane put
+// past an empty workspace makes. This is the explicit way to close them.
 func (s *Session) CompactWorkspaces() (map[int]int, error) {
 	var moved map[int]int
 	err := s.mutateState(func(state *SessionState) error {
@@ -283,11 +286,16 @@ func (s *Session) CompactWorkspaces() (map[int]int, error) {
 		if len(names) != len(state.WorkspaceNames) {
 			state.WorkspaceNames = names
 		}
-		newOf := state.closeUp(empty)
-		s.renumberLocked(state, newOf)
-		// Every gap a pane exiting on its own left is closed now, so none is
+		// Every gap a pane exiting on its own left is closed here, so none is
 		// kept for the next person's change to close a second time.
 		s.gaps = nil
+		s.closeUpPending = false
+		newOf := state.closeUp(empty)
+		if newOf == nil {
+			return nil
+		}
+		state.renumberWorkspaces(newOf)
+		s.renumberRecordsLocked(state, newOf)
 		for from, to := range newOf {
 			if held[from] {
 				if moved == nil {
@@ -301,14 +309,9 @@ func (s *Session) CompactWorkspaces() (map[int]int, error) {
 	return moved, err
 }
 
-// renumberLocked applies newOf, a renumber a verb asked for, to the state and
-// to the records the Session keeps beside it. Called from a mutateState
-// function.
-func (s *Session) renumberLocked(state *SessionState, newOf map[int]int) {
-	if newOf == nil {
-		return
-	}
-	state.renumberWorkspaces(newOf)
+// renumberRecordsLocked moves what the Session keeps beside the state when a
+// verb renumbered it with newOf. Called from a mutateState function.
+func (s *Session) renumberRecordsLocked(state *SessionState, newOf map[int]int) {
 	s.renumberSessionRecordsLocked(newOf)
 	// The focus maps were renumbered, so a push built before this keeps the
 	// session's focus rather than putting the old numbering back.
@@ -622,6 +625,7 @@ func takeWorkspaceMapsFrom(incoming, canonical *SessionState) {
 	incoming.WorkspaceStackRatio = maps.Clone(canonical.WorkspaceStackRatio)
 	incoming.WorkspaceMasterSplits = cloneMasterSplits(canonical.WorkspaceMasterSplits)
 	incoming.WorkspaceHasCustom = maps.Clone(canonical.WorkspaceHasCustom)
+	incoming.WorkspaceLayoutModes = maps.Clone(canonical.WorkspaceLayoutModes)
 	incoming.WorkspaceScrollColumns = canonical.WorkspaceScrollColumns
 	if incoming.WorkspaceTrees != nil {
 		incoming.WorkspaceTrees = canonical.WorkspaceTrees

@@ -460,7 +460,7 @@ func herdrString(m map[string]any, key string) string {
 	return s
 }
 
-func ptr[T any](v T) *T { return &v }
+func ptr[T any](v T) *T { return new(v) }
 
 // herdrVersion is the version a pong and a snapshot report: the herdr
 // release whose API this follows, marked as tuios in semver build metadata,
@@ -718,7 +718,7 @@ func (d *Daemon) herdrTabCreate(cs *connState, in *herdrIn) (*herdrResult, *herd
 	out, herr := d.herdrVerb(cs, "new-window", herdrArgs{Session: sess.Name(), Workspace: ws, Focus: &in.Focus, Cwd: in.Cwd, Env: in.Env}, fail)
 	if herr != nil {
 		if label != "" {
-			_, _ = d.herdrVerb(cs, "set-workspace-name", herdrArgs{Session: sess.Name(), Workspace: ws, Name: ptr("")}, fail)
+			_, _ = d.herdrVerb(cs, "set-workspace-name", herdrArgs{Session: sess.Name(), Workspace: ws, Name: new("")}, fail)
 		}
 		return nil, herr
 	}
@@ -812,7 +812,7 @@ func (d *Daemon) herdrTabClose(cs *connState, in *herdrIn) (*herdrResult, *herdr
 	// The name goes first: clearing it is admin, as closing is, and a pane
 	// refused here has closed nothing.
 	if st.WorkspaceNames[ws] != "" {
-		if _, herr := d.herdrVerb(cs, "set-workspace-name", herdrArgs{Session: sess.Name(), Workspace: ws, Name: ptr("")}, fail); herr != nil {
+		if _, herr := d.herdrVerb(cs, "set-workspace-name", herdrArgs{Session: sess.Name(), Workspace: ws, Name: new("")}, fail); herr != nil {
 			return nil, herr
 		}
 	}
@@ -1043,7 +1043,7 @@ func (d *Daemon) herdrPaneRename(cs *connState, in *herdrIn) (*herdrResult, *her
 		return nil, ierr.herdr()
 	}
 	args := herdrWin(sess, win.ID)
-	args.Name = ptr(strings.TrimSpace(in.label()))
+	args.Name = new(strings.TrimSpace(in.label()))
 	if _, herr := d.herdrVerb(cs, "set-window", args, "pane_rename_failed"); herr != nil {
 		return nil, herr
 	}
@@ -1171,7 +1171,7 @@ func (d *Daemon) herdrPaneWaitForOutput(cs *connState, in *herdrIn) (*herdrResul
 	var matched *string
 	for line := range strings.SplitSeq(res.Read.Text, "\n") {
 		if re.MatchString(line) {
-			matched = ptr(line)
+			matched = new(line)
 		}
 	}
 	return &herdrResult{Type: "output_matched", PaneID: res.Read.PaneID, Revision: &res.Read.Revision, MatchedLine: matched, Read: res.Read}, nil
@@ -1405,7 +1405,7 @@ func herdrWorktreeOf(e worktree.Entry, open map[string]string) herdrWorktreeReco
 		IsLinkedWorktree: e.Linked, OpenWorkspaceID: open[herdrRealPath(e.Path)], Label: filepath.Base(e.Path),
 	}
 	if e.Branch != "" {
-		r.Branch, r.Label = ptr(e.Branch), e.Branch
+		r.Branch, r.Label = new(e.Branch), e.Branch
 	}
 	return r
 }
@@ -1444,7 +1444,7 @@ func (d *Daemon) herdrWorktreeCreate(cs *connState, in *herdrIn) (*herdrResult, 
 	if herr != nil {
 		return nil, herr
 	}
-	wt := &herdrWorktreeRecord{Path: herdrString(out, "path"), Branch: ptr(in.Branch), IsLinkedWorktree: true, Label: in.Branch}
+	wt := &herdrWorktreeRecord{Path: herdrString(out, "path"), Branch: new(in.Branch), IsLinkedWorktree: true, Label: in.Branch}
 	return d.herdrLabelled(cs, herdrString(out, "session"), herdrString(out, "window_id"), in.label(), fail, &herdrResult{Type: "worktree_created", Worktree: wt})
 }
 
@@ -1486,7 +1486,7 @@ func (d *Daemon) herdrWorktreeOpen(cs *connState, in *herdrIn) (*herdrResult, *h
 	}
 	open := d.herdrOpenCheckouts(cs)
 	rec := herdrWorktreeOf(*entry, open)
-	res := &herdrResult{Type: "worktree_opened", Worktree: &rec, AlreadyOpen: ptr(false)}
+	res := &herdrResult{Type: "worktree_opened", Worktree: &rec, AlreadyOpen: new(false)}
 	if id := open[herdrRealPath(entry.Path)]; id != "" {
 		sess, ierr := d.herdrFindSession(id)
 		if ierr != nil {
@@ -1497,7 +1497,7 @@ func (d *Daemon) herdrWorktreeOpen(cs *connState, in *herdrIn) (*herdrResult, *h
 		if root == "" && len(st.Windows) > 0 {
 			root = st.Windows[0].ID
 		}
-		res.AlreadyOpen = ptr(true)
+		res.AlreadyOpen = new(true)
 		return d.herdrCreated(cs, sess, root, res)
 	}
 	args := herdrArgs{Cwd: entry.Path}

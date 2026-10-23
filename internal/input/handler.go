@@ -4,14 +4,14 @@
 package input
 
 import (
-	"github.com/Gaurav-Gosain/tuios/internal/listnav"
-	"github.com/charmbracelet/x/ansi"
 	"strings"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/Gaurav-Gosain/tuios/internal/app"
 	"github.com/Gaurav-Gosain/tuios/internal/config"
+	"github.com/Gaurav-Gosain/tuios/internal/listnav"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // HandleInput is the main input coordinator that routes messages to appropriate handlers
@@ -717,6 +717,11 @@ func routeKey(msg tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
 		return HandleTuiosPrefixCommand(msg, o)
 	}
 
+	// A declared menu (Ctrl+B, then the key that opens it, ...)
+	if o.Menu != "" {
+		return HandleMenuCommand(msg, o)
+	}
+
 	// Handle tape prefix commands (Ctrl+B, T, ...)
 	if o.TapePrefixActive {
 		return HandleTapePrefixCommand(msg, o)
@@ -870,7 +875,7 @@ func handleLogViewerKey(msg tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
 func viewerTakesKey(msg tea.KeyPressMsg, o *app.OS) bool {
 	return !isLeaderKey(msg, &o.Settings, o.HostBaseCode(msg)) && !o.PrefixActive && !o.WorkspacePrefixActive &&
 		!o.MinimizePrefixActive && !o.TilingPrefixActive && !o.DebugPrefixActive &&
-		!o.TapePrefixActive && !o.LayoutPrefixActive && !o.TuiosPrefixActive
+		!o.TapePrefixActive && !o.LayoutPrefixActive && !o.TuiosPrefixActive && o.Menu == ""
 }
 
 // handleMessageViewKey handles a key while the message view is open. Every key

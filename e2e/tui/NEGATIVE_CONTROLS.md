@@ -7837,33 +7837,6 @@ TUIOS_E2E=1 TUIOS_E2E_BIN=/path/to/tuios \
 TUIOS_E2E=1 TUIOS_E2E_BIN=/path/to/tuios \
   go test -count=1 -run '^(TestDaemonUpgradeRefusesPanesOfOtherMachines|TestDaemonUpgradeRefusesWhileAPopupCaptures|TestDaemonUpgradeRefusesASecondWhileOneRuns|TestDaemonUpgradeRefusedOverALink|TestDaemonUpgradeRefusesAnEmbeddedDaemon)$' .
 ```
-## A workspace's number is its position
-
-A dock pill dragged to another place kept its old `{index}` and `Alt+N` still reached it by that number, and the move keys renumbered on the client only, so the daemon kept the old names. Closing a workspace left a gap: closing 2 of 1, 2 and 3 left tabs labelled 1 and 3. The daemon now renumbers on every move (`Session.RenumberWorkspaces`), closes up the place of a workspace that goes (`noteWorkspacesLocked`), and gives each herdr tab a key that moves with it (`SessionState.WorkspaceTabKeys`). The tests are in `workspace_renumber_test.go`, with `TestDockWorkspacePillsDragIntoANewOrder` updated.
-
-Run on 2026-10-17, each against a build with the fix line or lines cut, built to a separate path.
-
-| Bug | Fix removed | How | Tests that fail | Verdict |
-|---|---|---|---|---|
-| The pre-fix behaviour | yes | upstream/main at 84715194 | every new test, and `TestDockWorkspacePillsDragIntoANewOrder` ("the daemon does not have 1=REVW after the drag", "kept a display order"). The key move fails at the daemon's names ("the daemon has workspace 1 named EDIT, want REVW") | **caught** |
-| A move did not renumber | yes | `state.renumberWorkspaces(newOf)` cut from `Session.RenumberWorkspaces` | `TestWorkspaceKeyMoveRenumbers`, `TestWorkspaceDragLeftRenumbers`, `TestWorkspaceDragThenKeyMove`, `TestWorkspaceRenumberReachesEveryClient`, `TestHerdrTabMoveKeepsTabIDs`, `TestWorkspaceMoveKeyTwiceQuickly`, `TestDockWorkspacePillsDragIntoANewOrder` | **caught** |
-| A herdr tab id followed the number, not the tab | yes | `renumberWorkspaces` keeps the keys where they were (`st.WorkspaceTabKeys = keys`) | `TestWorkspaceKeyMoveRenumbers` ("herdr tab ...:t1 names REVW after the move, want EDIT"), `TestWorkspaceDragLeftRenumbers`, `TestHerdrTabMoveKeepsTabIDs`, and the drag tests through the client's renumber reading | **caught** |
-| A key move left went nowhere | yes | the `delta < 0` order in `MoveWorkspaceBy` cut | `TestWorkspaceKeyMoveRenumbers` (second half), `TestWorkspaceDragThenKeyMove` | **caught** |
-| A second move sent before the first landed swapped back | yes | the `workspaceMoveInFlight` check in `OS.RenumberWorkspaces` cut | `TestWorkspaceMoveKeyTwiceQuickly` ("EDIT is workspace 1 after two moves right") | **caught** |
-| The client did not apply the daemon's renumber to its own state | yes | `adoptWorkspaceRenumbering` call cut from `ApplyStateSyncFrom` | `TestWorkspaceKeyMoveRenumbers`, `TestWorkspaceDragThenKeyMove`, `TestDockWorkspacePillsDragIntoANewOrder`. `TestWorkspaceDragLeftRenumbers` and the two-client test pass without it: the labels come from the daemon's state | **caught** |
-| Closing a workspace left a gap | yes | `closeUp(gone)` cut from `noteWorkspacesLocked` | `TestWorkspaceCloseRenumbersTheRest` ("the dock never drew [1·EDIT 2·DPLY]"), the three updated close tests in `workspace_tab_close_test.go` ("workspace 2 has 1 panes, want 0"), `TestEmptyWorkspaceReturnsWhereXpanesRan`, `TestEmptyWorkspaceOpensAPane` | **caught** |
-| `Alt+N` past the last workspace opened N, leaving a gap | yes | `newWorkspaceSlot` answers the number it was given | `TestWorkspaceSwitchPastTheLastOpensTheNext` ("opt+5 with three workspaces did not open workspace 4"), `TestEmptyWorkspaceOpensAPane` ("shows workspace 4, want 2") | **caught** |
-| The pane asked for on a new workspace landed on the old number when the switch closed up a workspace below it | yes | the client sends no tab key with `SendNewWindowFrom` | `TestEmptyWorkspaceOpensAPane` ("workspace 2 has 0 panes, want 1") | **caught** |
-
-The move controls were run against builds of 691b0394 (the move fix alone); the close controls against the final tree. The fixed build passes every test above, three times in a row for the move tests. Every E2E test that failed on the fixed build in a full run fails the same way on upstream/main at 84715194 (`TestDockFloodingComponentStaysBounded`, `TestMaxFPSAutoReadsTheDisplay`, the risk, GUI bridge, ports, OSC 7, kitten, nested-attach, page-binding, pty-log and stream-memory tests), apart from the ones this change moved on purpose, which are updated: a workspace's number is its position, so a test that put a pane on workspace 3 with nothing on 2, or pressed `Alt+3` in a one-workspace session, now reads the number the workspace holds. The option-key tests open a pane on every workspace first, so each `Alt+N` still reaches its own number and a misread digit still lands elsewhere. The Collie herdr fixture now expects `tab.close` on a tab whose last pane closed to answer `tab_not_found`, as herdr does.
-
-### A display order carried across a live upgrade
-
-Run on 2026-10-18 on macOS, on the local integration stack (live handoff merged with workspace renumbering). `TestDaemonUpgradeAppliesADisplayOrder` starts a daemon of a build that keeps a dragged workspace order as a display order (`TUIOS_E2E_DISPLAY_ORDER_BIN`, dev+f12d864d), sets the order DPLY, EDIT, REVW, and upgrades it live to the build under test. The fixed build passes.
-
-| Control: what was cut | Tests that fail | Verdict |
-| --- | --- | --- |
-| Adoption does not apply the display order (`adoptState` without `applyLegacyWorkspaceOrder`) | `TestDaemonUpgradeAppliesADisplayOrder` ("the daemon has workspace 1 named \"EDIT\", want \"DPLY\"") | **caught** |
 ## A hook report lands only on the pane its harness runs in
 
 `TestAgentReportOnlyFromTheHarnessInThePane` (in
@@ -8038,15 +8011,6 @@ and hid its cursor again on the same cell, which left a build without the fix
 there too. The cursor now goes to a cell no frame writes to, and the first
 wait ends before the guest shows it.
 
-### Compacting a session's workspaces
-
-Run on 2026-10-19 on macOS, on the local integration stack. `TestCompactWorkspacesClosesTheGaps` drives `tuios compact-workspaces` against a detached session with workspaces 1, 3 and 4 and an empty workspace 2 named "beta"; `TestCompactWorkspacesKeyAndDockMenu` drives the `compact_workspaces` key and the dock tab's "Compact workspaces" row. The fixed build passes both, and the workspace, dock and menu tests beside them.
-
-| Control: what was cut | Tests that fail | Verdict |
-| --- | --- | --- |
-| `CompactWorkspaces` drops the empty workspaces' names but does not renumber (`s.renumberLocked(state, newOf)` cut) | `TestCompactWorkspacesClosesTheGaps`, `TestCompactWorkspacesKeyAndDockMenu` | **caught** |
-| The `compact_workspaces` action is not registered | `TestCompactWorkspacesKeyAndDockMenu` ("the dock never drew [1·EDIT 2·REVW 3·DPLY]") | **caught** |
-| The dock tab menu never shows the row (`HasWorkspaceGap` check replaced by `false`) | `TestCompactWorkspacesKeyAndDockMenu` ("context menu never showed [Switch to Compact workspaces Close]") | **caught** |
 ### A picture cropped past its pane edge keeps its own scale
 
 A guest that scales a PNG into a cell box and places it past the pane's bottom right corner is cropped to the cells that show. `TestKittyOverflowCropKeepsThePicturesScale` sends a 2000x400 picture into 100x10 cells, twice the pinned 10x20 cell on both axes, by every medium a PNG can travel in, and checks that the source rectangle is 20 of its pixels a column and 40 a row. Without its size the crop was measured in the host's cell: a slice of the picture at its own size. Run on 2026-10-19.
@@ -8734,24 +8698,6 @@ TUIOS_E2E=1 TUIOS_E2E_BIN=/path/to/tuios \
 process with the pane's `TUIOS_PANE_ID`, which is the case this fix refuses,
 and failed against it. The driver now runs in the pane, as a harness's plugins
 do, and both pass on the fixed build and on `ccde47cf`.
-The move controls were run against builds of 691b0394 (the move fix alone); the close controls against the final tree. The fixed build passes every test above, three times in a row for the move tests. Every E2E test that failed on the fixed build in a full run fails the same way on upstream/main at 84715194 (`TestDockFloodingComponentStaysBounded`, `TestMaxFPSAutoReadsTheDisplay`, the risk, GUI bridge, ports, OSC 7, kitten, nested-attach, page-binding, pty-log and stream-memory tests), apart from the ones this change moved on purpose, which are updated: a workspace's number is its position, so a test that put a pane on workspace 3 with nothing on 2, or pressed `Alt+3` in a one-workspace session, now reads the number the workspace holds. The option-key tests open a pane on every workspace first, so each `Alt+N` still reaches its own number and a misread digit still lands elsewhere. The Collie herdr fixture now expects `tab.close` on a tab whose last pane closed to answer `tab_not_found`, as herdr does.
-
-### Numbers close up only on a person's change
-
-Review of the renumbering: `Alt+6` from an empty workspace 4 opened 5 and left the dock at 1, 2, 3, 5; a workspace whose panes exited on their own closed up, renumbering the workspace on screen and sending `window-moved` and `workspace-switched` for a switch nobody made; and an Inbox item kept the workspace number its pane had before a move. `newWorkspaceSlot` now reads the slot past the last workspace that holds a pane (or has one on its way), the PTY tells the session when its process exited on its own (`Session.notePaneExitedAlone`) so that workspace leaves a gap until a person's close or move closes it up (`noteWorkspacesLocked`), and the attention store follows `window-moved` (`attentionStore.windowWorkspace`). The tests are `TestWorkspaceSwitchFromAnEmptyOneStaysOnIt`, `TestWorkspaceSelfExitLeavesTheNumbers` and `TestWorkspaceMoveRenumbersInboxItems` in `workspace_renumber_test.go`.
-
-Run on 2026-10-20, each against a build of the final tree with the fix line or lines cut, built to a separate path, the source restored with `git checkout` afterwards.
-
-| Bug | Fix removed | How | Tests that fail | Verdict |
-|---|---|---|---|---|
-| The pre-fix behaviour | yes | the branch before these commits (f906cca7b) | all three new tests: "opt+6 from the empty workspace 4 left it, want it to stay on 4 (status [5:0 5 0])", "the daemon has workspace 3 named \"\", want \"DPLY\" (names map[1:EDIT 2:DPLY])", "the Inbox item of a pane on EDIT names workspace 1 after EDIT moved to 2" | **caught** |
-| `Alt+N` from an empty workspace opened the next number | yes | `newWorkspaceSlot` counts the workspace on screen as taken (`occupiedWorkspaceNumbers`) | `TestWorkspaceSwitchFromAnEmptyOneStaysOnIt` ("opt+6 from the empty workspace 4 left it"), `TestWorkspaceSelfExitLeavesTheNumbers` ("opt+5 with a gap at 2 did not open workspace 4") | **caught** |
-| A pane exiting on its own closed the numbers up | yes | the `p.exitedAlone` call cut from `PTY.noteExit` | `TestWorkspaceSelfExitLeavesTheNumbers` ("the daemon has workspace 3 named \"\", want \"DPLY\"") | **caught** |
-| An Inbox item kept the number from before a move | yes | the `EventWindowMoved` case cut from `attentionStore.noteSessionEvent` | `TestWorkspaceMoveRenumbersInboxItems` ("names workspace 1 after EDIT moved to 2") | **caught** |
-| The switch that stays on the empty workspace opened no pane with `new_window_when_empty` | yes | the `from = 0` for a redirected switch cut from `SwitchToWorkspace` | `TestEmptyWorkspaceOpensAPane` ("workspace 2 has 0 panes, want 1") | **caught** |
-| A workspace with a pane on its way counted as empty, so `Alt+2 Alt+3` ended on 2 | yes | the `paneRequests` check cut from `newWorkspaceSlot` | `TestEmptyWorkspaceFastSwitches` ("Alt+2 Alt+3: workspace 3 has 0 panes, want 1") | **caught** |
-
-The fixed build passes the three new tests and the targeted run (`TestWorkspace`, `TestHerdr`, `TestEmptyWorkspace`, `TestXpanes`, `TestDockWorkspace`, `TestCloseWorkspace`, `TestLiveness`, the pane-move, attach, option-key, subscribe, Inbox and agent-state tests: 101 passed). The Collie herdr fixture keeps `tab_not_found` for `tab.close` on a tab whose last pane closed: herdr 0.9.5 removes a tab with its last pane (`Workspace::close_pane` in `src/workspace.rs`), so an emptied workspace keeps no name and no tab.
 
 ### The reply forwarder and the read gate's wait
 
@@ -8785,20 +8731,6 @@ Each control cuts one change from the fix, rebuilds, runs the test twice, and re
 ```sh
 go test -count=1 -run '^TestReadGateNeverReportsOutputAfterAFailedWait$' ./internal/session/
 ```
-
-### Follow-ups: a harness pid the caller runs under, and a busy protocol pane
-
-Two cases join the test for the maintainer's follow-ups to #873. `host-pid` reports from outside the pane with `tuios call set-agent-state` and a `harness_pid` naming a `sleep` the test started, a live process here that the reporter does not descend from, as a container's own pid can happen to be. It ends the `sleep` and holds the pane at its shell for three detection ticks. `protocol-pane` starts a `start-agent --protocol acp` pane on `testdata/fakeacp`, whose pane process is the protocol program and so reads as at its shell while it runs. A harness for it is `sh` handing its pid to the `tuios call set-agent-state` it execs, which reports with that pid and exits, as a harness child that restarts does. The pane is held for three ticks. Run on 2026-10-20 on macOS against upstream main at 0f62e38f. The fixed build passes all eight cases.
-
-Upstream main fails both new cases with the pane at `none`: `host-pid` ("a host process the reporter does not descend from was taken for its harness, and its exit for the harness's") and `protocol-pane` ("a protocol pane lost its state when a harness under it exited, with the pane program still running").
-
-| Control: what was cut | Tests that fail | Verdict |
-| --- | --- | --- |
-| Every harness pid timed: `setAgentHarnessPID` reads the start time whether or not `callerRunsHarness` placed the pid under the caller | `host-pid` ("a host process the reporter does not descend from was taken for its harness, and its exit for the harness's: the pane is {State:none ...}") | **caught** |
-| No harness pid timed: `callerRunsHarness` returns false, so a hook's own harness is never taken for exited | `crash` ("the agents section still lists the pane after its agent left it, with the shell running") | **caught** |
-| The shell test dropped from the exit lapse: `&& fg == ""` removed, leaving `info.atShell()` alone | `protocol-pane` ("a protocol pane lost its state when a harness under it exited, with the pane program still running: the pane is {State:none ...}") | **caught** |
-
-Not covered end to end: an agent actually in another pid namespace. `host-pid` stands in for it with a pid the reporter does not descend from, which is what the daemon sees of one. Nor a platform that does not give the peer's pid, where no harness pid is timed and a report claim stays until it is cleared.
 
 ### Follow-ups: a harness pid the caller runs under, and a busy protocol pane
 
@@ -9055,42 +8987,6 @@ stay set, as for the other herdr steps.
 The fixed build passes `TestHerdrPluginTrustAndHooks` and
 `TestPluginsInstallFromGit` 3 of 3.
 
-### Opt+N from the splash stays on workspace 1
-
-With no pane in any workspace, the splash of workspace 1 is the empty workspace on screen, and `Alt+2` stays on it, as `Alt+N` to an unused number does from any empty workspace on screen. A pane opened on 2 from the splash would leave 1 empty below it, and nothing a person does would close that up. `TestUnreadableKeyKeepsTheRestOfTheFile`, `TestDoctorMatchesTheAppWithBadKeys`, `TestReloadWithABadKeyAppliesTheRest` and `TestMacConfigWorksOnLinux` prove a configured workspace key is bound by where it goes, so each opens a pane on 1 first (`openPaneOnTheSplash`), and the key then lands on 2. The test is `TestWorkspaceSwitchFromTheSplashStaysOnIt` in `workspace_renumber_test.go`: `Alt+2` and then `n` from the splash, and the pane opens on 1.
-
-Run on 2026-10-21 on macOS, against a build with the old splash fallback put back, built to a separate path, the source restored afterwards.
-
-| Bug | Fix removed | How | Tests that fail | Verdict |
-|---|---|---|---|---|
-| `Alt+2` from the splash went to 2 | yes | the `last == 0` fallback to `m.dockWorkspace()` put back in `newWorkspaceSlot` | `TestWorkspaceSwitchFromTheSplashStaysOnIt` ("opt+2 from the splash went to workspace 2, want it to stay on 1") | **caught** |
-
-The three config tests pass on that build too, as they should: with a pane on 1, both builds send the key to 2. The fixed build passes all four.
-
-### new_workspace from the empty workspace on screen
-
-`new_workspace` and the dock's `+` go to the lowest workspace with no pane that is not the one on screen. From an empty workspace past the last one in use, `SwitchToWorkspace` stays on it, since it is already the new one, so the dock never reads 1, 3. `handleNewWorkspace` then saw the switch land short of its target and opened no pane, so the key did nothing. It now opens the pane wherever the switch landed, as long as that workspace is empty. `TestNewWorkspaceSkipsTheEmptyWorkspaceOnScreen` expected the key to go on to 3. It is now `TestNewWorkspaceStaysOnTheEmptyWorkspaceOnScreen` in `tmux_style_actions_test.go`, which expects the view to stay on 2 with a pane there.
-
-Run on 2026-10-21 on macOS, against a build with the fix line cut, built to a separate path, the source restored afterwards.
-
-| Bug | Fix removed | How | Tests that fail | Verdict |
-|---|---|---|---|---|
-| `new_workspace` from the empty workspace on screen did nothing | yes | `handleNewWorkspace` returns early again when `o.CurrentWorkspace != ws` | `TestNewWorkspaceStaysOnTheEmptyWorkspaceOnScreen` ("left panes by workspace map[1:1], want one on 1 and one on 2") | **caught** |
-
-`TestTmuxStyleActionsRunWhenBound` passes on the cut build too: from workspace 1 the switch lands on its target. The fixed build passes 37 tests: every `TestNewWorkspace*`, `TestTmuxStyle*`, `TestWorkspace*` and `TestEmptyWorkspace*` test, and `TestReloadWithABadKeyAppliesTheRest`.
-
-### A shell exit is a person's close
-
-Typing `exit` in the last shell of a workspace ended the pane's process without a close, so `notePaneExitedAlone` recorded it as exiting on its own and the dock kept a gap (1, 3). A pane's own shell is now told apart by how it was spawned: `PTY.ownShell` is set for a pane started with no command, without `close_on_exit`, on this machine. Its exit is recorded as a shell's, and `notePaneMovesLocked` counts it as a person's close unless an agent was live in the pane at the last change (`agentWasLive`), since an agent run with `exec` ends the shell's process when it finishes. A pane given a command (a `tuios xpanes` run, `start-agent`, a fan) or `close_on_exit` still exits on its own and leaves the gap. The new test is `TestWorkspaceShellExitClosesUp` in `workspace_renumber_test.go`.
-
-Run on 2026-10-21 on macOS, each against a build with one line changed, built to a separate path, the source restored afterwards.
-
-| Bug | Fix removed | How | Tests that fail | Verdict |
-|---|---|---|---|---|
-| `exit` in the last shell of workspace 2 left the dock at 1, 3 | yes | `notePaneMovesLocked` treats a shell's exit as on its own again (`if true \|\| !shell \|\| was.agent`) | `TestWorkspaceShellExitClosesUp` ("the dock never drew [1·EDIT 2·DPLY]") | **caught** |
-| A command pane's exit closed up the numbers | n/a, the spawn fact itself | `ownShell` set for every pane (`true \|\| len(sp.command) == 0 ...`) | `TestWorkspaceSelfExitLeavesTheNumbers` ("the daemon has workspace 3 named \"\", want \"DPLY\" (names map[1:EDIT 2:DPLY])") | **caught** |
-
-`TestWorkspaceSelfExitLeavesTheNumbers` passes on the first build and `TestWorkspaceShellExitClosesUp` on the second, as they should: each build breaks only the side the other test covers. The fixed build passes both.
 Not covered end to end: the pid reuse check in `leftBehind` (it needs pid
 wraparound), the git timeout, and Windows and the BSDs, where the runner
 refuses a native plugin's commands (`plugin_unsupported_platform`). The
@@ -9813,3 +9709,156 @@ Run on 2026-10-21.
 `TestPaletteTokenSearchesActions` and `TestUnbindingFromTheOverlayReachesTheConfigFile` reached the manager with `Enter` on an action row. That was the behaviour this changes, so they press `ctrl+e` now. With the fix every test matching `Palette|Keybind|Rebind|Unbind` passes (34 of 34).
 
 The footer hint is spelt `^e rebind`, the way the keybind manager spells `^r` and `^d`. Not covered end to end: an action run from the palette in terminal mode.
+
+## Focused popup dimming (#979, after #976)
+
+## Focused popup dimming (#979)
+
+`TestPopupDimsTheScreenBehind` covers option on/off, overrides, focus away/back,
+and pane/dock/rail dimming with the popup lit, at six theme/depth combinations.
+On 2026-10-22 (Go 1.26.10), all pass. Each dark/truecolor call-site control
+passed `default-off`, then failed: cutting both popup gates or the
+`scrimmedChrome` gate in `composeLayersIn` gave `option-30: pane, rail or dock
+cells did not reach dim=true`; omitting `PopupDim: p.Dim` at creation gave
+`--dim 60 kept the option's 30 percent`; retaining the target after focus moved
+away gave `focus-away: pane, rail or dock cells did not reach dim=false`.
+
+Cutting the fullscreen guard fails `TestPopupScrimNeedsTheCanvas` in
+`internal/app/popup_test.go`: `the dimmed fullscreen popup skipped the dock's
+scrim`, after dim-off passes. Cutting retention or fingerprint wiring fails
+`TestPopupDimWireAndRetention` in `internal/session/popup_test.go` at explicit
+zero or the shared fingerprint, respectively. Dropping the TML branch in
+`popupScrimTarget` fails `TestPopupScrimPercent/tml` with `dim = 40, want 30`.
+All pass with the wiring restored.
+
+Repeat from `e2e/tui` with `TUIOS_E2E=1 TUIOS_E2E_BIN=/path/to/tuios go test
+-count=1 -run '^TestPopupDimsTheScreenBehind$' -v .`. `TUIOS_E2E_FRAMES` saves
+plain/styled text and PNGs for each option, override and focus step.
+## Menus declared in config.toml
+
+`TestDeclaredMenuSplitsFromTheLeader` (window mode and terminal mode) and
+`TestDeclaredStickyMenuStaysOpenUntilAnUnboundKey` declare a split menu under
+the window prefix and a sticky resize menu inside it. They press `ctrl+b t s y`
+and `ctrl+b t s R h h z h` in the real TUI. The resize test also waits for the
+panel text of the menu's key. The unit tests in `internal/input/menus_test.go`
+and `internal/config/menus_test.go` cover nesting, a key read in its own menu
+only, the key a sticky menu hands to the pane, and the scope chord, the
+warnings and the panel rows.
+
+Run on 2026-10-18 on macOS.
+
+| Control | Tests that fail | Verdict |
+|---|---|---|
+| the sticky re-open (`m.Menu = name`) cut from `HandleMenuCommand` | `TestDeclaredStickyMenuStaysOpenUntilAnUnboundKey` ("the second h, on the same chord: pane b is still 55 wide, want less than 55") | **caught** |
+| the `if o.Menu != ""` routing cut from `HandleTerminalModeKey` | `TestDeclaredMenuSplitsFromTheLeader/terminal_mode` ("daemon never reported 2 windows with settled geometry"). The window-mode case passes, which is why both exist | **caught** |
+| The positive half | none: the sticky test shrinks the pane twice before `z` closes the menu, and the split test reads one pane before any key | **guard** |
+
+Not covered: the `Menu` clauses in `KeysGoToBindings`
+(internal/app/keyboard_enhancements.go) and `viewerTakesKey`
+(internal/input/handler.go) have no test of their own, so no control was run
+on them.
+## A workspace's number is its position
+
+A dock pill dragged to another place kept its old `{index}` and `Alt+N` still reached it by that number, and the move keys renumbered on the client only, so the daemon kept the old names. Closing a workspace left a gap: closing 2 of 1, 2 and 3 left tabs labelled 1 and 3. The daemon now renumbers on every move (`Session.RenumberWorkspaces`), closes up the place of a workspace that goes (`noteWorkspacesLocked`), and gives each herdr tab a key that moves with it (`SessionState.WorkspaceTabKeys`). The tests are in `workspace_renumber_test.go`, with `TestDockWorkspacePillsDragIntoANewOrder` updated.
+
+Run on 2026-10-17, each against a build with the fix line or lines cut, built to a separate path.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| The pre-fix behaviour | yes | upstream/main at 84715194 | every new test, and `TestDockWorkspacePillsDragIntoANewOrder` ("the daemon does not have 1=REVW after the drag", "kept a display order"). The key move fails at the daemon's names ("the daemon has workspace 1 named EDIT, want REVW") | **caught** |
+| The pre-fix behaviour, rerun on 2026-10-18 | yes | upstream main at ccde47cf | `TestWorkspaceKeyMoveRenumbers`, `TestWorkspaceDragLeftRenumbers`, `TestWorkspaceDragThenKeyMove`, `TestWorkspaceRenumberReachesEveryClient`, `TestHerdrTabMoveKeepsTabIDs`, `TestWorkspaceMoveKeyTwiceQuickly`, `TestWorkspaceCloseRenumbersTheRest`, `TestWorkspaceSwitchPastTheLastOpensTheNext` and `TestDockWorkspacePillsDragIntoANewOrder` ("the daemon has workspace 1 named EDIT, want REVW", "EDIT is workspace 1 after two moves right") | **caught** |
+| A move did not renumber | yes | `state.renumberWorkspaces(newOf)` cut from `Session.RenumberWorkspaces` | `TestWorkspaceKeyMoveRenumbers`, `TestWorkspaceDragLeftRenumbers`, `TestWorkspaceDragThenKeyMove`, `TestWorkspaceRenumberReachesEveryClient`, `TestHerdrTabMoveKeepsTabIDs`, `TestWorkspaceMoveKeyTwiceQuickly`, `TestDockWorkspacePillsDragIntoANewOrder` | **caught** |
+| A herdr tab id followed the number, not the tab | yes | `renumberWorkspaces` keeps the keys where they were (`st.WorkspaceTabKeys = keys`) | `TestWorkspaceKeyMoveRenumbers` ("herdr tab ...:t1 names REVW after the move, want EDIT"), `TestWorkspaceDragLeftRenumbers`, `TestHerdrTabMoveKeepsTabIDs`, and the drag tests through the client's renumber reading | **caught** |
+| A key move left went nowhere | yes | the `delta < 0` order in `MoveWorkspaceBy` cut | `TestWorkspaceKeyMoveRenumbers` (second half), `TestWorkspaceDragThenKeyMove` | **caught** |
+| A second move sent before the first landed swapped back | yes | the `workspaceMoveInFlight` check in `OS.RenumberWorkspaces` cut | `TestWorkspaceMoveKeyTwiceQuickly` ("EDIT is workspace 1 after two moves right") | **caught** |
+| The client did not apply the daemon's renumber to its own state | yes | `adoptWorkspaceRenumbering` call cut from `ApplyStateSyncFrom` | `TestWorkspaceKeyMoveRenumbers`, `TestWorkspaceDragThenKeyMove`, `TestDockWorkspacePillsDragIntoANewOrder`. `TestWorkspaceDragLeftRenumbers` and the two-client test pass without it: the labels come from the daemon's state | **caught** |
+| Closing a workspace left a gap | yes | `closeUp(gone)` cut from `noteWorkspacesLocked` | `TestWorkspaceCloseRenumbersTheRest` ("the dock never drew [1·EDIT 2·DPLY]"), the three updated close tests in `workspace_tab_close_test.go` ("workspace 2 has 1 panes, want 0"), `TestEmptyWorkspaceReturnsWhereXpanesRan`, `TestEmptyWorkspaceOpensAPane` | **caught** |
+| `Alt+N` past the last workspace opened N, leaving a gap | yes | `newWorkspaceSlot` answers the number it was given | `TestWorkspaceSwitchPastTheLastOpensTheNext` ("opt+5 with three workspaces did not open workspace 4"), `TestEmptyWorkspaceOpensAPane` ("shows workspace 4, want 2") | **caught** |
+| The pane asked for on a new workspace landed on the old number when the switch closed up a workspace below it | yes | the client sends no tab key with `SendNewWindowFrom` | `TestEmptyWorkspaceOpensAPane` ("workspace 2 has 0 panes, want 1") | **caught** |
+
+The move controls were run against builds of 691b0394 (the move fix alone); the close controls against the final tree. The fixed build passes every test above, three times in a row for the move tests. Every E2E test that failed on the fixed build in a full run fails the same way on upstream/main at 84715194 (`TestDockFloodingComponentStaysBounded`, `TestMaxFPSAutoReadsTheDisplay`, the risk, GUI bridge, ports, OSC 7, kitten, nested-attach, page-binding, pty-log and stream-memory tests), apart from the ones this change moved on purpose, which are updated: a workspace's number is its position, so a test that put a pane on workspace 3 with nothing on 2, or pressed `Alt+3` in a one-workspace session, now reads the number the workspace holds. The option-key tests open a pane on every workspace first, so each `Alt+N` still reaches its own number and a misread digit still lands elsewhere. The Collie herdr fixture now expects `tab.close` on a tab whose last pane closed to answer `tab_not_found`, as herdr does.
+
+### Numbers close up only on a person's change
+
+Review of the renumbering: `Alt+6` from an empty workspace 4 opened 5 and left the dock at 1, 2, 3, 5; a workspace whose panes exited on their own closed up, renumbering the workspace on screen and sending `window-moved` and `workspace-switched` for a switch nobody made; and an Inbox item kept the workspace number its pane had before a move. `newWorkspaceSlot` now reads the slot past the last workspace that holds a pane (or has one on its way), the PTY tells the session when its process exited on its own (`Session.notePaneExitedAlone`) so that workspace leaves a gap until a person's close or move closes it up (`noteWorkspacesLocked`), and the attention store follows `window-moved` (`attentionStore.windowWorkspace`). The tests are `TestWorkspaceSwitchFromAnEmptyOneStaysOnIt`, `TestWorkspaceSelfExitLeavesTheNumbers` and `TestWorkspaceMoveRenumbersInboxItems` in `workspace_renumber_test.go`.
+
+Run on 2026-10-20, each against a build of the final tree with the fix line or lines cut, built to a separate path, the source restored with `git checkout` afterwards.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| The pre-fix behaviour | yes | the branch before these commits (f906cca7b) | all three new tests: "opt+6 from the empty workspace 4 left it, want it to stay on 4 (status [5:0 5 0])", "the daemon has workspace 3 named \"\", want \"DPLY\" (names map[1:EDIT 2:DPLY])", "the Inbox item of a pane on EDIT names workspace 1 after EDIT moved to 2" | **caught** |
+| `Alt+N` from an empty workspace opened the next number | yes | `newWorkspaceSlot` counts the workspace on screen as taken (`occupiedWorkspaceNumbers`) | `TestWorkspaceSwitchFromAnEmptyOneStaysOnIt` ("opt+6 from the empty workspace 4 left it"), `TestWorkspaceSelfExitLeavesTheNumbers` ("opt+5 with a gap at 2 did not open workspace 4") | **caught** |
+| A pane exiting on its own closed the numbers up | yes | the `p.exitedAlone` call cut from `PTY.noteExit` | `TestWorkspaceSelfExitLeavesTheNumbers` ("the daemon has workspace 3 named \"\", want \"DPLY\"") | **caught** |
+| An Inbox item kept the number from before a move | yes | the `EventWindowMoved` case cut from `attentionStore.noteSessionEvent` | `TestWorkspaceMoveRenumbersInboxItems` ("names workspace 1 after EDIT moved to 2") | **caught** |
+| The switch that stays on the empty workspace opened no pane with `new_window_when_empty` | yes | the `from = 0` for a redirected switch cut from `SwitchToWorkspace` | `TestEmptyWorkspaceOpensAPane` ("workspace 2 has 0 panes, want 1") | **caught** |
+| A workspace with a pane on its way counted as empty, so `Alt+2 Alt+3` ended on 2 | yes | the `paneRequests` check cut from `newWorkspaceSlot` | `TestEmptyWorkspaceFastSwitches` ("Alt+2 Alt+3: workspace 3 has 0 panes, want 1") | **caught** |
+
+The fixed build passes the three new tests and the targeted run (`TestWorkspace`, `TestHerdr`, `TestEmptyWorkspace`, `TestXpanes`, `TestDockWorkspace`, `TestCloseWorkspace`, `TestLiveness`, the pane-move, attach, option-key, subscribe, Inbox and agent-state tests: 101 passed). The Collie herdr fixture keeps `tab_not_found` for `tab.close` on a tab whose last pane closed: herdr 0.9.5 removes a tab with its last pane (`Workspace::close_pane` in `src/workspace.rs`), so an emptied workspace keeps no name and no tab.
+
+### Opt+N from the splash stays on workspace 1
+
+With no pane in any workspace, the splash of workspace 1 is the empty workspace on screen, and `Alt+2` stays on it, as `Alt+N` to an unused number does from any empty workspace on screen. A pane opened on 2 from the splash would leave 1 empty below it, and nothing a person does would close that up. `TestUnreadableKeyKeepsTheRestOfTheFile`, `TestDoctorMatchesTheAppWithBadKeys`, `TestReloadWithABadKeyAppliesTheRest` and `TestMacConfigWorksOnLinux` prove a configured workspace key is bound by where it goes, so each opens a pane on 1 first (`openPaneOnTheSplash`), and the key then lands on 2. The test is `TestWorkspaceSwitchFromTheSplashStaysOnIt` in `workspace_renumber_test.go`: `Alt+2` and then `n` from the splash, and the pane opens on 1.
+
+Run on 2026-10-21 on macOS, against a build with the old splash fallback put back, built to a separate path, the source restored afterwards.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| `Alt+2` from the splash went to 2 | yes | the `last == 0` fallback to `m.dockWorkspace()` put back in `newWorkspaceSlot` | `TestWorkspaceSwitchFromTheSplashStaysOnIt` ("opt+2 from the splash went to workspace 2, want it to stay on 1") | **caught** |
+
+The three config tests pass on that build too, as they should: with a pane on 1, both builds send the key to 2. The fixed build passes all four.
+
+### new_workspace from the empty workspace on screen
+
+`new_workspace` and the dock's `+` go to the lowest workspace with no pane that is not the one on screen. From an empty workspace past the last one in use, `SwitchToWorkspace` stays on it, since it is already the new one, so the dock never reads 1, 3. `handleNewWorkspace` then saw the switch land short of its target and opened no pane, so the key did nothing. It now opens the pane wherever the switch landed, as long as that workspace is empty. `TestNewWorkspaceSkipsTheEmptyWorkspaceOnScreen` expected the key to go on to 3. It is now `TestNewWorkspaceStaysOnTheEmptyWorkspaceOnScreen` in `tmux_style_actions_test.go`, which expects the view to stay on 2 with a pane there.
+
+Run on 2026-10-21 on macOS, against a build with the fix line cut, built to a separate path, the source restored afterwards.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| `new_workspace` from the empty workspace on screen did nothing | yes | `handleNewWorkspace` returns early again when `o.CurrentWorkspace != ws` | `TestNewWorkspaceStaysOnTheEmptyWorkspaceOnScreen` ("left panes by workspace map[1:1], want one on 1 and one on 2") | **caught** |
+
+`TestTmuxStyleActionsRunWhenBound` passes on the cut build too: from workspace 1 the switch lands on its target. The fixed build passes 37 tests: every `TestNewWorkspace*`, `TestTmuxStyle*`, `TestWorkspace*` and `TestEmptyWorkspace*` test, and `TestReloadWithABadKeyAppliesTheRest`.
+
+### A shell exit is a person's close
+
+Typing `exit` in the last shell of a workspace ended the pane's process without a close, so `notePaneExitedAlone` recorded it as exiting on its own and the dock kept a gap (1, 3). A pane's own shell is now told apart by how it was spawned: `PTY.ownShell` is set for a pane started with no command, without `close_on_exit`, on this machine. Its exit is recorded as a shell's, and `notePaneMovesLocked` counts it as a person's close unless an agent was live in the pane at the last change (`agentWasLive`), since an agent run with `exec` ends the shell's process when it finishes. A pane given a command (a `tuios xpanes` run, `start-agent`, a fan) or `close_on_exit` still exits on its own and leaves the gap. The new test is `TestWorkspaceShellExitClosesUp` in `workspace_renumber_test.go`.
+
+Run on 2026-10-21 on macOS, each against a build with one line changed, built to a separate path, the source restored afterwards.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| `exit` in the last shell of workspace 2 left the dock at 1, 3 | yes | `notePaneMovesLocked` treats a shell's exit as on its own again (`if true \|\| !shell \|\| was.agent`) | `TestWorkspaceShellExitClosesUp` ("the dock never drew [1·EDIT 2·DPLY]") | **caught** |
+| A command pane's exit closed up the numbers | n/a, the spawn fact itself | `ownShell` set for every pane (`true \|\| len(sp.command) == 0 ...`) | `TestWorkspaceSelfExitLeavesTheNumbers` ("the daemon has workspace 3 named \"\", want \"DPLY\" (names map[1:EDIT 2:DPLY])") | **caught** |
+
+`TestWorkspaceSelfExitLeavesTheNumbers` passes on the first build and `TestWorkspaceShellExitClosesUp` on the second, as they should: each build breaks only the side the other test covers. The fixed build passes both.
+
+### A workspace's layout mode moves with it
+
+A move renumbers every map kept by workspace number. The per-workspace layout modes are one of those maps, on the client (`renumberLocalWorkspaces`) and in the daemon (`renumberWorkspaces` and `takeWorkspaceMapsFrom`). The new test is `TestLayoutModeMovesWithItsWorkspace` in `workspace_layout_mode_test.go`.
+
+Run on 2026-10-23 on Linux, each against a build with lines cut, built to a separate path, the source restored afterwards.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| A moved workspace left its layout mode on its old number | yes, daemon side | the two `WorkspaceLayoutModes` lines cut from `workspace_renumber.go` | `TestLayoutModeMovesWithItsWorkspace` ("has layout mode \"scrolling\", want \"bsp\"") | **caught** |
+| The same | yes, both sides | the daemon lines and the `WorkspaceLayoutMode` line in `renumberLocalWorkspaces` cut | `TestLayoutModeMovesWithItsWorkspace` (the same message) | **caught** |
+
+The fixed build passes it.
+
+### A display order carried across a live upgrade
+
+Run on 2026-10-18 on macOS, on the local integration stack (live handoff merged with workspace renumbering). `TestDaemonUpgradeAppliesADisplayOrder` starts a daemon of a build that keeps a dragged workspace order as a display order (`TUIOS_E2E_DISPLAY_ORDER_BIN`, dev+f12d864d), sets the order DPLY, EDIT, REVW, and upgrades it live to the build under test. The fixed build passes.
+
+| Control: what was cut | Tests that fail | Verdict |
+| --- | --- | --- |
+| Adoption does not apply the display order (`adoptState` without `applyLegacyWorkspaceOrder`) | `TestDaemonUpgradeAppliesADisplayOrder` ("the daemon has workspace 1 named \"EDIT\", want \"DPLY\"") | **caught** |
+
+### Compacting a session's workspaces
+
+Run on 2026-10-19 on macOS, on the local integration stack. `TestCompactWorkspacesClosesTheGaps` drives `tuios compact-workspaces` against a detached session with workspaces 1, 3 and 4 and an empty workspace 2 named "beta"; `TestCompactWorkspacesKeyAndDockMenu` drives the `compact_workspaces` key and the dock tab's "Compact workspaces" row. The fixed build passes both, and the workspace, dock and menu tests beside them.
+
+| Control: what was cut | Tests that fail | Verdict |
+| --- | --- | --- |
+| `CompactWorkspaces` drops the empty workspaces' names but does not renumber (`state.renumberWorkspaces(newOf)` cut from `CompactWorkspaces`) | `TestCompactWorkspacesClosesTheGaps`, `TestCompactWorkspacesKeyAndDockMenu` | **caught** |
+| The `compact_workspaces` action is not registered | `TestCompactWorkspacesKeyAndDockMenu` ("the dock never drew [1·EDIT 2·REVW 3·DPLY]") | **caught** |
+| The dock tab menu never shows the row (`HasWorkspaceGap` check replaced by `false`) | `TestCompactWorkspacesKeyAndDockMenu` ("context menu never showed [Switch to Compact workspaces Close]") | **caught** |

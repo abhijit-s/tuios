@@ -86,6 +86,12 @@ const (
 	// ModalDimMax caps it for the reason DimUnfocusedMax does: past this the
 	// screen behind is gone rather than dimmed.
 	ModalDimMax = 90
+
+	// PopupDimDefault is how far the screen behind a popup is darkened when
+	// nothing sets it. Zero leaves the screen unchanged.
+	PopupDimDefault = 0
+	// PopupDimMax caps it for the same reason as ModalDimMax.
+	PopupDimMax = 90
 )
 
 // migrateAnimationsEnabled folds the old on/off appearance.animations_enabled

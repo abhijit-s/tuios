@@ -346,6 +346,9 @@ cells a program coloured itself unless a theme is set.
 `appearance.dim_foreground = false` keeps the text of an unfocused pane at full
 strength and dims only its background.
 
+`appearance.popup_dim` (0 to 90, default 0/off) dims behind a focused plain
+popup; `tuios popup --dim` overrides it.
+
 `appearance.modal_dim` (0 to 90, default 30) darkens the screen behind an open
 panel such as the command palette; 0 turns it off. `appearance.motion` is
 `none`, `basic` (window slides and the copy sweep) or `full` (the default: also the panel

@@ -435,11 +435,13 @@ needs a client attached.
 
 ```sh
 tuios popup -s work --width 60 --height 20 -- gum choose one two three
+tuios popup -s work --dim 30 -- gum choose one two three
 file=$(tuios popup -s work --capture-stdout -- fzf)
 tuios popup -s work --wait -- gum confirm "Deploy?" && ./deploy.sh
 ```
 
-`--width` and `--height` take cells or a percent. `--wait` returns the command's
+`--width` and `--height` take cells or a percent. `--dim` overrides
+`appearance.popup_dim` (0 to 90; 0 is off). `--wait` returns the command's
 status; `--capture-stdout` prints its standard output. A popup closed by hand
 exits 130. Capture is not on Windows.
 
