@@ -271,6 +271,13 @@ tuios look apply tuios.dev/r/<id>
 tuios look apply https://example.com/my.look.toml
 tuios look apply ./my.look.toml
 
+# Choose a look from the gallery list, and apply it
+tuios look pick
+
+# List the gallery looks: id, name and author
+tuios look list
+tuios look list --json
+
 # Show the look in use
 tuios look show
 
@@ -288,20 +295,60 @@ tuios look keys --json
   local file. tuios downloads only over https.
 - tuios shows the changes and asks before it writes. Use `--yes` to skip the
   question. A run with no terminal needs `--yes`.
-- tuios writes the look to `config.d/look.toml`. It does not change
-  `config.toml`.
+- tuios writes the look to `config.d/look.toml`. Without a take-over, it
+  does not change `config.toml`.
 - A theme or glyph set in the look goes into the themes or glyphs folder. Its
   name starts with `look-`.
 - A running tuios reloads the config. You do not restart.
 - A look can set only look keys. tuios leaves out every other key and names
   it. A value that is not correct stops the look.
 - `config.toml` wins over `config.d`. tuios names each key that `config.toml`
-  sets, because the look does not change that key.
+  or a later `config.d` file sets, because the look does not change that key.
+- tuios then asks: "Let the look set these keys?" A yes is a take-over. tuios
+  removes the keys from those files and saves your values in
+  `config.d/look.saved.json`. The comments and the order of the files stay.
+- `--take-over` answers yes. `--yes` alone answers no, so a script keeps its
+  config. Use `--yes --take-over` for both.
+- A file that tuios cannot write keeps its keys, and so does a file that
+  another file includes. tuios names the file and the keys.
 - A new look replaces the look in use.
 - A config folder that tuios cannot write stops the command.
 
+`tuios look pick` shows the looks of the gallery, each with its name, its
+author and the colours of its theme. `tuios look` with no command does the
+same in a terminal. The command palette has it as "Choose a look", which
+opens it in a new pane.
+
+- Up and down move. Enter applies the look. Esc closes the list.
+- Enter asks the same questions as `tuios look apply`, the take-over question
+  too. `--take-over` answers that question yes.
+- `tuios look list` prints the id, the name and the author of each look.
+  `--json` adds the colours of each theme.
+- The list comes from `tuios.dev/gallery/feed`. When tuios cannot get it, the
+  command says so and exits with an error.
+
 `tuios look remove` deletes `config.d/look.toml` and the theme and glyph set
-that the look installed. Use `--yes` to skip the question.
+that the look installed. Use `--yes` to skip the question. After a take-over,
+it puts your saved values back:
+
+- A file that you did not change since the take-over goes back byte for byte.
+- In a file that you changed, tuios puts back each saved key that the file
+  does not set.
+- A key that you set again after the take-over keeps your newer value. tuios
+  names it.
+- A file that you deleted stays deleted. tuios names the keys it does not put
+  back.
+- When tuios cannot write a key back, the look stays and the key stays saved.
+  Fix the file, then run `tuios look remove` again.
+- When `config.d/look.saved.json` cannot be read, tuios asks before it removes
+  the look without the saved values. It moves the file aside and does not
+  delete it.
+- When `config.d/look.toml` is gone, `tuios look remove` still puts the saved
+  values back.
+
+A new look applied over a take-over puts back the saved keys that the new look
+does not set. tuios reads each file again before it writes it. If a file
+changed while tuios asked its questions, tuios stops and changes nothing.
 
 ---
 

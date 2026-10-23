@@ -8813,6 +8813,20 @@ Upstream main fails both new cases with the pane at `none`: `host-pid` ("a host 
 | The shell test dropped from the exit lapse: `&& fg == ""` removed, leaving `info.atShell()` alone | `protocol-pane` ("a protocol pane lost its state when a harness under it exited, with the pane program still running: the pane is {State:none ...}") | **caught** |
 
 Not covered end to end: an agent actually in another pid namespace. `host-pid` stands in for it with a pid the reporter does not descend from, which is what the daemon sees of one. Nor a platform that does not give the peer's pid, where no harness pid is timed and a report claim stays until it is cleared.
+
+## Two paste tests that pressed Enter before the paste landed
+
+`TestPasteBuffersKeepYanksAndPasteThem` sent Enter once the buffer chooser closed. The chooser closes before the paste lands, because the client reads the buffer from the daemon first. On CI the Enter ran `echo CHOSEN-` alone, and the buffer went to the next prompt. The test now waits for `echo CHOSEN-pbalpha42` on the line before it sends Enter.
+
+`TestAnImagePastedIntoAnSSHShellGoesToThatMachine/tmux_over_ssh_with_a_tty` sent Enter once `tuios-paste-` was on the screen. A remote paste first shows the file's name in the dock, in "Copied tuios-paste-...", so the Enter ran `wc -c` with no argument, and the path went to its input. The test now reads only the rows with a pane border, and waits for the path to its `.png`. Run on 2026-10-22.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| The chooser's paste is late, and the test's Enter overtakes it | n/a, injected: a slow daemon | `pasteBufferNamed` sleeps 1 s before `show-buffer`, with the old test | `TestPasteBuffersKeepYanksAndPasteThem`, 3 of 3 runs ("the chooser did not paste the older buffer") | **caught**, the flake |
+| The image path is late, and the test reads the dock's "Copied tuios-paste-..." as the path | n/a, injected: a slow drop | `deliverImageCmd` sleeps 1.5 s after `paste-image` answers, with the old test | `TestAnImagePastedIntoAnSSHShellGoesToThatMachine`, 3 of 3 runs, in the five subtests that paste on the far machine ("the shell never printed the image's size") | **caught**, the flake |
+
+The fixed tests pass 3 of 3 runs on the delayed build, and 25 of 25 runs on main.
+
 ## TML surfaces in popups and panes
 
 The tests are `TestTMLShowPopup` and `TestTMLShowPaneAndClose` in `tml_test.go`, and the `tml surface` case of `TestIdleCostStaysLow`. Each control is a text replacement in the branch's checkout, built and put back before the next. Run on 2026-10-20 on Linux.
@@ -8920,6 +8934,16 @@ The frame step of `TestTMLOwnerComesFirstAndCannotBeForged` and `TestTMLOwnerNam
 | y and n answer while the question does not fit | "y ran a command whose question the person could not see whole" | **caught** |
 | The fit checked only at the press, drawing a cut question | "a smaller surface did not hide the cut question" | **caught** |
 | The window name left out of the new-window yes | "d asked no question showing \"with the window name prod\"" | **caught** |
+
+## The multi-client rigs drop the layout generation
+
+`TestFloatedPaneStaysFloatedEverywhere` failed on CI with the peer holding the floated pane at 118x38 while the local client drew it at 58x36. The rigs in `internal/app` route a session resize into `SessionResizeMsg` without its `Generation`, which `WireDaemonClient` passes. The local client then pushed the generation it attached with, the daemon read every later push as tiled in a stale layout and kept its own rectangles (`keepRectsOfStaleLayout`), and the peer adopted the daemon's nominal 120x40 for the floated pane. A trace of the failing run shows the local client's push arriving at the peer with `fl=true 0,0 120x40` while the local client drew 60x38. Whether it failed depended on whether the local client's first push landed before the peer's join moved the generation on. The four rigs now read the generation on the read loop and pass it. The product passes it already. Run on 2026-10-22.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| The rig's resize carries no generation | the `Generation` field in `routeSide`, as on main | four copies at once on two cores | `TestFloatedPaneStaysFloatedEverywhere`, 3 of 240 runs, and 3 of 800 in a second batch ("the pair never settled on one arithmetic"), with the CI numbers | **caught**, statistically |
+
+With the fix the same load passes 800 of 800 runs in two batches, and the other multi-client rig tests pass. The race needs the daemon to move the generation between two of the local client's pushes, which a test cannot schedule from outside, so the control is statistical.
 
 ## Snapping left with a pixel-mouse pane on screen
 
@@ -9646,3 +9670,36 @@ carrying an escape, beside one good mark. Run on 2026-10-23.
 
 Repeat with `TUIOS_E2E=1 TUIOS_E2E_BIN=/path/to/tuios go test -count=1 -run
 '^TestAgentMarks' -v .` from `e2e/tui`.
+## Look take-over
+
+`TestLookTakeOverAndRemove` applies a look over a config.toml and a later
+config.d file that set the same keys: with `--yes` alone, then with the
+take-over answered on a terminal, then removes it. Run on 2026-10-22.
+
+| Wiring | Cut | Tests that fail | Verdict |
+| --- | --- | --- | --- |
+| `--yes` alone does not take keys over | `confirmTakeOver` answers yes for `--yes` | `TestLookTakeOverAndRemove` ("apply --yes changed config.toml") | **caught** |
+| look remove puts the saved values back | `remove` in `internal/config/look.go` skips writing the restored files | `TestLookTakeOverAndRemove` ("look remove did not put config.toml back byte for byte") | **caught** |
+
+`TestLookTakeOverKeepsLaterEdits` runs four cases from a review of the
+take-over, each on its own scratch config. Run on 2026-10-22.
+
+| Wiring | Cut | Tests that fail | Verdict |
+| --- | --- | --- | --- |
+| A file a take-over left empty still drops the first copy when the person writes it again | `lookSaved.add` tests `f.After != "" &&` before its compare | none: `planRestore` drops the copy on its own compare first | **not caught**, the second check covers it |
+| The same, in both checks | `lookSaved.add` and `planRestore` both skip an empty `After` | `TestLookTakeOverKeepsLaterEdits/second_take-over_after_an_edit` ("the remove wrote back the copy from before the first take-over and lost startup.tiled") | **caught** |
+| A second take-over saves the value the file holds now | `lookSaved.add` merges the old saved values over the new ones | `TestLookTakeOverKeepsLaterEdits/second_take-over_after_an_edit` ("the remove put back the older border_focused_color") | **caught** |
+| A file that changed while tuios asked stops the command | the compare in `configWrites` cut | `TestLookTakeOverKeepsLaterEdits/edit_during_the_question` ("the take-over did not stop on the edit") | **caught** |
+| A remove with look.toml gone still puts the values back | `runLookRemove` stops with "No look is applied" when there is no look file | `TestLookTakeOverKeepsLaterEdits/look_file_deleted_by_hand` ("the remove did not put config.toml back") | **caught** |
+| A second look gives back the keys the first took and it does not set | the apply's restore skips every key | `TestLookTakeOverKeepsLaterEdits/second_look_over_a_take-over` ("the second look did not give the theme back to config.toml") | **caught** |
+| look remove puts the saved values back | `remove` in `internal/config/look.go` skips `Restore.write` | `TestLookTakeOverAndRemove` ("look remove did not put config.toml back byte for byte") | **caught** |
+
+## Look list and picker
+
+`TestLookPickAppliesAGalleryLook` serves a fake gallery feed on a loopback
+address through `TUIOS_LOOK_GALLERY`, runs `tuios look list`, and picks the
+second look with `tuios look pick`. Run on 2026-10-22.
+
+| Wiring | Cut | Tests that fail | Verdict |
+| --- | --- | --- | --- |
+| Enter applies the look under the cursor | the picker's Enter chooses row 0 | `TestLookPickAppliesAGalleryLook` (Alpha goes in, so the take-over question for Beta's border never comes) | **caught** |

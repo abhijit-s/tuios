@@ -17,10 +17,10 @@ func TestResolveLookSource(t *testing.T) {
 		in, where, err string
 		remote         bool
 	}{
-		{in: "tuios.dev/r/abc-1", where: lookGallery + "abc-1.toml", remote: true},
-		{in: "https://tuios.dev/r/abc-1", where: lookGallery + "abc-1.toml", remote: true},
-		{in: "https://tuios.dev/r/abc-1.toml", where: lookGallery + "abc-1.toml", remote: true},
-		{in: "abc-1", where: lookGallery + "abc-1.toml", remote: true},
+		{in: "tuios.dev/r/abc-1", where: lookGalleryURL("abc-1"), remote: true},
+		{in: "https://tuios.dev/r/abc-1", where: lookGalleryURL("abc-1"), remote: true},
+		{in: "https://tuios.dev/r/abc-1.toml", where: lookGalleryURL("abc-1"), remote: true},
+		{in: "abc-1", where: lookGalleryURL("abc-1"), remote: true},
 		{in: "https://example.com/a.toml", where: "https://example.com/a.toml", remote: true},
 		{in: "./mine.toml", where: "./mine.toml"},
 		{in: "tokyo", where: "tokyo"}, // a file of that name wins over the id
@@ -54,5 +54,35 @@ func TestLookRedirectStaysHTTPS(t *testing.T) {
 	}
 	if err := lookHTTP.CheckRedirect(to("https://example.com/a"), []*http.Request{{}}); err != nil {
 		t.Errorf("a redirect to https is refused: %v", err)
+	}
+}
+
+// The gallery override may leave https only for a literal loopback address.
+// A name goes through the resolver, which can answer with any address.
+func TestLookGalleryBaseKeepsHTTPSOffLoopback(t *testing.T) {
+	for in, ok := range map[string]bool{
+		"":                        true,
+		"https://example.com":     true,
+		"http://127.0.0.1:8080":   true,
+		"http://[::1]:8080":       true,
+		"http://localhost:8080":   false,
+		"http://example.com":      false,
+		"http://127.0.0.1.nip.io": false,
+		"ftp://127.0.0.1":         false,
+	} {
+		t.Setenv(lookGalleryEnv, in)
+		if _, err := lookGalleryBase(); (err == nil) != ok {
+			t.Errorf("%q: error %v, want ok=%v", in, err, ok)
+		}
+	}
+}
+
+// A stranger names a look, and the name reaches the terminal. No character
+// that reorders, hides or breaks a line may stay in it.
+func TestCleanLookTextDropsFormatCharacters(t *testing.T) {
+	for _, r := range []rune{'‮', '⁦', '​', '‍', '\ufeff', '­', ' ', ' ', '؜', '\x1b', '\n'} {
+		if got := cleanLookText("a" + string(r) + "b"); got != "a b" {
+			t.Errorf("U+%04X: got %q, want %q", r, got, "a b")
+		}
 	}
 }

@@ -941,6 +941,13 @@ func GetCommandPaletteItems(s *config.Settings) []CommandPaletteItem {
 			},
 		},
 		{
+			Name:     "Choose a look",
+			Category: "Session",
+			Action: func(m *OS) (*OS, tea.Cmd) {
+				return m, m.OpenLookPicker()
+			},
+		},
+		{
 			Name:     "Edit theme",
 			Category: "Session",
 			Action: func(m *OS) (*OS, tea.Cmd) {
