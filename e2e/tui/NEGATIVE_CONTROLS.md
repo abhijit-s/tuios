@@ -9615,3 +9615,34 @@ Without the fix, the inputs opened by a prefix chord (window and workspace renam
 | The drop for anything else that owns the keyboard: `pasteTakenByOverlay` ends with the overlays it named before instead of `OverlayOwnsKeyboard` | `help_list_drops_it` ("a paste into the help's list reached the pane, which shows \"hl1\"") | **caught** |
 
 Not covered end to end: the other one-line fields `textFieldPaste` lists (launcher, workspace switcher, aggregate view, keybind manager filter, theme picker and editor, glyph, effect and layout pickers, host picker, settings inline edit, file and worktree dialogs, tape name, accent hex, scrollback browser and copy-mode search), and the paste key in any field but the rename.
+## Look list and picker
+
+`TestLookPickAppliesAGalleryLook` serves a fake gallery feed on a loopback
+address through `TUIOS_LOOK_GALLERY`, runs `tuios look list`, and picks the
+second look with `tuios look pick`. Run on 2026-10-22.
+
+| Wiring | Cut | Tests that fail | Verdict |
+| --- | --- | --- | --- |
+| Enter applies the look under the cursor | the picker's Enter chooses row 0 | `TestLookPickAppliesAGalleryLook` (Alpha goes in, so the take-over question for Beta's border never comes) | **caught** |
+
+## Agent-state marks from the glyph set
+
+`TestAgentMarksFollowTheGlyphSet` writes a glyph set naming `✋` for
+`state_needs_input` and `◆` for `state_working`, reports three agents over the
+CLI and reads the rail, the front window's title bar and the cockpit by cell.
+`TestAgentMarksKeepTheirDefaults` is its positive half: no set, `--ascii-only`
+and the built-in `ascii` set. `TestAgentMarksRefuseWhatTheyCannotDraw` writes a
+four-cell mark, a mark wide only through the emoji variation selector and one
+carrying an escape, beside one good mark. Run on 2026-10-23.
+
+| Wiring | Cut | Tests that fail | Verdict |
+| --- | --- | --- | --- |
+| A set names the state marks at all | the binary built from the commit before the feature | `TestAgentMarksFollowTheGlyphSet` ("the rail never drew the set's marks"), `TestAgentMarksKeepTheirDefaults/ascii-set` ("the rail never drew \"! hand-pane\""), `TestAgentMarksRefuseWhatTheyCannotDraw` ("the rail did not fall back to ▲ and ○ beside the set's ◆") | **caught** |
+| The mark column is as wide as the widest mark | `agentMarks` in `internal/config/agent_marks.go` never raises the width above one | `TestAgentMarksFollowTheGlyphSet` ("work-pane starts at column 120 and hand-pane at 121: a two-cell mark moved its row's name off the spine") | **caught** |
+| The cockpit draws the set's marks | `ckStateMark` returns the cockpit's own glyph | `TestAgentMarksFollowTheGlyphSet` ("the cockpit's work-pane row reads \"     \" before the name, want the mark \"◆\"", "the cockpit's counts do not wear the set's marks"), `TestAgentMarksKeepTheirDefaults/ascii-set` | **caught** |
+| A mark that is not one or two cells, or wide only through what follows it, keeps the default | the `MarkWidth` check in `sanitizeGlyphSet` cut | `TestAgentMarksRefuseWhatTheyCannotDraw` ("the rail did not fall back to ▲ and ○") | **caught** |
+| The cockpit's name column moves with the mark column | with the width cut above, the cockpit rows | none: at the widths the test runs the cockpit leaves a blank cell after a one-cell mark, so a two-cell mark fits it either way; only the narrow single-line row (under 48 columns) needs the move | **not caught** |
+| The title bar reserves the mark's measured width | not cut | none: the test's titles have room to spare | **not caught** |
+
+Repeat with `TUIOS_E2E=1 TUIOS_E2E_BIN=/path/to/tuios go test -count=1 -run
+'^TestAgentMarks' -v .` from `e2e/tui`.
