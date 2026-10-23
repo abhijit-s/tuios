@@ -178,6 +178,13 @@ type agentClaim struct {
 	// reporter holds that is known to say working while its own prompt is
 	// up. See crushScreenWins.
 	screenWins bool
+	// promptHold is when a report from outside the pane moved the window off
+	// needs_input, as Unix nanoseconds, and 0 when nothing holds it. The
+	// prompt may still be on the screen, so typingRefusal holds the window as
+	// waiting on it. holdFg is the pane's foreground process group then, 0
+	// when it could not be read. See promptStillShown.
+	promptHold int64
+	holdFg     int
 }
 
 // herdrAnchor is one process a herdr claim follows, named by pid and start
