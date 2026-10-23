@@ -5265,11 +5265,12 @@ func (p *PTY) noteExit(code int) {
 // the program gets one copy.
 //
 // The emulator queues a reply while vtWriter writes to it, and from elsewhere:
-// when the colours or the cell size it reports change, and when a kitty file
-// upload's check ends. Every reply wakes this loop through OnResponse, set in
-// startPTY, and the replies are taken and written under respMu. Taking them under the lock is what lets a quiesce flush
-// them: once it holds respMu, no reply is in this goroutine's hands. See
-// pty_quiesce.go.
+// when the cell size or the colours it reports change, and when a kitty file
+// upload's check ends, on a goroutine of its own. Every reply wakes this loop
+// through OnResponse, set in startPTY, so a flood that asks for nothing costs
+// it nothing. The replies are taken and written under respMu. Taking them under the lock
+// is what lets a quiesce flush them: once it holds respMu, no reply is in this
+// goroutine's hands. See pty_quiesce.go.
 func (p *PTY) forwardTerminalResponses() {
 	if p.terminal == nil {
 		return
@@ -5291,7 +5292,7 @@ func (p *PTY) forwardTerminalResponses() {
 func (p *PTY) sendResponsesLocked() {
 	for {
 		data := p.terminal.TakeResponses()
-		if data == nil || p.pty == nil {
+		if len(data) == 0 || p.pty == nil {
 			return
 		}
 		_, _ = p.pty.Write(data)

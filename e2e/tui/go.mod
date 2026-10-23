@@ -6,7 +6,7 @@ toolchain go1.26.10
 
 require (
 	github.com/Gaurav-Gosain/tuitest v0.1.0
-	tuios.dev/vt v0.2.1-0.20261021104653-285e3de047fd
+	tuios.dev/vt v0.3.1-0.20261023124927-211d9f938c2a
 )
 
 require (
@@ -34,9 +34,9 @@ require (
 	golang.org/x/image v0.45.0 // indirect
 	golang.org/x/term v0.46.0 // indirect
 	golang.org/x/text v0.42.0 // indirect
-	tuios.dev/progstatus v0.1.0 // indirect
-	tuios.dev/swatch v0.1.0 // indirect
-	tuios.dev/tml v0.1.1-0.20261019164123-bf9b29e8d0d8 // indirect
+	tuios.dev/progstatus v0.1.1-0.20261023124927-50c38920e301 // indirect
+	tuios.dev/swatch v0.1.1-0.20261023124927-50c38920e301 // indirect
+	tuios.dev/tml v0.1.1-0.20261023124927-50c38920e301 // indirect
 )
 
 require (
@@ -59,7 +59,7 @@ require (
 	github.com/xo/terminfo v1.2.0 // indirect
 	golang.org/x/sync v0.23.0 // indirect
 	golang.org/x/sys v0.48.0 // indirect
-	tuios.dev/shot v0.2.0
+	tuios.dev/shot v0.2.1-0.20261023124927-50c38920e301
 )
 
 replace github.com/Gaurav-Gosain/tuios => ../..
