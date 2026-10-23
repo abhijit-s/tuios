@@ -74,7 +74,7 @@ func (m *OS) gotoPickerRow(r gotoRow, selected bool, rowBg color.Color, pal over
 		}
 		right = overlay.Style(rowBg).Foreground(pal.FgMute).Render(overlay.Truncate(words, max(width/3, 8)))
 		if glyph, glyphColor := agentMark(r.state, r.doneSeen, r.subagents, pal); glyph != "" {
-			right += overlay.Style(rowBg).Foreground(glyphColor).Bold(r.needsYou()).Render(" " + glyph)
+			right += overlay.Style(rowBg).Foreground(glyphColor).Bold(r.needsYou()).Render(" " + agentMarkCellRight(glyph))
 		}
 	case gotoSession, gotoWorkspace:
 		right = overlay.Style(rowBg).Foreground(pal.FgMute).Render(panePlural(r.panes))

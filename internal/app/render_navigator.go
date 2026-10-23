@@ -614,9 +614,11 @@ func navSSHTarget(cmdline string) string {
 // running command after a rule in the informational ink. byFolder is
 // navPaneLabel's.
 func (m *OS) navPaneName(s *navSession, p *navPane, selected bool, k navInks) (string, bool) {
-	mark := k.ink(k.fg).Render("  ")
+	// The mark column is as wide as the glyph set's widest agent mark, so the
+	// labels stay in one column when a set draws a two-cell mark.
+	mark := k.ink(k.fg).Render(strings.Repeat(" ", agentMarkWidth()+1))
 	if glyph, c := agentMark(p.AgentState, p.DoneSeen, p.Subagents, theme.UI()); glyph != "" {
-		mark = k.ink(theme.Readable(c, k.ground)).Bold(sidebarAttention(p.AgentState)).Render(glyph) + k.ink(k.fg).Render(" ")
+		mark = k.ink(theme.Readable(c, k.ground)).Bold(sidebarAttention(p.AgentState)).Render(agentMarkCell(glyph)) + k.ink(k.fg).Render(" ")
 	}
 	label, byFolder, quiet := navPaneLabel(p)
 	ink := k.fg
@@ -728,7 +730,7 @@ func (m *OS) navigatorPreview(r navRow, width, height int, bg color.Color, pal o
 	if p.Focused && s.Current {
 		facts = k.ink(k.current).Render("current")
 	}
-	out = append(out, pad+navSpans(width-2, k.ink(k.mute).Render("  "+where), facts, k))
+	out = append(out, pad+navSpans(width-2, k.ink(k.mute).Render(strings.Repeat(" ", agentMarkWidth()+1)+where), facts, k))
 	out = append(out, pad+overlay.DashRule(width-2, bg, pal))
 
 	room := height - len(out)
