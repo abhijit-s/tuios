@@ -7,6 +7,119 @@ below. Two of them are **not** caught here; that is written down rather than
 papered over, because a suite whose real coverage is unknown is worse than no
 suite.
 
+## Synchronized output holds the native cursor with content
+
+`TestSynchronizedOutputHoldsHostCursor` uses a real daemon, attached client,
+and 232x53 PTY with animations enabled. A FIFO feeds separate writes for a
+complete frame, an open DEC 2026 update at a drawing position, its completed
+frame, and an ordinary cursor-only update. Before sampling the hold, the test
+requires `get-window` to report the attached client's raw VT cursor at the
+intermediate position. This is independent of `GuestCursor`'s presentation
+cache: a delayed producer cannot make the hold assertion pass without ever
+opening the update. Acknowledgement and sampling have budgets below the VT's
+one-second sync timeout; exceeding them fails the test.
+
+Run on 2026-10-23 on macOS with Go 1.26.10, based on `a1823e525376` plus
+the cursor sync gate. A Go overlay changed only the call-site condition
+`if !w.Terminal.IsSyncActive()` in `Window.GuestCursor` to `if true`.
+It did not change the cursor accessors or the native/software ownership fix.
+The negative binary failed all three cases while `SYNCCOMMITTED` remained on
+screen: the host cursor moved from zero-based `(5,3)` to `(37,13)` and changed
+from bar to block. The visible case was detected immediately after client
+acknowledgement; hide-during and show-during were detected about 11 ms later.
+All three cases then passed their positive halves: closing 2026 moved to
+`(9,6)` with an underline and the requested visibility, and ordinary
+cursor-only output moved to `(10,7)`, visible with a bar.
+
+The fixed binary passed the same acknowledged fixture: the host cursor stayed
+at `(5,3)` with its prior visibility and bar shape throughout each approximately
+307–309 ms sampling interval, then committed the final cursor. Repeat from
+`e2e/tui` with `TUIOS_E2E=1 TUIOS_E2E_BIN=/path/to/tuios go test -p 1
+-run '^TestSynchronizedOutputHoldsHostCursor$' -count=1 -timeout 2m -v .`.
+Set `TUIOS_E2E_FRAMES` to an existing directory for the raw host stream
+(`cursor-sync.ansi`), client acknowledgements and cursor observations
+(`cursor-sync.txt`), and plain/styled held frames for every visibility case.
+The local run redirected only the harness's runtime root through an owned
+short `/tmp` alias to the investigation scratch directory for Unix socket
+length, and disabled its unrelated stale-runtime sweep through a test overlay.
+
+A temporary deterministic probe also exercised actual `OS.View`,
+`viewCursor`, and `GuestCursor`: position, visibility, shape, blink and OSC 12
+colour stayed committed during sync, then refreshed after its close. Its
+first-read-during-sync and busy-I/O-lock checks passed with the fix. Removing
+only the same gate failed the three View cases and the first-read case;
+ordinary updates and the nonblocking-lock control still passed. The probe is
+not retained because the real PTY E2E catches the reported bug.
+
+Focused `go test -race -p 1` checks passed for the probe plus native cursor
+ownership, cursor parking, overlay cursor suppression, I/O lock reentry, and
+content sync holds through cache invalidation, composition and the fullscreen
+fast path. Both normal and gate-disabled command binaries built successfully.
+
+This forces a fragmented guest update. It demonstrates the transport/render
+failure mechanism, not the frequency of natural Neovim j/k fragmentation or
+physical Ghostty display behavior. Cursor and content are still sampled under
+separate lock acquisitions; this gate prevents mid-sync cursor sampling and
+does not introduce an atomic frame snapshot.
+
+## Native cursor ownership across guest visibility changes
+
+`TestNativeCursorVisibilityTransition` in `internal/app` deterministically
+shows the guest cursor between the ownership query and the locked cell walk.
+Its visible, hidden and hidden-to-visible cases require text and cached text
+to contain no software cursor while native rendering owns it, and check the
+independently sampled native cursor after movement. In the same fixture each
+case then shows the guest cursor, sets `ShowScrollbackBrowser = true`, clears
+the content cache and requires a software cursor: the fallback still works
+when native ownership is unavailable.
+
+Run on 2026-10-23 on macOS against upstream main `c5077dcc` plus the fix.
+A Go overlay replaced only the `renderTerminal` call-site selection
+`nativeCursor, _ := m.paneCursor(); useRealCursor := nativeCursor != nil`
+with `useRealCursor := m.getRealCursor() != nil`; production files were not
+edited or reverted. From the root, `go test -p 2 -overlay <overlay.json>
+./internal/app -run '^TestNativeCursorVisibilityTransition$' -count=1 -v`
+failed only `hidden-to-visible`, printing:
+
+```text
+render painted 1 software cursors while the native cursor owns rendering
+cached text retained a software cursor after the native cursor moved
+```
+
+All three cases printed `software fallback rendered without native ownership`,
+including the failing transition case. The same command without the overlay
+passed all three cases. This is a deterministic race regression; the separate
+real-client cursor E2E tests do not force this interleaving.
+## Tiled panes move one way when a pane opens, swaps or closes
+
+`TestTiledPanesMoveOneWay` opens a second pane beside a first in a BSP daemon
+session with animations on, swaps the two with `H`, and closes the second.
+The render trace gives the first pane's rectangle in every frame the client
+composed. The open is also replayed from the host stream at the close of every
+synchronized update. Each transition must go from the start to the target in
+one direction, through at least three values in between, and must not reach
+the target early and leave it. The new pane's shell reports a directory (OSC 7)
+every 40ms, so the daemon broadcasts the session during the slide. The test
+requires a state sync for the first pane between two frames of its slide.
+
+Run on 2026-10-23 on Linux amd64 (Go 1.26.10).
+
+| Control | How | Result | Verdict |
+| --- | --- | --- | --- |
+| The parent commit | `f4a47c486` with only the frame line of the render trace added | 2 runs of 2 fail. Widths `[120 60 120 60 119 117 60 114 ...]`, presented right edges `[119 59 119 59 118 ...]`: the flash, once per broadcast. The swap is a cut: left edges `[60]` | **caught** |
+| No retarget on a sync | the fix with the `snapInFlight` check in `updateWindowFromState` removed | 2 runs of 2 fail. Widths `[120 60 116 108 60 99 91 60 ...]` | **caught** |
+| Landing snaps before a BSP open or close | `requireRealRelayout` back to `requireRealLayout` | not caught. A pane opened while another still slides is not in this test | **not caught** |
+
+With the fix the test passed 3 runs of 3. Open widths
+`[120 116 108 100 91 84 78 74 70 67 65 64 63 62 61 60]`, swap left edges
+`[0 6 19 31 41 48 52 55 57 58 59 60]`, close widths
+`[60 63 71 79 88 95 101 106 109 112 114 116 117 118 119 120]`.
+
+Repeat with `TUIOS_E2E=1 TUIOS_E2E_BIN=/path/to/tuios go test -count=1
+-run '^TestTiledPanesMoveOneWay$' -v .` from `e2e/tui`. With
+`TUIOS_E2E_FRAMES` set, the run saves the frame rectangles of each
+transition, the host stream, and the offset the open starts at.
+
 ## Sidebar-created worktrees apply startup tiling
 
 `TestRailRightClickMakesAWorktree` drives the repository row's real right-click
