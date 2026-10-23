@@ -9577,3 +9577,28 @@ With the fix the test passes four runs of four; the trace reads `working` from `
 | `detectionPass` marks `sawProcess` on the zero claim of a pane nothing holds, rather than on a claim at `AgentSourceDetect` (the build of the branch the fix sits on) | three runs of three ("an OSC-tier report was not applied to a pane no tier held while the agent ran: read idle (source report, harness ), set-agent-state said \"Not applied: a higher-ranked source owns this pane. It still reports idle.\"") | **caught** |
 
 Not covered: the other ways a pane can be left with a state and no claim before the detector first sees an agent in it. A transcript join dropped (`DropAgentTranscript`) yields the same way the screen tier does; a program's records ending clear the state to `none` before they yield, and the detector then takes a pane at `none` as its own.
+## Agent signals on an exited agent's pane
+
+The test is `TestAgentSignalsOnAnExitedAgentsPane` in `agent_progress_exited_test.go`. A pane whose agent has left keeps the harness it was attributed to; a program that is not an agent then runs in it: `mise`, a script that draws an OSC 9;4 progress bar and clears it, or `spin`, a script that puts a braille spinner in the window title, the shape of Claude Code's working title. The pane has to stay at `none` through the run and four seconds after, read every 200ms; each case saves `agent-state-trace.json`, `pane.txt` and the hook log. The agent leaves either through the real `tuios agent-hook claude-code` (a stand-in `claude` from `testdata/fakeclaude` ends a turn, sends `SessionEnd` and exits) or through a reporter at the OSC tier that says `working` and then `none`, naming `claude-code`. The positive cases run a stand-in `claude` with no hooks, found by the foreground-process detector, that clears its own bar (`idle` from `osc`) or sets its own spinner title (`working` from `osc`), in a fresh pane and in a pane an earlier agent left. Each control is a text replacement in the branch's checkout, built to a separate binary and put back. Run on 2026-10-22 on macOS against upstream main at 585f6778.
+
+Upstream main, which has no fix, fails `osc-tier-exit-bar` and `osc-tier-exit-title` three runs of three, both with the pane at `working`, source `osc`, harness `claude-code`. `hook-exit` passes on upstream: the claim the hook's `SessionEnd` leaves ranks above the OSC tier and refuses the bar, so it is a guard, not the case that shows the bug. A pane with the harness and no such claim (a claim at the OSC tier or below, or none at all) has no such guard. The fixed build passes all six cases three runs of three.
+
+| Control: what was cut | Tests that fail | Verdict |
+| --- | --- | --- |
+| The fix removed (upstream main) | `osc-tier-exit-bar` ("mise, a program that is not an agent, made the pane an agent: state working (source osc, harness claude-code)"), `osc-tier-exit-title` (the same for spin) | **caught** |
+| The OSC 9;4 gate back to its old test: `progressTarget` takes a harness named on the pane, a claim, or a harness pid for an agent | `osc-tier-exit-bar` ("mise, a program that is not an agent, made the pane an agent: state working (source osc, harness claude-code)") | **caught** |
+| The harness of a pane with no agent in it still read: `agentHarnessOf` returns the remembered harness whatever `agentInPane` says | `osc-tier-exit-title` ("spin, a program that is not an agent, made the pane an agent: state working (source osc, harness claude-code)") | **caught** |
+
+Not covered end to end: a notification (OSC 9 or 777) sent by a program that is not an agent in such a pane, which goes through the same `agentHarnessOf` gate as the title, and a harness pid recorded by `report-agent-session` on a pane at `none`, which `agentInPane` still counts while the process runs.
+
+## Clearing the rename dialog
+
+`TestRenameDialogClears` attaches a real client to a daemon session whose window is named `oldname`, opens the rename dialog with `r`, and reads every rename back from `tuios list-windows --json`. It clears with `ctrl+u`, with `ctrl+c` on text, closes with `ctrl+c` on an empty field (the name must stay), clicks the `clear` hint, and clears the help search with `ctrl+u`. Each control cut the wiring in a build of this branch and ran only this test. Run on 2026-10-21 on macOS against upstream main at b0c27a48.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| ctrl+u does nothing in the rename dialog | The `ctrl+u` case in `handleRenameMode` | Removed | `TestRenameDialogClears`: `ctrl+u left the dialog open with an empty field: field never read ""` | **caught** |
+| ctrl+c always cancels the rename | The empty-buffer branch of the `ctrl+c` case | Always `EndRename` | `TestRenameDialogClears`: `ctrl+c with text left the dialog open with an empty field: field never read ""` | **caught** |
+| ctrl+c never cancels the rename | The same branch | Always `RenameClear` | `TestRenameDialogClears`: `ctrl+c on an empty field did not close the dialog` | **caught** |
+| The clear hint is not pressable | `renameClearHit` recorded in `renderOverlays` | Never recorded | `TestRenameDialogClears`: `a click on the clear hint left the dialog open with an empty field: field never read ""` | **caught** |
+| ctrl+u does nothing in the help search | The `ctrl+u` check in `handleHelpOverlayKey` | Never taken | `TestRenameDialogClears`: `ctrl+u did not clear the help search query` | **caught** |
