@@ -9726,3 +9726,90 @@ one good mark. Run on 2026-10-23.
 
 Repeat with `TUIOS_E2E=1 TUIOS_E2E_BIN=/path/to/tuios go test -count=1 -run
 '^TestAgentMarks' -v .` from `e2e/tui`.
+## A hook report lands only on the pane its harness runs in
+
+`TestAgentReportOnlyFromTheHarnessInThePane` (in
+`harness_integrations_test.go`) runs the real Claude Code hook under a
+stand-in harness, the test binary itself, a process that is not a shell, so
+the hook reports it as `harness_pid`. Outside the pane, a server started from
+the test leaves it, so it runs under init in a session of its own, and runs
+the harness on a terminal of its own with the pane's `TUIOS_PANE_ID` and
+`TUIOS_SESSION`, the way Claude Code's daemon runs a background session. The
+server is a copy of the test binary named `claude`, started with
+`--bg-pty-host`, as Claude Code's pty host is. Its prompt, its
+`SubagentStart` and a Droid `SessionStart` must each be refused with
+`foreign_pane`, and so must a `tuios call set-agent-state` from there that
+claims the pane's own shell as its `harness_pid`; the pane must stay `none`
+and unlisted by `list-agents`. The positive halves: the same harness and hook
+run from the pane's shell set the pane to `working`; a harness outside the
+pane whose environment names no pane may still choose it with `--window`; and
+the same kind of server started from the pane's shell as a copy named
+`conmon` (a rootless container's helper) and as a copy named `tmux` has left
+the pane's tree and terminal just as the background session has, with no
+harness daemon above it, and its prompt (and, for `conmon`, its `Stop`) sets
+the pane with its own conversation. The test writes each hook's `--explain`
+line and the pane's state after it to `agent-report-own-pane.log` in its
+artifact directory.
+
+Run on 2026-10-18 on macOS, on the branch rebased onto `upstream/main` at
+`55590f29`, with the test of that time: the outside server was a plain copy
+of the test binary, and the exception was for multiplexer servers by name.
+The second row was run before the rebase.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| A harness outside the pane, with the pane's inherited `TUIOS_PANE_ID`, set its state | yes | `harnessOutsidePane` returns false at once, which cuts the check from all three verbs | `TestAgentReportOnlyFromTheHarnessInThePane` ("a prompt from a harness outside the pane: applied=true reason=\"\", want refused with foreign_pane"; then the subagent with `reason=""`, the Droid id with `foreign_harness` and the claimed shell with `foreign_session`, as the pane held `phantom-1`) | **caught** |
+| The same, on the branch's base | yes | `upstream/main` at `ccde47cf`, built unchanged | the same test, with the same first failure | **caught** |
+| A harness in tmux in the pane was refused, so the pane showing the tmux client lost its agent | yes | `harnessOutsidePane` without the multiplexer exception, since replaced by the harness daemon check | the same test ("a prompt from a harness in tmux in the pane: applied=false reason=\"foreign_pane\", want applied"); every other case passes | **caught** |
+| A caller outside the pane passed by naming the pane's shell as its `harness_pid` | yes | `harnessOutsidePane` without the check of the claim against the caller's pid | the same test ("a report from outside the pane claiming the pane's shell as its harness: applied=true reason=\"\", want refused with foreign_pane") | **caught** |
+
+Run on 2026-10-20 on macOS, on `upstream/main` at `5d290099` plus the
+branch, after review: the check refuses only a harness with a harness daemon
+(`harnessDaemons`) among its ancestors, not every harness that left the pane.
+Each control cut one thing from `internal/session/agent_report_pane.go`,
+built, ran the test, and restored the file byte for byte (same SHA-1).
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| A harness in a rootless container in the pane (distrobox, toolbox, podman, docker, through conmon) was refused | yes | The branch before the change, which refused every harness that left the pane unless a multiplexer server was above it | the same test ("a prompt from a harness in conmon in the pane: applied=false reason=\"foreign_pane\", want applied", and the same for its `Stop`); every other case passes | **caught** |
+| The same, and a harness in tmux in the pane | yes | `harnessOutsidePane` refuses every harness that left the pane (`return !harnessDaemonAbove(...) \|\| true`) | the same test: the `conmon` prompt and `Stop`, and "a prompt from a harness in tmux in the pane: applied=false reason=\"foreign_pane\", want applied" | **caught** |
+| A background session outside the pane set its state (the bug the check is for) | yes | `harnessDaemons` emptied | the same test ("a prompt from a harness outside the pane: applied=true reason=\"\", want refused with foreign_pane", then the subagent; the phantom's id then refuses every later case with `foreign_session`) | **caught** |
+
+The fixed build passes it three runs in a row (`-count=3`).
+
+`TestOpenCodeV2PluginReportsOnlyItsSession` and
+`TestPluginsReportBlockingPrompts` ran their plugin driver from the test
+process with the pane's `TUIOS_PANE_ID`, which is the case this fix refuses,
+and failed against it. The driver now runs in the pane, as a harness's plugins
+do, and both pass on the fixed build and on `ccde47cf`.
+
+## The go-to picker (goto_picker)
+
+`TestGotoPickerGoesAnywhere` opens the picker with `Ctrl+B G` on a real client attached to `home`, with `work` and `ops` beside it and `home` and `ops` filed under the space `surge`. The pane `needy` in `ops` is an agent in `needs_input`, set with `tuios set-agent-state`. A fuzzy query for `zebra` has to land on the pane `zebra-ledger` on workspace 2 of `work`, read from list-clients, list-workspaces and list-windows. The queries `kind:session space:surge`, `kind:ws session:work` and `@harness:claude` each have to show the rows they name and none of the others, which another query in the same run shows. An empty query and Enter has to go back to `home`, and, after the prefix `n` moves to `homeb`, back to the first pane of `home`: the place the client left, not the place the picker last left, and not the agent that needs you, whose row has to be on screen both times. Each step saves its frame under `artifactDir`. Each control below was built from the branch head with one piece of wiring cut, and run alone with `-run TestGotoPicker`. Run on 2026-10-21, on the branch rebased onto main at b90ef7e7.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| Selector terms do not narrow the list | The `q.match(r)` gate in `gotoFiltered` (goto_picker.go) | Deleted | `TestGotoPickerGoesAnywhere` ("kind:session space:surge: showing \"session    work\"") | **caught** |
+| Enter on a pane in another session does not switch session | The `sidebarFocusWindow` call in `gotoRow`'s pane case | Replaced by a focus of the pane in the attached session only | `TestGotoPickerGoesAnywhere` ("ASSERTION: no client shows session work") | **caught** |
+| The empty list does not put the place left first | Both recent tiers in `gotoRank` | Deleted, so a recent place ranks in the rest | `TestGotoPickerGoesAnywhere` ("ASSERTION: no client shows session home", the first flip back) | **caught** |
+| A move made without the picker is not a place left | The `m.noteGotoPlace()` call in `Update` (update.go) | Deleted, so a place is noted only when the picker opens | `TestGotoPickerGoesAnywhere` ("ASSERTION: no client shows session home", the flip back after the prefix `n`) | **caught** |
+| An agent that needs you takes Enter on an empty query | The order of the first two tiers in `gotoRank` | Swapped back, so the needs-you tier sorts above the place left last | `TestGotoPickerGoesAnywhere` ("ASSERTION: no client shows session home", the first flip back) | **caught** |
+| The action reaches no handler | `registerPrefixHandlers`: the `goto_picker` line | Deleted | `TestGotoPickerGoesAnywhere` ("the go-to picker never showed") | **caught** |
+
+The fixed build passes it, along with every test matching `Switcher`, `Palette`, `Inbox`, `WhichKey`, `Overlay`, `KeybindManager`, `Keybinds` and `SessionPicker` (68 tests passed, 1 skipped: `TestRealCrushAnsweredFromTheInbox`, which needs a real crush binary).
+## Palette runs actions
+
+`TestPaletteRunsTheActionItFinds` types `#new_window` into the palette, presses `Enter`, and waits for the dock and the daemon's `list-windows` to show two windows with the palette closed and no keybind manager on screen. Then it types `#toggle_zoom`, presses `ctrl+e`, and waits for the keybind manager open on Toggle zoom, with the daemon still listing two windows. Frames are saved under the test's artifact directory: the `#` search with the `^e rebind` hint, the screen after `Enter`, and the manager after `ctrl+e`.
+
+`TestPaletteViewOnlyActionSaysSoInFull` types `#file_delete_forever`, an action only the rail reads, presses `Enter`, and waits for the keybind manager and the notice in the dock. It wants the notice whole, `file_delete_forever works only in its own view.`, with no ellipsis on its line, at the suite's terminal size. The frame is saved as `view-only-notice`.
+
+Run on 2026-10-21.
+
+| Wiring | Cut | Tests that fail | Verdict |
+| --- | --- | --- | --- |
+| Enter on an action row runs the action | the row's action skips `runPaletteAction` and opens the keybind manager, as it did before | `TestPaletteRunsTheActionItFinds` ("enter on the new_window row: window count never reached 2 (last 1)") | **caught** |
+| The view-only notice fits the dock | the two-sentence notice put back ("... runs only in its own view. Its keys are listed here.") | `TestPaletteViewOnlyActionSaysSoInFull` ("the notice is cut off in the dock: \"... file_delete_forever runs only in its own view. Its…  more ...\"") | **caught** |
+
+`TestPaletteTokenSearchesActions` and `TestUnbindingFromTheOverlayReachesTheConfigFile` reached the manager with `Enter` on an action row. That was the behaviour this changes, so they press `ctrl+e` now. With the fix every test matching `Palette|Keybind|Rebind|Unbind` passes (34 of 34).
+
+The footer hint is spelt `^e rebind`, the way the keybind manager spells `^r` and `^d`. Not covered end to end: an action run from the palette in terminal mode.
