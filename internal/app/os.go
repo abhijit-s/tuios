@@ -1269,6 +1269,9 @@ type OS struct {
 	// replyEditorDir is the private folder of the file $EDITOR has open for
 	// a draft, removed when it closes. See inbox_reply_history.go.
 	replyEditorDir string
+	// scrollbackEditorDir is the private folder of the scrollback file the
+	// editor has open, removed when it closes. See os_selection.go.
+	scrollbackEditorDir string
 	// launcherIconCells is where the last frame put each row's icon, in
 	// panel-relative cells, for the flush that follows the frame.
 	launcherIconCells []launcherIconPlacement
@@ -2308,6 +2311,7 @@ func (m *OS) Cleanup() {
 	// The copy of an image the desktop viewer was given.
 	m.replyPreview.removeOpened()
 	m.removeReplyEditorFile()
+	m.removeScrollbackEditorFile()
 	m.stopWindowExitDrain()
 	m.endConfigWatch()
 	m.endOmarchyFollow()

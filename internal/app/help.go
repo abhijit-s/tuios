@@ -329,11 +329,15 @@ func generateCategoryBindings(registry *config.KeybindRegistry, categoryName str
 // generateWorkspaceBindings generates all workspace-related bindings
 func generateWorkspaceBindings(registry *config.KeybindRegistry, s *config.Settings) []HelpBinding {
 	bindings := []HelpBinding{}
+	// Every live key from every section. GetKeys stops at the first section
+	// that names the action, and the workspaces section always does from the
+	// defaults, so a key bound in [keybindings.global] never showed (#1085).
+	presses := config.PressesByAction(registry)
 
 	// Add all 9 workspace switches
 	for i := 1; i <= 9; i++ {
 		action := fmt.Sprintf("switch_workspace_%d", i)
-		keys := registry.GetKeys(action)
+		keys := presses[action]
 		if len(keys) > 0 {
 			bindings = append(bindings, HelpBinding{
 				Action:      action,
@@ -347,7 +351,7 @@ func generateWorkspaceBindings(registry *config.KeybindRegistry, s *config.Setti
 	// Add all 9 move and follow actions
 	for i := 1; i <= 9; i++ {
 		action := fmt.Sprintf("move_and_follow_%d", i)
-		keys := registry.GetKeys(action)
+		keys := presses[action]
 		if len(keys) > 0 {
 			bindings = append(bindings, HelpBinding{
 				Action:      action,
@@ -360,7 +364,7 @@ func generateWorkspaceBindings(registry *config.KeybindRegistry, s *config.Setti
 
 	for i := 1; i <= 9; i++ {
 		action := fmt.Sprintf("send_to_workspace_%d", i)
-		keys := registry.GetKeys(action)
+		keys := presses[action]
 		if len(keys) > 0 {
 			bindings = append(bindings, HelpBinding{
 				Action:      action,
@@ -606,7 +610,11 @@ func generateCopyModeBindings(registry *config.KeybindRegistry, s *config.Settin
 			break
 		}
 	}
-	return slices.Insert(fixed, at, bound...)
+	out := slices.Insert(fixed, at, bound...)
+	if keys := registry.GetCopyModeKeys(config.ActionEditScrollback); len(keys) > 0 {
+		out = append(out, HelpBinding{Action: config.ActionEditScrollback, Keys: keys, Description: "Open the scrollback in the editor", Category: HelpCategoryCopyMode})
+	}
+	return out
 }
 
 // copyModeLineKeys is the row of copy mode's fixed line motions.
@@ -798,6 +806,7 @@ func generatePrefixBindings(registry *config.KeybindRegistry, s *config.Settings
 		"prefix_toggle_sidebar", "prefix_toggle_spotlight", "prefix_explore",
 		"prefix_jump_notif", "prefix_last_message", "prefix_mail", "prefix_inbox", "prefix_next_attention",
 		"toggle_scratch", "paste_image", "paste_buffer", "choose_buffer", "prefix_transfers",
+		config.ActionEditScrollback,
 		"hints", "hints_all_panes", "display_panes", config.ActionCopyModeSearchForward, config.ActionCopyModeSearchBackward,
 		// prefix_review and prefix_next_finished are listed only in the
 		// Agents section, which waits for an agent to have been seen.

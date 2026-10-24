@@ -119,6 +119,19 @@ Repeat with `TUIOS_E2E=1 TUIOS_E2E_BIN=/path/to/tuios go test -count=1
 -run '^TestTiledPanesMoveOneWay$' -v .` from `e2e/tui`. With
 `TUIOS_E2E_FRAMES` set, the run saves the frame rectangles of each
 transition, the host stream, and the offset the open starts at.
+## Prompt-aware agent restoration
+
+`TestAutoResumeWaitsForShellReadiness` covers A-only/A+B prompts, fast unmarked
+shells, foreground readers, restored prompt history, and the shared 10-second
+deadline. Main fails the delayed-prompt and transient-busy cases. Before the
+unmarked-path fix, plain and busy unmarked shells took 10 seconds and failed
+their latency bounds. Observed controls: treating D as readiness or bypassing
+foreground ownership sends input into a startup reader. Removing busy retry
+leaves a Resume offer. Skipping the quiet window resumes at about 25 ms. A
+20-second budget misses the test's 12-second outcome limit.
+`TestWaitShellPromptReadiness` also checks cancellation and shell exit.
+Run from `e2e/tui` with `TUIOS_E2E=1 go test -count=1
+-run '^TestAutoResumeWaitsForShellReadiness$' -v .`. `TUIOS_E2E_FRAMES` saves frames.
 
 ## Sidebar-created worktrees apply startup tiling
 
@@ -10185,6 +10198,18 @@ each "nothing printed" check is the notice printed in the same fixture a step
 earlier. The artifact is `mail-notice-hooks.log`: each event and its output.
 
 Each control cuts one change, rebuilds, runs the test, and reverts the patch.
+
+## Asks of one agent take turns
+
+`TestAsksOfOneAgentTakeTurns` asks a stand-in agent, which takes 3 seconds
+over each question and reports `working` and `idle`, four questions against a
+real daemon. Two asks sent together must each get an answer that holds its own
+`DONE` line and no other question's. Then one ask is answered while a second
+comes with a ready timeout of 1 second: both must succeed, the second with
+`queued_behind` 1 and `waited_turn_ms` of a second or more. The pane must show
+each question taken and answered before the next. The artifact is
+`ask-turns.log`: each ask's JSON answer and the pane at the end.
+
 Run on 2026-10-23 on Linux amd64 (Go 1.27.1).
 
 | Control | How | Test that fails | Verdict |
@@ -10246,3 +10271,101 @@ After review of #966, these three still drew with `theme.UI()` and so kept the c
 | The scrollback browser keeps the accent frame and the chrome's rows under `pane_overlays` | `m.overlayUI()`, `browserFrameInk` and the palette passed to `browserFooterHints` | `internal/app/render_scrollback_browser.go` put back to `4a9267a44` | `TestPaneOverlaysReachTheRemainingSurfaces/scrollback-browser` (`the scrollback browser does not read as a pane window`: frame `fg={R:139 G:117 B:255}`, `selected row to pane ground 1.02:1` at `bg={R:45 G:44 B:54}`, key pill `bg={R:77 G:76 B:87}`) | **caught** |
 | The copy-mode search bar keeps the chrome's surface under `pane_overlays` | `m.overlayUI()` at the `copy-mode-search` layer | `internal/app/render_overlays.go` put back to `4a9267a44` | `TestPaneOverlaysReachTheRemainingSurfaces/copy-mode-search` (`the copy-mode search bar is not on the pane's ground`: pad, prompt and count `bg={R:58 G:57 B:67}`, the pane cell beside them `bg={R:32 G:48 B:64}`) | **caught** |
 | The pane look reaches the three without the option | The `PaneOverlays` checks in `overlayGround` and `overlayFrameInk` | Both deleted | `TestStockRemainingSurfacesKeepTheirOwnLook`: `/stock/plugin-approval` (`the plugin approval dialog … does not keep upstream's look`, frame `fg={R:175 G:255 B:255} bg={R:0 G:0 B:0}`), `/stock/scrollback-browser` (`the scrollback browser moved under a config without pane_overlays`, frame `fg={R:170 G:255 B:170}`), `/stock/copy-mode-search` (`the copy-mode search bar moved`, pad `bg={R:0 G:0 B:0}`), the same three under `/pane-background` (grounds `{R:32 G:48 B:64}`), and `/stock-16/plugin-approval` (frame index 14, want 8) and `/stock-16/scrollback-browser` (frame index 10, want 14). `/stock-16/copy-mode-search` passes: at 16 colours the option changes no ground, and the bar has no frame | **caught** |
+## Review leaves out large untracked files
+
+`TestReviewDoesNotReadLargeUntrackedFiles` sets `max_untracked_mb = 1` and
+routes `*.bin` through a clean filter that logs each file it runs on, which
+stands in for Git LFS without needing it installed. The pane's repository holds
+a 2 MiB untracked `data/large.bin` and a small `small.bin`. The small file going
+through the filter is the positive half: it shows the probe sees what review
+reads.
+
+Run on 2026-10-23 on macOS with Go 1.26.10, based on `5a2e8221` plus the fix.
+The negative binary changed only `Build` in `internal/review/diff.go` to pass
+`0` instead of `opt.MaxUntracked` to `worktree.SnapshotTree`. It failed every
+assertion about the large file: `--stat` listed `data/large.bin +1 -0`, the
+JSON had it with counts and `skipped` false, the filter's log named
+`data/large.bin` once per review, and the object store held its blob. The fixed
+binary passed the same test, and `TestCheckpointLeavesOutLargeUntrackedFiles`
+still passes now that `SaveCheckpoint` goes through the same `SnapshotTree`.
+
+| Control | How | Tests that fail | Verdict |
+| --- | --- | --- | --- |
+| Review stages every untracked file, however large | `Build`: `worktree.SnapshotTree(ctx, opt.Dir, 0)` (the tree before the change) | `TestReviewDoesNotReadLargeUntrackedFiles` (the 2 MiB file has counts, went through the clean filter, and is in the object store) | **caught** |
+
+Fan compare (`WorkingNumstat`, `WorkingDetail`), `tuios fan diff` and
+review-stage take the same limit through the same `SnapshotTree`, and have no
+end-to-end test of it.
+
+## Mail wakes an agent at rest
+
+`TestMailWakesAnIdleAgentOnce` runs stand-in agents that print each line typed
+into them, against a real daemon. A burst of three messages to an idle agent
+types one line, not before the 5 second grace, and no second line in the 9
+seconds after it. An agent on `needs_input` gets nothing typed, and its
+positive half is the line it gets once it reports idle. An agent that heard of
+its mail from a real `PostToolUse` hook mid-turn gets nothing typed when it
+comes to rest. No pane may show the subject's or the body's marker text.
+No pane may show the sender's name either. `TestMailWakeTurnsOff` runs the
+same agent with `[agents.mail] wake = false`: nothing is typed, and
+`wake = true` written to the file, as a pane could write it, still types
+nothing. Its positive half, in the same daemon: after `tuios config apply`,
+the next message types the line. `TestMailWakeTakesNoAuthorityFromAReadOnlyCaller`
+sends mail through `tuios mcp`, a `read_only` connection, and
+`TestMailWakeTakesNoAuthorityFromAPaneOnAnotherMachine` from a pane whose
+process runs on a linked machine: neither types a line. The positive half of
+each, in the same daemon: mail from the person's shell wakes the agent.
+The controls were run again on 2026-10-24 after the review fixes, and the
+first three rows below hold. The artifact is
+`mail-wake.log`: what each pane showed each time its count of typed lines
+changed.
+
+Run on 2026-10-23 on Linux amd64 (Go 1.27.1).
+
+| Control | How | Test that fails | Verdict |
+| --- | --- | --- | --- |
+| Mail never arms a wake | `return` at the top of `noteMailSent` | `TestMailWakesAnIdleAgentOnce`: "the idle agent was never told about its mail"; `TestMailWakeTurnsOff`: "with wake = true again the agent was not told about its mail" | **caught** |
+| The notice mark is ignored | in `mailWakeLook`, wake for any unread mail and pick from every sender | `TestMailWakesAnIdleAgentOnce`: "an agent its hook told about the mail was woken for it too" | **caught** |
+| The switch is ignored | `SetMailWake` stores true whatever it is given | `TestMailWakeTurnsOff`: "with wake = false a line was typed" | **caught** |
+| The wake line names the sender | the wake types the hook's line, which names senders | `TestMailWakesAnIdleAgentOnce`: "the sender's name was typed into the agent" | **caught** |
+| A read_only connection lends the wake its authority | cut the scope check from `mailOriginOf` | `TestMailWakeTakesNoAuthorityFromAReadOnlyCaller`: "mail from a read_only connection typed a line into the agent" | **caught** |
+| A pane on another machine lends the wake its authority | cut the forwarded-pane check from `mailOriginOf` | `TestMailWakeTakesNoAuthorityFromAPaneOnAnotherMachine`: "mail from a pane on another machine typed a line into the agent" | **caught** |
+| A file change turns the wake on | drop the `byPerson` check in `applyUserConfig` | `TestMailWakeTurnsOff`: "wake = true written to the file turned the wake on without the person" | **caught** |
+| The waker types into a pane not at rest | drop the `agentReady` check in `mailWakeLook` | none: the queue refuses the pane on `needs_input` itself and holds the line until the pane is at rest | **not caught, by design**: the queue is the guard that types, and this check only saves a queue entry |
+
+## Edit the scrollback in the editor
+
+`TestCopyModeEditScrollback` prints 3000 numbered rows in a pane, searches back to `row-2990` in copy mode and presses `ctrl+g`. `EDITOR` is a script named `vim` that records its arguments, a copy of the file, and the modes of the file and its folder. The test requires a file with no escape codes that holds `row-1`, `row-1000` and `row-3000`, the arguments `+LINE FILE` with LINE the line of `row-2990` in that file, mode 600 on the file and 700 on its folder, and the file and folder gone after the editor exits while the client still runs. In the `daemon` case the rows are printed in a detached session before the client attaches, so the client holds only the newest 1000 history rows and only the daemon has `row-1`. With `TUIOS_E2E_FRAMES` set, it saves the arguments, the file and two frames.
+
+Run on 2026-10-24 on Linux with Go 1.27.1 against upstream main at efdc2a9c. Each control is a text replacement in `internal/app/os_selection.go`, built to a separate binary and put back before the next. The fixed build passes both cases.
+
+| Control: what was cut | Tests that fail | Verdict |
+| --- | --- | --- |
+| The fix removed (upstream main) | `standalone` and `daemon` ("ctrl+g in copy mode did not run the editor") | **caught** |
+| The daemon capture skipped: a daemon session writes the client's own copy | `daemon` ("the file has no line \"row-1\": the editor did not get the whole scrollback (1022 lines)") | **caught** |
+| `applyScrollbackEditorDone` does not remove the folder | `standalone` and `daemon` ("the scrollback file ... or its folder is still there after the editor exited") | **caught** |
+| No line passed to the editor | `standalone` and `daemon` ("the editor got [FILE], want it to end with [+2991 FILE]") | **caught** |
+
+Not covered end to end: the refusal in a browser client and in an SSH client from another machine, the removal when the client ends while the editor runs, the File editor setting, and the helix `FILE:LINE` form.
+
+## Workspace keys from every section in the help overlay
+
+`TestHelpListsWorkspaceKeysFromEverySection` binds `f7` to `switch_workspace_1` in `[keybindings.global]` and leaves the workspaces section at its defaults. It opens the help overlay, searches for "workspace 1", and requires the "Switch to workspace 1" row to list `f7`. With `TUIOS_E2E_FRAMES` set, it saves the frame.
+
+Run on 2026-10-24 on Linux against upstream main at 856b8ef4.
+
+| Control: what was cut | Tests that fail | Verdict |
+| --- | --- | --- |
+| The fix removed (upstream main) | "the help overlay does not list the global f7 for Switch to workspace 1": the row lists only `alt+1` | **caught** |
+| Asks take no turn | `askAgent` takes a no-op turn instead of `askTurns.take` | `ask ASK-THREE did not get its own answer: "GOT[ASK-THREEASK-FOUR]\nDONE[ASK-THREEASK-FOUR]"`: the two questions were typed into one line | **caught** |
+| The same, with the "sent together" half taken out of the test | as above | `ask ASK-TWO failed: exit status 1` (`not_ready` after its 1 second ready timeout) | **caught** |
+
+`TestACancelledAskLeavesTheLine` asks the same stand-in agent a question,
+then starts a second ask and kills its process while it waits its turn, then
+starts a third. The third must wait behind one ask, not two, and the pane must
+never show the cancelled question. The artifact is `ask-cancel.log`: the pane
+at the end. Run on 2026-10-24 on Linux amd64 (Go 1.27.1).
+
+| Control | How | Test that fails | Verdict |
+| --- | --- | --- | --- |
+| The ask never learns its caller went away | `askCancel` returns a channel that never closes | `the third ask waited behind 2 asks, want 1` and `the question of a caller that went away was typed` | **caught** |

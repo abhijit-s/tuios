@@ -2094,6 +2094,9 @@ test_patterns = ["go test", "pytest"]
 [agents.queue]
 max = 8
 
+[agents.mail]
+wake = true
+
 [agents.checkpoints]
 enabled = true
 keep = 50
@@ -2139,13 +2142,24 @@ max_untracked_mb = 50
   reads it at start and again when the file changes; a queue already longer
   keeps what it holds. The queue is built: see
   [AGENT_STATE.md](AGENT_STATE.md#queued-messages).
+- `[agents.mail]` `wake` types one line into an agent at rest that has mail
+  nobody told it about, through the delivery queue: the count, the senders
+  and the command that reads the mail, never the mail itself. It is true by
+  default. Set it to false to stop it. The daemon reads it at start. A file
+  change turns it off at once. Turning it on again waits for `tuios config
+  apply` from outside tuios, or a restart. See
+  [AGENT_STATE.md](AGENT_STATE.md#mail-that-wakes-an-agent-at-rest).
 - `[agents.checkpoints]` saves the git work tree of an agent's pane each time
   the agent finishes a turn that changed a file (`tuios checkpoint`).
   `enabled` is true by default. `keep` is how many checkpoints one pane keeps:
   50 by default, at most 1000. `max_untracked_mb` leaves an untracked file
   larger than this many megabytes out of a checkpoint: 50 by default, and a
   negative value means no limit. `tuios checkpoint list` names the files left
-  out, and a restore does not change them. The daemon reads these at start
+  out, and a restore does not change them. The same limit holds for
+  `tuios review`, review-stage, fan compare and `tuios fan diff`, which never
+  read such a file: review lists it as not read. Reading one would copy it
+  into the repository's object store, and through a clean filter such as Git
+  LFS's into that store too, on every read. The daemon reads these at start
   and again when the file changes. See [Turn checkpoints](AGENT_STATE.md#turn-checkpoints).
 
 One rail option goes with them: `appearance.sidebar.agent_rest_fold`, how long

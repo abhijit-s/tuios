@@ -3555,8 +3555,18 @@ command that reopens the conversation: `claude --resume <id>`, `codex resume
 | Value | What a restore does |
 | --- | --- |
 | `ask` (default) | A Resume row in the Inbox per pane, its summary the exact command. Your client says once, in the dock, that there are conversations to resume. `y` on the row goes to the pane and types the command; `d` dismisses it. |
-| `auto` | Waits for each new shell to draw its prompt, then types the command, 100 ms apart. A pane whose shell is not at its prompt within 10 seconds gets the Resume row instead. |
+| `auto` | Waits for each new shell's prompt signal before typing. Per-pane waits are staggered by 100 ms. A pane whose shell is not at its prompt after 10 seconds gets the Resume row instead. |
 | `off` | Nothing. The id stays on the pane. |
+
+Automatic resume uses the new shell's OSC 133 A or B mark, not saved scrollback.
+A shell that sent no marks keeps the existing 300 ms quiet-window fallback.
+The shell must own the foreground before anything is typed. If startup is still
+busy, the daemon keeps polling within the same 10-second budget. The unmarked
+fallback is still a heuristic. Use `tuios doctor shell` to check prompt
+integration. A shell that reports a command finishing but never marks a new
+prompt gets the Inbox offer instead. A-only marking, such as Kitty's zsh
+integration, is supported. It marks the start of prompt rendering, not its
+completion. No additional configuration is needed.
 
 A pane counts as running an agent when its saved state has an agent state or
 a harness attribution, both of which clear when the agent leaves the pane. The
@@ -4601,6 +4611,44 @@ your own `u` within the 10 seconds still puts it back. Nothing new is
 allowed: the daemon still refuses to type over a prompt, right before it
 types.
 
+### Mail that wakes an agent at rest
+
+An agent at rest runs no hooks, so it does not hear of mail that arrives
+while it waits. When mail for a pane stays unread and unannounced for 5
+seconds, and the pane's agent is at rest, the daemon queues one line for it:
+
+```
+You have 2 unread tuios messages. Read them with: tuios read-agent-messages -s work -w c7be946f --unread
+```
+
+The line goes through the delivery queue, so it is typed only after a second
+at rest, never into a pane on `needs_input`, and never twice. `list-queued`
+shows it with `by` set to `tuios mail`. The line holds only the count and the
+command. It holds no text a sender chose: no subject, no body, and no sender
+name, which is a pane title. So mail cannot type a prompt into an agent. The
+line is written again right before it is typed: a wake whose mail was read
+while it waited is dropped, and one that waited while more mail came says the
+new count.
+
+- **Once per message.** A hook notice and a wake share one mark per pane. Mail
+  a hook announced during a turn wakes nothing when the turn ends. A burst of
+  mail gives one line, and mail that comes while a wake waits in the queue
+  adds none. Two wakes of one pane are at least 30 seconds apart.
+- **Grants.** The wake carries the authority of the caller that sent the
+  mail, as its connection proved it, not the `from` the message claims. A
+  pane that may not type into the recipient cannot wake it, and the queue
+  checks again right before it types. A connection restricted to `read_only`
+  (`tuios mcp` without `--write`) and a pane on another machine wake nothing,
+  as `queue-prompt` refuses them.
+- **At rest** means `idle` or `done`, and `unknown` only for a harness that
+  can never show idle. A pane on `none` gets no wake, because its prompt line
+  belongs to a shell. A pane on `needs_input` gets its line once it is at rest
+  again.
+- **Off.** `[agents.mail] wake = false` turns it off. Mail is still stored,
+  and the hooks still announce it. A change of the file turns it off at once.
+  Turning it on again waits for `tuios config apply` from outside tuios, or a
+  daemon restart, since a process in a pane can write the file.
+
 ## Reviewing an agent's changes
 
 When an agent finishes, you read what it changed, leave notes on the lines
@@ -4631,7 +4679,11 @@ Committed and uncommitted work show together, untracked files included (status
 `U`) and ignored files left out. The working state is written as a git tree
 through a temporary copy of the worktree's index, so the repository's index,
 its files and what the agent staged are never changed; the objects the tree
-needs are loose objects that `git gc` collects. A diff stops at 400 files,
+needs are loose objects that `git gc` collects. An untracked file larger than
+`[agents.checkpoints] max_untracked_mb` (50 MB by default) is never read: it
+is listed as not read (`skipped`), with no counts. Reading it would copy it
+into the object store, and through a clean filter such as Git LFS's into that
+store as well, on every review. A diff stops at 400 files,
 2 MiB of text or 5000 lines in one file, and the files past a limit are
 listed with their counts only (`truncated`). Binary files have counts only.
 All the git calls of one diff are bounded at 10 seconds together, and nothing

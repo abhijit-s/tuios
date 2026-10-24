@@ -194,6 +194,16 @@ old behaviour. None of them bumps the protocol integer: every field keeps its
 name and type, and a caller that sends nothing new keeps working. What changes
 is an answer, and each entry says which.
 
+**Asks of one agent take turns.** An `ask-agent` that comes while another
+ask of the same target runs no longer types over it, and no longer fails with
+`not_ready` once `ready_timeout` passes. It waits for its turn, first come
+first served, for up to `timeout`, and then goes on as before. A turn that
+does not come in time is `not_ready`, and nothing is typed. An ask whose
+caller closes its connection while it waits leaves the line and types
+nothing. The reply gains
+`queued_behind` and `waited_turn_ms`. A queued prompt (`queue-prompt`) is not
+typed while an ask holds the target's turn.
+
 **list-host-sessions rows carry agents.** A remote session row gains
 `agents`, one entry per agent pane: `id`, `title`, `state`, `state_at`,
 `harness`, `message`, `kind`, `meta` and `subagents`, at most 32 a session.
@@ -4219,7 +4229,9 @@ is in it, else the repository holding the pane's directory; none is
 working state, committed or not, untracked files included and ignored files
 left out, is written as a git tree through a temporary copy of the worktree's
 index, so its index, its files and what the agent staged are not changed.
-Every git call of one diff together is bounded at 10 seconds (`git_failed`
+An untracked file larger than `[agents.checkpoints] max_untracked_mb` is left
+out of the tree and never read; it is listed with status `U`, `skipped` true
+and no counts or hunks. Every git call of one diff together is bounded at 10 seconds (`git_failed`
 past it). [AGENT_STATE.md](AGENT_STATE.md#reviewing-an-agents-changes) has the
 whole contract.
 

@@ -131,6 +131,12 @@ type queueEntry struct {
 	// typed is the pastes an entry in parts is typed as, once its files are
 	// written. See composeQueued.
 	typed []string
+	// recheck, when set, writes the entry's text again right before it is
+	// typed, or reports false to drop it untyped. A mail wake uses it
+	// (mail_wake.go). done, when set, runs once the entry left the queue
+	// by being typed, refused or found stale.
+	recheck func() (string, bool)
+	done    func()
 }
 
 // paneQueue is one pane's queue.
@@ -614,6 +620,14 @@ func (d *Daemon) deliverQueued(window string) {
 		q.mu.Unlock()
 		return
 	}
+	// An ask holds the pane's turn: it typed a question and reads the
+	// answer, or waits to. A prompt typed now would land in that answer.
+	// Look again after a rest.
+	if d.askTurns.busy(window) {
+		q.armLocked(d, window, pq, q.restFor())
+		q.mu.Unlock()
+		return
+	}
 	if ready, wait, look := q.restLocked(rest, q.typed[window].at, time.Now()); !ready {
 		// Not at rest, or not at a rest reached since the last entry was
 		// typed. Either a look is due later, or the pane's next state
@@ -695,6 +709,9 @@ func (d *Daemon) deliverQueued(window string) {
 	if stalled {
 		d.attention.openQueueStalled(sess.Name(), target)
 	}
+	if e.done != nil && (status == PromptSent || status == queueRefused || status == PromptStalled) {
+		e.done()
+	}
 	d.publishQueued(window)
 }
 
@@ -712,6 +729,13 @@ func (d *Daemon) typeQueued(sess *Session, target WindowState, e *queueEntry) (s
 	}
 	if verr := d.refuseBlockedAgent(sess, target.ID); verr != nil {
 		return PromptNotSent, verr.Message, 0
+	}
+	if e.recheck != nil {
+		text, ok := e.recheck()
+		if !ok {
+			return queueRefused, "nothing is left for it to say", 0
+		}
+		return d.typePromptPastes(sess, target.ID, []string{text})
 	}
 	pastes, err := d.composeQueued(sess, target, e)
 	if err != nil {
