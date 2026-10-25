@@ -1474,14 +1474,14 @@ func (d *Daemon) verbSetWorkspaceOrder(cs *connState, params json.RawMessage) (a
 	return map[string]any{"type": "workspace_order_set", "workspace_order": nil, "renumbered": renumbered}, nil
 }
 
-func (d *Daemon) verbCompactWorkspaces(_ *connState, params json.RawMessage) (any, *verbError) {
+func (d *Daemon) verbCompactWorkspaces(cs *connState, params json.RawMessage) (any, *verbError) {
 	var p struct {
 		Session string `json:"session"`
 	}
 	if verr := decodeParams(params, &p); verr != nil {
 		return nil, verr
 	}
-	sess, verr := d.resolveVerbSession(p.Session)
+	sess, verr := d.resolveVerbSession(cs, p.Session)
 	if verr != nil {
 		return nil, verr
 	}
