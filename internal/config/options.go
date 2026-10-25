@@ -391,6 +391,16 @@ var optionSpecs = []Option{
 		Default:     "", Color: true,
 	},
 	{
+		Path: "appearance.border_focused_color_window", Type: OptionString, Section: "appearance",
+		Description: "Colour of the focused pane's border in window mode. It wins over border_focused_color",
+		Default:     "", Color: true,
+	},
+	{
+		Path: "appearance.border_focused_color_terminal", Type: OptionString, Section: "appearance",
+		Description: "Colour of the focused pane's border in terminal mode. It wins over border_focused_color",
+		Default:     "", Color: true,
+	},
+	{
 		Path: "appearance.border_focused_gradient", Type: OptionString, Section: "appearance",
 		Description: "Two or more colours, separated by spaces, that the focused pane's border steps through. Empty draws one colour",
 		Default:     "",
@@ -1111,6 +1121,11 @@ var optionSpecs = []Option{
 		Path: "notifications.error_sticky", Type: OptionBool, Section: "notifications",
 		Description: "Make errors wait for esc instead of expiring",
 		Default:     "true",
+	},
+	{
+		Path: "notifications.bell", Type: OptionString, Section: "notifications",
+		Description: "What a pane's bell does: a dock message, a bell in your terminal, both, or nothing",
+		Accepted:    BellModes, Default: BellToast,
 	},
 
 	// [notifications.agent]. The sounds table is absent: its two keys are paths

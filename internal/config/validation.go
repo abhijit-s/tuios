@@ -300,6 +300,7 @@ func validateNotificationsConfig(cfg *UserConfig, result *ValidationResult) {
 	check("duration", cfg.Notifications.Duration)
 	check("warning_duration", cfg.Notifications.WarningDuration)
 	check("error_duration", cfg.Notifications.ErrorDuration)
+	warnEnum(result, "notifications", "bell", cfg.Notifications.Bell, BellModes, BellToast)
 
 	agent := &cfg.Notifications.Agent
 	if _, _, err := ParseQuietHours(agent.QuietHours); err != nil {
@@ -589,6 +590,8 @@ func validateBorderColors(cfg *UserConfig, result *ValidationResult) {
 	a := &cfg.Appearance
 	warnColours(result, "appearance", "The border uses the theme colour",
 		"border_focused_color", a.BorderFocusedColor,
+		"border_focused_color_window", a.BorderFocusedColorWindow,
+		"border_focused_color_terminal", a.BorderFocusedColorTerminal,
 		"border_unfocused_color", a.BorderUnfocusedColor)
 	warnColours(result, "appearance", "Overlay frames keep their default colour",
 		"overlay_border_color", a.OverlayBorderColor)

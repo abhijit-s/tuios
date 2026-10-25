@@ -129,6 +129,10 @@ type NotificationsConfig struct {
 	// ErrorSticky makes errors wait for esc instead of expiring (default true).
 	ErrorSticky *bool `toml:"error_sticky"`
 
+	// Bell is what a pane's BEL does: toast, forward, both or off. See
+	// BellModes.
+	Bell string `toml:"bell"`
+
 	// Agent is the [notifications.agent] table: what happens when a pane's
 	// agent state changes. See agent_alerts.go.
 	Agent AgentAlertsConfig `toml:"agent"`
@@ -379,6 +383,10 @@ type AppearanceConfig struct {
 	SharedBorders            *bool                   `toml:"shared_borders"`               // Share borders between adjacent tiled windows (default: false)
 	// Customization
 	BorderFocusedColor string `toml:"border_focused_color"` // Hex color for focused pane border (e.g., "#89b4fa")
+	// BorderFocusedColorWindow and BorderFocusedColorTerminal are the focused
+	// border in one mode. Each wins over BorderFocusedColor in its mode.
+	BorderFocusedColorWindow   string `toml:"border_focused_color_window"`
+	BorderFocusedColorTerminal string `toml:"border_focused_color_terminal"`
 	// BorderFocusedGradient is two or more colours the focused border steps
 	// through, separated by spaces or commas. Empty draws one colour.
 	BorderFocusedGradient string `toml:"border_focused_gradient"`
@@ -1511,6 +1519,8 @@ func DefaultConfig() *UserConfig {
 			Lists: getDefaultListsKeybinds(),
 		},
 	}
+	// Written out so the file shows the key and its default.
+	cfg.Notifications.Bell = BellToast
 	return cfg
 }
 
@@ -3024,7 +3034,7 @@ func ApplyAppearanceConfig(cfg *UserConfig, s *Settings) {
 	// Custom border colors override the theme-derived colors. Empty strings
 	// clear any override and restore theme colors. This runs after the theme
 	// switch above, which resets the derived colors.
-	theme.SetBorderOverrides(cfg.Appearance.BorderFocusedColor, cfg.Appearance.BorderUnfocusedColor)
+	theme.SetBorderOverrides(cfg.Appearance.BorderOverrides())
 	s.BorderFocusedGradient = cfg.Appearance.BorderFocusedGradient
 	s.BorderGradientAngle = DefaultBorderGradientAngle
 	if a := cfg.Appearance.BorderGradientAngle; a != nil {
@@ -3149,6 +3159,11 @@ func ApplyNotificationConfig(cfg *UserConfig, s *Settings) {
 	// explicit false turns it off.
 	if cfg.Notifications.ErrorSticky != nil {
 		s.NotificationErrorSticky = *cfg.Notifications.ErrorSticky
+	}
+	// An unknown value keeps the default; validation already warned about it.
+	s.Bell = BellToast
+	if slices.Contains(BellModes, cfg.Notifications.Bell) {
+		s.Bell = cfg.Notifications.Bell
 	}
 }
 
@@ -3927,4 +3942,15 @@ func GetConfigPath() (string, error) {
 		return xdg.ConfigFile("tuios/config.toml")
 	}
 	return path, nil
+}
+
+// BorderOverrides are the border colour keys of a, as the theme package takes
+// them.
+func (a *AppearanceConfig) BorderOverrides() theme.BorderOverrides {
+	return theme.BorderOverrides{
+		Focused:         a.BorderFocusedColor,
+		FocusedWindow:   a.BorderFocusedColorWindow,
+		FocusedTerminal: a.BorderFocusedColorTerminal,
+		Unfocused:       a.BorderUnfocusedColor,
+	}
 }

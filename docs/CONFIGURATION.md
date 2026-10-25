@@ -1167,6 +1167,34 @@ window_title_align = "center"
 settings page, in the Appearance section, and `tuios set-config` applies them
 at once.
 
+## Focused border colour
+
+The focused pane's border shows the mode. By default it is the theme's cyan
+in window mode and its green in terminal mode. Three keys set it.
+
+| Option | Values | Default |
+|---|---|---|
+| `appearance.border_focused_color` | a [colour](#colour-values). It sets the border in both modes | empty |
+| `appearance.border_focused_color_window` | a [colour](#colour-values). It sets the border in window mode | empty |
+| `appearance.border_focused_color_terminal` | a [colour](#colour-values). It sets the border in terminal mode | empty |
+
+```toml
+[appearance]
+border_focused_color_window = "accent"
+border_focused_color_terminal = "#ff9e64"
+```
+
+- A key for one mode wins over `border_focused_color` in that mode.
+- An empty key uses the next key. After the three keys, the theme sets the colour.
+- `border_focused_color` also replaces the colours for copy mode and for an
+  agent that waits. The keys for one mode do not.
+- On many themes the cyan and the green have the same lightness. The default
+  terminal mode colour then moves darker, or lighter when darker is too faint.
+  You can then see the mode without the hue.
+- At 16 colours the default borders use bright cyan and bright green, the
+  slots of your terminal's palette.
+- The settings page has a row for each key, in the Appearance section.
+
 ## Focused border gradient
 
 `appearance.border_focused_gradient` draws the focused pane's border in two
@@ -1610,6 +1638,18 @@ A row that waits for a person keeps its attention mark in the gutter. The
 marker glyph is the `marker` role of the glyph set (see [GLYPHS.md](GLYPHS.md)).
 The option is on the settings page, in the Sidebar section.
 
+The focused pane's row in the terminals section carries the mark. Sometimes
+the rail does not show that row. The agents row of the pane then carries the
+mark in its gutter. This occurs in these cases:
+
+- `sections` does not include `terminals`.
+- The rail is narrow and lists an agent pane only in the agents section.
+- The terminals section has no room for the row.
+- The terminals section shows the panes of another session.
+
+The agents row uses the bar or the marker. With `underline` or `pill`, it
+uses the bar.
+
 ## The rail's section headers
 
 `appearance.sidebar.header_style` sets how a section header is drawn:
@@ -1647,6 +1687,14 @@ density = "roomy"
 ```
 
 The panes do not move. Only the rail's rows change.
+
+## The rail's cursor row
+
+When the rail has the keyboard, the cursor row has a lighter background. The
+text of the row is also bold and underlined in the accent colour. This mark
+does not need the background, so you can see the cursor on a see-through
+terminal or with `background = "off"`. The gutter keeps its own marks. At 16
+colours the cursor row is in reverse video.
 
 ## A rail section that overflows
 
@@ -1819,6 +1867,34 @@ needs version 2 of the integration:
 run `tuios integration install claude-code` (or `opencode`, `kilo`, `qwen`)
 again after upgrading. [AGENT_STATE.md](AGENT_STATE.md#approvals-from-the-inbox) says how
 a prompt is held, answered and handed back.
+
+## The pane bell
+
+A program in a pane rings the bell when it prints the BEL character. For
+example, `printf '\a'` rings it. `notifications.bell` sets what tuios does then:
+
+```toml
+[notifications]
+bell = "toast"   # or "forward", "both", "off"
+```
+
+- `toast` shows "bell" in the dock. This is the default.
+- `forward` sends the bell to the terminal that tuios runs in. That terminal
+  then plays its sound, flashes, or marks the window or tab.
+- `both` does the two.
+- `off` does neither.
+
+tuios sends the bell for every pane, also for the pane you are in. It sends
+at most one bell from each pane in 200 milliseconds. A client attached to the
+daemon sends the bell to its own terminal. Over `tuios ssh` and in tuios-web,
+the bell goes to that client, not to the machine that runs tuios.
+
+The terminal decides what a bell does. In Ghostty, for example, set
+`bell-features` to choose a sound, an attention request or a title mark.
+
+The workspace bell marker does not change with this setting. Set
+`bell_marker` under `[dock.tabs]` to change it. You can also change
+the setting on the settings page, in the "Alerts" tab, as "Pane bell".
 
 ## Push notifications to your phone
 
@@ -2331,7 +2407,7 @@ allow = ["list", "mail"]
 | `open` | Start processes: sessions, windows, worktrees, fans, `start-agent`, clones of a repository by its URL, and panes this machine runs for it. |
 | `write` | Change what is here: type into panes, `run` a line at a prompt, close and move windows, set options, layouts and names, report agent state, and attach. Also read a worktree's work out with `bundle-worktree` (`tuios worktree pull`), since a machine that may type into a shell here can read those files already. |
 | `respond` | Answer for the person: prompts, held approvals, `ask-human` questions, dismissing Inbox items, and passing on held mail. Also type into a pane that waits on a prompt, from a pane on the other machine. The person on the other machine, outside every pane, needs only `write` for that. |
-| `files` | Read and write files here with the file verbs: a file's bytes, copies in and out (`transfer-start` on the other machine), new folders, moves and removes. It is apart from `write`, so you can stop one machine's copies and keep its typing. A write that arrives over the link lands only in the folders of `files_roots` (the receive folder unless you add more, see below), and the drop folder for dropped files, never in `~/.ssh`, `~/.gnupg`, credentials, shell start files, login items or tuios's own config, whatever `allow` and `files_roots` say. A read never returns keys or credentials. See [protocol.md](protocol.md#files-and-transfers). |
+| `files` | Read and write files here with the file verbs: a file's bytes, copies in and out (`transfer-start` on the other machine), new folders, moves and removes. It is apart from `write`, so you can stop one machine's copies and keep its typing. A write that arrives over the link lands only in the folders of `files_roots` (the receive folder unless you add more, see below), and the drop folder for dropped files, never in `~/.ssh`, `~/.gnupg`, credentials, shell start files, login items or tuios's own config, whatever `allow` and `files_roots` say. A read never returns keys or credentials. It also lets a window here that the other machine draws show kitty images that a program names by path (`kitten icat --transfer-mode=file`): this machine reads the file under the same read rules and `files_read_roots`, and sends the bytes. See [protocol.md](protocol.md#files-and-transfers). |
 
 With no table, a machine may `list`, `mail`, `open`, `write` and `files`,
 which is what every link could do before the policy existed. `respond` is
