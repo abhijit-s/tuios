@@ -102,6 +102,7 @@ var windowMenuRows = []menuRow{
 	{parts: []menuPart{{"window_prefix_prev", "Previous window"}}, desc: "Previous window"},
 	{parts: []menuPart{{"move_window", "Move pane to..."}}, desc: "Move pane to..."},
 	{parts: []menuPart{{"window_prefix_tiling", "Toggle tiling mode"}}, desc: "Toggle tiling mode"},
+	{parts: []menuPart{{"window_prefix_float", "Float or tile the pane"}}, desc: "Float or tile the pane"},
 	{parts: []menuPart{{"split_vertical", "Split right"}}, desc: "Split right"},
 	{parts: []menuPart{{"split_horizontal", "Split down"}}, desc: "Split down"},
 	{parts: []menuPart{{"prefix_fullscreen", "Toggle zoom"}}, desc: "Toggle zoom"},

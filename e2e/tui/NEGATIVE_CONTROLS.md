@@ -1486,6 +1486,7 @@ person enables it.
 | `env` on `tab.create` and `pane.split` | `verbNewWindow`: `Env: env` cut from the window options | `TestHerdrSocketAPI` (the new pane never shows env-from-tab) | **caught** |
 | `env` on `workspace.create` | `verbNewSession`: `Env: env` cut from the window options | `TestHerdrSocketAPI` (the new pane never shows env-from-workspace) | **caught** |
 | The warning for a `plugin_action` key that no plugin has | `validateCommands`: the `validatePluginActionKeys` call cut | `TestHerdrPluginPalette` (never shows "1 config problem") | **caught** |
+| A plugin's pane tags another pane with metadata, as herdr-sidebar tags its preview panes | `herdrPane`: the `pluginPaneMetadataTarget` branch made `ok && false` | `TestHerdrPluginPanes` ("the plugin pane could not tag the pane it was opened from", with `a pane may report only for itself`) | **caught** |
 | A bare action id prefers the enabled plugin | `FindAction`: the enabled-only return cut | `TestHerdrPluginPalette` (run-1.env never holds the key's run: the id is ambiguous) | **caught** |
 
 ## send-keys in the pane's keyboard mode
@@ -10585,3 +10586,69 @@ With the change in place both tests pass, and so does
 An origin/main daemon with the new CLI keeps 2000 lines and prints a note to
 run `tuios restart-server`. `--commands` against it exits 1 with the same
 advice.
+
+## Artifacts in the agents view, and the float toggle for TML
+
+`TestCockpitArtifacts` in `cockpit_artifacts_test.go`. An agent's pane shows a TML form as a popup. Opening the agents view moves the form into the view with the keys, and the person makes two choices there. A second agent's popup arrives while the view is open: its row gets the `new artifact` chip and moves to Needs you, and a click on the chip opens it in the view, where the person answers it. Closing the view lets the first form float again with the choices. `ctrl+b t f` docks it as a pane and floats it again, with the choices kept. A second client at 16 colours shows the form in its view. The person submits the form from the view, and the agent's `--wait` prints the answer with status 0. Run on 2026-10-24 on Linux against upstream main at 5a2e8221. With the fix it passes three runs of three.
+
+Each control is a text replacement in the branch's checkout, built to a separate binary and put back before the next.
+
+| Control: what was cut | Where it fails | Verdict |
+| --- | --- | --- |
+| Upstream main, with the step that waits for the popup's `dock` control left out | "the form moved into the agents view": the popup draws under the view, which shows no form | **caught** |
+| Upstream main as is | "the floating form": the popup has no `dock` control | **caught** |
+| `OpenInbox` does not call `cockpitAdoptFloating` | "the form moved into the agents view" | **caught** |
+| `CloseInbox` does not call `cockpitArtifactRelease` | Toggle 1: the popup does not get the focus back, so `ctrl+b t f` acts on another pane | **caught** |
+| `ToggleFloating` refuses TML windows as it refuses other popups | Toggle 1: the form stays a popup | **caught** |
+| `ckArtFormRow` returns nothing, so a row in Needs you for a form reads as working | "the row in Needs you does not say a form waits" | **caught** |
+
+Not covered: a TML surface in a session the client is not attached to. The view lists it and draws its last state, read-only, and says to attach.
+
+## Typing into a TML text field
+
+`TestTMLInputTyping` in `tml_input_typing_test.go`. An agent's pane shows a form with one `input` bound to the state and a `Send` button with the key `y`. A click puts the caret in the field. The person types, deletes with `ctrl+u`, `backspace` and `ctrl+w`, moves the caret with `left` and `home`, types a `y` while the field has the focus, and pastes. The agents view takes the same form with its text, the person types once more there, and `enter` submits it. The agent's `--wait` prints the text with status 0. Run on 2026-10-24 on Linux. Each control is a text replacement, built to a separate binary and put back before the next.
+
+| Control: what was cut | Where it fails | Verdict |
+| --- | --- | --- |
+| Upstream main at 22d63929 | Typing step 1: the field takes no typed text | **caught** |
+| `Surface.Key` checks the button keys before the focused text field | Typing step 3: the `y` of "today" presses Send | **caught** |
+| A paste into a TML window is refused as before | "the paste in the field" | **caught** |
+
+## The rail cursor row takes cursor_background
+
+`TestRailCursorShowsWithoutItsGround` (in `sidebar_keyboard_test.go`) has two more cases. Both set `appearance.sidebar.cursor_background = "#ff00ff"`. At truecolor, every cell of the cursor row between the gutter and the edge rule must be on `#ff00ff`. The test then saves the config file with `#00c0c0` and waits for the row to take the new colour. At 16 colours, no rail cell may carry `#ff00ff`, and the cursor row must still be in reverse video. Run on 2026-10-25 on Linux against upstream main at b2741f02a. Each control is a text replacement, built to a separate binary and put back before the next.
+
+| Control: what was cut | Where it fails | Verdict |
+| --- | --- | --- |
+| `railCursorBg` always returns nil, so the option does nothing | `cursor-bg-truecolor`: "cursor_background is set, but the cursor row is not on #ff00ff" | **caught** |
+| `railCursorBg` has no 16-colour check | passes: at 16 colours the reverse video drops every ground of the row, so the colour cannot show | **not caught**, the check is a guard only |
+## Lock mode
+
+`TestLockModeGivesEveryKeyToThePane` in `lock_mode_test.go` attaches a real client to a daemon session under `keybindings.preset = "zellij"`, which turns `keybindings.lock` on with ctrl+g as the leader. It keeps the client in terminal mode, since alt+esc is a key lock gives the pane. It runs `cat -v` in the focused pane of two. Locked, alt+2, alt+n and ctrl+p must reach `cat -v` as `^[2^[n^P`, with the session still on workspace 1, focus unchanged and no palette. ctrl+g p h moves focus left, then l, h and l without the leader move it again, and the dock pill shows the unlock glyph. esc must lock again, so h and alt+2 after it reach `cat -v` as `h^[2` and focus stays. ctrl+g p d splits, and alt+2 after it must leave the session on workspace 1. Each control is a build to a separate binary, the source put back before the next. Run on 2026-10-24 on Linux with Go 1.27.1, based on origin/main at 5a2e8221b.
+
+The fixed build passes three runs of three.
+
+| Control: what was cut | Tests that fail | Verdict |
+| --- | --- | --- |
+| The fix removed (origin/main at 5a2e8221b) | fails at the start: "the dock does not say locked". origin/main has no `keybindings.lock`, and its zellij preset leaves the tuios chords on | **caught** |
+| The locked path in `HandleTerminalModeKey` (`if o.Locked() { ... typeIntoPane }`) made `if false && ...`, the dock indicator kept | "alt+2 alt+n ctrl+p did not reach cat -v as bytes" | **caught** |
+| `menuKey.ran` returns false at once, so no menu is held | "l after ctrl+g p h, without the leader: focus is on <a>, want <b>" | **caught** |
+
+Not covered end to end: a declared menu held by a repeatable action, and the timed repeat window skipped while locked.
+
+### Held menus, the hold key, the badge and the rail pane
+
+Review findings on #1081. `TestLockModeGivesEveryKeyToThePane` gains step 2b: ctrl+g p h, l, then x and alt+2 must reach `cat -v` as `x^[2`, with two panes left and the client locked. `TestLockModeHeldLeaderMenuTakesOnlyRepeatKeys` runs `keybindings.lock = true` with the tuios leader, `dock_prefix_indicator = "badge"` and left alt as the hold key. ctrl+b left, right, then two seconds, then x and alt+2 must reach `cat -v` as `x^[2` with two panes left. The badge must show `PREFIX` and the unlock glyph while the menu is held. The which-key panel must show `(repeat)`, `Focus pane` and `Close and lock`, and not `Close window` or `Create window`. In a pane that set `CSI > 11 u`, left alt pressed and let go, then z, must reach `cat -v` as `^[[57443;3u^[[57443;3:3u^[[122u`. `TestLockModeGivesTheRailPaneItsWorkspaceChords` focuses a left rail session pane under lock. q, alt+1 and alt+3 must reach the rail pane's `cat -v` as `q^[1^[3` and not the attached session's pane. Then ctrl+b left holds the leader menu, and x y Enter must reach the rail pane as `xy`, with no x in the attached session's pane. Each control is a build to a separate binary, the source put back before the next. Run on 2026-10-25 on Linux.
+
+The fixed build passes.
+
+| Control: what was cut | Tests that fail | Verdict |
+| --- | --- | --- |
+| The PR before these fixes (2e3e784) | step 2b: "x alt+2 in the held pane menu did not reach cat -v"; the leader test: "the badge does not say unlocked" | **caught** |
+| `menuKey.refuses` returns false, so a held menu keeps its full table | both "x alt+2 in the held ... menu did not reach cat -v". x closed pane b: the frame shows one pane | **caught** |
+| `renderWhichKey` keeps the full table for a held menu (`if false && m.LockHeld`) | "the held leader menu's hint does not list its repeat keys and esc" | **caught** |
+| `unlockBadge` made `false` | "the badge does not say unlocked while the leader menu is held" | **caught** |
+| `ReleaseHoldKey` not gated on a hold in progress | "the hold key's press and release did not both reach the pane" | **caught** |
+| The rail's workspace chord exception kept under lock | "q alt+1 alt+3 did not reach the rail pane" | **caught** |
+| `menuKey.unbound` sends with `forwardKeyToFocusedWindow`, as before the second review | "x y after ctrl+b left did not reach the rail pane as xy" | **caught** |
+| `menuKey.unbound` calls `typeIntoPane`, but `typeIntoPane` has no rail check | "x y after ctrl+b left did not reach the rail pane as xy" | **caught** |

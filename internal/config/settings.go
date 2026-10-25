@@ -654,6 +654,9 @@ type Settings struct {
 	// rather than the binding tables. Empty is the default of each.
 	KeyboardLayout string
 	OptionGlyphs   string
+	// Lock is keybindings.lock: terminal mode gives every key but the leader
+	// to the focused pane.
+	Lock bool
 
 	// PaneGap is the cells of empty space the tiler keeps between two neighbouring
 	// panes: i3's inner gap, and about the only spacing a terminal window manager
@@ -807,6 +810,12 @@ type Settings struct {
 	WindowChromeBackground string
 	DockBackground         string
 	SidebarBackground      string
+
+	// SidebarCursorBackground is the ground of the rail's cursor row while
+	// the rail has the keyboard. Empty keeps the palette's Surface. It is
+	// a colour only, with no off or theme: the row is a band on the rail,
+	// not a surface of its own. See sidebarRowBg.
+	SidebarCursorBackground string
 
 	// ClockFormat is the Go time layout the clock overlay draws with. Empty takes
 	// DefaultClockFormat.

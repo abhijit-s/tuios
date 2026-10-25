@@ -46,7 +46,7 @@ uses that leader. The offer changes nothing until you press `U` and Enter.
 | `tuios` | `ctrl+b` | The tuios keys. This is the default |
 | `tmux` | `ctrl+b` | tmux 3.8's keys after the leader |
 | `screen` | `ctrl+a` | GNU screen's keys after the leader, also on the control variant (`ctrl+a ctrl+n`). `ctrl+a ctrl+a` goes to the last workspace. `ctrl+a a` sends `ctrl+a` to the pane |
-| `zellij` | `ctrl+g` | zellij's unlock-first keys. After `ctrl+g`, `p` opens pane mode (the window menu), `t` tab mode (the workspace menu), `s` copy mode and `o` the session switcher. The next key runs one action. In pane mode `r` splits right, `d` splits down, `f` zooms, `h` `j` `k` `l` move focus and `c` renames. In tab mode `n` opens a workspace, `x` closes it, and `h` and `l` go to the previous and next |
+| `zellij` | `ctrl+g` | zellij's unlock-first keys. After `ctrl+g`, `p` opens pane mode (the window menu), `t` tab mode (the workspace menu), `s` copy mode and `o` the session switcher. The next key runs one action. In pane mode `r` splits right, `d` splits down, `f` zooms, `h` `j` `k` `l` move focus and `c` renames. In tab mode `n` opens a workspace, `x` closes it, and `h` and `l` go to the previous and next. It turns on [lock mode](#lock-mode) |
 
 - A tmux window is a workspace here. A tmux pane is a window here. So `c`,
   `n`, `p`, `l`, `0` to `9`, `,` and `&` act on workspaces.
@@ -79,6 +79,46 @@ uses that leader. The offer changes nothing until you press `U` and Enter.
 `tuios keybinds cheatsheet tmux` shows the keys in three groups: the keys that
 work as in tmux, the tuios keys that moved, and what tmux has that tuios does
 not. `tuios keybinds preset show tmux` prints the preset file.
+
+## Lock mode
+
+Lock mode gives every key to the program in the pane. It is the locked mode of
+zellij. Turn it on in `config.toml`:
+
+```toml
+[keybindings]
+lock = true
+```
+
+The zellij preset turns it on. Set `lock = false` to turn it off under that
+preset.
+
+- In terminal mode, tuios takes only the leader. Every other key goes to the
+  pane, also the keys that tuios binds. `alt+1` to `alt+9`, `alt+n`,
+  `alt+esc`, `ctrl+p`, the arrow keys with `alt`, `shift+up` and the hold key
+  all go to the pane.
+- The leader unlocks. Press the leader, then the keys of one action. The
+  action runs and tuios locks again.
+- A repeatable action keeps its menu open. These are the actions in
+  `keybindings.repeat`, such as focus moves and resize steps. Press the key
+  again to move again. You do not press the leader again.
+- The open menu then takes only repeatable keys. Any other key closes the
+  menu and goes to the pane, and tuios locks again. For example, `x` after
+  `ctrl+b left right` goes to the pane. It does not close a pane. The
+  which-key panel of the open menu shows only the repeatable keys and `esc`.
+- Press `esc` to close the menu and lock again. `ctrl+c` also closes it.
+- Press the leader to close the menu and open a new leader menu.
+- A key that the open menu does not bind closes the menu. The key goes to the
+  pane.
+- To go to window mode, press the leader, then `esc`.
+- To send the leader to the pane, press the leader two times.
+- Window mode, overlays, copy mode and the mouse do not change.
+
+The mode pill in the dock shows a lock when tuios is locked. It shows an open
+lock while the leader or a menu waits for a key. Without Nerd Fonts, the pill
+shows `LOCK` and `UNLOCK`. When the dock is hidden, or
+`appearance.dock_prefix_indicator` is `"badge"`, the floating badge shows
+`PREFIX` and the open lock while a menu waits for a key.
 
 ## The full list
 
@@ -1604,6 +1644,7 @@ Inside it:
 | `space` | Read an approval's or a question's prompt and answer it here |
 | `n` | Open the New agent sheet. See below |
 | `c` | On an attempt of a fan: compare the attempts. See below |
+| `o` | Open what the agent has shown, such as a TML form, on its Artifacts tab, and use it. `esc` goes back to the list |
 | `f` | Show only what needs you, then each kind of item, then every agent |
 | `s` | Step the order inside each group |
 | `/` | Search. A `key:value` term is a selector, such as `harness:codex` |
@@ -1611,8 +1652,8 @@ Inside it:
 | `y` `p` `m` | Resume, pass held mail on, open the mailbox |
 | `x` `*` | Mark an agent, or every agent shown, for a bulk answer. A marked row shows a mark, and the header counts the marks |
 | `1` `3` with marks | Allow every marked approval once, after a sheet that lists them, or reject them |
-| `[` `]` | Switch the focus tabs: Thread, Changes, Checkpoints and Pane |
-| `J` `K` | Scroll the thread, or a long plan waiting for a yes |
+| `[` `]` | Switch the focus tabs: Thread, Changes, Artifacts, Checkpoints and Pane |
+| `J` `K` | Scroll the thread, or a long plan waiting for a yes. On the Artifacts tab, move between the artifacts |
 | `e` | Show every line of every card in the thread |
 | `v` | Review the agent's changes |
 | `ctrl+]` | Go to the agent's pane and zoom it. `ctrl+b i` comes back to the same agent |
@@ -1663,6 +1704,25 @@ through `tuios start-agent`. Uncommitted files stay in this folder. On a
 linked host the agent works in a new worktree of the host's checkout, which
 the host finds by the repository's origin.
 
+The Artifacts tab lists what the agent has shown you: each TML document its
+pane opened, open or closed, and each screenshot it took. The newest is
+first. The selected one is drawn under the list. An open document is the
+same document as its popup or pane, with the same state: what you choose in
+one place shows in the other. `o` or a click gives it the keys, and `esc`
+gives them back. A closed document shows what it showed last, and your
+answer. A document from another session is read-only here.
+
+A TML popup and the agents view do not show at the same time:
+
+- Open the view while an agent's popup floats, and the view selects that
+  agent and shows the popup's document, with the keys.
+- A document that opens while the view is open shows in the focus when it is
+  from the selected agent. From another agent, its row gets a
+  `● new artifact` chip, and a popup moves the row to Needs you. A click on
+  the chip opens it.
+- Close the view while the Artifacts tab shows an open document, and its
+  window gets the focus and floats again.
+
 In the image view, which a click on an image chip in the reply opens: `o`
 opens the image in the desktop's viewer, `c` saves a copy and copies its
 path, `s` saves a copy, `left` and `right` step through the images, `+` and
@@ -1709,7 +1769,7 @@ These keys are in three sections of their own, rebindable like any other:
 `inbox_write`, `inbox_sort`, `inbox_view_pane`, `inbox_new_agent`,
 `inbox_allow`, `inbox_allow_always`, `inbox_open`, `inbox_back`,
 `inbox_help`, `inbox_mark`, `inbox_mark_all`, `inbox_tab_prev`,
-`inbox_tab_next`, `inbox_expand`, `inbox_compare`),
+`inbox_tab_next`, `inbox_expand`, `inbox_compare`, `inbox_artifact`),
 `[keybindings.inbox_peek]` (the prompt: `peek_approve`, `peek_approve_always`,
 `peek_deny`, `peek_type`, `peek_read_again`, `peek_go`, `peek_back`) and
 `[keybindings.mail]` (the mailbox: `mail_down`, `mail_up`, `mail_page_down`,
@@ -2154,6 +2214,11 @@ prev_workspace = ["p"]
 
 An action in the list repeats only when a key runs it after the leader. tuios
 warns about an entry with no such key, and about a misspelt action.
+
+With `keybindings.lock` on, there is no repeat window in terminal mode. A
+repeatable action keeps its menu open until you press `esc`, with no time
+limit. The open menu takes only repeatable keys. Any other key goes to the
+pane, and tuios locks again. See [Lock mode](#lock-mode).
 
 Workspace switching on `opt+1` to `opt+9` works with no configuration on a
 US or ABC keyboard layout. It also works in a terminal that reports Alt with

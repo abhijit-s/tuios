@@ -863,6 +863,10 @@ type SidebarConfig struct {
 	// Background is the ground painted under the rail: off, theme or
 	// #RRGGBB, and empty follows appearance.background (default: empty).
 	Background string `toml:"background"`
+	// CursorBackground is the ground of the row under the rail's cursor
+	// while the rail has the keyboard: a colour, and empty keeps the
+	// palette's own (default: empty).
+	CursorBackground string `toml:"cursor_background"`
 	// AgentRow is the [appearance.sidebar.agent_row] table: the tokens an
 	// agent row draws and the value rules that colour them. Decoded as generic
 	// TOML and read by ParseSidebarAgentRow, so a wrong value in it is a
@@ -943,6 +947,13 @@ type KeybindingsConfig struct {
 	// "bind" when keyboard_layout is "us" or, with keyboard_layout unset, the
 	// Mac's input source is US or ABC, and "alt" otherwise.
 	OptionGlyphs string `toml:"option_glyphs,omitempty"`
+	// Lock is zellij's locked mode. When true, terminal mode gives every key
+	// to the focused pane except the leader: no terminal_mode key, no global
+	// key, no workspace chord and no hold key. The leader unlocks for one
+	// action, and tuios locks again when it is done. A repeatable action (see
+	// Repeat) keeps its menu open until esc, and that menu takes only the
+	// repeatable actions. Unset is false, or the preset's.
+	Lock *bool `toml:"lock,omitempty"`
 	// Repeat lists the actions that stay armed after the leader, as tmux's
 	// bind -r does: the same key pressed again inside
 	// appearance.prefix_repeat_time runs the action again without the leader.
@@ -1408,6 +1419,7 @@ func DefaultConfig() *UserConfig {
 				"window_prefix_prev":   {"shift+tab"},
 				"window_prefix_tiling": {"t"},
 				"move_window":          {"m"},
+				"window_prefix_float":  {"f"},
 				"window_prefix_cancel": {"esc"},
 			},
 			MinimizePrefix: map[string][]string{
@@ -1636,7 +1648,10 @@ const (
 	ActionInboxNewAgent    = "inbox_new_agent"
 	// ActionInboxCompare opens the comparison of the attempts of the fan
 	// under the cursor.
-	ActionInboxCompare    = "inbox_compare"
+	ActionInboxCompare = "inbox_compare"
+	// ActionInboxArtifact opens what the agent under the cursor has shown,
+	// such as a TML form, on its Artifacts tab, and gives it the keys.
+	ActionInboxArtifact   = "inbox_artifact"
 	ActionInboxDetailDown = "inbox_detail_down"
 	ActionInboxDetailUp   = "inbox_detail_up"
 	// The approval card's keys, the keys that open and close the focus on a
@@ -1721,6 +1736,7 @@ func getDefaultInboxKeybinds() map[string][]string {
 		ActionInboxDenyReason:  {"R"},
 		ActionInboxNewAgent:    {"n"},
 		ActionInboxCompare:     {"c"},
+		ActionInboxArtifact:    {"o"},
 		ActionInboxDetailDown:  {"J", "ctrl+d"},
 		ActionInboxDetailUp:    {"K", "ctrl+u"},
 		ActionInboxAllow:       {"a"},
@@ -2723,6 +2739,7 @@ func ApplyAppearanceConfig(cfg *UserConfig, s *Settings) {
 	s.WindowChromeBackground = cfg.Appearance.WindowChromeBackground
 	s.DockBackground = cfg.Appearance.DockBackground
 	s.SidebarBackground = cfg.Appearance.Sidebar.Background
+	s.SidebarCursorBackground = cfg.Appearance.Sidebar.CursorBackground
 
 	// A pointer because zero is a real value here: it turns the repeat window
 	// off, and a plain int could not tell that from an absent key.
@@ -2851,6 +2868,7 @@ func ApplyAppearanceConfig(cfg *UserConfig, s *Settings) {
 	}
 	s.KeyboardLayout = cfg.Keybindings.KeyboardLayout
 	s.OptionGlyphs = cfg.Keybindings.OptionGlyphs
+	s.Lock = cfg.Keybindings.Lock != nil && *cfg.Keybindings.Lock
 
 	// The motion level. A config that was not run through the load path (one
 	// built in code) can still carry the old boolean, so it is folded here as
@@ -3418,6 +3436,10 @@ func fillMissingKeybinds(cfg, defaultCfg *UserConfig) {
 			}
 			if cfg.Keybindings.LeaderTwice == "" {
 				cfg.Keybindings.LeaderTwice = kb.LeaderTwice
+			}
+			if cfg.Keybindings.Lock == nil && kb.Lock != nil {
+				lock := *kb.Lock
+				cfg.Keybindings.Lock = &lock
 			}
 		}
 	}

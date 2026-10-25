@@ -256,6 +256,11 @@ func HandleInput(msg tea.Msg, o *app.OS) (tea.Model, tea.Cmd) {
 // terminal's bracketed paste (tea.PasteMsg) and the paste key's clipboard read
 // (tea.ClipboardMsg), so neither path can reach a pane the other protects.
 func pasteTakenByOverlay(o *app.OS, content string) (tea.Cmd, bool) {
+	// A TML surface the person is in, in the agents view, takes a paste
+	// into its focused text field.
+	if o.ShowInbox && o.CockpitArtifactFocused() {
+		return o.CockpitArtifactPaste(content), true
+	}
 	// While the Inbox's reply editor is open the paste is the reply's text,
 	// line breaks and all. A long paste is held as one block.
 	// The reply editor is handled by the two callers, before this.
@@ -390,7 +395,8 @@ func HandleKeyPress(msg tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
 	// so holding it cannot type anything into a pane; every other key struck
 	// while it is held loses the trigger's own modifier, so holding Option and
 	// tapping n runs the window-mode action bound to n.
-	if o.PressHoldKey(msg) {
+	// Lock mode gives the hold key to the pane like every other key.
+	if !o.Locked() && o.PressHoldKey(msg) {
 		return o, nil
 	}
 	msg = o.StripHoldModifier(msg)
@@ -597,14 +603,10 @@ func routeKey(msg tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
 		// Keep leader chords and workspace navigation in the window manager.
 		// Every other key belongs to the pane actually visible in the rail.
 		key := withoutChordText(msg).String()
-		workspaceChord := strings.HasPrefix(key, "alt+") && len(key) == len("alt+1") && key[len(key)-1] >= '1' && key[len(key)-1] <= '9'
+		// Lock mode gives the workspace chords to the pane, so to this one.
+		workspaceChord := !o.Locked() && strings.HasPrefix(key, "alt+") && len(key) == len("alt+1") && key[len(key)-1] >= '1' && key[len(key)-1] <= '9'
 		if !o.PrefixActive && !isLeaderKey(msg, &o.Settings, o.HostBaseCode(msg)) && !workspaceChord {
-			if w := o.SidebarSessionWindow(); w != nil {
-				raw, released := paneKeyBytes(paneMsg(msg, o), w, o, true)
-				if len(raw) > 0 && o.WriteSidebarSession(raw) && !released {
-					o.NotePaneKeyDown(msg.Code, w.ID)
-				}
-			}
+			typeIntoRailPane(msg, o)
 			return o, nil
 		}
 	}
@@ -669,7 +671,9 @@ func routeKey(msg tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
 	//
 	// It is after every overlay above: a key while the palette or the help
 	// panel is open belongs to the panel, whatever was pressed before it.
-	if !o.PrefixActive {
+	// Lock mode holds a menu open instead, so no window is armed while it is on;
+	// one left over from window mode must not take a locked key either.
+	if !o.PrefixActive && !o.Locked() {
 		if m, cmd, ok := tryPrefixRepeat(msg, o); ok {
 			return m, cmd
 		}

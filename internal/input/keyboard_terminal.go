@@ -108,7 +108,7 @@ func HandleTerminalModeKey(msg tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
 	// wheel and as in kitty. A full-screen program (nvim, less, htop, a
 	// compositor) gets the key itself: it has no scrollback to show, and
 	// Shift+Up is a key it uses. A pane already in copy mode keeps scrolling.
-	if focusedWindow != nil && keyScrollsPane(focusedWindow) {
+	if focusedWindow != nil && keyScrollsPane(focusedWindow) && !o.Locked() {
 		action := sectionAction(msg, o, (*config.KeybindRegistry).GetTerminalModeAction)
 		if handleTerminalScrollBinding(action, o, focusedWindow) {
 			return o, nil
@@ -147,8 +147,10 @@ func HandleTerminalModeKey(msg tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
 
 	// Check for prefix key in terminal mode. A leader the prefix_mode table
 	// binds, pressed after the leader, is that binding's and goes to
-	// HandlePrefixCommand below (issue #866).
-	if isLeaderKey(msg, &o.Settings, o.HostBaseCode(msg)) && !leaderBoundInPrefix(msg, o) {
+	// HandlePrefixCommand below (issue #866). A menu lock mode holds open is
+	// the exception: there the leader always opens a fresh leader menu.
+	if isLeaderKey(msg, &o.Settings, o.HostBaseCode(msg)) && (o.LockHeld || !leaderBoundInPrefix(msg, o)) {
+		leaderWhileHeld(o)
 		// Leader twice sends the leader itself to the pane, as tmux does with
 		// prefix prefix. It is encoded like any forwarded key: CSI u for a
 		// kitty pane, legacy bytes otherwise. A leader with no legacy encoding
@@ -214,6 +216,13 @@ func HandleTerminalModeKey(msg tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
 		return HandlePrefixCommand(msg, o)
 	}
 
+	// Lock mode: no menu is open and the key is not the leader, so it goes to
+	// the pane, whatever tuios binds it to. Nothing below may see it.
+	if o.Locked() {
+		o.LockHeld = false
+		return typeIntoPane(msg, o, false)
+	}
+
 	// Direct terminal-mode binds and workspace switching, resolved through the
 	// keybind registry so a rebind in config.toml takes effect. These must be
 	// checked before the PTY forwarding below so their keys are not typed into
@@ -258,6 +267,18 @@ func HandleTerminalModeKey(msg tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
 		}
 		return o, nil
 	}
+	return typeIntoPane(msg, o, nvimNavigation)
+}
+
+// typeIntoPane sends a key to the pane the user types into: a rail session
+// pane that has the keyboard, or else the focused pane and the multifocus
+// set's panes, unless the key is a focus move nvim navigation forwards. With
+// no pane focused it goes back to window mode.
+func typeIntoPane(msg tea.KeyPressMsg, o *app.OS, nvimNavigation bool) (*app.OS, tea.Cmd) {
+	if typeIntoRailPane(msg, o) {
+		return o, nil
+	}
+	focusedWindow := o.GetFocusedWindow()
 	// A TML window takes the key itself: its surface is drawn by this
 	// client, and its PTY only holds the place. See app/tml.go.
 	if o.DrawsTML(focusedWindow) {
@@ -305,6 +326,22 @@ func HandleTerminalModeKey(msg tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
 	return o, nil
 }
 
+// typeIntoRailPane sends a key to the rail session pane that has the
+// keyboard. It reports whether a rail session had the keyboard, in which case
+// the key is the rail's and goes nowhere else.
+func typeIntoRailPane(msg tea.KeyPressMsg, o *app.OS) bool {
+	if !o.SidebarSessionFocused() {
+		return false
+	}
+	if w := o.SidebarSessionWindow(); w != nil {
+		raw, released := paneKeyBytes(paneMsg(msg, o), w, o, true)
+		if len(raw) > 0 && o.WriteSidebarSession(raw) && !released {
+			o.NotePaneKeyDown(msg.Code, w.ID)
+		}
+	}
+	return true
+}
+
 // recordTerminalKey records a keystroke that is being forwarded to the focused
 // window's PTY into the active tape recording. Printable single-byte ASCII is
 // accumulated as a Type command; everything else is recorded as a KeyCombo.
@@ -333,8 +370,6 @@ func recordTerminalKey(o *app.OS, msg tea.KeyPressMsg) {
 // to the table stayed invisible until someone added a case, and the key it was
 // bound to silently dismissed the chord instead. One route, one table.
 func handleTerminalLayoutPrefix(msg tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
-	o.LayoutPrefixActive = false
-	o.PrefixActive = false
 	return runPrefix(msg, o, (*config.KeybindRegistry).GetLayoutPrefixAction)
 }
 
