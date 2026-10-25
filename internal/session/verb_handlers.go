@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image/color"
 	"maps"
 	"os"
 	"path/filepath"
@@ -41,11 +42,12 @@ func decodeParams(params json.RawMessage, v any) *verbError {
 	return nil
 }
 
-// resolveVerbSession resolves a session name (empty means most recently active)
-// to a live session, or a session_not_found error whose hint lists the sessions
-// that do exist and suggests the closest name.
-func (d *Daemon) resolveVerbSession(name string) (*Session, *verbError) {
-	sess := d.findTargetSession(name)
+// resolveVerbSession resolves a session name to a live session, or a
+// session_not_found error whose hint lists the sessions that do exist and
+// suggests the closest name. An empty name is the caller's own session, or
+// the most recently active one for a caller in no pane (findTargetSession).
+func (d *Daemon) resolveVerbSession(cs *connState, name string) (*Session, *verbError) {
+	sess := d.findTargetSession(cs, name)
 	if sess != nil {
 		return sess, nil
 	}
@@ -102,7 +104,7 @@ func mapResolveErr(err error, sess *Session) *verbError {
 		hint := &VerbHint{
 			Param:   "window",
 			Verb:    "list-windows",
-			Command: "tuios list-windows --json",
+			Command: "tuios list-windows",
 			Detail:  "the window target matched no window. A window is addressable by its id, a unique id prefix, the index list-windows prints, or its exact name.",
 		}
 		if strings.Contains(msg, "ambiguous window") {
@@ -111,8 +113,10 @@ func mapResolveErr(err error, sess *Session) *verbError {
 			hint.Detail = "the window target matched more than one window, listed in the message. Pass the id, or give the windows different names with set-window --name."
 		}
 		if sess != nil {
-			hint.Available = windowTargets(sess.GetState())
-			hint.DidYouMean = closestMatch(targetFromError(msg), hint.Available)
+			state := sess.GetState()
+			hint.Command = "tuios list-windows " + sessionArg(sess)
+			hint.Available = windowChoices(state)
+			hint.DidYouMean = closestMatch(targetFromError(msg), windowTargets(state))
 		}
 		return hintedVerbError(ErrVerbWindowNotFound, msg, hint)
 	}
@@ -156,14 +160,14 @@ func (d *Daemon) verbListClients(_ *connState, _ json.RawMessage) (any, *verbErr
 	}, nil
 }
 
-func (d *Daemon) verbSessionInfo(_ *connState, params json.RawMessage) (any, *verbError) {
+func (d *Daemon) verbSessionInfo(cs *connState, params json.RawMessage) (any, *verbError) {
 	var p struct {
 		Session string `json:"session"`
 	}
 	if verr := decodeParams(params, &p); verr != nil {
 		return nil, verr
 	}
-	sess, verr := d.resolveVerbSession(p.Session)
+	sess, verr := d.resolveVerbSession(cs, p.Session)
 	if verr != nil {
 		return nil, verr
 	}
@@ -178,14 +182,14 @@ func (d *Daemon) verbSessionInfo(_ *connState, params json.RawMessage) (any, *ve
 	return data, nil
 }
 
-func (d *Daemon) verbListWindows(_ *connState, params json.RawMessage) (any, *verbError) {
+func (d *Daemon) verbListWindows(cs *connState, params json.RawMessage) (any, *verbError) {
 	var p struct {
 		Session string `json:"session"`
 	}
 	if verr := decodeParams(params, &p); verr != nil {
 		return nil, verr
 	}
-	sess, verr := d.resolveVerbSession(p.Session)
+	sess, verr := d.resolveVerbSession(cs, p.Session)
 	if verr != nil {
 		return nil, verr
 	}
@@ -222,12 +226,12 @@ func addResumable(d *Daemon, state *SessionState, data map[string]any) {
 // cursor and process fields, and with none attached the daemon gives the
 // window's list-windows entry. The window is resolved here either way, so a
 // target that matches nothing is the same error attached or not.
-func (d *Daemon) verbGetWindow(_ *connState, params json.RawMessage) (any, *verbError) {
+func (d *Daemon) verbGetWindow(cs *connState, params json.RawMessage) (any, *verbError) {
 	var p commonParams
 	if verr := decodeParams(params, &p); verr != nil {
 		return nil, verr
 	}
-	sess, verr := d.resolveVerbSession(p.Session)
+	sess, verr := d.resolveVerbSession(cs, p.Session)
 	if verr != nil {
 		return nil, verr
 	}
@@ -322,7 +326,7 @@ func (d *Daemon) verbNewWindow(cs *connState, params json.RawMessage) (any, *ver
 	if verr != nil {
 		return nil, verr
 	}
-	sess, verr := d.resolveVerbSession(p.Session)
+	sess, verr := d.resolveVerbSession(cs, p.Session)
 	if verr != nil {
 		return nil, verr
 	}
@@ -576,7 +580,7 @@ func (d *Daemon) verbPopup(cs *connState, params json.RawMessage) (any, *verbErr
 	if verr := decodeParams(params, &p); verr != nil {
 		return nil, verr
 	}
-	sess, verr := d.resolveVerbSession(p.Session)
+	sess, verr := d.resolveVerbSession(cs, p.Session)
 	if verr != nil {
 		return nil, verr
 	}
@@ -793,12 +797,12 @@ func newWindowErr(err error, sess *Session, ws int) *verbError {
 	return mapResolveErr(err, sess)
 }
 
-func (d *Daemon) verbCloseWindow(_ *connState, params json.RawMessage) (any, *verbError) {
+func (d *Daemon) verbCloseWindow(cs *connState, params json.RawMessage) (any, *verbError) {
 	var p commonParams
 	if verr := decodeParams(params, &p); verr != nil {
 		return nil, verr
 	}
-	sess, verr := d.resolveVerbSession(p.Session)
+	sess, verr := d.resolveVerbSession(cs, p.Session)
 	if verr != nil {
 		return nil, verr
 	}
@@ -845,7 +849,7 @@ func (d *Daemon) closeWindowOfPTY(sess *Session, ptyID string, popupOnly bool) {
 // verbCloseWorkspace closes every pane on one workspace. A scratch pane is
 // left alone unless the workspace named is a scratch workspace: a scratch
 // group is closed only when it is the target.
-func (d *Daemon) verbCloseWorkspace(_ *connState, params json.RawMessage) (any, *verbError) {
+func (d *Daemon) verbCloseWorkspace(cs *connState, params json.RawMessage) (any, *verbError) {
 	var p struct {
 		Session   string `json:"session"`
 		Workspace int    `json:"workspace"`
@@ -853,7 +857,7 @@ func (d *Daemon) verbCloseWorkspace(_ *connState, params json.RawMessage) (any, 
 	if verr := decodeParams(params, &p); verr != nil {
 		return nil, verr
 	}
-	sess, verr := d.resolveVerbSession(p.Session)
+	sess, verr := d.resolveVerbSession(cs, p.Session)
 	if verr != nil {
 		return nil, verr
 	}
@@ -902,6 +906,9 @@ func (d *Daemon) verbSendKeys(cs *connState, params json.RawMessage) (any, *verb
 		Literal bool   `json:"literal"`
 		Raw     bool   `json:"raw"`
 		Repeat  int    `json:"repeat"`
+		// AllowBlocked lets a pane send keys to a pane on needs_input
+		// (typingBlocked).
+		AllowBlocked bool `json:"allow_blocked"`
 	}
 	if verr := decodeParams(params, &p); verr != nil {
 		return nil, verr
@@ -913,7 +920,7 @@ func (d *Daemon) verbSendKeys(cs *connState, params json.RawMessage) (any, *verb
 		return nil, invalidParam("repeat", fmt.Sprintf("repeat must be between 1 and %d, got %d", maxSendKeysRepeat, p.Repeat))
 	}
 	repeat := max(p.Repeat, 1)
-	sess, verr := d.resolveVerbSession(p.Session)
+	sess, verr := d.resolveVerbSession(cs, p.Session)
 	if verr != nil {
 		return nil, verr
 	}
@@ -946,6 +953,9 @@ func (d *Daemon) verbSendKeys(cs *connState, params json.RawMessage) (any, *verb
 		}
 	}
 	if verr := d.recheckTyping(cs, "send-keys", sess, p.Window); verr != nil {
+		return nil, verr
+	}
+	if verr := d.recheckBlocked(cs, "send-keys", sess, p.Window, p.AllowBlocked); verr != nil {
 		return nil, verr
 	}
 
@@ -1056,11 +1066,14 @@ func (d *Daemon) verbSendText(cs *connState, params json.RawMessage) (any, *verb
 		Text    string `json:"text"`
 		Paste   bool   `json:"paste"`
 		Submit  bool   `json:"submit"`
+		// AllowBlocked lets a pane type into a pane on needs_input
+		// (typingBlocked).
+		AllowBlocked bool `json:"allow_blocked"`
 	}
 	if verr := decodeParams(params, &p); verr != nil {
 		return nil, verr
 	}
-	sess, verr := d.resolveVerbSession(p.Session)
+	sess, verr := d.resolveVerbSession(cs, p.Session)
 	if verr != nil {
 		return nil, verr
 	}
@@ -1075,6 +1088,9 @@ func (d *Daemon) verbSendText(cs *connState, params json.RawMessage) (any, *verb
 	if verr := d.recheckTyping(cs, "send-text", sess, p.Window); verr != nil {
 		return nil, verr
 	}
+	if verr := d.recheckBlocked(cs, "send-text", sess, p.Window, p.AllowBlocked); verr != nil {
+		return nil, verr
+	}
 	if p.Submit {
 		// The prompt path ask-agent types with: one paste, a wait for the
 		// program to take it in, and the harness's own submit key.
@@ -1087,7 +1103,12 @@ func (d *Daemon) verbSendText(cs *connState, params json.RawMessage) (any, *verb
 		// The pane is checked again right before the submit key: it can
 		// come to a prompt while the paste is taken in, and the Enter
 		// would answer it.
-		ctx := withSubmitGuard(d.ctx, func() *verbError { return d.recheckTyping(cs, "send-text", sess, window) })
+		ctx := withSubmitGuard(d.ctx, func() *verbError {
+			if verr := d.recheckTyping(cs, "send-text", sess, window); verr != nil {
+				return verr
+			}
+			return d.recheckBlocked(cs, "send-text", sess, window, p.AllowBlocked)
+		})
 		if _, err := submitPrompt(ctx, pty, p.Text, d.inputProfileFor(sess, window)); err != nil {
 			return nil, ptyWriteError(err)
 		}
@@ -1148,7 +1169,7 @@ func ptyWriteError(err error) *verbError {
 	return newVerbError(ErrVerbInternal, err.Error())
 }
 
-func (d *Daemon) verbCapturePane(_ *connState, params json.RawMessage) (any, *verbError) {
+func (d *Daemon) verbCapturePane(cs *connState, params json.RawMessage) (any, *verbError) {
 	var p struct {
 		Session    string   `json:"session"`
 		Window     string   `json:"window"`
@@ -1163,6 +1184,7 @@ func (d *Daemon) verbCapturePane(_ *connState, params json.RawMessage) (any, *ve
 		Palette    []string `json:"palette"`    // 16 hex colours to resolve against (default: xterm)
 		Unwrap     bool     `json:"unwrap"`     // join the rows the terminal soft-wrapped
 		Trim       bool     `json:"trim"`       // drop the blank lines at the end
+		Commands   int      `json:"commands"`   // the last N shell commands, under lines in total
 	}
 	if verr := decodeParams(params, &p); verr != nil {
 		return nil, verr
@@ -1170,7 +1192,21 @@ func (d *Daemon) verbCapturePane(_ *connState, params json.RawMessage) (any, *ve
 	if verr := validateCaptureSource(p.Source); verr != nil {
 		return nil, verr
 	}
-	sess, verr := d.resolveVerbSession(p.Session)
+	if p.Commands < 0 {
+		return nil, invalidParam("commands", "commands is how many of the last shell commands to capture, 1 or more")
+	}
+	if p.Commands > 0 {
+		switch {
+		case p.Source != "" && p.Source != "recent":
+			return nil, invalidParam("commands", "commands reads the scrollback, so it takes no source other than recent")
+		case p.Start > 0 || p.End > 0:
+			return nil, invalidParam("commands", "commands takes no start or end. Use lines for the most lines to keep")
+		case p.Unwrap:
+			return nil, invalidParam("commands", "commands takes no unwrap")
+		}
+		p.Scrollback = true
+	}
+	sess, verr := d.resolveVerbSession(cs, p.Session)
 	if verr != nil {
 		return nil, verr
 	}
@@ -1181,7 +1217,7 @@ func (d *Daemon) verbCapturePane(_ *connState, params json.RawMessage) (any, *ve
 	}
 
 	if p.Source == captureLastCommand {
-		return captureLastCommandOutput(pty, p.Window, p.Styled || p.ANSI || p.Resolved, p.Unwrap, p.Trim, p.Start, p.End, p.Lines)
+		return captureLastCommandOutput(sess, pty, p.Window, p.Styled || p.ANSI || p.Resolved, p.Unwrap, p.Trim, p.Start, p.End, p.Lines)
 	}
 
 	scrollback := p.Scrollback || p.Source == "recent"
@@ -1189,21 +1225,59 @@ func (d *Daemon) verbCapturePane(_ *connState, params json.RawMessage) (any, *ve
 	// escape sequences, and the reply must admit what the content carries
 	// instead of reporting styled=false beside a rewritten capture.
 	ansi := p.Styled || p.ANSI || p.Resolved
-	var content string
-	var meta paneMeta
+	var palette [16]color.Color
 	if p.Resolved {
-		palette, verr := paletteFromParams(p.Palette)
-		if verr != nil {
+		var verr *verbError
+		if palette, verr = paletteFromParams(p.Palette); verr != nil {
 			return nil, verr
 		}
+	}
+	var content string
+	var meta paneMeta
+	// commandMarks is set by a commands capture: true when the pane's marks
+	// cut the capture into commands, false when it fell back to lines.
+	var commandMarks *bool
+	var commandList []map[string]any
+	commandsAvailable := 0
+	omitted := -1
+	if p.Commands > 0 {
+		ceiling := p.Lines
+		if ceiling <= 0 {
+			ceiling = defaultCommandCeiling
+		}
+		rows, blocks, m, ok := pty.captureCommandRows(ansi)
+		commandMarks = &ok
+		if ok {
+			meta, commandsAvailable = m, len(blocks)
+			content, omitted, commandList = captureCommands(rows, blocks, p.Commands, ceiling)
+			if p.Resolved {
+				content = ResolveSGR(content, palette)
+			}
+		} else {
+			// No marks to cut by: the last ceiling lines, as lines gives.
+			p.Lines = ceiling
+		}
+	}
+	byCommands := commandMarks != nil && *commandMarks
+	switch {
+	case byCommands:
+		// Built above.
+	case p.Resolved:
 		content, meta = pty.CaptureContentResolvedMeta(scrollback, palette, p.Unwrap)
-	} else {
+	default:
 		content, meta = pty.CaptureContentMeta(scrollback, ansi, p.Unwrap)
 	}
 	if p.Trim {
 		content = trimCapture(content)
 	}
-	content = sliceCaptureLines(content, p.Start, p.End, p.Lines)
+	if !byCommands {
+		// Counted before the cut, so the caller can tell a capture that
+		// lines shortened from one that held everything.
+		if p.Lines > 0 && p.Start <= 0 && p.End <= 0 {
+			omitted = max(captureLineCount(content)-p.Lines, 0)
+		}
+		content = sliceCaptureLines(content, p.Start, p.End, p.Lines)
+	}
 
 	source := p.Source
 	if source == "" {
@@ -1230,6 +1304,16 @@ func (d *Daemon) verbCapturePane(_ *connState, params json.RawMessage) (any, *ve
 	if p.Trim {
 		out["trimmed"] = true
 	}
+	if omitted >= 0 {
+		out["lines_omitted"] = omitted
+	}
+	if commandMarks != nil {
+		out["command_marks"] = *commandMarks
+		if *commandMarks {
+			out["commands"] = commandList
+			out["commands_available"] = commandsAvailable
+		}
+	}
 	// A revision counts from 0 again when the daemon restarts, so it is a
 	// cache key only beside the daemon start it came from.
 	if d.events != nil {
@@ -1238,7 +1322,7 @@ func (d *Daemon) verbCapturePane(_ *connState, params json.RawMessage) (any, *ve
 	return out, nil
 }
 
-func (d *Daemon) verbResize(_ *connState, params json.RawMessage) (any, *verbError) {
+func (d *Daemon) verbResize(cs *connState, params json.RawMessage) (any, *verbError) {
 	var p struct {
 		Session string `json:"session"`
 		Window  string `json:"window"`
@@ -1251,7 +1335,7 @@ func (d *Daemon) verbResize(_ *connState, params json.RawMessage) (any, *verbErr
 	if p.Width <= 0 || p.Height <= 0 {
 		return nil, invalidParam("width", "width and height must both be positive")
 	}
-	sess, verr := d.resolveVerbSession(p.Session)
+	sess, verr := d.resolveVerbSession(cs, p.Session)
 	if verr != nil {
 		return nil, verr
 	}
@@ -1298,7 +1382,7 @@ func (d *Daemon) verbKillSession(_ *connState, params json.RawMessage) (any, *ve
 	return map[string]any{"type": "ok"}, nil
 }
 
-func (d *Daemon) verbSetSessionName(_ *connState, params json.RawMessage) (any, *verbError) {
+func (d *Daemon) verbSetSessionName(cs *connState, params json.RawMessage) (any, *verbError) {
 	var p struct {
 		Session string `json:"session"`
 		Name    string `json:"name"`
@@ -1306,7 +1390,7 @@ func (d *Daemon) verbSetSessionName(_ *connState, params json.RawMessage) (any, 
 	if verr := decodeParams(params, &p); verr != nil {
 		return nil, verr
 	}
-	sess, verr := d.resolveVerbSession(p.Session)
+	sess, verr := d.resolveVerbSession(cs, p.Session)
 	if verr != nil {
 		return nil, verr
 	}
@@ -1319,7 +1403,7 @@ func (d *Daemon) verbSetSessionName(_ *connState, params json.RawMessage) (any, 
 	return map[string]any{"type": "session_name_set", "session": sess.Name(), "display_name": name}, nil
 }
 
-func (d *Daemon) verbSetSessionAccent(_ *connState, params json.RawMessage) (any, *verbError) {
+func (d *Daemon) verbSetSessionAccent(cs *connState, params json.RawMessage) (any, *verbError) {
 	var p struct {
 		Session string `json:"session"`
 		Accent  string `json:"accent"`
@@ -1327,7 +1411,7 @@ func (d *Daemon) verbSetSessionAccent(_ *connState, params json.RawMessage) (any
 	if verr := decodeParams(params, &p); verr != nil {
 		return nil, verr
 	}
-	sess, verr := d.resolveVerbSession(p.Session)
+	sess, verr := d.resolveVerbSession(cs, p.Session)
 	if verr != nil {
 		return nil, verr
 	}
@@ -1338,7 +1422,7 @@ func (d *Daemon) verbSetSessionAccent(_ *connState, params json.RawMessage) (any
 	return map[string]any{"type": "session_accent_set", "session": sess.Name(), "accent": accent}, nil
 }
 
-func (d *Daemon) verbSetWorkspaceName(_ *connState, params json.RawMessage) (any, *verbError) {
+func (d *Daemon) verbSetWorkspaceName(cs *connState, params json.RawMessage) (any, *verbError) {
 	var p struct {
 		Session   string `json:"session"`
 		Workspace int    `json:"workspace"`
@@ -1350,7 +1434,7 @@ func (d *Daemon) verbSetWorkspaceName(_ *connState, params json.RawMessage) (any
 	if p.Workspace == 0 {
 		return nil, invalidParam("workspace", "workspace is required and is the workspace number, e.g. 1")
 	}
-	sess, verr := d.resolveVerbSession(p.Session)
+	sess, verr := d.resolveVerbSession(cs, p.Session)
 	if verr != nil {
 		return nil, verr
 	}
@@ -1361,7 +1445,7 @@ func (d *Daemon) verbSetWorkspaceName(_ *connState, params json.RawMessage) (any
 	return map[string]any{"type": "workspace_name_set", "workspace": p.Workspace, "name": name}, nil
 }
 
-func (d *Daemon) verbSetWorkspaceOrder(_ *connState, params json.RawMessage) (any, *verbError) {
+func (d *Daemon) verbSetWorkspaceOrder(cs *connState, params json.RawMessage) (any, *verbError) {
 	var p struct {
 		Session string `json:"session"`
 		Order   []int  `json:"order"`
@@ -1372,7 +1456,7 @@ func (d *Daemon) verbSetWorkspaceOrder(_ *connState, params json.RawMessage) (an
 	if len(p.Order) == 0 {
 		return nil, invalidParam("order", "order is required and is the workspace numbers in the order to show them, e.g. [3,1,2]")
 	}
-	sess, verr := d.resolveVerbSession(p.Session)
+	sess, verr := d.resolveVerbSession(cs, p.Session)
 	if verr != nil {
 		return nil, verr
 	}
@@ -1637,7 +1721,7 @@ func (d *Daemon) reportTarget(cs *connState, sessionName, window string) (*Sessi
 			}
 		}
 	}
-	sess, verr := d.resolveVerbSession(sessionName)
+	sess, verr := d.resolveVerbSession(cs, sessionName)
 	if verr != nil {
 		return nil, "", verr
 	}
@@ -1784,7 +1868,7 @@ func (d *Daemon) verbSetAgentSession(cs *connState, params json.RawMessage) (any
 	if len(sid) > maxAgentSessionIDLen {
 		return nil, invalidParam("agent_session_id", fmt.Sprintf("agent_session_id is %d bytes; the limit is %d", len(sid), maxAgentSessionIDLen))
 	}
-	sess, verr := d.resolveVerbSession(p.Session)
+	sess, verr := d.resolveVerbSession(cs, p.Session)
 	if verr != nil {
 		return nil, verr
 	}
@@ -1989,12 +2073,12 @@ func resolveExisting(path string) string {
 	}
 }
 
-func (d *Daemon) verbGetAgentState(_ *connState, params json.RawMessage) (any, *verbError) {
+func (d *Daemon) verbGetAgentState(cs *connState, params json.RawMessage) (any, *verbError) {
 	var p commonParams
 	if verr := decodeParams(params, &p); verr != nil {
 		return nil, verr
 	}
-	sess, verr := d.resolveVerbSession(p.Session)
+	sess, verr := d.resolveVerbSession(cs, p.Session)
 	if verr != nil {
 		return nil, verr
 	}
@@ -2077,12 +2161,12 @@ func (d *Daemon) verbGetAgentState(_ *connState, params json.RawMessage) (any, *
 // was not counted. A person who reports a false positive should be able to read
 // the answer once and see either the rule that fired or the word they took for
 // one.
-func (d *Daemon) verbExplainAgentDetect(_ *connState, params json.RawMessage) (any, *verbError) {
+func (d *Daemon) verbExplainAgentDetect(cs *connState, params json.RawMessage) (any, *verbError) {
 	var p commonParams
 	if verr := decodeParams(params, &p); verr != nil {
 		return nil, verr
 	}
-	sess, verr := d.resolveVerbSession(p.Session)
+	sess, verr := d.resolveVerbSession(cs, p.Session)
 	if verr != nil {
 		return nil, verr
 	}
@@ -2242,7 +2326,7 @@ func describeRule(det detection) string {
 // looks, and a rule that fails says nothing about which of its strings was the
 // reason. This answers both, so adding a harness is an edit and a re-run rather
 // than an experiment.
-func (d *Daemon) verbExplainAgentScreen(_ *connState, params json.RawMessage) (any, *verbError) {
+func (d *Daemon) verbExplainAgentScreen(cs *connState, params json.RawMessage) (any, *verbError) {
 	var p struct {
 		commonParams
 		Harness string `json:"harness"`
@@ -2251,7 +2335,7 @@ func (d *Daemon) verbExplainAgentScreen(_ *connState, params json.RawMessage) (a
 	if verr := decodeParams(params, &p); verr != nil {
 		return nil, verr
 	}
-	sess, verr := d.resolveVerbSession(p.Session)
+	sess, verr := d.resolveVerbSession(cs, p.Session)
 	if verr != nil {
 		return nil, verr
 	}
@@ -2366,6 +2450,17 @@ func (d *Daemon) verbExplainAgentScreen(_ *connState, params json.RawMessage) (a
 	out["title_matched"] = titleRule >= 0
 	out["title_rule_state"] = titleState
 	return out, nil
+}
+
+// captureLineCount is how many lines lines can choose from in content: the
+// rows up to the last one that is not blank, as sliceCaptureLines counts them.
+func captureLineCount(content string) int {
+	split := strings.Split(strings.TrimSuffix(content, "\n"), "\n")
+	n := len(split)
+	for n > 0 && strings.TrimSpace(split[n-1]) == "" {
+		n--
+	}
+	return n
 }
 
 // sliceCaptureLines applies the optional region/lines selection to captured
