@@ -178,7 +178,7 @@ func (st sidebarRowState) lit() bool { return st.Cursor || st.Hover }
 // severity mark and the foreign tint in the gutter keep their own meaning.
 func (st sidebarRowState) mark(pal overlay.Palette, row string) string {
 	rs := overlay.RowState{Cursor: st.Cursor, Focused: st.Focused, Hover: st.Hover}
-	return pal.CursorText(pal.Mark(row, rs), rs, sidebarNameCol-1)
+	return pal.CursorText(pal.Mark(row, rs), rs, sidebarNameCol()-1)
 }
 
 // railRowState reads the rail's focus once so a row site does not have to.
