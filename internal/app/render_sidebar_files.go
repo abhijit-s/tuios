@@ -68,6 +68,13 @@ type fileRowSpec struct {
 	// one thing this section has to say that the user has to act on, and it
 	// would otherwise be drawn in the same ink as the word "empty".
 	Warn bool
+	// Tree marks a row of the tree style. Depth is how far below the root's
+	// names it is, Guide the indent drawn in front of it, and Open whether a
+	// folder row is open. See sidebar_files_tree.go.
+	Tree  bool
+	Depth int
+	Guide string
+	Open  bool
 }
 
 // sidebarFileRows is the section's rows, in drawn order.
@@ -75,10 +82,63 @@ type fileRowSpec struct {
 // The ".." row is part of the same list rather than pinned above it, so it
 // scrolls with the names it belongs to and the section needs one offset like
 // every other. It comes first, which is where a person looks for the way out.
+//
+// The rows are built once per state of the listing and kept: a tree of 64
+// open folders of 2000 names is 128,000 rows, and the render and every j, k,
+// g and G read them. The slice is shared, so a caller must not change it.
 func (m *OS) sidebarFileRows() []fileRowSpec {
 	if !m.filesSectionEnabled() {
 		return nil
 	}
+	return m.fileRowsBuilt()
+}
+
+// fileRowsKey is everything sidebarFileRows draws from. The listings move Gen
+// and the tree's gen whenever their names change, so the two counters stand
+// for the names.
+type fileRowsKey struct {
+	want, dir, elsewhere, err string
+	spoofed, loading, capped  bool
+	tree, ascii               bool
+	gen, treeGen              uint64
+	// The root's names by identity as well: a listing replaced by one of the
+	// same generation (a section closed and opened again starts its count
+	// over) is still a new listing.
+	first *fileEntry
+	n     int
+}
+
+// fileRowsCache is the last rows built and the state they were built for.
+type fileRowsCache struct {
+	key   fileRowsKey
+	valid bool
+	rows  []fileRowSpec
+}
+
+// fileRowsBuilt is sidebarFileRows past the section's on switch, from the
+// cache when the listing has not moved.
+func (m *OS) fileRowsBuilt() []fileRowSpec {
+	v := &m.filesView
+	key := fileRowsKey{
+		want: v.Want, dir: v.Dir, elsewhere: v.Elsewhere, err: v.Err,
+		spoofed: v.Spoofed, loading: v.Loading, capped: v.Capped,
+		tree: m.filesTreeOn(), ascii: m.Settings.UseASCIIOnly,
+		gen: v.Gen, treeGen: m.filesTree.gen,
+		n: len(v.Entries),
+	}
+	if len(v.Entries) > 0 {
+		key.first = &v.Entries[0]
+	}
+	c := &m.filesRows
+	if c.valid && c.key == key {
+		return c.rows
+	}
+	c.key, c.valid, c.rows = key, true, m.buildFileRows()
+	return c.rows
+}
+
+// buildFileRows builds the section's rows from the listing.
+func (m *OS) buildFileRows() []fileRowSpec {
 	switch {
 	case m.filesView.Want == "":
 		// Nothing has ever been asked for, which on a fresh client means no pane
@@ -106,7 +166,15 @@ func (m *OS) sidebarFileRows() []fileRowSpec {
 		return []fileRowSpec{{Note: true, Name: "loading"}}
 	}
 
-	rows := make([]fileRowSpec, 0, len(m.filesView.Entries)+3)
+	n := len(m.filesView.Entries) + 3
+	if m.filesTreeOn() {
+		// Every open folder's names and its note, so the rows are one
+		// allocation rather than a slice grown and copied a dozen times.
+		for _, d := range m.filesTree.dirs {
+			n += len(d.Entries) + 1
+		}
+	}
+	rows := make([]fileRowSpec, 0, n)
 	if m.FileViewSpoofed() {
 		// First, above the way out, and in the warning ink. It is the one thing
 		// the section can say that changes what the rows below will do, so it
@@ -117,17 +185,21 @@ func (m *OS) sidebarFileRows() []fileRowSpec {
 		rows = append(rows, fileRowSpec{Note: true, Warn: true, Name: fileSpoofRow})
 	}
 	if filepath.Dir(m.filesView.Dir) != m.filesView.Dir {
-		rows = append(rows, fileRowSpec{Kind: sidebarRowFileUp, Index: -1, Key: "..", Name: "..", Dir: true})
+		rows = append(rows, fileRowSpec{Kind: sidebarRowFileUp, Index: -1, Key: "..", Name: "..", Dir: true, Tree: m.filesTreeOn()})
 	}
-	for i, e := range m.filesView.Entries {
-		rows = append(rows, fileRowSpec{
-			Kind:  sidebarRowFileEntry,
-			Index: i,
-			Key:   e.Name,
-			Name:  e.Name,
-			Dir:   e.Dir,
-			Icon:  e.Icon,
-		})
+	if m.filesTreeOn() {
+		rows = m.fileTreeRows(rows, m.filesView.Dir, "", m.filesView.Entries, nil, false)
+	} else {
+		for i, e := range m.filesView.Entries {
+			rows = append(rows, fileRowSpec{
+				Kind:  sidebarRowFileEntry,
+				Index: i,
+				Key:   e.Name,
+				Name:  e.Name,
+				Dir:   e.Dir,
+				Icon:  e.Icon,
+			})
+		}
 	}
 	switch {
 	case m.filesView.Loading:
@@ -230,6 +302,9 @@ func sidebarFilesEmptyRow(cw int, pal overlay.Palette) string {
 // with no colour and no icon at all. The icon in the glyph column is the layer
 // on top of it, not instead of it.
 func (m *OS) sidebarFileRow(row fileRowSpec, cw int, pal overlay.Palette, st sidebarRowState) string {
+	if row.Tree {
+		return m.sidebarFileTreeRow(row, cw, pal, st)
+	}
 	bg := sidebarRowBg(st, pal)
 
 	if row.Note {
@@ -275,6 +350,88 @@ func (m *OS) sidebarFileRow(row fileRowSpec, cw int, pal overlay.Palette, st sid
 	glyph := sidebarStyle(bg, glyphInk).Render(mark.Glyph)
 	body := sidebarStyle(bg, ink).Render(overlay.Truncate(shown, sidebarNameAvail(cw, 0)))
 	return sidebarComposeRow(gutter, glyph, body, "", cw, bg)
+}
+
+// sidebarFileTreeRow draws one row of the tree style, in neo-tree's columns:
+// the gutter, two cells of guide per level, the open or closed mark, a space,
+// the file type's icon, a space, and the name.
+//
+// The mark column is blank on a file and on "..", so the icons and names of
+// one folder line up whatever kind each row is. The guides wear the rule ink,
+// never the name's, and the cursor's underline starts at the name: see
+// fileTreeNameCol.
+func (m *OS) sidebarFileTreeRow(row fileRowSpec, cw int, pal overlay.Palette, st sidebarRowState) string {
+	bg := sidebarRowBg(st, pal)
+	s := &m.Settings
+	gutter := sidebarGutter(false, "", bg, pal, s)
+	guide := ""
+	if row.Guide != "" {
+		guide = sidebarStyle(bg, sidebarRuleInk(bg, pal)).Render(row.Guide)
+	}
+	gap := sidebarStyle(bg, nil).Render(" ")
+	col := m.fileTreeNameCol(row)
+
+	if row.Note {
+		ink := pal.FgMute
+		if row.Warn {
+			ink = pal.Warning
+		}
+		// A note stands where a name's mark would, under the folder's names.
+		at := 1 + lipgloss.Width(row.Guide) + 2
+		return sidebarFit(gutter+guide+gap+gap+
+			sidebarStyle(bg, ink).Render(overlay.Truncate(row.Name, max(cw-at-1, 1))), cw, bg)
+	}
+
+	shown := printableTitle(row.Name)
+	if shown == "" {
+		shown = row.Name
+	}
+	up := row.Kind == sidebarRowFileUp
+	ink := pal.FgDim
+	if row.Dir {
+		if !up {
+			shown += "/"
+		}
+		ink = pal.Fg
+	}
+	icons := fileIconsOn(s) && s.SidebarShowGlyphs
+	chevron := " "
+	switch {
+	case up || !row.Dir:
+	case icons && row.Open:
+		chevron = fileTreeChevronOpen
+	case icons:
+		chevron = fileTreeChevronShut
+	case row.Open:
+		chevron = s.GetRailFoldOpenGlyph()
+	default:
+		chevron = s.GetRailFoldShutGlyph()
+	}
+	marks := sidebarStyle(bg, ink).Render(chevron) + gap
+	if icons {
+		mark := fileRowMark(row.Icon, row.Dir, up, s)
+		if row.Dir && row.Open && mark.Glyph == fileIconDir.Glyph {
+			mark.Glyph = fileTreeOpenDirGlyph
+		}
+		glyphInk := ink
+		if mark.Hex != "" {
+			glyphInk = theme.FileIconInkOn(mark.Hex, m.sidebarGroundOr(bg))
+		}
+		marks += sidebarStyle(bg, glyphInk).Render(mark.Glyph) + gap
+	}
+	body := sidebarStyle(bg, ink).Render(overlay.Truncate(shown, max(cw-col-1, 1)))
+	return sidebarFit(gutter+guide+marks+body, cw, bg)
+}
+
+// fileTreeNameCol is the column a tree row's name starts on. The cursor's
+// underline and weight start there, so the guides, the mark and the icon
+// keep their own look on the cursor row.
+func (m *OS) fileTreeNameCol(row fileRowSpec) int {
+	col := 1 + lipgloss.Width(row.Guide) + 2
+	if fileIconsOn(&m.Settings) && m.Settings.SidebarShowGlyphs {
+		col += 2
+	}
+	return col
 }
 
 // shortenHome writes a path under the home directory as ~/..., which is how the

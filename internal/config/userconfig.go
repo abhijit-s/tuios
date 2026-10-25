@@ -839,6 +839,9 @@ type SidebarConfig struct {
 	// FolderClick is what a click on a folder row does: navigate, cd or both
 	// (default: navigate).
 	FolderClick string `toml:"folder_click"`
+	// FilesStyle is how the files section draws: list or tree (default:
+	// list). See SidebarFilesStyles.
+	FilesStyle string `toml:"files_style"`
 	// HeaderCase is how the rail's section headers read: lowercase or uppercase
 	// (default: lowercase). See RailHeaderCases.
 	HeaderCase string `toml:"header_case"`
@@ -1117,6 +1120,7 @@ func DefaultConfig() *UserConfig {
 				Width:         SidebarDefaultWidth,
 				Sections:      SidebarDefaultSections,
 				FolderClick:   SidebarFolderClickNavigate,
+				FilesStyle:    SidebarFilesList,
 				HeaderCase:    RailHeaderLowercase,
 				RowStyle:      RailRowBar,
 				HeaderStyle:   RailHeaderAuto,
@@ -2617,6 +2621,12 @@ func ApplyAppearanceConfig(cfg *UserConfig, s *Settings) {
 	}
 	if sb.FolderClick != "" {
 		s.SidebarFolderClick = sb.FolderClick
+	}
+	// A typo reads as the default, the same contract the other enum options
+	// keep, and the validator says so.
+	s.SidebarFilesStyle = SidebarFilesList
+	if slices.Contains(SidebarFilesStyles, sb.FilesStyle) {
+		s.SidebarFilesStyle = sb.FilesStyle
 	}
 	// A typo reads as the default, the same contract the other enum options
 	// keep.

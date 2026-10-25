@@ -687,9 +687,9 @@ func chromeGlyph(r rune) bool {
 
 // printableTitle strips what a terminal cannot be trusted to render out of a
 // title before it is shown as chrome (sidebar rows, the window title badge, the
-// command palette, the dock): control characters and private-use codepoints
-// (nerd-font icons shells love to put in titles, which show as tofu boxes
-// without the right font), decorative symbol and emoji codepoints (an agent
+// command palette, the dock): control characters, private-use codepoints
+// while Nerd Fonts are off (nerd-font icons, which show as tofu boxes without
+// the right font; see printableRune), decorative symbol and emoji codepoints (an agent
 // setting a dingbat or emoji in its title otherwise tofus wherever we echo it),
 // plus everything non-ASCII when ASCII-only rendering is on. Titles are foreign
 // data; our own chrome glyphs are audited, so they are kept by codepoint.
@@ -733,12 +733,16 @@ func printableRune(r rune, ascii bool) bool {
 		// override reorders what follows it, so a name holding one reads as
 		// something it is not.
 		return false
-	case r >= 0xe000 && r <= 0xf8ff:
-		// BMP private use area.
-		return false
-	case r >= 0xf0000:
-		// Plane 15/16 private use.
-		return false
+	case r >= 0xe000 && r <= 0xf8ff, r >= 0xf0000:
+		// The private use area: the BMP block and planes 15 and 16. Nerd
+		// Font icons live here, and a person puts them in a session or
+		// workspace name on purpose. They are kept while Nerd Fonts are on,
+		// which is when tuios draws its own icons from the same font, so a
+		// terminal that shows those shows these. Each is one cell to
+		// ansi.StringWidth, the emulator and the host terminal alike, so
+		// keeping them moves no column. With Nerd Fonts off (ASCII mode, or
+		// a font with none) they would be tofu boxes, so they go.
+		return overlay.UseNerdFonts()
 	case r >= 0x25a0 && r <= 0x2bff && !chromeGlyph(r):
 		// Geometric Shapes through Miscellaneous Symbols and Arrows. Agents
 		// park spinners and status ornaments in here (Claude Code alone uses
@@ -1529,6 +1533,10 @@ func (m *OS) sidebarPanelLinesForTree(tree sessiontree.Tree) ([]string, int) {
 	case m.sidebarFollowSession != "":
 		cursorTarget = sidebarNavRow{Kind: sidebarRowSession, SessionID: m.sidebarFollowSession}
 		haveCursorTarget = true
+	case m.sidebarCursorWantSet:
+		// A row the keyboard moved to that this frame may have to scroll to.
+		cursorTarget = m.sidebarCursorWant
+		haveCursorTarget = true
 	case m.SidebarCursor >= 0 && m.SidebarCursor < len(m.SidebarNav):
 		cursorTarget = m.SidebarNav[m.SidebarCursor]
 		haveCursorTarget = true
@@ -1899,10 +1907,22 @@ func (m *OS) sidebarPanelLinesForTree(tree sessiontree.Tree) ([]string, int) {
 	if m.sidebarRailFocused() && haveCursorTarget {
 		if sec, idx, ok := m.sidebarCursorIndex(cursorTarget, sessionRows, spaceRows, terminals, agents, files); ok {
 			if rows := capRows[sec]; rows > 0 {
+				// A section with rows below its fold spends its last line on
+				// the "+N" row, so only rows-1 of its rows are drawn. The
+				// cursor on the row under that line was not drawn at all
+				// (issue #1102), so the fold is a line higher than the budget
+				// unless the window already reaches the section's end.
+				fold := rows
+				if rows > 1 && rowsIn[sec] > rows && *scroll[sec] < rowsIn[sec]-rows {
+					fold = rows - 1
+				}
 				if idx < *scroll[sec] {
 					*scroll[sec] = idx
-				} else if idx >= *scroll[sec]+rows {
-					*scroll[sec] = idx - rows + 1
+				} else if idx >= *scroll[sec]+fold {
+					*scroll[sec] = idx - rows + 2
+					if idx == rowsIn[sec]-1 || rows == 1 {
+						*scroll[sec] = idx - rows + 1
+					}
 				}
 			}
 		}
@@ -2225,6 +2245,13 @@ func (m *OS) sidebarPanelLinesForTree(tree sessiontree.Tree) ([]string, int) {
 				st.Cursor = st.Cursor || isCursor(row.Kind, "", row.Key)
 				recordHit(row.Kind, "", row.Key, row.Index, 1)
 			}
+			if row.Tree {
+				// A tree row's name starts past its guides and marks, and only
+				// the name takes the cursor's underline.
+				rs := overlay.RowState{Cursor: st.Cursor, Focused: st.Focused, Hover: st.Hover}
+				lines = append(lines, compose(pal.CursorText(pal.Mark(m.sidebarFileRow(row, cw, pal, st), rs), rs, m.fileTreeNameCol(row))))
+				continue
+			}
 			lines = append(lines, compose(st.mark(pal, m.sidebarFileRow(row, cw, pal, st))))
 		}
 		if h := hidden[sidebarSectionFiles]; h > 0 {
@@ -2458,6 +2485,16 @@ func (m *OS) sidebarPanelLinesForTree(tree sessiontree.Tree) ([]string, int) {
 // across a relayout (reorder, switch, filter, peek). A follow request is
 // consumed here, once the row it named exists in the new layout.
 func (m *OS) sidebarPublishNav(nav []sidebarNavRow, target sidebarNavRow, haveTarget bool) {
+	// A row the keyboard moved to that this frame could not draw (a name gone
+	// from the listing) leaves the cursor on the row it was on, not on the
+	// rail's first row.
+	if m.sidebarCursorWantSet {
+		m.sidebarCursorWantSet = false
+		if !slices.ContainsFunc(nav, func(r sidebarNavRow) bool { return sidebarNavRowsEqual(r, target) }) &&
+			m.SidebarCursor >= 0 && m.SidebarCursor < len(m.SidebarNav) {
+			target = m.SidebarNav[m.SidebarCursor]
+		}
+	}
 	m.SidebarNav = nav
 	m.sidebarFollowSession = ""
 	// A pending walk into or out of a folder outranks the tracked row, because
@@ -2468,6 +2505,13 @@ func (m *OS) sidebarPublishNav(nav []sidebarNavRow, target sidebarNavRow, haveTa
 			m.SidebarCursor = i
 			return
 		}
+	}
+	if haveTarget && isFileListRow(target.Kind) {
+		// A name that left the section (its folder closed or was deleted, or
+		// the style changed) hands the cursor to the nearest row it was under,
+		// not to the rail's first row: a d pressed next must not land on a
+		// session.
+		target = sidebarFileFallback(nav, target)
 	}
 	if haveTarget {
 		m.SidebarCursor = 0
@@ -2481,6 +2525,31 @@ func (m *OS) sidebarPublishNav(nav []sidebarNavRow, target sidebarNavRow, haveTa
 	if m.SidebarCursor >= len(nav) {
 		m.SidebarCursor = max(len(nav)-1, 0)
 	}
+}
+
+// sidebarFileFallback is target when nav holds it, else the row of the
+// nearest folder above it that nav holds, else the files section's first row,
+// else target.
+func sidebarFileFallback(nav []sidebarNavRow, target sidebarNavRow) sidebarNavRow {
+	has := func(r sidebarNavRow) bool {
+		return slices.ContainsFunc(nav, func(n sidebarNavRow) bool { return sidebarNavRowsEqual(n, r) })
+	}
+	if has(target) {
+		return target
+	}
+	for key := fileTreeParentKey(target.WindowID); key != ""; key = fileTreeParentKey(key) {
+		for _, r := range nav {
+			if r.Kind == sidebarRowFileEntry && r.WindowID == key {
+				return r
+			}
+		}
+	}
+	for _, r := range nav {
+		if isFileListRow(r.Kind) {
+			return r
+		}
+	}
+	return target
 }
 
 // sidebarFileRowIndex is the index of the named entry in the files section, or

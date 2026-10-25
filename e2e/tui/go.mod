@@ -35,8 +35,8 @@ require (
 	golang.org/x/term v0.46.0 // indirect
 	golang.org/x/text v0.42.0 // indirect
 	tuios.dev/progstatus v0.1.1-0.20261023124927-50c38920e301 // indirect
-	tuios.dev/swatch v0.1.1-0.20261023124927-50c38920e301 // indirect
-	tuios.dev/tml v0.1.1-0.20261023124927-50c38920e301 // indirect
+	tuios.dev/swatch v0.1.1-0.20261025090851-2c1449b0d078 // indirect
+	tuios.dev/tml v0.1.2-0.20261025213319-f88006395466 // indirect
 )
 
 require (

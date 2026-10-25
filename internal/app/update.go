@@ -1583,8 +1583,20 @@ func (m *OS) handleMsg(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 		return m, tea.Batch(cmd, ListenForCwdChange(m.PendingCwdChange))
 
 	case fileDirChangedMsg:
-		// The listed folder changed on disk. See sidebar_files_watch.go.
-		return m, tea.Batch(m.refreshChangedFolder(), listenForFileChange(m.fileWatchChan(), msg.at))
+		// The listed folder, or a folder open in the tree, changed on disk.
+		// See sidebar_files_watch.go. A change that names nothing is the
+		// root's: a daemon push and an older watch say only that.
+		root, dirs := m.fileWatch.takeDirty()
+		cmd := m.refreshChangedTree(dirs, root)
+		if root || len(dirs) == 0 {
+			cmd = tea.Batch(m.refreshChangedFolder(), cmd)
+		}
+		return m, tea.Batch(cmd, listenForFileChange(m.fileWatchChan(), msg.at))
+	case fileTreeListMsg:
+		// A folder open in the tree, read on its own goroutine.
+		cmd := m.HandleFileTreeList(msg)
+		m.renderSkipped = false
+		return m, cmd
 	case NvimNavigationMsg:
 		m.onNvimNavigation(msg)
 		return m, ListenForNvimNavigation(m.PendingNvimNavigation)
@@ -2250,6 +2262,7 @@ func (m *OS) handleMsg(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 			oldWindowCount := m.windowCountForNotice()
 			oldWorkspace := m.CurrentWorkspace
 			oldWindows := m.windowLabelsForNotice()
+			oldMade := m.panesMadeForNotice()
 
 			if err := m.ApplyStateSyncFrom(msg.State, msg.SourceID); err != nil {
 				m.LogError("Failed to apply state sync: %v", err)
@@ -2266,6 +2279,7 @@ func (m *OS) handleMsg(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 
 				// Show notifications for significant changes
 				newWindowCount := m.windowCountForNotice()
+				newMade := m.panesMadeForNotice()
 				newWorkspace := m.CurrentWorkspace
 
 				// Window count change notification. A window that moved to
@@ -2273,6 +2287,9 @@ func (m *OS) handleMsg(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 				// not made.
 				if note, ok := m.windowMoveNotice(msg.State, oldWindows); ok {
 					m.ShowNotification(note, "info", 2*time.Second)
+				} else if newMade == oldMade {
+					// Only TML surfaces came or went. A program put them on
+					// the screen, and the person did not make a window.
 				} else if newWindowCount > oldWindowCount {
 					m.ShowNotification(fmt.Sprintf("Window created (%d total)", newWindowCount), "info", 2*time.Second)
 				} else if newWindowCount < oldWindowCount {

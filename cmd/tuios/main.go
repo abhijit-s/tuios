@@ -2698,10 +2698,13 @@ would accept a question right now.`,
 		Long: `Queue a message in the session's agent ring. With -w it goes to one pane's
 inbox. Without -w, it is a notice everyone in the session can read.
 
-It does not touch the recipient's keyboard, which is the point: a message can be
-left for an agent that is mid-turn, and it is there when that agent next reads
-its inbox. Nothing delivers it for you, so the recipient has to be one that
-checks. For an agent that does not, ask-agent types the question instead.
+It never types the message into the recipient's pane, which is the point: a
+message can be left for an agent that is mid-turn, and it is there when that
+agent next reads its inbox. tuios tells the recipient that mail waits: in its context during a
+turn when its hooks are installed, and with one typed line once it is at rest.
+The line holds the count and the command that reads the mail, never the body.
+'[agents.mail] wake = false' turns the typed line off. Use ask-agent when you
+need the answer now.
 
 --reply-to answers a message by its id. The reply joins that message's thread,
 and a reply to a reply joins the same one. A reply is the only acknowledgement
@@ -3074,7 +3077,32 @@ command in authorized_keys to make the policy a boundary:
 	rootCmd.AddCommand(newTMLCommand())
 
 	addExplorers(rootCmd)
+	rejectUnknownSubcommands(rootCmd)
 	return rootCmd
+}
+
+// rejectUnknownSubcommands makes every group command below the root (a
+// command with subcommands and nothing of its own to run) fail on a word
+// that names none of its subcommands. Cobra checks that only for the root.
+// Below it, a command with no Run returns flag.ErrHelp before it looks at
+// the args, so "tuios plugins uninstal" printed the help and exited 0. A
+// bare group, or one given only "help", still prints its help.
+func rejectUnknownSubcommands(cmd *cobra.Command) {
+	for _, sub := range cmd.Commands() {
+		rejectUnknownSubcommands(sub)
+	}
+	if !cmd.HasParent() || !cmd.HasSubCommands() || cmd.Run != nil || cmd.RunE != nil {
+		return
+	}
+	cmd.Args = func(c *cobra.Command, args []string) error {
+		if len(args) == 1 && args[0] == "help" {
+			return nil
+		}
+		return cobra.NoArgs(c, args)
+	}
+	cmd.RunE = func(c *cobra.Command, _ []string) error {
+		return c.Help()
+	}
 }
 
 // registerInterfaceFlags registers the appearance and interface flags on each

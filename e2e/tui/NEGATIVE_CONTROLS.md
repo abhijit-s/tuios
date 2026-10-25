@@ -767,6 +767,8 @@ a working negative control look like a broken one for half an hour.
 | A program that set focus reporting (DECSET 1004) in the focused pane of a daemon session read no focus-in report | the call site | replace `p.noteFocusReporting(focusOn)` in `vtWriter` (`internal/session/session.go`) with `_ = focusOn` | `TestFocusReportOnEnable/daemon` ("focused pane read \"\" after setting 1004"); `/standalone` passes | **caught** |
 | The same in a standalone pane | the gate line | make the `FocusReportingEnabled` edge check in the PTY reader (`internal/terminal/window_io.go`) `if false && ...` | `TestFocusReportOnEnable/standalone` ("focused pane read \"\" after setting 1004"); `/daemon` passes | **caught** |
 | The daemon sent the focus-in report with the host terminal out of focus | the host focus term | make `sessionShown` (`internal/session/focus_report.go`) accept a client that reported losing focus | `TestFocusReportOnEnable/daemon` ("pane read \"\\x1b[I\" with the host out of focus") | **caught** |
+| A pane never heard that the host terminal lost focus, so Neovim's `FocusLost` did not fire on a switch to another application (discussion #1128) | the whole fix | build `origin/main` at `8d463ac7f` | `TestPaneFocusEventsFollowTheFocus` ("the host terminal lost focus: the pane read ...`^[[I`, want ...`^[[I^[[O`") | **caught** |
+| The daemon reported each client's host focus change on its own, so a pane shown by two clients heard a focus change that was not one | the aggregate check | make `handleClientFocus` (`internal/session/client_focus.go`) call `reportHostFocus` on every change, with that client's focus | `TestPaneFocusEventsFollowTheFocus` ("the second host terminal got focus: the pane read ...`^[[I^[[I`") | **caught** |
 | A Crush permission dialog stays on working when Crush reports working after blocked | n/a, injected, cuts the wiring | drop the `claim.screenWins` branch from `blockerOverridesClaim` in `internal/session/agent_state.go` | `TestCrushPermissionAnsweredFromTheInbox` ("the pane is {State:working ... Source:report ...}, want state needs_input") | **caught** |
 | The Inbox cannot answer a Crush permission dialog | n/a, injected, cuts the wiring | drop the `[screen.rule.answers]` block from `internal/harness/manifests/crush.toml` | `TestCrushPermissionAnsweredFromTheInbox` ("the pane never showed [ALLOWED]") | **caught** |
 | An Inbox row with a long pane name shows no summary | n/a, injected, cuts the wiring | drop the name-width cap from `inboxItemRow` in `internal/app/render_inbox.go` | `TestCrushPermissionAnsweredFromTheInbox` ("the Inbox never listed the Crush approval with its summary") | **caught** |
@@ -9085,6 +9087,32 @@ one test. Run on 2026-10-18, after the fourth review of #877.
 | A kill at the prompt does not block the next install | the kernel lock `HoldLock` in `newInstaller` becomes a guard file made with `O_EXCL` and removed on return | `TestPluginsInstallFromGit` ("install of main after a kill at the prompt: exit status 1") | **caught** |
 | The build runs in the folder the state file names | the build runs in the fetch folder, which moves into place after it | `TestPluginsInstallFromGit` ("the build ran in \".../plugins/%fetch-N\", want the folder the state file names") | **caught** |
 | The state write comes after the build | the state file is written before the build | `TestPluginsInstallFromGit` ("the state file does not name the build of main": it says `built = false`) | **caught** |
+
+### tuios plugins uninstall, and unknown subcommands
+
+`TestPluginsInstallFromGit` ends with three more steps, after step 8:
+
+9. `tuios plugins uninstal e2e.probe` fails with `unknown command`. Cobra
+   printed the help of a group command for an unknown word, and exited 0.
+10. A linked folder: `tuios plugins uninstall e2e.linked` is refused with a
+    message that names `unlink`, and the folder stays.
+11. `tuios plugins uninstall URL`, by the source: the output says the
+    plugin is disabled and its pane is closed. The lock entry, the state
+    entry, the plugin folder and the `enabled` entry are gone. The state
+    file stays. The session has one window less. No process runs in the
+    removed folder (Linux, from `/proc`). The artifact is `uninstall.txt`.
+
+Each control cut the wiring, built the binary, and ran the one test. Run on
+2026-10-25.
+
+| Wiring | Cut | Tests that fail | Verdict |
+| --- | --- | --- | --- |
+| The whole change | a build of `origin/main` at 657bacdfd | `TestPluginsInstallFromGit` ("tuios plugins uninstal: <nil>, want an unknown command error", and each uninstall check) | **caught** |
+| Group commands refuse an unknown word | the `rejectUnknownSubcommands` call in `newRootCommand` | `TestPluginsInstallFromGit` ("tuios plugins uninstal: <nil>, want an unknown command error") | **caught** |
+| `plugin.disable` with `close_panes` closes the panes | `panes_closed` is 0 and `closePluginPanes` is not called | `TestPluginsInstallFromGit` ("the session has 2 windows after the uninstall, want 1", "processes still run in the removed folder") | **caught** |
+| Uninstall disables the plugin first | the `disableForUninstall` call | `TestPluginsInstallFromGit` ("config.toml still enables e2e.probe", "processes still run in the removed folder") | **caught** |
+| Uninstall drops the lock entry | the `UpdateLock` call does nothing | `TestPluginsInstallFromGit` ("plugins.lock or the state file still names e2e.probe", "plugins list still shows e2e.probe") | **caught** |
+| Uninstall removes the plugin folder | the `os.RemoveAll` call | `TestPluginsInstallFromGit` (".../plugins/e2e.probe is still there after the uninstall") | **caught** |
 | Old build folders go after the switch | the `collect` call in `restart` | `TestPluginsInstallFromGit` (".../plugins/e2e.probe holds [three folders], want [two]") | **caught** |
 | A failed or killed reinstall leaves the old plugin running | the plugin is stopped before the build | `TestPluginsInstallFromGit` ("plugins run ping after a failed build: exit status 1") | **caught** |
 | Discover uses the state's folder only for the lock's commit | `State.Live` takes the state's folder whatever its commit | `TestPluginsInstallFromGit` ("with the state ahead of plugins.lock, the plugin does not run from the folder of main") | **caught** |
@@ -10652,3 +10680,93 @@ The fixed build passes.
 | The rail's workspace chord exception kept under lock | "q alt+1 alt+3 did not reach the rail pane" | **caught** |
 | `menuKey.unbound` sends with `forwardKeyToFocusedWindow`, as before the second review | "x y after ctrl+b left did not reach the rail pane as xy" | **caught** |
 | `menuKey.unbound` calls `typeIntoPane`, but `typeIntoPane` has no rail check | "x y after ctrl+b left did not reach the rail pane as xy" | **caught** |
+## Nerd Font icons in session and workspace names
+
+`TestRailRightClickRenamesTheSessionUnderThePointer` (in `sidebar_rename_session_test.go`) now also renames the session with `tuios rename-session` to a name that starts with U+E795, and names workspace 1 with `tuios set-workspace-name` to a name that starts with U+F0219. The rail and the dock must draw each icon in one cell, with the space and the word in the next cells. A second client then attaches with `TERM=linux`, which has no Nerd Font glyphs. Its dock must show the workspace name with no icon cell anywhere on the screen. Run on 2026-10-25 on Linux against upstream main at b2741f02a. Each control is a text replacement, built to a separate binary and put back before the next.
+
+| Control: what was cut | Where it fails | Verdict |
+| --- | --- | --- |
+| `printableRune` drops every private use code point, which is upstream main | "the rail and the dock did not draw the names with their icons, one cell each" | **caught** |
+| `printableRune` keeps every private use code point, also with Nerd Fonts off | "with Nerd Fonts off, the dock did not draw the workspace name without its icon" | **caught** |
+
+## Bare default session starts in the caller's directory
+
+`TestBareDefaultSessionStartsInCallersDirectory` starts an empty daemon in one
+directory, runs bare `tuios` from a second directory, and checks the first
+window's cwd. A later client attaches from a third directory and opens another
+window with cwd inheritance off; that window must retain the session's first
+start directory. Run on Linux amd64 with `TUIOS_E2E=1` and a binary from the
+same revision as the test.
+
+| Control | Result | Verdict |
+| --- | --- | --- |
+| Baseline before the fix | First window starts in the daemon's directory | **caught** |
+| Omit the local client's caller cwd | First window starts in the daemon's directory | **caught** |
+| Omit the new default session's start directory | First window starts in the daemon's directory | **caught** |
+| Apply the caller cwd to an existing session | Second client's new window starts in the third directory | **caught** |
+
+Each change was built in a separate Go overlay, leaving the source tree intact.
+With the fix, the test passes and saves frames for both clients.
+## Settings hover keeps up with the pointer (#1058)
+
+`TestSettingsHoverKeepsUpWithThePointer` (in `settings_hover_lag_test.go`) runs a 400x100 client with `max_fps = 240`, so a frame of the settings panel takes longer to compose than one frame period. It sweeps the pointer over ten settings rows for 3 s, one report every 2 ms, then stops it on a row the sweep never touched. That row must carry the cursor marker within 1.5 s. Run on 2026-10-25 on Linux against upstream main at 73d59f3e1.
+
+The fixed build passes: the row was highlighted 14 to 211 ms after the pointer stopped, over six runs.
+
+| Control: what was cut | Where it fails | Verdict |
+| --- | --- | --- |
+| The motion budget counted from the start of the compose (`m.lastInteractionRender = composeStart`), which is upstream main | "the row under the pointer was highlighted 4.375s after the pointer stopped; the budget is 1.5s" | **caught** |
+## The files section scrolls with the keyboard cursor (#1102)
+
+`TestRailFilesSectionScrollsWithTheCursor` (in `sidebar_files_test.go`) lists a folder of 46 names in a files section of about 30 lines, in the list style and in the tree style. G must put the cursor on zz-last.txt, the last name, and a walk of 42 j keys sent at once must put it on f-39.txt. Each step checks the cursor row by the path Y copies and checks that the rail draws the name. Run on 2026-10-25 on Linux against origin/main at 73d59f3e1 plus the branch. The control is a text replacement, built to a separate binary and put back.
+
+| Control: what was cut | Where it fails | Verdict |
+| --- | --- | --- |
+| `sidebarFilesCursorMove` and `sidebarFilesCursorJump` return false at once, so j and G step over the drawn rows only, as before | both subtests: "the gesture never produced the clipboard writes [.../zz-last.txt]; it wrote []" | **caught** |
+
+The tree subtest also deletes alpha/inner, which is open, and makes it again under the same path before the rail reads alpha. A file made in the new inner 1.5 s later must show. The cursor was on deep.txt, which is gone, so it must be on inner, and Y must copy inner's path.
+
+| Control: what was cut | Where it fails | Verdict |
+| --- | --- | --- |
+| `dirwatch.Set` keeps the watch descriptor of a folder that was deleted (`if false && ok && mask&selfGone != 0`), so `Refresh` never watches the new folder | tree: "a file made in the new inner never showed" | **caught** |
+| `sidebarPublishNav` does not call `sidebarFileFallback`, so a vanished file row sends the cursor to row 0 of the rail | tree: "the gesture never produced the clipboard writes [.../alpha/inner]; it wrote []" | **caught** |
+
+## A clipboard image shows on the first paste
+
+`TestCockpitReplyClipboardImageFirstPaste` (in `cockpit_test.go`) runs a 200x55 client on a host with kitty graphics, with a fake `wl-paste` that offers one PNG. It lets the screen go quiet, presses ctrl+v in the agents view's reply, and checks that the thumbnail is placed on its box with no other input. A click on the chip then opens the image view, which must place its picture with no other input. Run on 2026-10-25 on Linux against upstream main at 8d463ac7f.
+
+The fixed build passes, and saves the thumbnail and the image view with the host's pictures drawn in.
+
+| Control: what was cut | Where it fails | Verdict |
+| --- | --- | --- |
+| `FlushIfDrawn` never called, which is upstream main | "the first paste placed no thumbnail (label at {row:49 col:6})" after 5 s | **caught** |
+
+## The first prompt waits for the agent's input box
+
+The fake claude in `fanFixture` (`fan_test.go`) sends the SessionStart hook,
+which reports idle, and then drops every key for 2 s before it turns bracketed
+paste on. Claude Code 2.1.310 starts the same way: its SessionStart hook reports
+idle before its input box is live, and the Enter typed in that gap is lost.
+`TestFanTypesPromptWhenReady` (fan) and `TestCockpitSpawnSheet` (the spawn
+sheet) must read the prompt as sent. Run on 2026-10-25 on Linux against
+upstream main at 8d463ac7f.
+
+| Control: what was cut | Where it fails | Verdict |
+| --- | --- | --- |
+| The `waitInputLive` call in `typeFirstPrompt`, which is upstream main | "the prompts were never sent", "the sheet never made a worktree on agent/lru-cache-safe with the task sent": `prompt_status` reads stalled | **caught** |
+## TML panes: minimize a popup, scroll a long document, no frame for a hidden surface
+
+Run on 2026-10-25 on Linux, based on `f527c102e`.
+
+| Bug | Control | Test (failure seen) | Result |
+| --- | --- | --- | --- |
+| A TML popup did not minimize: leader m m did nothing | the binary from `f527c102e`, before the fix | `TestTMLShowPopup` ("leader m m did not minimize the popup to the dock") | **caught** |
+| A document taller than its pane was cut, with no sign of more and no way to scroll | the same binary | `TestTMLShowPaneAndClose` ("the long pane shows no scroll bar") | **caught** |
+| A patch to a minimized TML pane composed a whole frame | injected: `markTMLDirty` treats every window as on the screen, and `handleTMLWake` skips the frame only when nothing changed | `TestIdleCostStaysLow/minimized_tml_surface` (ticks=20, tickerWakes=20, ctxsw=3975, against 0, 0 and about 400 with the fix) | **caught** |
+| The page ended short of the document's end, so G never showed the last box | injected in loom: no fallback to the natural height, and no gap for a dropped box | loom `TestPageScroll` ("the screen has no \"END\"") | **caught in `loom`** |
+| A pane showed "esc close", which esc does not do in a pane | the binary from the first round of this branch, before view.placement | `TestTMLShowPaneAndClose` ("the pane shows a hint that does not hold"), `TestTMLShowPopup` ("the popup does not show its esc close hint") | **caught** |
+| Opening a TML surface showed "Window created (2 total)" | injected: the `newMade == oldMade` branch in the state sync notice made unreachable | `TestTMLShowPaneAndClose` (the frame holds "Window created") | **caught** |
+| The zoom key on a popup said nothing | injected: the notice taken out of `ToggleZoom` | `TestTMLShowPopup` ("z on the popup said nothing") | **caught** |
+| A zoom and an unzoom moved the page place | injected in loom: the anchor lookup given no key | loom `TestPageKeepsItsPlaceAcrossWidths` ("a narrower width moved the top from p14 to p10") | **caught in `loom`** |
+| A narrow row of stats cut their labels; a pane had no view.placement | injected in loom: stats left out of `rowLines`; placement left out of the view variables | loom `TestPlacementAndStatRows` ("the screen has no \"passed\"", "no \"esc close\"") | **caught in `loom`** |
+| Text fields had no visible field on a dark ground; two fields read as one; a checkbox sat far from its label | the loom before the fix | loom `TestGolden/fields` and `TestGolden/deploy` at truecolor, 256, 16 and ASCII (the goldens now hold the box, the rule, the row between fields and `[x] Checked`) | **caught in `loom`** |

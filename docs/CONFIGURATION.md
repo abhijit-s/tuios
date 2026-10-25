@@ -1665,6 +1665,46 @@ mark in its gutter. This occurs in these cases:
 The agents row uses the bar or the marker. With `underline` or `pill`, it
 uses the bar.
 
+## The files section style
+
+`appearance.sidebar.files_style` sets how the rail's files section shows a
+folder:
+
+| Value | What it shows |
+|---|---|
+| `list` | One folder. `..` goes up, and a folder row goes into the folder. This is the default |
+| `tree` | One tree from the folder. A folder opens under its own row, with indent guides and an open or closed mark |
+
+```toml
+[appearance.sidebar]
+files_style = "tree"
+```
+
+In the tree, the rail has these keys on a name:
+
+| Key | What it does |
+|---|---|
+| `l`, `right` | Open the folder. On an open folder, go to its first name |
+| `h`, `left` | Close the open folder. On another name, go to its folder |
+| `enter`, a click | Open or close the folder. On a file, do what the list does |
+
+The file action keys (`a`, `r`, `d`, `y`, `x`, `p`, `Y`, `S`) act on the name
+under the cursor. A new file or a paste goes into the folder of that name. On
+an open folder, it goes into that folder. With `folder_click = "cd"`, a folder
+row types a cd into the pane and does not open. With `both`, a folder row
+only opens, because a cd moves the root of the tree to that folder.
+
+In both styles, `g` and `G` on a file go to the first or last name of the
+list. Press the key again to go to the first or last row of the rail.
+
+tuios reads a folder only when you open it. It remembers the open folders of
+each session until tuios stops. You can open 64 folders at most. Each open
+folder shows its first 2000 names. tuios watches each open folder on this
+computer and shows a change without a key. A folder that is open under a
+folder on another computer shows a change when you open it again. When tuios
+sees that an open folder is gone, it closes the folder. A new folder with the
+same name starts closed.
+
 ## The rail's cursor row
 
 When the rail has the keyboard, the row under the cursor has a lighter
@@ -2153,6 +2193,7 @@ find a plugin runs nothing. A plugin runs only when its id is in `enabled`.
 `tuios plugins install SOURCE` writes `plugins.lock` beside `config.toml`.
 It pins each installed plugin to one commit. Keep the file with your config,
 and run `tuios plugins install` on a new machine to get the same commits.
+`tuios plugins uninstall ID` removes the plugin from the file.
 
 An enabled plugin runs its commands with your rights, outside every pane.
 Enable only plugins that you trust.
@@ -2165,6 +2206,7 @@ tuios plugins enable example.notes
 tuios plugins disable example.notes
 tuios plugins link ~/src/my-herdr-plugin
 tuios plugins install owner/repo        # also adds the id to enabled
+tuios plugins uninstall example.notes   # also removes the id from enabled
 ```
 
 You must run them from a terminal outside tuios. A change to the file that

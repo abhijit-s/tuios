@@ -40,6 +40,11 @@ type Options struct {
 	// Off by default: a click on a link comes back as a "link" Effect, so
 	// the host can ask the person first, as TML requires.
 	Hyperlinks bool
+	// Placement says where the host shows the surface, such as "popup" or
+	// "pane". A binding reads it as view.placement, so a document can show
+	// the keys that work where it is, such as "esc close" in a popup only.
+	// SetPlacement changes it.
+	Placement string
 }
 
 // Surface is one TML document drawn into a cell buffer: the tree, the state
@@ -86,6 +91,12 @@ type Surface struct {
 	// focused box into view. A wheel scroll leaves it, so the person can
 	// look away from the focus.
 	focusMoved bool
+	// relayout says the page scrolled: the next Render places and paints
+	// again, with no binding evaluated.
+	relayout bool
+	// reveal says the focused box took a key: the next layout of a page
+	// brings its cursor into view.
+	reveal bool
 
 	// The work of the last Render, for the budgets the tests hold.
 	stats renderStats
@@ -203,7 +214,8 @@ func (s *Surface) View() *View { return cloneView(s.view) }
 func cloneView(v *View) *View {
 	return &View{Tabs: maps.Clone(v.Tabs), Sort: maps.Clone(v.Sort), Filter: maps.Clone(v.Filter), Fold: maps.Clone(v.Fold),
 		Focus: v.Focus, Cursor: maps.Clone(v.Cursor), Scroll: maps.Clone(v.Scroll), Split: maps.Clone(v.Split),
-		Text: maps.Clone(v.Text), Caret: maps.Clone(v.Caret)}
+		Text: maps.Clone(v.Text), Caret: maps.Clone(v.Caret), Page: v.Page,
+		PageAnchor: v.PageAnchor, PageRow: v.PageRow}
 }
 
 // Patch applies a JSON Patch from the owner to the state. Only the boxes
@@ -230,7 +242,7 @@ func (s *Surface) addPending(changed []string) {
 // flush brings the boxes up to date with pending changes before input
 // acts on them, at the last size.
 func (s *Surface) flush() {
-	if s.root != nil && (s.full || len(s.pending) > 0 || len(s.viewDue) > 0 || s.clock) {
+	if s.root != nil && (s.full || len(s.pending) > 0 || len(s.viewDue) > 0 || s.clock || s.relayout) {
 		s.Render(s.w, s.h)
 	}
 }
@@ -261,6 +273,17 @@ func (s *Surface) Replace(doc *tml.Node, keepState bool) error {
 		store = st
 	}
 	return s.setDoc(doc, store)
+}
+
+// SetPlacement changes where the host shows the surface, which a binding
+// reads as view.placement. A change makes the next Render build the tree
+// again; the same placement does nothing.
+func (s *Surface) SetPlacement(p string) {
+	if p == s.opts.Placement {
+		return
+	}
+	s.opts.Placement = p
+	s.full = true
 }
 
 // NeedsClock reports whether a binding calls ago(). Then the host calls
@@ -321,12 +344,13 @@ func (s *Surface) Render(w, h int) *Buffer {
 	s.budget = tml.NewBudget()
 	if s.full || s.root == nil {
 		s.rebuildAll()
-	} else if !s.rebuildDirty() {
+	} else if !s.rebuildDirty() && !s.relayout {
 		return s.out
 	}
+	s.relayout = false
 
 	s.layoutRoot()
-	s.focusMoved = false
+	s.focusMoved, s.reveal = false, false
 	if s.links == nil || s.full {
 		s.links = map[image.Point]string{}
 	}
@@ -361,6 +385,7 @@ func (s *Surface) rebuildAll() {
 	root := &box{kind: "tml", src: s.doc, key: "", dirty: true}
 	if s.doc.Type == "tml" {
 		root.kids = s.buildChildren(s.doc, "", nil, root)
+		root.w = &pageWidget{}
 	} else {
 		// A fragment, such as the one row of a dock cell.
 		root.kids = s.build(s.doc, "", nil, root)
@@ -531,7 +556,7 @@ func (s *Surface) markView(key string) {
 func (s *Surface) vars(sc *scope) map[string]any {
 	m := map[string]any{
 		"state": s.store.State(),
-		"view":  map[string]any{"width": float64(s.w), "height": float64(s.h), "band": band(s.w)},
+		"view":  map[string]any{"width": float64(s.w), "height": float64(s.h), "band": band(s.w), "placement": s.opts.Placement},
 	}
 	sc.vars(m)
 	return m
