@@ -67,6 +67,8 @@ type Surface struct {
 	mode  plot.Mode
 
 	cache map[*tml.Node]*compiled
+	// sketches keeps the Mermaid diagrams drawn, by source and width.
+	sketches *sketchCache
 
 	root  *box
 	byPtr map[string][]*box
@@ -210,6 +212,28 @@ func deepCopy(v any) any {
 // may keep it, for example across a reconnect; the surface changes it
 // only through input.
 func (s *Surface) View() *View { return cloneView(s.view) }
+
+// SetView replaces this client's view state with a copy of v, as View
+// returned it: for example the view another client of the same surface
+// reported, to draw what that client shows. A key that names no node does
+// nothing. Nil clears the view. The next Render builds the tree again.
+func (s *Surface) SetView(v *View) {
+	nv := newView()
+	if v != nil {
+		maps.Copy(nv.Tabs, v.Tabs)
+		maps.Copy(nv.Sort, v.Sort)
+		maps.Copy(nv.Filter, v.Filter)
+		maps.Copy(nv.Fold, v.Fold)
+		maps.Copy(nv.Cursor, v.Cursor)
+		maps.Copy(nv.Scroll, v.Scroll)
+		maps.Copy(nv.Split, v.Split)
+		maps.Copy(nv.Text, v.Text)
+		maps.Copy(nv.Caret, v.Caret)
+		nv.Focus, nv.Page, nv.PageAnchor, nv.PageRow = v.Focus, v.Page, v.PageAnchor, v.PageRow
+	}
+	s.view = nv
+	s.full = true
+}
 
 func cloneView(v *View) *View {
 	return &View{Tabs: maps.Clone(v.Tabs), Sort: maps.Clone(v.Sort), Filter: maps.Clone(v.Filter), Fold: maps.Clone(v.Fold),

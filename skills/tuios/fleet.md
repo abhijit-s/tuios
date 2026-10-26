@@ -28,6 +28,7 @@ and a comma gives alternatives.
 | `host:` | the machine: `local`, or a host name, a glob |
 | `name:` | the window's name, a glob |
 | `cwd:` | the directory or anything under it; `~` is the home directory |
+| `task:` | a task card the pane holds, by id, a glob (`tuios --skill tasks`) |
 
 A glob's `*` does not cross a slash. A term the pane cannot answer does not
 match. `list-agents --all-hosts --select` reads every machine.
@@ -76,6 +77,9 @@ shell. `worktree ls` (the `list-worktrees` verb) reports each session's rolled-u
 and reports `merged`: true when the branch has commits of its own and its base,
 or the upstream of the base, already holds them. `merged_into` names that ref.
 A merge commit, a fast-forward, a rebase and a squash all count. No fetch runs.
+
+A person makes the same from the client: `Ctrl+B U` (action `new_worktree`)
+asks for a branch name and uses the repository of the focused pane's folder.
 
 ## Fan-out
 

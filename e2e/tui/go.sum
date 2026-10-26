@@ -132,3 +132,5 @@ tuios.dev/tml v0.1.2-0.20261025213319-f88006395466 h1:1gvQCf07fWqG9xDjonYgQv2jks
 tuios.dev/tml v0.1.2-0.20261025213319-f88006395466/go.mod h1:8F9rKdZTa4zslNLjGxEMDA+UUw3RODNSU/tbYDcSMdc=
 tuios.dev/vt v0.3.2-0.20261026032729-ad7ecbf47fbd h1:OsXYfybY44riU+ZhZLrODyJ2+AjcdvmNlMYYz3oWc1w=
 tuios.dev/vt v0.3.2-0.20261026032729-ad7ecbf47fbd/go.mod h1:fKipZ0jUN3HNyKNIvijTji4y2caLJwqKPJm3R8ywWXU=
+tuios.dev/vt v0.3.3-0.20261026155234-cc516ef05029 h1:+t7BnViyLHQxelTEAPR/MaFc0jv0TYbFwRaIcu9FFhY=
+tuios.dev/vt v0.3.3-0.20261026155234-cc516ef05029/go.mod h1:fKipZ0jUN3HNyKNIvijTji4y2caLJwqKPJm3R8ywWXU=

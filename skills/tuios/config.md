@@ -210,7 +210,7 @@ tuios list-themes --filter catppuccin
 ```
   catppuccin_frappe     catppuccin_latte      catppuccin_macchiato  catppuccin_mocha
 
-4 of 345 registered themes.
+4 of 346 registered themes.
 
 active: gruvbox_dark (session)
 themes dir: /home/you/.config/tuios/themes
@@ -341,8 +341,9 @@ tuios set-config appearance.clock_format "Mon 3:04PM"
 tuios set-config appearance.window_title_format "{index}: {title}"
 ```
 
-`dim_unfocused` (0 to 90) quiets the content of unfocused panes. It reaches only
-cells a program coloured itself unless a theme is set.
+`dim_unfocused` (0 to 90) quiets the content of unfocused panes. With no theme it
+uses the colours the host terminal reports. If the terminal reports none, text is
+drawn faint.
 `appearance.dim_foreground = false` keeps the text of an unfocused pane at full
 strength and dims only its background.
 

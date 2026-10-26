@@ -1209,6 +1209,17 @@ border_focused_color_terminal = "#ff9e64"
 - On many themes the cyan and the green have the same lightness. The default
   terminal mode colour then moves darker, or lighter when darker is too faint.
   You can then see the mode without the hue.
+- The default unfocused border is darker than both focused borders on a dark
+  background, and lighter on a light one. You can see focus without the hue.
+- Each default focused border has at least twice the contrast of the unfocused
+  border against the background.
+- With no theme, the default unfocused border is a grey near your terminal
+  background. The focused borders use a saturated cyan and green.
+- With `appearance.session_border` on, the focused border in window mode uses
+  the session colour. In terminal mode it uses the terminal mode colour.
+  Terminal mode stands further from the background and is at least as
+  saturated, so it is the more visible of the two. The session colour moves
+  toward the background to make the step.
 - At 16 colours the default borders use bright cyan and bright green, the
   slots of your terminal's palette.
 - The settings page has a row for each key, in the Appearance section.
@@ -2445,6 +2456,17 @@ receive folder. The pane sees and controls only the copies it started.
 [agents.permissions]
 mode = "strict"
 grants = ["read", "write", "fan", "files"]
+```
+
+`task` lets a pane add, claim and finish the task cards of its own session
+(`tuios task`) without `admin`. A pane claims only for itself and changes only
+the card it holds. `admin` includes `task`. Under `strict`, give it to the
+panes that take work from a conductor:
+
+```toml
+[agents.permissions]
+mode = "strict"
+grants = ["read", "write", "fan", "task"]
 ```
 
 The daemon reads the table when it starts and again when the file changes. A

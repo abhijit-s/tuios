@@ -232,6 +232,9 @@ func TestHookIntegrationsReportTheTurn(t *testing.T) {
 // the pane comes between a takeover and the other conversation's next report.
 // A conversation that never sent a SessionStart is refused throughout. Once
 // codex exits and the pane is back at its shell, the guard forgets them all.
+// A PermissionRequest in a turn Codex's automatic reviewer decides (#1183)
+// leaves the pane working and the Inbox empty, and one in a turn the person
+// reviews is an approval.
 //
 // Negative controls: with shared_server removed from the codex manifest, or
 // the daemon not reading it, the other conversation's approval lands on the
@@ -292,6 +295,53 @@ func TestCodexSharedServerKeepsAnotherConversationOffThePane(t *testing.T) {
 
 	hook(foreignApproval)
 	refused("other PermissionRequest mid-turn", "working")
+
+	// #1183: with approvals_reviewer = "auto_review", Codex's own reviewer
+	// decides every PermissionRequest, so the pane stays working and nothing
+	// asks the person. The rollout's last turn_context says who reviews: after
+	// /approvals switches back to the person, the next request is an approval.
+	rollout := filepath.Join(t.TempDir(), "rollout.jsonl")
+	turnContext := func(reviewer string) string {
+		return `{"timestamp":"2026-10-26T09:00:00.000Z","type":"turn_context","payload":{"cwd":"/work","approval_policy":"on-request","approvals_reviewer":"` + reviewer + `","model":"gpt-5"}}` + "\n"
+	}
+	appendRollout := func(lines ...string) {
+		t.Helper()
+		f, err := os.OpenFile(rollout, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+		if err != nil {
+			t.Fatalf("open the rollout: %v", err)
+		}
+		defer func() { _ = f.Close() }()
+		for _, l := range lines {
+			if _, err := f.WriteString(l); err != nil {
+				t.Fatalf("write the rollout: %v", err)
+			}
+		}
+	}
+	reviewed := func(command string) string {
+		return `{"hook_event_name":"PermissionRequest","session_id":"cx-pane","transcript_path":"` + rollout + `","tool_name":"Bash","tool_input":{"command":"` + command + `"}}`
+	}
+	appendRollout(turnContext("auto_review"),
+		`{"timestamp":"2026-10-26T09:00:01.000Z","type":"response_item","payload":{"type":"function_call_output","output":"{\"type\":\"turn_context\"}"}}`+"\n")
+	hook(`{"hook_event_name":"PreToolUse","session_id":"cx-pane","tool_name":"Bash","tool_input":{"command":"gh pr list"}}`)
+	hook(reviewed("gh pr list"))
+	// The report would land within a socket round trip; give it a moment.
+	time.Sleep(500 * time.Millisecond)
+	if st := readAgentState(t, base, "e2e-agent", win); st.State != "working" || st.AgentSession != "cx-pane" {
+		log.save(t)
+		t.Fatalf("an auto-reviewed PermissionRequest moved the pane: %+v", st)
+	}
+	if out := inbox(); strings.Contains(out, "gh pr list") {
+		log.save(t)
+		t.Fatalf("the Inbox lists an auto-reviewed request:\n%s", out)
+	}
+	log.add("%-44s state=working", "auto-reviewed PermissionRequest")
+	appendRollout(turnContext("user"))
+	hook(reviewed("gh pr merge"))
+	if st := waitAgentState(t, base, "e2e-agent", win, "needs_input", "codex", log, "PermissionRequest for the person"); !strings.Contains(st.Message, "gh pr merge") {
+		t.Fatalf("the approval for the person names the wrong call: %+v", st)
+	}
+	hook(`{"hook_event_name":"PostToolUse","session_id":"cx-pane","tool_name":"Bash","tool_input":{"command":"gh pr merge"},"tool_response":{"exit_code":0}}`)
+	waitAgentState(t, base, "e2e-agent", win, "working", "codex", log, "pane PostToolUse")
 
 	hook(`{"hook_event_name":"Stop","session_id":"cx-pane","last_assistant_message":"The build passes."}`)
 	waitAgentState(t, base, "e2e-agent", win, "done", "codex", log, "pane Stop")
@@ -503,6 +553,9 @@ func TestQwenApprovalFromTheInbox(t *testing.T) {
 // named in the environment.
 type pluginDriver struct {
 	stdin io.WriteCloser
+	// outFile is what the driver prints, where it answers an event that
+	// carries an ack.
+	outFile string
 }
 
 // pluginLoadDeadline is a failsafe, not a budget. The driver says when the
@@ -548,7 +601,7 @@ func realNode() (string, error) {
 
 // startPlugin renders harness's plugin with tuios integration install and
 // starts it under the driver script, which knows each harness's API shape.
-func startPlugin(t *testing.T, base, harness, session, window string) *pluginDriver {
+func startPlugin(t *testing.T, base, harness, session, window string, reportCommand ...string) *pluginDriver {
 	t.Helper()
 	if _, err := exec.LookPath("node"); err != nil {
 		t.Skip("node is not installed")
@@ -577,7 +630,11 @@ func startPlugin(t *testing.T, base, harness, session, window string) *pluginDri
 		file = filepath.Join(xdgDir(base, "XDG_CONFIG_HOME"), "opencode", "plugins", "tuios-agent-state.js")
 	}
 	installHarness := strings.TrimSuffix(harness, "-v2")
-	if out, err := tuiosCLIEnv(t, base, env, "integration", "install", installHarness, "--command", tuiosBin); err != nil {
+	command := tuiosBin
+	if len(reportCommand) > 0 {
+		command = reportCommand[0]
+	}
+	if out, err := tuiosCLIEnv(t, base, env, "integration", "install", installHarness, "--command", command); err != nil {
 		t.Fatalf("integration install %s: %v\n%s", harness, err, out)
 	}
 	if harness == "opencode-v2" {
@@ -636,7 +693,7 @@ func startPlugin(t *testing.T, base, harness, session, window string) *pluginDri
 		data, _ := os.ReadFile(errFile)
 		return string(data)
 	}
-	d := &pluginDriver{}
+	d := &pluginDriver{outFile: outFile}
 	start := time.Now()
 	deadline := start.Add(pluginLoadDeadline)
 	for !printed("DRIVER-READY") {
@@ -675,6 +732,20 @@ func (d *pluginDriver) emit(t *testing.T, event map[string]any) {
 	if _, err := d.stdin.Write(append(line, '\n')); err != nil {
 		t.Fatalf("emit: %v", err)
 	}
+}
+
+// waitAck waits for the driver to print the ack an event carried. The driver
+// prints it after the plugin's handler for that event returned, so a handler
+// that waits on its own reports has finished by then.
+func (d *pluginDriver) waitAck(t *testing.T, ack string) {
+	t.Helper()
+	for end := time.Now().Add(uiTimeout); time.Now().Before(end); time.Sleep(20 * time.Millisecond) {
+		data, _ := os.ReadFile(d.outFile)
+		if slices.Contains(strings.Split(string(data), "\n"), "DRIVER-ACK "+ack) {
+			return
+		}
+	}
+	t.Fatalf("the plugin driver never acknowledged %q", ack)
 }
 
 // TestOpenCodeV2PluginReportsOnlyItsSession exercises the installed plugin and
@@ -1218,6 +1289,11 @@ func fakeClaudePID(t *testing.T, scenario string) int {
 //     its harness_pid and conversation, then the agent crashes. The pid was
 //     recorded from the harness's own hook, so the outside report must not
 //     forget that it can tell when the harness exits, and the row has to go.
+//   - late-report: a hook the agent started reaches the daemon after the
+//     agent has left, from a process it left behind in the pane, as Pi's
+//     session_start report does after a quick quit. The report names a
+//     harness that is no longer its ancestor, so no start time was read,
+//     and its row stayed for the life of the pane.
 //   - protocol-pane: a start-agent --protocol pane, whose pane process is the
 //     protocol program rather than a shell, so it reads as at its shell while
 //     the agent runs. A harness process under it reports through its hook
@@ -1264,6 +1340,9 @@ func TestHookClaimLapsesWithTheHarness(t *testing.T) {
 		// outside reports from outside the running agent with its harness_pid
 		// and conversation, before the agent leaves.
 		outside bool
+		// late is a payload a process the agent leaves behind reports once
+		// the agent has exited.
+		late string
 	}{
 		{name: "session-end", end: sessionEnd},
 		{name: "session-end-typed", end: sessionEnd, typed: true},
@@ -1274,6 +1353,7 @@ func TestHookClaimLapsesWithTheHarness(t *testing.T) {
 		{name: "host-pid", hostPID: true},
 		{name: "outside-same-pid", outside: true},
 		{name: "protocol-pane", protocol: true},
+		{name: "late-report", end: sessionEnd, late: cc("", `"hook_event_name":"SessionStart","source":"resume"`)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			base := t.TempDir()
@@ -1303,6 +1383,11 @@ func TestHookClaimLapsesWithTheHarness(t *testing.T) {
 			}
 			lines := []string{
 				cc("", `"hook_event_name":"SessionStart","source":"startup"`),
+			}
+			if tc.late != "" {
+				lines = append(lines, "late "+tc.late)
+			}
+			lines = append(lines,
 				cc("", `"hook_event_name":"UserPromptSubmit","prompt":"Run the tests and read the rail."`),
 				cc("", `"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"go test ./...","description":"Run the tests"},"tool_use_id":"toolu_01x1"`),
 				cc("", `"hook_event_name":"PostToolUse","tool_name":"Bash","tool_input":{"command":"go test ./...","description":"Run the tests"},"tool_response":{"stdout":"ok","stderr":"","interrupted":false},"tool_use_id":"toolu_01x1","duration_ms":40`),
@@ -1310,7 +1395,7 @@ func TestHookClaimLapsesWithTheHarness(t *testing.T) {
 				cc("", `"hook_event_name":"PostToolUse","tool_name":"Read","tool_input":{"file_path":"internal/app/render_sidebar.go"},"tool_response":{"type":"text"},"tool_use_id":"toolu_01x2","duration_ms":3`),
 				cc("", `"hook_event_name":"Stop","stop_hook_active":false,"last_assistant_message":"Hello.","background_tasks":[],"session_crons":[]`),
 				"wait rest",
-			}
+			)
 			if tc.end != "" {
 				lines = append(lines, tc.end)
 			}
@@ -1478,6 +1563,30 @@ func TestHookClaimLapsesWithTheHarness(t *testing.T) {
 			if err != nil {
 				t.Fatalf("the agents section still lists the pane after its agent left it, with the shell running: %v\nagents section: %q\ndaemon listing:\n%s\n%s",
 					err, railAgentRows(term.Screen(), railCol), listing(), term.Snapshot())
+			}
+			if tc.late != "" {
+				// The late hook is the second SessionStart in the log, and it
+				// has to have been taken: a refused one would pass for free.
+				var last string
+				for end := time.Now().Add(uiTimeout); time.Now().Before(end); time.Sleep(50 * time.Millisecond) {
+					data, _ := os.ReadFile(hookLog)
+					if starts := strings.Count(string(data), `"event":"SessionStart"`); starts >= 2 {
+						last = string(data)[strings.LastIndex(string(data), `"event":"SessionStart"`):]
+						break
+					}
+				}
+				if last == "" {
+					t.Fatalf("the late hook never ran")
+				}
+				if !strings.Contains(strings.SplitN(last, "\n", 2)[0], `"applied":true`) {
+					t.Fatalf("the late hook was not applied, so it shows nothing: %s", last)
+				}
+				time.Sleep(ticks)
+				saveFrame(t, term, "agent-exit-"+tc.name+"-late")
+				if st := readAgentState(t, base, session, windowID(t, base, session, "pilot")); st.State != "none" || shown(term.Screen()) {
+					t.Fatalf("a hook that landed after its agent left put the row back for good: the pane is %+v\nagents section: %q\ndaemon listing:\n%s\n%s",
+						st, railAgentRows(term.Screen(), railCol), listing(), term.Snapshot())
+				}
 			}
 			if !tc.note {
 				return

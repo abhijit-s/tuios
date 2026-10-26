@@ -5221,6 +5221,18 @@ cut is to the wiring, and the logs are `/tmp/wt-ctl-<name>.log`.
 | `wrap-create`: the verb's error is returned without `failed to create the worktree` | `TestRailWorktreeRefusals` ("the daemon's refusal did not say which step failed") | **caught** |
 | `route-key`: the `WorktreePromptOpen` route cut from `routeKey` | both ("did not derive the session name", "did not refuse an empty branch") | **caught** |
 | `attach`: the `SwitchToSession` call cut from `handleWorktreeCreated` | `TestRailRightClickMakesAWorktree` ("the rail never showed the created worktree as the attached session") | **caught** |
+
+`TestRailWorktreeRefusals` also drives the `new_worktree` key (leader `U`).
+From a pane in no repository it must show a message and no dialog. From a pane
+in a subfolder of the repository it must open the dialog on the repository and
+make a session that is attached and grouped under the repository on the rail.
+The frames are `worktree-key-no-repo`, `worktree-key-dialog` and
+`worktree-key-created`. Run on 2026-10-26 on branch `feat/new-worktree-key`.
+
+| Control: what was cut | Where it failed | Verdict |
+| --- | --- | --- |
+| `default-key`: the default `U` binding of `new_worktree` removed | "the key did not say the pane is in no repository" | **caught** |
+| `repo-root`: `BeginWorktreePromptForFocusedPane` opens the dialog on the parent of the repository | "the key did not open the dialog on the pane's repository" | **caught** |
 The `ClearDropZone` calls (press, release, lost release) have no control. Without them a stale highlight shows on a press until the first motion recomputes it, and the last drop's target pane is kept alive until the next drag; no test here makes two drags in one session or inspects memory.
 ### Rail git section on one line
 
@@ -8116,6 +8128,7 @@ editor's caret, hidden, after the person types. Run on 2026-10-18.
 | The renderer shows the parked cursor | The frame hook's handling, `cursorPark.frame` | Passes every frame through unchanged | `TestHiddenCursorParksAtGuestCursor` ("at (90,10) visible=true"), `TestRichRowReplyAndRecap` ("at (17,33) visible=true") | **caught** |
 | A visibility change without a frame never reaches the host | The write in `cursorPark.set` | Not written | `TestHiddenCursorParksAtGuestCursor` ("after the guest hid its cursor again without drawing: ... visible=true") | **caught** |
 | A draft's caret does not take the cursor | The open draft in `imeCaret` (now `draftCaret`) | Branch skipped | `TestRichRowReplyAndRecap` ("in the reply editor: the host cursor is at (80,39)") | **caught** (first version of the fix) |
+| A guest's hide or show changes the host cursor shape (#1140) | The pane's shape on the parked cursor in `viewCursor` | The parked cursor handed over as a blinking block | `TestHiddenCursorParksAtGuestCursor` ("sent the host 2 cursor shapes, want none": CSI 2 SP q and CSI 1 SP q after the mark), with every position wait passing | **caught** (run 2026-10-26) |
 
 The exit path, where the frame that leaves the alternate screen must show the
 cursor again, is not checked here. The local client writes its own reset with
@@ -8874,6 +8887,16 @@ Upstream main fails both new cases with the pane at `none`: `host-pid` ("a host 
 | The shell test dropped from the exit lapse: `&& fg == ""` removed, leaving `info.atShell()` alone | `protocol-pane` ("a protocol pane lost its state when a harness under it exited, with the pane program still running: the pane is {State:none ...}") | **caught** |
 
 Not covered end to end: an agent actually in another pid namespace. `host-pid` stands in for it with a pid the reporter does not descend from, which is what the daemon sees of one. Nor a platform that does not give the peer's pid, where no harness pid is timed and a report claim stays until it is cleared.
+
+### Follow-up: a hook that lands after its agent quit
+
+The `late-report` case joins the test for discussion 850, where a Pi row stayed in the agents section after a quick quit. The stand-in starts a process that waits for it to exit and then runs a `SessionStart` hook from the pane, as Pi's `session_start` report does when the quit beats it to the daemon. The hook names a harness that is no longer its ancestor, or none, so the old daemon read no start time and the claim never lapsed. The test waits for the late hook to be applied, holds the pane at its shell for three detection ticks, and requires the pane at `none`. Run on 2026-10-26 on Linux against upstream main at 99607164e. The fixed build passes all ten cases, and `late-report` passes 5 of 5 runs.
+
+| Control: what was cut | Tests that fail | Verdict |
+| --- | --- | --- |
+| The whole fix: upstream main, where `harnessLeftPane` does not exist | `late-report`, 3 of 3 runs ("the agents section still lists the pane after its agent left it, with the shell running") | **caught** |
+
+The same race was run with the real Pi 1.4.0 and the shipped extension, with the hook made to land after the quit by a wrapper that sleeps 2 s before it runs `tuios agent-hook`. Upstream main left a stale row in 5 of 30 cycles (source `report`, state `idle`, only the shell in the pane). The fixed build left none in 30 cycles.
 
 ## Two paste tests that pressed Enter before the paste landed
 
@@ -10840,3 +10863,206 @@ Without the busy loops, upstream main failed one run in three (2.6 s) with tuios
 | `pickLatest` keeps the size whoever is attached (`anyAttachedBy` made `true`) | `LeftAloneNewClientTakesItsSize/switch` and `/close`: "the session is 200x50 under latest, want 80x24" | **caught** |
 | `handleAttach` keeps every attach's input (the branch's first commit) | `SwitchIntoASmallerSessionKeepsItsSize`: "the panes span 120 columns, want 80" | **caught** |
 | `pickLatest`'s kept case cut, so the leave hands the session over at once (main) | `RoundTripKeepsSize` and `ReturnKeepsItsInput`: "over the round trip ws was 200x50 80x24" | **caught** |
+## A Pi session is read as a tree
+
+`TestPersonReadsPiTranscript` and `TestPiTranscriptSafety` (in `agent_transcript_pi_test.go` and `agent_transcript_pi_safety_test.go`), and the `pi` row of `TestCockpitThreadOtherHarnesses`, drive the real hook, the daemon, the human-only read and the Inbox on a Pi session that holds an abandoned sibling branch. `TestPiReadKeepsItsProjectionBySizeAndTime` and `TestPiReadBounds` (in `internal/transcriptview`) and `TestPiAgentPlaceholder` (in `internal/harness`) are unit tests for the parts a daemon test cannot see: the cache, the size bounds and the folder placeholder. Run on 2026-10-25 on Linux against upstream main at e48fc3b0.
+
+| Control: what was cut | Where it fails | Verdict |
+| --- | --- | --- |
+| Upstream main, where no reader is registered for Pi | "unsupported_harness: transcript pi cannot be read" in the first two, and "pi thread never showed the answer" in the cockpit row | **caught** |
+| `piProject` bypassed, so the file's own order is read | `TestPersonReadsPiTranscript`: "Pi transcript exposed \"ABANDONED-BRANCH\"" | **caught** |
+| The join no longer treats a tree like a document (`IsTree`) | `TestPersonReadsPiTranscript`: "a Pi transcript event carried an offset cursor" | **caught** |
+| Neither `DropAgentTranscript` call in `set-agent-state` and `set-agent-session` runs | `TestPiTranscriptSafety/a_replaced_conversation_is_never_shown_again`: "a refused path kept the previous conversation" | **caught** |
+| Each text or thinking block its own entry | `TestPiTranscriptSafety/secrets_and_controls_never_reach_a_client`: "split text blocks: PEM body reached the client", with the unsplit key control still masked | **caught** |
+| No decoder for the commands the person ran (`bashExecution`) | `TestPersonReadsPiTranscript`: "direct shell statuses: []" | **caught** |
+| The projection cache never hit | `TestPiReadKeepsItsProjectionBySizeAndTime`: "a file with the same size and time was read again" | **caught** |
+| A record past `lineMax` fails the whole view | `TestPiReadBounds/long_record`: "transcript too large to read whole" | **caught** |
+| `{pi_agent}` left unexpanded | `TestPiAgentPlaceholder`: `Root()` is empty in five of its six cases | **caught** |
+
+## The entry a Pi session has selected is followed
+
+`TestPiTranscriptFollowsSelectedBranch` and `TestPiTranscriptExtension` (in `agent_transcript_pi_lifecycle_test.go`) drive the real hook, the daemon, the Inbox and the generated Pi extension, which runs under a Node stand-in for Pi's extension API that supplies only lifecycle events and appends to the session file the way Pi does. Run on 2026-10-25 on Linux against upstream main at e48fc3b0.
+
+| Control: what was cut | Where it fails | Verdict |
+| --- | --- | --- |
+| The reader is never given the selected entry (`verb_agent_transcript.go`) | `TestPiTranscriptFollowsSelectedBranch`: "same-file branch selection did not reset the conversation" | **caught** |
+| No `transcript` event when an existing join's selection changes | the same test: "no Pi transcript event: stream read timed out" | **caught** |
+| The extension has no `session_tree` handler | `TestPiTranscriptExtension/the_extension_follows_a_session_through_a_resume...`: "Pi conversation never showed \"ABANDONED-BRANCH\"" | **caught** |
+| `session_start` never starts the file watch (the `startWatching` call) | `.../a_message_is_shown_once_it_is_persisted...` and `.../a_custom_message_appended_at_rest_is_shown`: the new message "never showed" | **caught** |
+| An entry the daemon already has is reported again | `.../a_selection_already_reported_spawns_nothing`: "reported again 2 times" | **caught** |
+| Shutdown waits for the whole backlog (`DRAIN_MS` at 60 s) | `.../a_slow_daemon_cannot_hold_up_shutdown`: "report backlog made Pi shutdown take 3.37s" | **caught** |
+| Superseded selections are not merged | `.../selections_that_supersede_one_another_are_merged`: "want the start and one merged selection, got 11 reports" | **caught** |
+| `enqueue` returns before it queues anything | `.../a_slow_daemon_cannot_hold_up_shutdown`: "the slow daemon was sent 0 reports, so the backlog was never built", and `.../selections_that_supersede_one_another_are_merged`: "want the start and one merged selection, got 0 reports" | **caught** |
+
+## Three tests that failed every time on macOS (#1139)
+
+Run on 2026-10-26 on Linux against upstream main at 4538d1d12. Linux cannot run the macOS timing, so each control slows down the step that macOS was slow at. Each control is a text replacement, built to a separate binary and put back before the next.
+
+| Control: what was changed | Test | Where it fails | Verdict |
+| --- | --- | --- | --- |
+| The TML placeholder starts with `sleep 2`, with the input fix removed | `TestTMLInputTyping` | Typing step 1, the macOS failure: the click came before the placeholder turned on mouse reporting | **caught** |
+| The same placeholder delay, with the input fix | `TestTMLInputTyping` | passes | fix holds |
+| `worktree.Push` sleeps one second between the push and the upstream config, with the old test | `TestShipPushSendsTheCommitThePersonAllowed` | `feat/ship@{upstream}` exits 128, the macOS failure | **caught** |
+| The same delay, with the test that waits for "Pushed feat/ship" | `TestShipPushSendsTheCommitThePersonAllowed` | passes | fix holds |
+| kittylive sleeps one second after its last line, with the old kittylive | `TestKittyFilesFromAPaneOnAHost/icat` | "the pane did not clear", the macOS failure: kittylive read the typed `clear` | **caught** |
+| The same sleep, with kittylive stopping its reader before its last line | `TestKittyFilesFromAPaneOnAHost/icat` | passes | fix holds |
+
+The `t=s` upload and icat's memory mode are expected only on Linux. tuios reads a shared memory object only from `/dev/shm`, and the far side answers `ENOTSUPPORTED` on other systems. That part is not a control: no Linux run can show it.
+| Superseded selections are not merged | `.../selections_that_supersede_one_another_are_merged`: "not merged: 11 reports" | **caught** |
+
+## A late tool result reaches the card that is still running
+
+`TestCockpitThreadFoldsALateToolResult` (in `cockpit_thread_late_result_test.go`) opens a Pi session in the Inbox with a command still running, then moves the thread to the page that holds its failed result. Run on 2026-10-25 on Linux against upstream main at e48fc3b0.
+
+| Control: what was cut | Where it fails | Verdict |
+| --- | --- | --- |
+| A later page's result is never folded into a retained call | `TestCockpitThreadFoldsALateToolResult`: "incremental failure left the retained tool running" | **caught** |
+
+## Dim and border lightness on a host with no theme (discussion #850)
+
+`TestDimFollowsHostColors` and `TestFocusedBorderStandsOutOnTheHostGround` run
+under `testdata/hostterm` playing ghostty on its Nord theme. The control is the
+build without the fix: main at 99607164e, run on 2026-10-26 on Linux.
+
+| Control: what was cut | Where it fails | Verdict |
+| --- | --- | --- |
+| The whole dim fix | `background-off` and `background-theme`: default and red text not dimmed. `background-colour`: default text not dimmed, red blended from xterm's red to `#6f2624`. `host-answers-nothing`: the text not faint | **caught** |
+| The whole border fix | `session_border=false`: terminal mode border at L 0.848, unfocused at L 0.815. `session_border=true`: window mode at L 0.866, terminal mode at L 0.848 | **caught** |
+| The neutral unfocused border | `session_border=false`: the unfocused border is `#faaaaa`, a hue rather than a neutral | **caught** |
+
+The fixed build passes all six cases. Its frames are drawn with the Nord
+palette as `dim.png`, `window.png` and `terminal.png` under the artifact
+directory.
+
+## A floating pane resized over the tiling
+
+`TestFloatMouseResizeKeepsTheTiles` and `TestFloatEdgeResizeKeepsTheTile` in `scratch_mouse_test.go` tile two panes, float one with the leader, `t`, `f`, and resize the float with the mouse. After each drag they read `list-windows --json`. The float must take the new size, and the tiled pane must keep its rectangle. The edge test runs on the shipped looks and on own borders with the dock on top. Run on 2026-10-26 on Linux, against upstream main at 167078a43.
+
+| Control: what was cut | Where it fails | Verdict |
+| --- | --- | --- |
+| Every part of the fix, which is upstream main | `TestFloatMouseResizeKeepsTheTiles`: the bottom-right alt+right drag leaves the float at 68x43, the bottom border drag moves the float to y=-3. `TestFloatEdgeResizeKeepsTheTile`: "top in its slot" leaves the float at y=2. "top one row below its slot" moves the tiled pane from y=2 h=43 to y=17 h=28, the float's row and height. "bottom border in its slot" moves the float to y=-3. All six cases fail | **caught** |
+| The floating-pane checks in the edge drag (`tiled := o.AutoTiling` in `applyBorderResize`) and in the split scan (`adjustTilingNeighborsGeneric`) | `TestFloatEdgeResizeKeepsTheTile/*/bottom_border_in_its_slot`: the tiled pane goes from h=43 to h=38 with the float, on both looks | **caught** |
+| The grabbed pane in the corner drag (`focusedWindow = o.Windows[o.DraggedWindowIndex]` in `handleMouseMotion`) | `TestFloatMouseResizeKeepsTheTiles`, the drag across a peer's focus change: the float stops at w=52 h=32, want w=56 h=36 | **caught** |
+
+The tiled pane does not move in the peer-sync control: it fills the pane area, so the tiling path holds each of its edges. The cut shows as a float that stops resizing.
+
+### capture-pane on a TML surface, and the agent as its owner
+
+`TestTMLShowPaneAndClose` reads the surface with capture-pane and checks that
+each captured line is on the screen, before and after a click on a tab that
+binds no state path. `TestTMLOwnerNameMustBeUnique` opens surfaces from panes
+that report an agent. Run on 2026-10-26.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|-----|-------------|-----|-----------------|---------|
+| The capture shows another view than the person's | the view report in `tmlViewChange` | it returns nil at once | `TestTMLShowPaneAndClose` ("the captured line \"▌ internal/session  TestAttachRace ...\" is not on the screen": the cursor row of a new view) | **caught** |
+| A surface from an agent pane names a hash | the agent name in `tmlAgentName` | it returns "" at once | `TestTMLOwnerNameMustBeUnique` ("from pane 7ed13d20 · Agent" for the claude pane) | **caught** |
+
+### git runs no program the pane's repository names
+
+`TestGitRunsNoProgramOfThePaneRepository` gives the pane's repository a clean
+and a smudge filter, a textconv and `diff.external` in its own config, and
+three hooks in `.git/hooks`. Each appends its name to a marker file. A
+checkpoint on a state change, `tuios review`, `tuios fan`, `tuios fan compare`
+and `tuios worktree diff` each run, and the marker must stay empty.
+`TestSpawnSheetIgnoresAReportedFolder` prints an OSC 7 report for a second
+repository with the same probes, opens the New agent sheet and starts an
+agent from it. `TestCheckpointIgnoresAReportedFolderWithoutProcessCwd` does
+the same with `TUIOS_E2E_NO_PROCESS_CWD=1`, as on native Windows, and takes a
+checkpoint. Run on 2026-10-26 on Linux.
+
+| Control: what was cut | Where it fails | Verdict |
+| --- | --- | --- |
+| Every part of the fix (a binary built from `origin/main`) | `TestGitRunsNoProgramOfThePaneRepository`: the checkpoint runs `clean`, `hook-post-index-change` and `hook-reference-transaction`; review, fan, fan compare and worktree diff run the filter, and fan runs `hook-post-checkout` and `smudge`; worktree diff runs `external` and shows no a.txt. `TestSpawnSheetIgnoresAReportedFolder`: the sheet says "from otherrepo / main", its read runs `clean`, and Start makes a worktree of the other repository and runs `hook-post-checkout`. `TestCheckpointIgnoresAReportedFolderWithoutProcessCwd`: the checkpoint is taken in the reported repository, not the one the pane started in, and runs `clean`, `hook-post-index-change` and `hook-reference-transaction` | **caught** |
+## Task cards (#1093)
+
+Run on 2026-10-26 on macOS against `tasks-store` rebased on upstream main at
+`12dedac04`. Each control is a text replacement in `internal/session`, run and put
+back before the next.
+
+| Control: what was changed | Test | Where it fails | Verdict |
+| --- | --- | --- | --- |
+| The restore does not put the cards back after its state push (`restoreTasks` call in `daemon_resurrect.go` cut) | `TestTaskCardsAreClaimedOnceAndSurviveARestart` | "after the restart the session holds 0 cards, want 2" | **caught** |
+| The state change that closes a pane or ends its agent lets no card go (the `releasedTaskEvents` append in `emitLifecycleLocked`, `session.go`, cut) | `TestTaskCardsAreReleasedWithTheirPane` | "t1 never read ["released" "pane closed"]", after the 10 s wait | **caught** |
+| A client sync drops the cards (`incoming.Tasks, incoming.NextTaskID = canonical…` in `state_merge.go` cut) | `TestTaskCardsAreReleasedWithTheirPane` | "after a client sync the session holds 0 cards, want 3", once the attached client has pushed | **caught** |
+| The selector reads no cards from a pane (`Tasks: tasks` in `paneSelectorTarget`, `verb_select.go`, cut) | `TestTaskCardsAreReleasedWithTheirPane` | "list-agents --select task:t1 = [], want the one pane …" | **caught** |
+
+The artifacts `tasks-claim-and-restart.txt` and `tasks-release-with-pane.txt`
+hold each pane's claim output, the card histories after the pane closed and
+the agent left, and the listings after the restart and after the client sync.
+
+## Border prominence by mode and on light grounds (discussion #850)
+
+`TestFocusedBorderStandsOutOnTheHostGround` runs on Nord, Catppuccin Mocha
+and TokyoNight, and on their light pairs, with `session_border` off and on.
+The control is main at 6d122034a, run on 2026-10-26 on Linux.
+
+| Control: what was cut | Where it fails | Verdict |
+| --- | --- | --- |
+| The whole change | `session_border=true` on all six schemes: terminal mode stands nearer the ground than window mode, or is less saturated (Nord: window L 0.866 chroma 0.295, terminal L 0.766 chroma 0.140). `session_border=false` on the three light schemes: the window mode border has about 5:1, under twice the unfocused border's 3:1 | **caught** |
+
+The fixed build passes all twelve cases.
+
+## Kitty images under popups and dialogs
+
+`TestKittyImageStaysUnderPopovers` shows a kitty image in a full pane, opens
+a popup and then the rename dialog over it, and replays the host stream. No
+placement may cover a cell the popup or the dialog drew, part of the image
+must still show, and the whole image must come back when the cover closes.
+Run on 2026-10-26 on Linux, against main at `9b4c9b8ef`.
+
+| Control: what was changed | Where it fails | Verdict |
+| --- | --- | --- |
+| The whole change (main) | popup: "the image is drawn over the popup at column 40 row 15". rename: "the image is drawn over the rename at column 43 row 18". Both with the image placed whole at 118x36 | **caught** |
+| `WindowZ` set from `w.Z` instead of `HitZ(w)` in `GetKittyGraphicsCmd` | popup: "the image is drawn over the popup at column 40 row 15". rename passes | **caught** |
+
+The fixed build passes both cases. With `TUIOS_E2E_FRAMES` set, each case
+writes `1-before.txt`, `2-covered.txt` and `3-after.txt`: the screen with
+the cells the host draws the image on marked.
+
+## Terminal mode on a pane a switch to an empty workspace opens (#1173)
+
+`TestEmptyWorkspaceOpensAPane` now makes its first switch to an empty
+workspace in terminal mode. When the pane arrives, GetSessionInfo must say
+terminal mode, and the shell must compute a marker from keys typed with no
+`i`. The second switch is made in window mode, and the pane must arrive in
+window mode. Run on 2026-10-26 on Linux.
+
+| Control: what was cut | Where it fails | Verdict |
+| --- | --- | --- |
+| The whole change (main, `internal/app/workspace.go` and `os.go` from `origin/main` through `go build -overlay`) | "after a switch in terminal mode the new pane arrived in \"window_management\" mode, want terminal (#1173)" | **caught** |
+
+The fixed build passes, three runs in a row.
+## Keys typed fast into a TML field reach the daemon in order
+
+`TestTMLInputTyping` types bursts of keys into a TML text field. Each key
+sends its own tml-input. Before the fix each call dialed its own connection
+at once, so a later key could reach the daemon before an earlier one. The
+daemon then kept an older value, and its next push put that value back in
+the field. The last key of a burst was lost, mostly the space of "y: ". Run
+on 2026-10-26 on Linux against main at `859cef306`, with four busy loops on
+the same cores as the test, `-count=50`.
+
+| Control: what was changed | Where it fails | Verdict |
+| --- | --- | --- |
+| The whole change (main) | 4 of 50 runs: "the paste in the field" three times, with the field at `y:ship it very soon (signed)`, and typing step 3 once | **caught** |
+
+The fixed build passes 100 of 100 runs under the same load.
+## Wide text in the agent thread and the Live box
+
+The codex case of `TestCockpitThreadOtherHarnesses` adds an agent message of
+Hangul, Hangul mixed with ASCII, a syllable written as conjoining jamo, and
+CJK, kana and an emoji to the rollout. It also prints Hangul in the agent's
+pane, so that the Live box draws it. Each line must show on screen whole. A
+row of wide text must also end at the right edge with the ground of the row
+under it. Run on 2026-10-26 and 2026-10-27 on Linux (#1184).
+
+| Control: what was cut | Where it fails | Verdict |
+| --- | --- | --- |
+| Main before #1197, at `d95fe65c3` | the Live box never shows the Hangul line. The thread never shows any of the four wide lines: every wide cell is blank | **caught** |
+| Main with #1197, at `9b41ceb34`: grapheme width in the cockpit canvas and the overlay rows cut | the jamo row "한글 자모" is drawn short of the right edge: the side column ground starts four cells early | **caught** |
+
+The fixed build passes. With `TUIOS_E2E_FRAMES` set, the case writes
+`thread-codex-live.png` and `thread-codex.png`. Set `TUIOS_E2E_FONT_FALLBACK`
+to a list of font files that have Hangul and CJK, so that the frames draw
+them.

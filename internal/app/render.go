@@ -217,7 +217,7 @@ func (m *OS) GetCanvas(render bool) *frameCanvas {
 		isFocused := m.FocusedWindow == i && m.FocusedWindow >= 0 && m.FocusedWindow < len(m.Windows)
 		isMultifocused := len(m.MultifocusSet) > 0 && m.MultifocusSet[window.ID]
 		var borderColorObj color.Color
-		_, quietTint, tinted := m.sessionBorderTint()
+		_, _, quietTint, tinted := m.sessionBorderTint()
 		var stateColor color.Color
 		if isFocused {
 			stateColor = m.focusedStateBorder(window)
@@ -432,6 +432,8 @@ func (m *OS) GetCanvas(render bool) *frameCanvas {
 
 		// The part of this client's pane area a smaller session leaves.
 		layers = m.renderLeftover(layers)
+
+		m.kittyChrome = chromeRectsAbovePanes(m.kittyChrome[:0], layers[paneLayers:])
 	} else {
 		// Off the render path (e.g. state snapshots) nothing draws the sidebar,
 		// so last frame's hit geometry must not linger and mis-route a click.
@@ -986,15 +988,20 @@ func (m *OS) fastPathPaints() bool {
 // colour the theme names for it, outranks the mode and the session. The mode
 // colour outranks the session's: in terminal mode the border says the keys are
 // going into the guest, which is the more urgent fact and the one a person
-// checks before typing.
+// checks before typing. A session's terminal mode colour is held apart in
+// lightness from its window mode one, and is the louder of the two: a session
+// that drew a green would otherwise look the same in both modes.
 func (m *OS) focusedBorderColor(state color.Color) color.Color {
 	if state != nil {
 		return state
 	}
-	if m.Mode == TerminalMode {
+	tint, tintTerminal, _, tinted := m.sessionBorderTint()
+	switch {
+	case m.Mode == TerminalMode && tinted:
+		return tintTerminal
+	case m.Mode == TerminalMode:
 		return theme.BorderFocusedTerminalOn(m.host.bg)
-	}
-	if tint, _, ok := m.sessionBorderTint(); ok {
+	case tinted:
 		return tint
 	}
 	return theme.BorderFocusedWindowOn(m.host.bg)
@@ -1339,10 +1346,11 @@ func (m *OS) flushGraphicsForView() {
 		// Self-placed remote video images are hidden/dropped here, not by
 		// HideAllPlacements (they are not in `placements`).
 		m.KittyPassthrough.SetOverlayActive(hideImages)
-		// Chrome that leaves the panes showing. Set every frame, and nil
-		// once capture mode closes, so the images get their full rectangle
-		// back on the next refresh.
-		m.KittyPassthrough.SetChromeOccluders(m.pipOccluders(m.captureOccluders()))
+		// Chrome that leaves the panes showing: popovers, dialogs, the
+		// rail, the dock, capture mode's marquee. Set every frame from the
+		// layers the frame drew, so an image gets its full rectangle back on
+		// the refresh after the chrome closes.
+		m.KittyPassthrough.SetChromeOccluders(m.pipOccluders(m.kittyChrome))
 	}
 
 	// The launcher's own icons run past the hide above rather than through it.
@@ -1459,6 +1467,10 @@ func (m *OS) GetKittyGraphicsCmd() tea.Cmd {
 				if announcedW <= 0 || announcedH <= 0 {
 					announcedW, announcedH = w.ContentWidth(), w.ContentHeight()
 				}
+				// WindowZ is the rank the pane is drawn at, not its raw Z. A
+				// float or a popup is lifted into a band above every tile, so
+				// its raw Z can be below the Z of the tile it covers, and the
+				// image in that tile was then drawn over it.
 				backing[n] = WindowPositionInfo{
 					WindowX:            w.X + view.dx,
 					WindowY:            w.Y + view.dy,
@@ -1472,7 +1484,7 @@ func (m *OS) GetKittyGraphicsCmd() tea.Cmd {
 					ScrollbackLen:      scrollbackLen,
 					ScrollOffset:       w.ScrollbackOffset,
 					IsBeingManipulated: w.IsBeingManipulated,
-					WindowZ:            w.Z,
+					WindowZ:            HitZ(w),
 					IsAltScreen:        w.IsAltScreen(),
 					ScreenWidth:        screenWidth,
 					ScreenHeight:       screenHeight,

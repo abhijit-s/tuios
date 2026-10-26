@@ -3931,7 +3931,11 @@ and when the pane is not a pane id, the hook prints nothing.
 
 Codex maps the same events the same way, plus `Interrupt` to `idle`, with the
 same activity (its `apply_patch` files come from the patch's header lines, and
-the model from every event). Gemini CLI maps `BeforeAgent` and `BeforeTool` to
+the model from every event). One Codex event differs: a `PermissionRequest`
+reports nothing when Codex's automatic reviewer decides it. That is a turn
+whose rollout names `approvals_reviewer = "auto_review"` with the `on-request`
+or granular approval policy. The reviewer allows or denies the call without
+you. A prompt that does reach you shows from the screen and the title. Gemini CLI maps `BeforeAgent` and `BeforeTool` to
 `working` (`BeforeTool` with its tool name as activity), `AfterTool` to `working` only
 from `needs_input`, `Notification` `ToolPermission` to `needs_input` kind
 `approval`, `AfterAgent` to `done`, and `SessionStart` and `SessionEnd` as
@@ -4728,6 +4732,14 @@ of a session here whose process runs on another machine is refused with
 `not_repo`. Attach to that machine and review there, or bring the work here
 with `tuios worktree pull HOST:SESSION` and review that.
 
+**Programs the repository names.** tuios runs git for checkpoints, reviews,
+counts, diffs and new worktrees with no hooks. A filter, textconv or diff
+program that only the repository's own config names does not run. tuios then
+reads those files as they are on disk. A filter that your global config names,
+such as Git LFS's, still runs. The pane's directory is the folder its shell is
+in. Where tuios cannot read that folder, as on native Windows, it is the folder
+the pane started in. An OSC 7 report does not change it.
+
 **Notes.** A note sits on a line (`FILE:LINE`, on the new side, or with
 `side: old` on a removed line numbered as in the base) or on a whole hunk (by
 its header). It keeps the text of its line, filled in from the file when the
@@ -4955,7 +4967,9 @@ email, signing setup and hooks make the commit. tuios sets no identity and
 adds nothing to the message. Without `-m`, the message is the pane's last
 prompt, or the line its last turn ended with. When a hook or signing refuses
 the commit, the index goes back to what it was. A commit is refused while the
-agent is `working` or `needs_input`, unless you pass `--force`.
+agent is `working` or `needs_input`, unless you pass `--force`. A call from
+inside a pane runs git with no hooks, and with no program that only the
+repository's own config names.
 
 **Merge.** The branch merges into the base the worktree was made from, in the
 main checkout. That checkout must have the base checked out and no
@@ -5309,7 +5323,9 @@ every pane, are held to nothing new.
 | `write` | Type into the panes of its own session (`send-text`, `send-keys`, `ask-agent`, `run`) that hold nothing it does not, and leave mail and stashed files there |
 | `fan` | Do what `write` does in its fan group and the sessions it launched, and start agents with `fan` and `start-agent` |
 | `respond` | Answer another pane's prompt with `respond`, without the person (see [Who may answer](#who-may-answer)), and type into a pane waiting on a prompt |
-| `admin` | Everything else, as every pane could before grants: every session, the listings across sessions, windows, layouts, options, `kill-session`, `run-command`, attach. Includes `read`, `write` and `fan`, never `respond` |
+| `files` | Copy files with `tuios cp`, inside the pane's own folder, and see and control its own copies |
+| `task` | Add, claim, finish, stage, block and release the task cards of its own session (`tuios task`). It claims only for itself and changes only the card it holds |
+| `admin` | Everything else, as every pane could before grants: every session, the listings across sessions, windows, layouts, options, `kill-session`, `run-command`, attach, any task card and `tuios task rm`. Includes `read`, `write`, `fan`, `files` and `task`, never `respond` |
 
 Whatever it holds, a pane can always report about itself (`set-agent-state`,
 `set-agent-meta`, `set-agent-session`, `ask-human`, `request-approval`, on its

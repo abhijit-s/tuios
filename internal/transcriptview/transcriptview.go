@@ -272,6 +272,9 @@ type Options struct {
 	// Session names the session in a format whose store holds many
 	// (FormatOpenCode), as the harness's plugin reported it.
 	Session string
+	// Leaf selects a Pi tree entry. Nil uses the last complete entry; a
+	// present empty string selects the empty branch before its first entry.
+	Leaf *string
 }
 
 // Page is one read.
@@ -316,6 +319,9 @@ func Read(path string, opts Options) (Page, error) {
 	fm, ok := lookupFormat(opts.Format)
 	if !ok {
 		return Page{}, ErrFormat
+	}
+	if fm.tree {
+		return piRead(path, opts)
 	}
 	f, err := transcript.OpenRegular(path)
 	if err != nil {

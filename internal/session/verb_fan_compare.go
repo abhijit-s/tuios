@@ -202,6 +202,13 @@ func (d *Daemon) verbCompareFan(cs *connState, params json.RawMessage) (any, *ve
 	if verr := decodeParams(params, &p); verr != nil {
 		return nil, verr
 	}
+	// detail returns the first changed lines of each attempt's files, which
+	// are file contents: over a link it needs what review-diff needs.
+	if p.Detail {
+		if verr := d.checkLinkPolicy(cs, linkCapReadOut, "compare-fan with detail"); verr != nil {
+			return nil, verr
+		}
+	}
 	_, info, verr := d.fanTarget(cs, p.Session)
 	if verr != nil {
 		return nil, verr
@@ -819,7 +826,7 @@ func (d *Daemon) verbKeepFan(cs *connState, params json.RawMessage) (any, *verbE
 				recorded = b
 			}
 		}
-		res, verr := d.shipMerge(kept.Name(), info.Path, info.RepoRoot, recorded, p.Into, p.MergeMode, "")
+		res, verr := d.shipMerge(d.shipCallerIsPerson(cs), kept.Name(), info.Path, info.RepoRoot, recorded, p.Into, p.MergeMode, "")
 		if verr != nil {
 			if verr.Hint != nil {
 				verr.Hint.Detail += " No sibling was removed."

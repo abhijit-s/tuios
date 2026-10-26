@@ -198,6 +198,7 @@ With no theme set, tuios uses the terminal's own colors.
 **Popular themes include:**
 - `charmtone`: Charm's CharmTone colours on a dark ground, with a Charple accent
 - `charmtone-light`: CharmTone on a light ground
+- `gilt`: Cool obsidian, warm parchment and a gold accent
 - `tokyonight`: A clean, dark theme with vibrant colors
 - `dracula`: Dark theme with purple accent
 - `nord`: An arctic, north-bluish color palette
@@ -2570,6 +2571,69 @@ tuios queue rm q3
 tuios queue rm --all -w build
 ```
 
+### `tuios task`
+
+Hand out a session's work as task cards. A card is one unit of work: a title,
+the prompt for the pane that takes it, a stage, and the pane that holds it. The
+daemon keeps the cards with the session, so they outlive the pane that added
+them. After a daemon restart they come back with every holder let go. A card is
+also let go when its pane closes or its agent leaves the pane. See
+[Task verbs](protocol.md#task-verbs).
+
+The stages are `todo`, `plan`, `doing`, `verify`, `review`, `shipped` and
+`done`. `claim` moves a card in `todo` or `plan` to `doing`, and `done` moves
+it to `done` and lets it go.
+
+**Usage:**
+```bash
+tuios task add [-p PROMPT] [--stage STAGE] TITLE... [flags]
+tuios task ls [--stage STAGE] [--open] [flags]
+tuios task get ID [flags]
+tuios task claim ID | --next [-w <window>] [flags]
+tuios task done ID [flags]
+tuios task stage ID STAGE [flags]
+tuios task block ID REASON... | --clear [flags]
+tuios task release ID [flags]
+tuios task rm ID [flags]
+```
+
+**Flags:**
+- `-s, --session <name>`: Session of the cards (default: this pane's session, else the most recently active)
+- `-p, --prompt <text>` (`add`): What the pane that takes the card is to do, at most 16 KiB; `-` reads it from standard input
+- `--stage <stage>` (`add`, `ls`): The stage it starts in; for `ls`, only the cards in it
+- `--open` (`ls`): Leave out the cards that are done
+- `--next` (`claim`): Take the oldest card no pane holds that is not blocked or done
+- `-w, --window <target>` (`claim`): The pane that takes the card (default: this pane; required outside a pane)
+- `--clear` (`block`): Lift the block
+- `--json`: Output the verb result as JSON
+
+The words of `TITLE` and `REASON` are joined with spaces. `ls` prints one line
+per card: its id, stage (with `!` when it is blocked), the pane that holds it,
+its age, and its title. `claim` prints the card's id and title on its first
+line, so a script can read the id with `cut -d' ' -f1`; with nothing to take it
+fails with `no_task`, and a card another pane holds fails with `task_held`.
+
+From inside a pane, changing a card needs the `task` grant. A pane claims
+only for itself and finishes, stages, blocks or releases only the card it
+holds, unless it holds `admin`. `rm` from a pane needs `admin`.
+
+**Examples:**
+```bash
+# A conductor adds the work
+tuios task add -p 'Read api/retry.go and add a jitter option, with a test.' make the backoff jitter configurable
+
+# A worker pane takes the next card, and finishes it
+tuios task claim --next
+tuios task done t1
+
+# Stuck on something, then free again
+tuios task block t1 waiting on the staging key
+tuios task block t1 --clear
+
+# What is open
+tuios task ls --open
+```
+
 ### `tuios review`
 
 Show what the agent in a pane changed, leave notes on its lines, and send the
@@ -2725,7 +2789,8 @@ git runs in the daemon with your own environment: your name, email, signing
 setup and hooks. tuios sets no identity and adds no trailer. `ship commit`
 stages every change, untracked files included and ignored files not. When a
 hook or the signing program refuses the commit, the index goes back to what
-it was.
+it was. A call from inside a pane runs git with no hooks, and with no program
+that only the repository's own config names.
 
 `ship merge` merges into the main checkout. That checkout must have the
 target branch checked out and no uncommitted change to a tracked file. When
@@ -4790,7 +4855,8 @@ them, however it was made:
 | `fan` | Write in its fan group and start agents with `fan` and `start-agent` |
 | `respond` | Answer another pane's prompt with `respond`, without the person, and type into a pane waiting on a prompt |
 | `files` | Copy files with `tuios cp`: a copy whose ends on this machine are inside the folder of the pane, and whose ends on a host are under its home folder or are its receive folder. It sees and controls only its own copies |
-| `admin` | Everything else, as every pane could before grants, such as `run-command` and `attach`. Includes `read`, `write`, `fan` and `files`, never `respond` |
+| `task` | Add, claim, finish, stage, block and release the task cards of its own session with `tuios task`. It claims only for itself and changes only the card it holds |
+| `admin` | Everything else, as every pane could before grants, such as `run-command`, `attach` and `tuios task rm`. Includes `read`, `write`, `fan`, `files` and `task`, never `respond` |
 
 A pane without `admin` types (`send-text`, `send-keys`, `run`, `ask-agent`,
 `queue`) into another pane only when that pane holds nothing it does not,
@@ -4958,6 +5024,7 @@ tuios tml get SURFACE
 tuios tml list [-s SESSION]
 tuios tml close SURFACE [VALUE]
 tuios tml validate FILE
+tuios tml render FILE [--width N] [--height N] [--state JSON] [--tab ID] [--ansi]
 ```
 
 FILE is a TML text or TML JSON file, or `-` for standard input.
@@ -4989,6 +5056,17 @@ From a pane, these commands need the `write` grant, and `tml patch`,
 button's `pane('send-text', ...)` runs with the opening pane's grants, and tuios
 asks the person before a surface first types into a pane. `tml validate` prints each problem with its line, the node and the fix,
 and exits with status 1 when the document has errors. It needs no daemon.
+
+`tml render` prints the document drawn as text, as tuios draws it in a pane,
+and opens nothing. The width is the terminal's width, or 100 when standard
+output is not a terminal. Without `--height` the document gets the rows it
+takes. `--state` replaces the state, `--tab` opens a tab by its id, and `--ansi`
+keeps the colours as ANSI escape sequences. It exits with status 1 and prints
+the problems when the document is not valid. It needs no daemon.
+
+`tuios capture-pane` on a TML window prints the surface as drawn, at the
+window's size, with its state and the view of the client that last reported
+one: the open tab, the cursor rows and the scroll place.
 
 **Flags of `tml show`:**
 - `-s, --session <name>`: Target session (default: this pane's session, else the most recently active)
@@ -5386,7 +5464,9 @@ connects. The browser asks for the user name and the password.
   can still read it from `/proc`. Use `--password-file` instead.
 
 There is no flag that takes the password itself. Other users can see command
-line arguments in `ps`.
+line arguments in `ps`. A password from a file or from `TUIOS_WEB_PASSWORD`
+that is shorter than 12 characters gets a warning at start, because
+tuios-web does not slow down wrong guesses.
 
 - On `localhost`: the password is optional. With no password, other users on
   this machine can connect. tuios-web prints one line at start to say so. Use

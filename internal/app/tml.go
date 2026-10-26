@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bytes"
 	"cmp"
 	"encoding/json"
 	"fmt"
@@ -17,6 +18,7 @@ import (
 	"github.com/Gaurav-Gosain/tuios/internal/session"
 	"github.com/Gaurav-Gosain/tuios/internal/terminal"
 	"github.com/Gaurav-Gosain/tuios/internal/theme"
+	"github.com/Gaurav-Gosain/tuios/internal/tmldraw"
 	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/charmbracelet/x/ansi"
 	"tuios.dev/loom"
@@ -111,6 +113,12 @@ type tmlView struct {
 	// not flicker back to the one before it. deferred holds that push.
 	inflight int
 	deferred *session.TMLSurfacePayload
+	// sent closes when the last tml-input this view made has its answer.
+	// The next one waits for it, so the daemon applies the inputs in the
+	// order the person made them. Each call dials its own connection, and
+	// without the wait a later keystroke could reach the daemon first and
+	// an earlier value would win. Guarded by tmlClient.mu.
+	sent chan struct{}
 	// content is the last frame, for the size in w and h.
 	content string
 	w, h    int
@@ -120,6 +128,12 @@ type tmlView struct {
 	// confirmed the targets they said yes to, per surface.
 	confirm   *tmlPaneAction
 	confirmed map[string]bool
+	// sentView is this client's view state as last sent to the daemon,
+	// which draws it for capture-pane, and viewAt when. viewDue says a
+	// change waits for the flush tmlViewGap schedules.
+	sentView []byte
+	viewAt   time.Time
+	viewDue  bool
 }
 
 // tmlParam is a string parameter of a pane() action.
@@ -649,7 +663,7 @@ func (m *OS) renderTML(window *terminal.Window, dim int) string {
 	if confirmText != "" && sh < ch {
 		out += "\n" + confirmText
 	}
-	out = tmlPad(out, dx, dy, fullW, fullH)
+	out = tmldraw.Pad(out, dx, dy, fullW, fullH)
 	cacheRender(window, out, 0, 0, dim)
 	return out
 }
@@ -720,82 +734,10 @@ func colorKey(c color.Color) string {
 	return strconv.FormatUint(uint64(r)<<48|uint64(g)<<32|uint64(b)<<16|uint64(a), 36)
 }
 
-// tmlPalette maps the chrome palette of this client's depth onto loom's
-// roles, so a surface looks like the rest of tuios and keeps its contrast
-// floors. At 16 colours the grounds are the terminal's own, so they are left
-// out and loom draws the cursor row and a primary button in reverse video.
+// tmlPalette is the loom palette of this client's depth and theme. See
+// tmldraw.Palette.
 func (m *OS) tmlPalette() *loom.Palette {
-	pal := theme.UI()
-	depth := loom.TrueColor
-	switch pal.Depth {
-	case overlay.Depth256:
-		depth = loom.Color256
-	case overlay.Depth16:
-		depth = loom.Color16
-	}
-	if m.Settings.UseASCIIOnly {
-		depth = loom.ASCII
-	}
-	roles := map[string]color.Color{
-		"fg": pal.Fg, "dim": pal.FgDim, "mute": pal.FgMute,
-		"accent": pal.Accent, "accent-bright": pal.AccentBright,
-		"success": pal.Success, "warning": pal.Warning, "error": pal.Warn, "info": pal.Info,
-		"attention": pal.Attention, "busy": pal.Busy, "edge": pal.Edge,
-		"canvas": pal.Canvas, "panel": pal.Panel, "surface": pal.Surface, "card": pal.Card,
-		"accent-tint": pal.AccentTint, "success-tint": pal.SuccessTint,
-		"warning-tint": pal.WarningTint, "error-tint": pal.WarnTint,
-		loom.RoleCursor: pal.RowSel, loom.RolePill: pal.PillFg,
-	}
-	maps.Copy(roles, chartRoles(pal))
-	for k, c := range roles {
-		if c == nil {
-			delete(roles, k)
-			continue
-		}
-		if _, none := c.(lipgloss.NoColor); none {
-			delete(roles, k)
-		}
-	}
-	return loom.NewPalette(depth, roles)
-}
-
-// chartRoles gives the roles plot draws with that the chrome palette has no
-// name for: track, the empty part of a gauge and the land of a map, and the
-// heat ramp of a heatmap and a map's shades. Left to loom's fallbacks, heat2
-// and heat3 are both info, and at 16 colours the land, heat1 and three of
-// the shades share a slot, so a map's six tones read as three. Here all six
-// differ at every depth: at 16 colours by hue, above it as a ramp from the
-// panel through info to the bright accent.
-func chartRoles(pal overlay.Palette) map[string]color.Color {
-	if pal.Depth == overlay.Depth16 {
-		return map[string]color.Color{
-			loom.RoleTrack: overlay.Slot(8),
-			// Five hues, so no two shades can be the same colour in any
-			// palette: blue, cyan, green, yellow and bright magenta. Slot
-			// 12 is the accent and info, and 4 and 12 look alike in many
-			// palettes.
-			loom.RoleHeat1: overlay.Slot(4), loom.RoleHeat2: overlay.Slot(6),
-			loom.RoleHeat3: overlay.Slot(2), loom.RoleHeat4: overlay.Slot(3),
-			loom.RoleHeat5: overlay.Slot(13),
-		}
-	}
-	if pal.Panel == nil || pal.Info == nil || pal.AccentBright == nil || pal.FgMute == nil {
-		return nil
-	}
-	out := map[string]color.Color{
-		loom.RoleTrack: overlay.MixColors(pal.Panel, pal.FgMute, 0.35),
-		loom.RoleHeat1: overlay.MixColors(pal.Panel, pal.Info, 0.35),
-		loom.RoleHeat2: overlay.MixColors(pal.Panel, pal.Info, 0.65),
-		loom.RoleHeat3: pal.Info,
-		loom.RoleHeat4: overlay.MixColors(pal.Info, pal.AccentBright, 0.5),
-		loom.RoleHeat5: pal.AccentBright,
-	}
-	if pal.Depth == overlay.Depth256 {
-		for k, c := range out {
-			out[k] = overlay.To256(c)
-		}
-	}
-	return out
+	return tmldraw.Palette(theme.UI(), m.Settings.UseASCIIOnly)
 }
 
 // TMLKey gives a key to the surface of a TML window. A popup closes on an
@@ -953,10 +895,65 @@ func (m *OS) tmlResult(w *terminal.Window, v *tmlView, res loom.Result) tea.Cmd 
 		m.ShowNotification(fmt.Sprintf("One press can run at most %d pane actions. Nothing ran.", tmlActionsPerPress), "warning", m.Settings.NotificationDuration)
 		actions = nil
 	}
-	if len(ops) > 0 || closing || len(events) > 0 || len(actions) > 0 {
-		cmds = append(cmds, m.tmlInput(v, tmlInputReq{ops: ops, events: events, actions: actions, closing: closing, value: value, hasValue: hasValue}))
+	// The view travels when it changed, so capture-pane draws what the
+	// person looks at. See tmlViewChange.
+	view, flush := m.tmlViewChange(v, res.View)
+	if flush != nil {
+		cmds = append(cmds, flush)
+	}
+	if len(ops) > 0 || closing || len(events) > 0 || len(actions) > 0 || view != nil {
+		cmds = append(cmds, m.tmlInput(v, tmlInputReq{ops: ops, events: events, actions: actions, closing: closing, value: value, hasValue: hasValue, view: view}))
 	}
 	return tea.Batch(cmds...)
+}
+
+// tmlViewGap is the least time between two reports of a view that only
+// changed. A wheel scroll changes the view on every step. Its last place
+// goes in one report after the gap.
+const tmlViewGap = 250 * time.Millisecond
+
+// TMLViewFlushMsg sends a view change that waited for tmlViewGap.
+type TMLViewFlushMsg struct{ id string }
+
+// tmlViewChange returns v's view as JSON when an input changed it and it
+// differs from the last one sent, for the tml-input of that input. A change
+// within tmlViewGap of the last report waits: the command it returns sends
+// it after the gap. Typed text that binds no state path stays here.
+func (m *OS) tmlViewChange(v *tmlView, changed bool) (json.RawMessage, tea.Cmd) {
+	if (!changed && !v.viewDue) || v.surface == nil {
+		return nil, nil
+	}
+	view := v.surface.View()
+	view.Text, view.Caret = nil, nil
+	raw, err := json.Marshal(view)
+	if err != nil || bytes.Equal(raw, v.sentView) {
+		v.viewDue = false
+		return nil, nil
+	}
+	if wait := tmlViewGap - time.Since(v.viewAt); wait > 0 {
+		if v.viewDue {
+			return nil, nil
+		}
+		v.viewDue = true
+		id := v.id
+		return nil, tea.Tick(wait, func(time.Time) tea.Msg { return TMLViewFlushMsg{id: id} })
+	}
+	v.sentView, v.viewAt, v.viewDue = raw, time.Now(), false
+	return raw, nil
+}
+
+// handleTMLViewFlush sends the view change of a surface that waited.
+func (m *OS) handleTMLViewFlush(id string) tea.Cmd {
+	v := m.tml.views[id]
+	if v == nil || !v.viewDue {
+		return nil
+	}
+	v.viewAt = time.Time{}
+	raw, _ := m.tmlViewChange(v, true)
+	if raw == nil {
+		return nil
+	}
+	return m.tmlInput(v, tmlInputReq{view: raw})
 }
 
 // tmlRepaint marks a surface for a repaint: its window when it has one here,
@@ -1073,6 +1070,7 @@ type tmlInputReq struct {
 	closing  bool
 	value    any
 	hasValue bool
+	view     json.RawMessage
 }
 
 // tmlPaneAction is one pane() action, run by the daemon with the grants of
@@ -1099,6 +1097,9 @@ func (m *OS) tmlInput(v *tmlView, r tmlInputReq) tea.Cmd {
 	if len(r.actions) > 0 {
 		params["actions"] = r.actions
 	}
+	if r.view != nil {
+		params["view"] = r.view
+	}
 	if r.closing {
 		params["close"] = true
 		if r.hasValue {
@@ -1109,11 +1110,18 @@ func (m *OS) tmlInput(v *tmlView, r tmlInputReq) tea.Cmd {
 			params["value"] = json.RawMessage(raw)
 		}
 	}
+	done := make(chan struct{})
 	m.tml.mu.Lock()
 	v.inflight++
+	prev := v.sent
+	v.sent = done
 	m.tml.mu.Unlock()
 	return func() tea.Msg {
+		if prev != nil {
+			<-prev
+		}
 		raw, err := call("tml-input", params, tmlInputTimeout)
+		close(done)
 		m.tml.mu.Lock()
 		v.inflight--
 		m.tml.mu.Unlock()

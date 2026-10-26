@@ -2,7 +2,7 @@
 
 pkgs.buildGoModule rec {
   pname = "tuios";
-  version = "v0.11.0";
+  version = "v0.11.1";
 
   src = ./.;
 
@@ -47,5 +47,5 @@ pkgs.buildGoModule rec {
   '';
 
   # This has to be updated each time dependencies are updated.
-  vendorHash = "sha256-XSsF9JzIVFiSq5LBKD9eBDMcv9UsZ5DRFj4OZBafcog=";
+  vendorHash = "sha256-qqnVUriYa1vSTdOAPza4pZ10U29FP1JUU4TbTEevjlQ=";
 }

@@ -68,8 +68,9 @@ them is refused. `agent-activity` (one entry of
 a pane's activity ring, as `entry`: a prompt, a tool call, its result or a
 finished turn) is opt-in: it arrives only when `--types` names it, and a
 resumed stream does not replay it, so read `tuios agent-log` after a gap.
-`transcript` (a pane's joined transcript grew, with the `cursor` of
-`agent-transcript`) is opt-in in the same way. It is for a client that shows
+`transcript` (a pane's joined transcript grew or Pi's selected entry changed; a linear log's event carries the
+`cursor` of `agent-transcript`, a document's or Pi's carries none, so read with
+the cursor of your last reply) is opt-in in the same way. It is for a client that shows
 the conversation to the person. `transfer-progress` (a copy's row while its bytes
 move, at most four a second) and `transfer-file` (one file of a copy ended) are
 opt-in in the same way. `layout-changed` (the panes on `workspace` opened,
@@ -90,7 +91,7 @@ Every type, and what it reports:
 | `session-created`, `session-closed` | A session is made or ends |
 | `client-session-changed` | A client enters or leaves a session |
 | `agent-state`, `agent-message`, `agent-activity` | An agent changes state, gets mail, or logs activity |
-| `transcript` | The transcript a pane is joined to grows |
+| `transcript` | The transcript a pane is joined to grows, or Pi's selected entry changes |
 | `attention` | The Inbox changes |
 | `notification`, `bell` | A pane sends a notification or a bell |
 | `prompt`, `command-started`, `command-finished` | Shell integration marks in a pane |
@@ -98,6 +99,8 @@ Every type, and what it reports:
 | `host-changed` | A host link connects or drops |
 | `transfer`, `transfer-progress` | A copy the daemon runs is created, changes state, ends, or leaves the list (`action` `removed`, after `transfer-clear` or 30 minutes after it ended); its progress, opt-in (`tuios --skill files`) |
 | `transfer-file` | One file of a copy ended: `file` has `id`, `rel`, `state` (`done`, `same`, `skipped`, `conflict` or `failed`), `sha256`, `code`, `error`. Opt-in |
+| `task-claimed`, `task-finished` | A pane took a task card, or finished it: `task` is the card's row, `window` the pane (`tuios --skill tasks`) |
+| `task-changed` | A task card was `added`, `staged`, `blocked`, `unblocked`, `released` or `removed` (`action`). A release tuios made carries `reason`: `pane closed`, `agent left` or `restart` |
 | `daemon-upgraded` | A live upgrade (`tuios daemon upgrade`) replaced the daemon: `title` is the build the panes came from, `body` the build that has them, `state` is `upgraded`, `fallback`, or `recovered` when the new image died and the previous binary took the panes back under a new daemon pid |
 | `tml-event` | A person ran an `emit` on a TML surface, or the surface closed: `tml` has `surface`, `name`, `value`, `reason` (on a close) and `version`. Opt-in |
 | `gap` | Events were lost. See below |

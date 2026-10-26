@@ -259,7 +259,7 @@ var windowParam = verbParam{
 }
 
 // selectorSyntax is the one sentence every select param shares.
-const selectorSyntax = "A selector: space-separated key:value terms, all of which must match, each with comma-separated alternatives. Keys: harness (id or program name), state, needs:you, session (glob), group (fan-out group, glob), host (local or a host name, glob), name (window name, glob), cwd (the directory or under it; ~ is home)."
+const selectorSyntax = "A selector: space-separated key:value terms, all of which must match, each with comma-separated alternatives. Keys: harness (id or program name), state, needs:you, session (glob), group (fan-out group, glob), host (local or a host name, glob), name (window name, glob), cwd (the directory or under it; ~ is home), task (a task card the pane holds, by id, glob)."
 
 // selectWriteParams are the two params a write addressed by selector takes.
 // what says what the write does to the panes the selector matches.
@@ -363,7 +363,7 @@ func buildVerbRegistry() map[string]verbEntry {
 				{Name: "window", Type: "string", Description: "The caller's pane."},
 				{Name: "session", Type: "string", Description: "The session of the caller's pane."},
 				{Name: "via", Type: "string", Description: "How the pane was found: pid from the kernel, env from the process's TUIOS_PANE_ID while the pane was being created, token from pane_token.", Accepted: []string{"pid", "env", "token"}},
-				{Name: "grants", Type: "[]string", Description: "The grants the pane holds now. admin implies read, write and fan; respond is never implied.", Accepted: config.PaneGrantNames},
+				{Name: "grants", Type: "[]string", Description: "The grants the pane holds now. admin implies read, write, fan, files and task; respond is never implied.", Accepted: config.PaneGrantNames},
 				{Name: "explicit", Type: "bool", Description: "True when the pane was given grants of its own, false when it holds the default."},
 				{Name: "mode", Type: "string", Description: "[agents.permissions] mode: open gives a pane started with no grants admin, strict gives it default_grants.", Accepted: config.PaneModes},
 				{Name: "default_grants", Type: "[]string", Description: "What a pane started with no grants of its own holds now."},
@@ -1214,6 +1214,7 @@ func buildVerbRegistry() map[string]verbEntry {
 				{Name: "value", Type: "any", Description: "With close: the value. Omit when the person dismissed the surface."},
 				{Name: "events", Type: "[]object", Description: "The emit actions the person ran, each {name, value}. Each becomes a tml-event for the owner."},
 				{Name: "actions", Type: "[]object", Description: "The pane() actions the person ran, each {verb, params}: focus, new-window or send-text. Each runs with the grants of the pane that opened the surface, never the person's."},
+				{Name: "view", Type: "object", Description: "The client's view state, as loom keeps it: open tabs, cursor rows, scroll places, sorts, filters and folds, without typed text. capture-pane draws the surface with the last view reported."},
 			},
 			returns: []verbParam{
 				{Name: "version", Type: "int", Description: "The surface's version after the change."},
@@ -1643,7 +1644,7 @@ func buildVerbRegistry() map[string]verbEntry {
 			handler:  (*Daemon).verbRemovePush,
 		},
 		"capture-pane": {
-			description: "Capture a pane's content.",
+			description: "Capture a pane's content. On a window that shows a TML surface, the content is the surface drawn at the window's size, with its state and the open tab, and the result adds surface.",
 			params: []verbParam{
 				sessionParam,
 				windowParam,
@@ -1712,7 +1713,7 @@ func buildVerbRegistry() map[string]verbEntry {
 				{Name: "scrollback", Type: "bool", Description: "Put the pane's history above the screen in the picture.", Default: "false"},
 				{Name: "lines", Type: "int", Description: "Bound the history rows to the last N. Needs scrollback."},
 				{Name: "cursor", Type: "bool", Description: "Draw the cursor cell.", Default: "false"},
-				{Name: "out", Type: "string", Description: "Write here instead of generating a name under screenshot.directory."},
+				{Name: "out", Type: "string", Description: "Write here instead of generating a name under screenshot.directory. A linked machine cannot set it."},
 			},
 			returns: []verbParam{
 				{Name: "path", Type: "string", Description: "The file that was written."},
@@ -2061,6 +2062,7 @@ func buildVerbRegistry() map[string]verbEntry {
 				{Name: "kind", Type: "string", Description: "What a needs_input state waits for: approval for a tool call waiting to be allowed, question for anything else. Only valid with needs_input. Omitted, it is guessed from message. Reported back by get-agent-state and list-agents as blocked_by.", Accepted: agentKindNames},
 				{Name: "agent_session_id", Type: "string", Description: "The harness's own id for the conversation, as a hook reports it. It is stored on the window for a later resume. It also turns on the nested-session guard: while the pane's harness is working or needs_input by its own report, a report for a different conversation or from a different harness is refused with reason foreign_session or foreign_harness."},
 				{Name: "transcript_path", Type: "string", Description: "The transcript file the harness is writing, as a hook reports it. For a harness whose manifest has a transcript reader, the window is joined to this exact file instead of a searched one. It must be a regular file under the harness's transcript folder, and a process in a pane may name one only for its own pane. Kept in daemon memory only."},
+				{Name: "transcript_leaf", Type: "string", Description: "Pi's selected tree entry id, at most 128 letters, digits, '-' or '_'. A present empty string selects the empty branch; omission preserves the previous selection or uses the last complete entry for an old hook. Requires harness pi and transcript_path. Kept in daemon memory only."},
 				{Name: "if_state", Type: "string", Description: "Comma-separated states. The report applies only when the window is in one of them now, and is otherwise refused with reason if_state.", Accepted: AgentStateNames},
 				{Name: "harness_pid", Type: "int", Description: "The pid of the harness process that ran the hook. With agent_session_id, a different session from the same harness process is a new conversation in that process (/clear or /resume, even after an interrupted turn that never reported Stop), so it takes the pane over instead of being refused as foreign_session. A harness whose environment names this pane in TUIOS_PANE_ID but that runs outside it, neither the pane's process, on its terminal, nor descended from it, with a harness daemon among its ancestors (Claude Code's daemon or the pty host of its background sessions), is refused with reason foreign_pane: a background session that inherited the variable. A harness under anything else that left the pane, such as a tmux server or a rootless container's conmon, is taken for the pane. A harness_pid that is not the caller or one of its ancestors is not believed, and the caller is checked in its place. Kept in daemon memory only."},
 				{Name: "session_start", Type: "bool", Description: "Marks the report of a conversation starting or resuming, as a SessionStart hook sends it. For a harness whose manifest sets shared_server (Codex), a report for a conversation other than the pane's own takes the pane over only with this set, and is otherwise refused with reason foreign_session."},
@@ -2088,10 +2090,13 @@ func buildVerbRegistry() map[string]verbEntry {
 				windowParam,
 				{Name: "harness", Type: "string", Required: true, Description: "Id of the harness the conversation belongs to. A window attributed to a different harness refuses the report with reason foreign_harness."},
 				{Name: "agent_session_id", Type: "string", Required: true, Description: "The harness's own id for the conversation, at most 256 bytes."},
+				{Name: "transcript_path", Type: "string", Description: "The exact transcript file, held to set-agent-state's same-machine, own-pane, regular-file and manifest-folder rules. A transcript update never replaces a different conversation, even at rest."},
+				{Name: "transcript_leaf", Type: "string", Description: "Pi's selected entry, as set-agent-state describes it. An empty string selects an empty branch. Updating selection changes no agent state and raises a transcript event even without a file append."},
 				{Name: "harness_pid", Type: "int", Description: "The pid of the harness process that ran the hook. While the window is working or needs_input, a different id from a different process than the one that reported the stored id is a nested run and is refused with reason foreign_session. A harness whose environment names this pane in TUIOS_PANE_ID but that runs outside it, neither the pane's process, on its terminal, nor descended from it, with a harness daemon among its ancestors (Claude Code's daemon or the pty host of its background sessions), is refused with reason foreign_pane: a background session that inherited the variable. A harness under anything else that left the pane, such as a tmux server or a rootless container's conmon, is taken for the pane. Kept in daemon memory only."},
 			},
 			returns: []verbParam{
 				{Name: "agent_session_id", Type: "string", Description: "The id the window holds after the call."},
+				{Name: "transcript_refused", Type: "string", Description: "Why the transcript update was refused. Absent when accepted or not provided."},
 				{Name: "applied", Type: "bool", Description: "Whether the report was taken. A report naming the id the window already holds is taken and changes nothing."},
 				{Name: "reason", Type: "string", Description: "Why the report was not taken. Absent when it was.", Accepted: []string{agentRefusedForeignSession, agentRefusedForeignHarness, agentRefusedForeignPane}},
 			},
@@ -2670,7 +2675,7 @@ func buildVerbRegistry() map[string]verbEntry {
 			params: []verbParam{
 				sessionParam,
 				{Name: "path", Type: "string", Required: true, Description: "Absolute path to an existing regular file on the daemon's host. The daemon opens and copies it as the user that started it. With content, the daemon does not open it. It only names the stored file."},
-				{Name: "content", Type: "string", Description: "The file's bytes, base64, for a file on another machine. At most 8 MB decoded. The path then gives the extension and the source label."},
+				{Name: "content", Type: "string", Description: "The file's bytes, base64, for a file on another machine. At most 8 MB decoded. The path then gives the extension and the source label. From a linked machine, content is required."},
 			},
 			returns: []verbParam{
 				{Name: "path", Type: "string", Description: "The stored path. Attach this, or hand it to another agent."},
@@ -2735,6 +2740,7 @@ func buildVerbRegistry() map[string]verbEntry {
 	// The verbs of the agent review, triage, queue and approval work, kept in
 	// a file of their own. See verb_protocol_agents.go.
 	maps.Copy(table, agentWorkVerbs())
+	maps.Copy(table, taskVerbs())
 	// The checkpoint verbs. See verb_checkpoint.go.
 	maps.Copy(table, checkpointVerbs())
 	// The ship verbs. See verb_ship.go.

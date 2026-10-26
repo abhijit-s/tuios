@@ -1649,7 +1649,7 @@ catalog.
 | `no_keyboard` | The target is the person's inbox, `human`, which has no pane to type into. |
 | `confirm_required` | A write by `select`, or a `ship-push` or `ship-pr`, sent nothing: it carried no `confirm` token, or a token for something other than what would be sent now. The hint lists the panes, or what the push would send, in `available`, and carries the token in `confirm`. |
 | `no_transcript` | `agent-transcript` found no transcript for the pane: it is not joined to one, or the file is gone. Nothing was read. |
-| `unsupported_harness` | `agent-transcript` cannot read the transcript of the pane's harness. Today it reads Claude Code transcripts only. |
+| `unsupported_harness` | `agent-transcript` cannot read the transcript of the pane's harness. Supported readers are listed under [agent-transcript](#agent-transcript). |
 | `forbidden` | The caller may not do what it asked. A process inside a pane of this daemon cannot send or ask as `human`, and a machine linked to this one cannot call what its link policy does not grant; the hint names the capability and the `[hosts]` table that grants it. Nothing was done. |
 | `protocol_mismatch` | The caller's protocol version is outside the range this daemon serves. Only `hello` produces it. |
 | `unknown_host` | No host by that name is configured. Host names are matched exactly. |
@@ -1927,7 +1927,8 @@ person configured) is held to nothing new.
 | `fan` | What `write` allows, in the sessions of its fan group and the sessions it launched, and start agents with `fan` and `start-agent` |
 | `respond` | Answer an on-screen prompt with `respond`, without the person's `human_nonce`, on a pane in its reach, and type into a pane on `needs_input` |
 | `files` | The transfer verbs, held to two rules. `transfer-start`: each end on this machine is inside the pane's folder (its session's worktree when tuios made it, else the folder the pane started in; a `cd` or an OSC 7 does not move it, and the home folder, a folder above it or a folder another user owns is never one. The folder is resolved through its links once, when it is recorded), and every file the copy reads or writes here goes through an os.Root at that folder, and each end on a host is under that host's home or is its receive folder (no `path`). The other transfer verbs see and act on only the copies the pane started. A pane without admin starts windows (new-window, new-session, popup, start-agent, a plugin pane) only inside its folder, and types only into panes whose files folder is inside its own |
-| `admin` | Everything else, as every pane could before grants: every session, the listings across sessions, windows, layouts, options, `kill-session`, and the client protocol (attach, and `run-command`, which sends a client protocol message). Implies `read`, `write`, `fan` and `files`, never `respond` |
+| `task` | The task verbs that change a card (`add-task`, `claim-task`, `finish-task`, `set-task-stage`, `block-task`, `release-task`) in the pane's own session. A pane claims only for itself and changes only the card it holds. See [Task verbs](#task-verbs) |
+| `admin` | Everything else, as every pane could before grants: every session, the listings across sessions, windows, layouts, options, `kill-session`, any task card and `remove-task`, and the client protocol (attach, and `run-command`, which sends a client protocol message). Implies `read`, `write`, `fan`, `files` and `task`, never `respond` |
 
 Whatever it holds, a pane may call `hello`, `list-verbs`, `unsubscribe`,
 `restrict-connection`, `pane-grants` and `resolve-pane`, and report about
@@ -2706,6 +2707,14 @@ it: `ops`, a JSON Patch on the state from its local actions, `events`, the
 `tml-event`), and `close` with an optional `value`. It needs `human_nonce`,
 the client's attach nonce, and fails with `not_human` without one. A program
 uses `tml-patch`, `tml-replace` and `tml-close` instead.
+
+A client also sends `view`, its loom view state (open tabs, cursor rows,
+scroll places, sorts, filters and folds, without typed text), when it
+changed, at most once every 250 ms. The daemon keeps the last one, up to
+16 KiB, and `capture-pane` on the surface's window draws the surface with it.
+A `capture-pane` on a TML window draws the surface with loom at the window's
+size, whatever `source` asks for, and adds `surface` and `surface_version`
+to the result.
 
 ### tml-patch
 
@@ -5034,12 +5043,12 @@ the session has no value of its own.
 ### set-agent-state
 
 Record the agent state a pane reports. Params: `session`, `window`, `state`
-(required), `message`, `source` (default `report`), `harness`, and five fields
+(required), `message`, `source` (default `report`), `harness`, and fields
 a hook reporter adds, each optional. Without `window`, a caller in a pane
 reports about its own pane, and its own session when `session` is omitted. A
 caller outside every pane reports about the focused window, as before.
 
-The five hook fields:
+The optional hook fields:
 
 - `kind`: `approval` or `question`, what a `needs_input` state waits for. Only
   valid with `needs_input`. Stored as the window's `agent_kind` and reported by
@@ -5051,6 +5060,14 @@ The five hook fields:
 - `transcript_path`: the transcript file the harness writes. For a harness whose
   manifest has a transcript reader, the window is joined to exactly that file.
   It is held in daemon memory and never synced.
+- `transcript_leaf`: the entry of a tree-structured transcript, which today is
+  Pi's, that the harness has selected. It needs `transcript_path` and a harness
+  whose manifest names a tree reader, or the call is `invalid_params`. At most
+  128 ASCII letters, digits, `_` or `-`. A present empty string selects the empty
+  branch before the first entry. Omitting it keeps the selection already
+  reported, or shows the branch that ends at the last complete entry for an
+  older integration. It stays in daemon memory, never in persisted window state
+  or events.
 - `if_state`: comma-separated states. The report applies only while the window
   is in one of them.
 - `harness_pid`: the pid of the harness process that ran the hook. Read only
@@ -5134,7 +5151,17 @@ pane's agent state, the source that holds it, or its harness attribution. It is
 what `tuios agent-hook` sends for a harness whose hooks can name the
 conversation but cannot be trusted with its state, so the pane's screen rules
 keep deciding the state. Params: `session`, `window`, `harness` (required),
-`agent_session_id` (required, at most 256 bytes), `harness_pid`.
+`agent_session_id` (required, at most 256 bytes), `harness_pid`, and optional
+`transcript_path` and `transcript_leaf`.
+
+The transcript fields use the same checks and meanings as in `set-agent-state`.
+They name the conversation already in the pane: a different session id is
+refused with `foreign_session`, even at rest, so a delayed old report cannot
+replace the current conversation. An accepted leaf change raises `transcript`
+even when the file did not change. It does not change the state, its time, its
+source, the prompt or the completion count. A rejected path is explained in
+`transcript_refused`, and a refusal for the same conversation keeps the previous
+join.
 
 ```json
 {"verb": "set-agent-session", "params": {"session": "work", "window": "build", "harness": "qwen", "agent_session_id": "5f1c", "harness_pid": 4100}}
@@ -5169,7 +5196,8 @@ already grants any socket caller, the one field and no state.
 
 Wire compatibility: a new verb. An older daemon answers `unknown_verb`, and
 `tuios agent-hook` asks `list-verbs` first and sends nothing to a daemon
-without it.
+without it. The optional transcript fields are sent only when `list-verbs` names
+them; an older daemon gets the identity report without them.
 
 ### report-agent-activity
 
@@ -5534,8 +5562,9 @@ string of terms separated by spaces, all of which must match; a term is
 (the harness id, or a program name a manifest detects), `state`, `needs`
 (only `needs:you`: `needs_input` or `errored`), `session` (glob), `group` (the
 fan-out group, glob), `host` (`local` or a host name, glob), `name` (window
-name, glob) and `cwd` (the directory or under it; a leading `~` is the
-daemon's home). Globs are `path.Match`: `*` does not cross a slash. A term a
+name, glob), `cwd` (the directory or under it; a leading `~` is the
+daemon's home) and `task` (a task card the pane holds, by id, glob; see
+[Task verbs](#task-verbs)). Globs are `path.Match`: `*` does not cross a slash. A term a
 pane cannot answer does not match. A selector that does not parse is
 `invalid_params` naming `select`, with the keys in `accepted`.
 
@@ -6484,10 +6513,10 @@ the one before. The configuration is in
 | Capability | Verbs |
 | --- | --- |
 | none | `hello`, `list-verbs`, `link-peer`, `restrict-connection`, `pane-grants` (which says no pane grants apply over a link) |
-| `list` | `list-*`, `session-info`, `ssh-agent-path`, `display-env`, `get-window`, `capture-pane`, `screenshot`, `get-option`, `get-agent-state`, `resolve-pane`, `explain-agent-*`, `wait-for`, `subscribe`, `unsubscribe`, `peek-prompt`, `read-dir`, `wait-dir`, `compare-fan`, `agent-activity`, `get-approval`, `file-stat`, `file-list` |
+| `list` | `list-*`, `session-info`, `ssh-agent-path`, `display-env`, `get-window`, `capture-pane`, `screenshot`, `get-option`, `get-agent-state`, `resolve-pane`, `explain-agent-*`, `wait-for`, `subscribe`, `unsubscribe`, `peek-prompt`, `read-dir`, `wait-dir`, `compare-fan`, `agent-activity`, `get-approval`, `file-stat`, `file-list`, `list-tasks`, `get-task` |
 | `mail` | `send-agent-message`, `read-agent-messages`, `agent-mail-notice`, `stash-put`, `stash-list`, `stash-get` |
 | `open` | `new-session`, `new-window`, `split-window`, `popup`, `new-worktree`, `fan`, `start-agent`, `open-pane`, `resize-pane`, `close-pane`, `pane-cwd`, `pane-agent`, `pane-calls` |
-| `write` | `send-keys`, `send-text`, `ask-agent`, `run-command`, `switch-session`, `detach-client`, `close-window`, `close-workspace`, `kill-session`, `focus-window`, `move-window`, `set-window`, `select-workspace`, `set-layout`, `resize`, `set-option`, `set-session-*`, `set-workspace-*`, `set-agent-*`, `resume-agent`, `request-approval`, `refresh-dock`, `pip`, `remove-worktree`, `bundle-worktree`, `run`, `ask-human` (whose handler refuses a link caller anyway), `review-diff` (it returns file contents), `review-note`, `review-stage`, `send-review`, `queue-prompt`, `cancel-queued`, `keep-fan` |
+| `write` | `send-keys`, `send-text`, `ask-agent`, `run-command`, `switch-session`, `detach-client`, `close-window`, `close-workspace`, `kill-session`, `focus-window`, `move-window`, `set-window`, `select-workspace`, `set-layout`, `resize`, `set-option`, `set-session-*`, `set-workspace-*`, `set-agent-*`, `resume-agent`, `request-approval`, `refresh-dock`, `pip`, `remove-worktree`, `bundle-worktree`, `run`, `ask-human` (whose handler refuses a link caller anyway), `review-diff` (it returns file contents), `review-note`, `review-stage`, `send-review`, `queue-prompt`, `cancel-queued`, `keep-fan`, `add-task`, `claim-task`, `finish-task`, `set-task-stage`, `block-task`, `release-task`, `remove-task` |
 | `open` and `write` | `verify-fan` |
 | `open` and `files` | `paste-pane-image` |
 | `write` and `files` | `paste-image` |
@@ -6691,8 +6720,38 @@ answers, thinking, tool calls, diffs of edits, plans and todo lists.
 The daemon reads the transcript file that the pane is joined to. The pane is
 joined when the agent's hooks report `transcript_path`, or when the daemon
 finds the one file that belongs to the pane. The path stays in the daemon.
-The caller names a window, never a file. Today the daemon reads Claude Code
-transcripts only.
+The caller names a window, never a file. The daemon reads Claude Code, Codex, Gemini CLI, Qwen Code, Copilot CLI, Amp,
+OpenCode, Cursor Agent and Pi transcripts.
+
+#### Pi sessions
+
+Pi's `pi-jsonl` reader supports its tree-structured session versions 2 and 3,
+checked against Pi 1.3.0. A session is a tree of entries and sibling entries are
+different conversations, so the reader shows the branch that ends at the last
+complete entry, and nothing from another branch. The allowed folder is
+`sessions` in Pi's agent folder, `$PI_CODING_AGENT_DIR` or `~/.pi/agent`, as the
+daemon's environment has it. Sessions kept anywhere else need a matching
+harness manifest; a hook cannot widen the folder by naming a file. A session
+with no file (`--no-session`) has no transcript to read, and an accepted new
+session identity with no usable file clears the previous conversation rather
+than showing stale history.
+
+The version 3 Pi integration reports the exact file and the entry Pi has
+selected, which includes `/tree` navigation that appends nothing to the file,
+and the reader shows that branch. Update the integration through your normal
+management and reload or restart Pi to load it. An older integration reports no
+selection, so the reader keeps showing the branch that ends at the last complete
+entry and cannot see a rewind that exists only in memory. An entry named before
+its line is written gives an empty view until the line is complete, never
+another branch.
+
+Pi reads are bounded: a file over 32 MiB or with more than 100,000 entries is
+refused, and a record over 16 MiB is left out, as the other readers skip a
+line that long. The daemon keeps what it parsed for a short time, keyed by the
+file's size and modification time, so paging through a long session does not
+read the whole file again. Pi `transcript` events carry no `cursor`, as with
+other readers of a document: read with the cursor of your last reply and honor
+the reply's `reset` field.
 
 The daemon accepts a reported `transcript_path` only when all of these are
 true. Otherwise it does not join the pane, and the `set-agent-state` reply
@@ -7055,6 +7114,77 @@ first, each with `parts`, `at` (Unix ms) and `dropped`.
 The TUI's target is `harness:HARNESS:FOLDER` when it knows both, and
 `pane:SESSION/WINDOW` otherwise.
 
+### Task verbs
+
+A task card is one unit of work in a session: a title, the prompt for the
+pane that takes it, a stage, and at most one holder, the window id of the pane
+working on it. The daemon keeps the cards on the session's state, so they are
+saved with it. After a restart they come back with every holder released and a
+`released` history entry with reason `restart`, since no agent comes back from
+a restart. A card is also released when its pane closes (reason `pane closed`)
+and when the agent leaves its pane, which reports `none` (reason `agent left`).
+`tuios task` wraps the verbs.
+
+The stages are `todo`, `plan`, `doing`, `verify`, `review`, `shipped` and
+`done`. `claim-task` moves a card in `todo` or `plan` to `doing`, and
+`finish-task` moves it to `done` and clears its holder; every other move is
+`set-task-stage`'s. A move to `done` there is a finish: it clears the holder
+and the block and sends `task-finished`. Finishing a card that is done
+already, or moving a card to the stage it is in, changes nothing and sends no
+event.
+`release-task` clears the holder and keeps the stage. `block-task` marks a card
+stuck with a reason, keeping its holder and stage, and `clear` lifts the mark.
+
+| Verb | What it does | A pane without `admin` | Over a link | Result `type` |
+| --- | --- | --- | --- | --- |
+| `add-task` | Add a card: `title` (required, at most 200 bytes), `prompt` (at most 16 KiB), `stage` (default `todo`) | `task`, own session | `write` | `task_added` |
+| `list-tasks` | The session's cards, oldest first. `stage`, `holder` and `open` (leave out `done`) narrow it | `read` | `list` | `task_list` |
+| `get-task` | One card with its `prompt` and `history` | `read` | `list` | `task` |
+| `claim-task` | Take the card `id`, or with `next` the oldest card no pane holds that is not blocked or done, for `window` | `task`; for itself only | `write` | `task_claimed` |
+| `finish-task` | Mark the card done | `task`; only the card it holds | `write` | `task_finished` |
+| `set-task-stage` | Move the card to `stage` | `task`; only the card it holds | `write` | `task_changed` |
+| `block-task` | Mark the card stuck with `reason`, or lift it with `clear` | `task`; only the card it holds | `write` | `task_changed` |
+| `release-task` | Let the card go and keep its stage | `task`; only the card it holds | `write` | `task_changed` |
+| `remove-task` | Remove the card and its history | refused | `write` | `task_removed` with `id` |
+
+Every verb but `list-tasks` and `remove-task` answers with the card's row at
+the top level of the result: `id`, `session`, `title`, `preview` (the first
+line of the prompt, at most 80 characters), `stage`, `stage_at`, `holder`
+(`window`, `name`, `harness` and `state` read from the pane now, and
+`held_at`; `null` when no pane holds it), `by`, `at`, `blocked` (`reason`,
+`by`, `at`; `null` when it is not blocked), and `fan` (`fan`, `fan_id`: the
+session's fan group and fan id) for a card added in a fan's session. `list-tasks`
+answers `tasks`, one row each. Times are Unix nanoseconds, as `list-queued`
+gives them.
+
+Who made a change (`by`, and each history entry's `by`) is decided from the
+connection, as for the queue: `human` only with a live `human_nonce`,
+`link:HOST` over a link, the pane's window id for a process in a pane,
+`plugin:ID` for a native plugin, and `shell` otherwise. A change tuios made on
+its own has `by` `tuios`.
+
+A pane claims only for itself: it leaves `window` out or names its own. It
+finishes, stages, blocks or releases only the card it holds. A pane holding
+`admin`, the person, a shell, a link and a plugin name the window on a claim
+and change any card; outside a pane `window` is required. The pick and the
+take of a claim happen in one state change, so two panes that claim `next` at
+once take two cards.
+
+`claim-task` of a card another pane holds is `task_held`. An unknown `id`, or
+`next` with nothing open to take, is `no_task`. Claiming a card that is done
+or blocked is `invalid_params`.
+
+```json
+{"id":1,"verb":"add-task","params":{"session":"work","title":"make the backoff jitter configurable","prompt":"Read api/retry.go and add a jitter option, with a test."}}
+{"id":1,"result":{"type":"task_added","id":"t1","session":"work","title":"make the backoff jitter configurable","preview":"Read api/retry.go and add a jitter option, with a test.","stage":"todo","stage_at":1793000355960400000,"holder":null,"by":"shell","at":1793000355960400000,"blocked":null}}
+{"id":2,"verb":"claim-task","params":{"session":"work","next":true,"window":"build"}}
+{"id":2,"result":{"type":"task_claimed","id":"t1","session":"work","title":"make the backoff jitter configurable","preview":"Read api/retry.go and add a jitter option, with a test.","stage":"doing","stage_at":1793000361002300000,"holder":{"window":"3a42ab8f-…","name":"build","harness":"claude-code","state":"working","held_at":1793000361002300000},"by":"shell","at":1793000355960400000,"blocked":null}}
+```
+
+The events `task-claimed`, `task-finished` and `task-changed` follow every
+change (see [Event stream](#event-stream)), and the selector key `task`
+names the pane holding a card (see [Selectors](#selectors)).
+
 ## Event stream
 
 The daemon can push events instead of a caller polling. A connection that issues
@@ -7101,11 +7231,14 @@ Event types:
 | `command-started` | A shell with OSC 133 marks started a command. `cmdline` is cut to 512 bytes, with likely secrets masked. | `session`, `window`, `pty_id`, `cmdline` |
 | `command-finished` | That command finished. `exit_code` is absent when the shell sent no status; a prompt with no finish mark ends the command that way. `command_seq` counts the pane's finished commands. | `session`, `window`, `pty_id`, `cmdline`, `exit_code`, `duration_ms`, `command_seq` |
 | `agent-activity` | One entry of an agent pane's activity ring, as [agent-activity](#agent-activity) returns it. Opt-in: only a subscription whose `types` names it receives it. Not replayed on a resume. | `session`, `window`, `entry` |
-| `transcript` | The transcript that a pane is joined to grew. Read it again with [agent-transcript](#agent-transcript). `cursor` is the cursor that a read to the end returns now. When you hold that cursor, there is nothing new. The event carries nothing from the file. It fires at most once for each read the daemon makes, after the 150 ms debounce. Opt-in: only a subscription whose `types` names it receives it. Not replayed on a resume. | `session`, `window`, `cursor` |
+| `transcript` | The transcript that a pane is joined to grew, or the entry a Pi session has selected changed. Read it again with [agent-transcript](#agent-transcript). `cursor` is the cursor that a read to the end returns now. When you hold that cursor, there is nothing new. An event for a document or for a Pi session carries no `cursor`: read with the cursor of your last reply. The event carries nothing from the file. It fires at most once for each read the daemon makes, after the 150 ms debounce. Opt-in: only a subscription whose `types` names it receives it. Not replayed on a resume. | `session`, `window`, `cursor` |
 | `daemon-upgraded` | A live upgrade replaced the daemon's image. Raised once, by the image that took the panes over. `title` is the build the panes came from, `body` the build that has them now. `state` is `upgraded`, `fallback` when the new binary could not take them and the previous one did, or `recovered` when the new image died before it was up and the handoff's keeper started the previous binary in its place, under a new daemon pid. No hook runs for it. | `title`, `body`, `state` |
 | `transfer` | A copy the daemon runs (see [Files and transfers](#files-and-transfers)) changed. `action` is `created`, `state`, `ended` or `removed`, and `transfer` is its row as `transfer-list` returns it. `removed` says a copy that ended left the list, by `transfer-clear` or 30 minutes after it ended, and carries its last row. A state is said once per change; a folder copy going between `running` and `verifying` for each file is not a change. A copy the daemon takes back from its journal at start says `state` once. | `action`, `transfer` |
 | `transfer-progress` | A copy's row while its bytes move, at most four a second per copy. Opt-in: only a subscription whose `types` names it receives it. Not replayed on a resume. | `action` (`progress`), `transfer` |
 | `transfer-file` | One file of a copy ended. `action` and `file.state` are `done` (copied and checked), `same` (there already with the same bytes), `skipped` (there and different, left as it was), `conflict` (made there during the copy, left as it was) or `failed`. `file` has `id`, `pane`, `rel`, `state`, `sha256`, `code` and `error`. Opt-in: only a subscription whose `types` names it receives it. Not replayed on a resume. | `action`, `file` |
+| `task-claimed` | A pane took a task card. `task` is the card's row as `list-tasks` gives it, and `window` the pane that took it. See [Task verbs](#task-verbs). | `session`, `window`, `task` |
+| `task-finished` | A task card was marked done. `window` is the pane that held it, empty when none did. | `session`, `window`, `task` |
+| `task-changed` | A task card was `added`, `staged`, `blocked`, `unblocked`, `released` or `removed` (`action`). A release tuios made on its own carries `reason`: `pane closed`, `agent left` or `restart`; a block carries its reason too. `removed` carries the card's last row. | `session`, `action`, `reason`, `task` |
 | `tml-event` | What a person did on a TML surface that its owner hears: an `emit` action in the document, or the close, which is the surface's last event. `tml` has `surface`, `name` (the emit's name, or `close`), `value` (absent when null), `reason` (on a close: `closed`, `program` or `dismissed`) and `version`. `window` is the TML window. Opt-in: only a subscription whose `types` names it receives it, and a `tml-open` with `events` gets the events of its own surface. | `tml` |
 
 ### What fires when

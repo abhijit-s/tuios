@@ -107,17 +107,6 @@ func (w *Window) IsAltScreen() bool { return w.isAltScreen.Load() }
 // SetAltScreen records whether the application is using the alternate screen buffer.
 func (w *Window) SetAltScreen(v bool) { w.isAltScreen.Store(v) }
 
-// clipboard returns the last clipboard content set via OSC 52.
-func (w *Window) clipboard() string {
-	if p := w.clipboardContent.Load(); p != nil {
-		return *p
-	}
-	return ""
-}
-
-// setClipboard records the last clipboard content set via OSC 52.
-func (w *Window) setClipboard(content string) { w.clipboardContent.Store(&content) }
-
 // Cache for local terminal environment variables (detect once, reuse for local windows)
 // SSH sessions will detect per-connection based on their environment
 var (
@@ -356,7 +345,6 @@ type Window struct {
 	DaemonResizeFunc  func(w, h int) error     // Callback for resizing daemon PTY
 	DaemonCloseFunc   func()                   // Callback when window is closed (to notify daemon)
 	OnProcessExit     func()                   // Callback when PTY process exits (to close window)
-	clipboardContent  atomic.Pointer[string]   // Written by VT callback on PTY goroutine, read on UI goroutine (OSC 52)
 	ClipboardSetFunc  func(string)             // Callback to propagate clipboard to host
 	NotifyFunc        func(title, body string) // Callback for guest desktop notifications (OSC 9/777/99)
 	BellFunc          func()                   // Callback for guest bell (BEL)
@@ -364,10 +352,10 @@ type Window struct {
 	NvimNavFunc       func(direction string)   // Callback for nvim navigation requests (OSC 7777)
 	NvimNavStateFunc  func(active bool)        // Callback for nvim navigation state (OSC 7777)
 	NvimNavResetFunc  func()                   // Callback when the alternate screen exits
-	outputChan        chan outputChunk         // Channel for serializing daemon PTY output writes
+	outputQ           *outputQueue             // Queue for serializing daemon PTY output writes
 	outputDone        chan struct{}            // Signal to stop the output writer and render coalescer goroutines
 	suppressCallbacks atomic.Bool              // Suppress VT emulator callbacks during state restoration (prevents race conditions)
-	closed            atomic.Bool              // Set by Close() so the external outputChan sender (WriteOutputAsync) stops before teardown
+	closed            atomic.Bool              // Set by Close() so the external output queue sender (WriteOutputAsync) stops before teardown
 
 	// hasFocus is whether this pane has focus on a screen someone could be
 	// looking at, as the app last set it. The PTY reader reads it when the
@@ -751,14 +739,13 @@ func newWindowBase(id, title string, x, y, width, height, z int, ptyDataChan cha
 			}
 		},
 		ClipboardSet: func(_ string, content string) {
-			window.setClipboard(content)
 			if window.ClipboardSetFunc != nil {
 				window.ClipboardSetFunc(content)
 			}
 		},
-		ClipboardQuery: func(_ string) string {
-			return window.clipboard()
-		},
+		// No ClipboardQuery: an OSC 52 query is answered with empty content,
+		// as xterm answers by default. The answer is written to the pane's
+		// input, so it must not carry text a program in the pane chose.
 		Notify: func(title, body string) {
 			if window.NotifyFunc != nil {
 				window.NotifyFunc(title, body)
@@ -896,7 +883,7 @@ func NewWindowIn(dir, id, title string, x, y, width, height, z int, exitChan cha
 	// Output reaches the renderer through the same coalescer a daemon pane
 	// uses, so a flooding local pane asks for at most one frame per interval
 	// instead of one per PTY read. Close closes outputDone, which stops it.
-	// outputChan stays nil: that is what tells the daemon-only paths
+	// outputQ stays nil: that is what tells the daemon-only paths
 	// (WriteOutputAsync, outputWriter, the drain and resize sentinels) that
 	// this pane has no daemon stream.
 	window.outputDone = make(chan struct{})
@@ -955,10 +942,9 @@ func NewDaemonWindow(id, title string, x, y, width, height, z int, ptyID string,
 	window.PTYID = ptyID
 	window.DaemonMode = true
 	// Each item is one batch off the daemon stream, up to 256 KiB.
-	// maxQueuedBytes bounds the bytes; the slots only bound the count, and
-	// 4096 of them is 160 KiB of channel per pane for a queue that never gets
-	// a hundred items deep.
-	window.outputChan = make(chan outputChunk, 4096)
+	// maxQueuedBytes bounds the bytes; the slots only bound the count. The
+	// queue starts empty and grows with the backlog (output_queue.go).
+	window.outputQ = newOutputQueue()
 	window.outputDone = make(chan struct{})
 	window.coalesceWake = make(chan struct{}, 1)
 

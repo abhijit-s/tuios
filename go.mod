@@ -10,7 +10,7 @@ require (
 	charm.land/ssh v0.4.3
 	charm.land/tone v0.1.0
 	charm.land/wish/v2 v2.0.5
-	github.com/Gaurav-Gosain/sip v0.9.4
+	github.com/Gaurav-Gosain/sip v0.10.0
 	github.com/Gaurav-Gosain/tuiffects v0.7.1
 	github.com/adrg/xdg v0.5.3
 	github.com/alecthomas/chroma/v2 v2.27.0
@@ -81,12 +81,12 @@ require (
 	golang.org/x/net v0.60.0 // indirect
 	golang.org/x/sync v0.23.0
 	golang.org/x/text v0.42.0
-	tuios.dev/loom v0.2.3-0.20261025213319-f88006395466
+	tuios.dev/loom v0.2.3-0.20261026100403-53167308ea72
 	tuios.dev/plot v0.2.2-0.20261023124927-50c38920e301 // indirect
 	tuios.dev/progstatus v0.1.1-0.20261023124927-50c38920e301
 	tuios.dev/shot v0.2.1-0.20261023124927-50c38920e301
-	tuios.dev/sketch v0.4.1-0.20261025215526-aff13ec4aa2d
+	tuios.dev/sketch v0.4.1-0.20261026100045-84b0cd549f12
 	tuios.dev/swatch v0.1.1-0.20261025090851-2c1449b0d078
-	tuios.dev/tml v0.1.2-0.20261025213319-f88006395466
-	tuios.dev/vt v0.3.2-0.20261026032729-ad7ecbf47fbd
+	tuios.dev/tml v0.1.2-0.20261026053458-d16ce6efff34
+	tuios.dev/vt v0.3.3-0.20261026223555-ca9d1cf6cc71
 )

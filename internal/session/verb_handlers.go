@@ -19,6 +19,7 @@ import (
 	"github.com/Gaurav-Gosain/tuios/internal/config"
 	"github.com/Gaurav-Gosain/tuios/internal/federation"
 	"github.com/Gaurav-Gosain/tuios/internal/harness"
+	"github.com/Gaurav-Gosain/tuios/internal/transcriptview"
 	"github.com/google/uuid"
 	"tuios.dev/vt"
 )
@@ -1211,9 +1212,18 @@ func (d *Daemon) verbCapturePane(cs *connState, params json.RawMessage) (any, *v
 		return nil, verr
 	}
 
-	pty, err := d.resolvePTYForTarget(sess, p.Window)
-	if err != nil {
-		return nil, mapResolveErr(err, sess)
+	win, pty, verr := d.resolveWindowPTY(sess, p.Window)
+	if verr != nil {
+		return nil, verr
+	}
+
+	if win.Kind == WindowKindTML && p.Source != captureLastCommand {
+		// The PTY runs only the placeholder line, so the surface is drawn
+		// instead, whatever source, scrollback or commands asked for: a
+		// surface has no history. See tml_capture.go.
+		if out, verr := d.captureTMLPane(win, pty, p.Styled || p.ANSI || p.Resolved, p.Resolved, p.Palette, p.Trim, p.Start, p.End, p.Lines); verr != nil || out != nil {
+			return out, verr
+		}
 	}
 
 	if p.Source == captureLastCommand {
@@ -1518,11 +1528,12 @@ func (d *Daemon) setAgentState(cs *connState, params json.RawMessage, ownPane bo
 		// The fields below are what a hook reporter adds. Every one is
 		// optional, and a caller that sends none of them is handled exactly as
 		// before they existed.
-		Kind           string `json:"kind"`
-		AgentSessionID string `json:"agent_session_id"`
-		TranscriptPath string `json:"transcript_path"`
-		IfState        string `json:"if_state"`
-		HarnessPID     int    `json:"harness_pid"`
+		Kind           string  `json:"kind"`
+		AgentSessionID string  `json:"agent_session_id"`
+		TranscriptPath string  `json:"transcript_path"`
+		TranscriptLeaf *string `json:"transcript_leaf"`
+		IfState        string  `json:"if_state"`
+		HarnessPID     int     `json:"harness_pid"`
 		// SessionStart marks a conversation's SessionStart. See
 		// AgentReport.SessionStart.
 		SessionStart bool `json:"session_start"`
@@ -1539,6 +1550,9 @@ func (d *Daemon) setAgentState(cs *connState, params json.RawMessage, ownPane bo
 		return nil, verr
 	}
 	if verr := checkActivityReport(p.Activity, activityEvents); verr != nil {
+		return nil, verr
+	}
+	if verr := d.checkTranscriptSelection(p.Harness, p.TranscriptPath, p.TranscriptLeaf); verr != nil {
 		return nil, verr
 	}
 	if p.State == "" {
@@ -1597,6 +1611,17 @@ func (d *Daemon) setAgentState(cs *connState, params json.RawMessage, ownPane bo
 	if verr != nil {
 		return nil, verr
 	}
+	// An accepted new identity must never retain the previous conversation's
+	// history if its replacement is absent or refused by the path allowlist.
+	// A tree of entries is joined only by the file the hook names, so nothing
+	// else would replace it.
+	var treeWindow, previousSession string
+	if p.AgentSessionID != "" && d.transcriptIsTree(p.Harness) {
+		st := sess.GetState()
+		if idx, err := findWindowStateIndex(st.Windows, target); err == nil {
+			treeWindow, previousSession = st.Windows[idx].ID, st.Windows[idx].AgentSessionID
+		}
+	}
 
 	report := AgentReport{
 		State:      state,
@@ -1616,6 +1641,7 @@ func (d *Daemon) setAgentState(cs *connState, params json.RawMessage, ownPane bo
 		SharedServer: d.agentMatcher.registry.SharedServer(p.Harness),
 	}
 	report.foreignPane = d.harnessOutsidePane(cs, sess, target, p.HarnessPID)
+	report.harnessGone = p.AgentSessionID != "" && d.harnessLeftPane(cs, sess, target, p.HarnessPID)
 	report.fromPane = ownPane || d.reportFromOwnPane(cs, sess, target)
 	// The identity guard is read before the report applies, because it is
 	// about the pane as the report found it, and applyAgentReport checks
@@ -1664,7 +1690,7 @@ func (d *Daemon) setAgentState(cs *connState, params json.RawMessage, ownPane bo
 	transcriptRefused := ""
 	switch {
 	case applied && p.TranscriptPath != "":
-		transcriptRefused = d.joinReportedTranscript(cs, sess, target, p.Harness, p.TranscriptPath, "")
+		transcriptRefused = d.joinReportedTranscript(cs, sess, target, p.Harness, p.TranscriptPath, "", p.TranscriptLeaf)
 	case applied && cs != nil && p.TranscriptPath == "" && p.AgentSessionID != "":
 		// A harness whose hook names its session and not its file (Amp):
 		// the manifest's session_file names the file, and it is held to the
@@ -1679,10 +1705,14 @@ func (d *Daemon) setAgentState(cs *connState, params json.RawMessage, ownPane bo
 		// as a file the daemon can watch.
 		sid := strings.TrimSpace(p.AgentSessionID)
 		if path := d.storeTranscriptPath(p.Harness); path != "" {
-			transcriptRefused = d.joinReportedTranscript(cs, sess, target, p.Harness, path, sid)
+			transcriptRefused = d.joinReportedTranscript(cs, sess, target, p.Harness, path, sid, nil)
 		} else if path := d.sessionTranscriptPath(p.Harness, sid); path != "" {
-			transcriptRefused = d.joinReportedTranscript(cs, sess, target, p.Harness, path, "")
+			transcriptRefused = d.joinReportedTranscript(cs, sess, target, p.Harness, path, "", nil)
 		}
+	}
+	if applied && treeWindow != "" && previousSession != p.AgentSessionID && (p.TranscriptPath == "" || transcriptRefused != "") {
+		sess.DropAgentTranscript(treeWindow)
+		sess.emit(SessionEvent{Type: EventTranscript, Window: treeWindow})
 	}
 	// state is the effective state, so a report a higher-ranked source outranked
 	// reports what the pane actually shows rather than what was asked for.
@@ -1848,16 +1878,21 @@ func (d *Daemon) verbSetAgentSession(cs *connState, params json.RawMessage) (any
 		return nil, agentsDisabledError()
 	}
 	var p struct {
-		Session        string `json:"session"`
-		Window         string `json:"window"`
-		Harness        string `json:"harness"`
-		AgentSessionID string `json:"agent_session_id"`
-		HarnessPID     int    `json:"harness_pid"`
+		Session        string  `json:"session"`
+		Window         string  `json:"window"`
+		Harness        string  `json:"harness"`
+		AgentSessionID string  `json:"agent_session_id"`
+		HarnessPID     int     `json:"harness_pid"`
+		TranscriptPath string  `json:"transcript_path"`
+		TranscriptLeaf *string `json:"transcript_leaf"`
 	}
 	if verr := decodeParams(params, &p); verr != nil {
 		return nil, verr
 	}
 	harnessID := strings.TrimSpace(p.Harness)
+	if verr := d.checkTranscriptSelection(harnessID, p.TranscriptPath, p.TranscriptLeaf); verr != nil {
+		return nil, verr
+	}
 	if harnessID == "" {
 		return nil, invalidParam("harness", "harness is required: the id of the harness the conversation belongs to, e.g. qwen")
 	}
@@ -1880,6 +1915,15 @@ func (d *Daemon) verbSetAgentSession(cs *connState, params json.RawMessage) (any
 		}
 		target = id
 	}
+	// An accepted new identity must never retain the previous conversation's
+	// history, and this verb names no file to replace it with.
+	var treeWindow, previousSession string
+	if d.transcriptIsTree(harnessID) {
+		st := sess.GetState()
+		if idx, err := findWindowStateIndex(st.Windows, target); err == nil {
+			treeWindow, previousSession = st.Windows[idx].ID, st.Windows[idx].AgentSessionID
+		}
+	}
 	stored, applied, reason, err := sess.applyAgentSession(target, AgentSessionReport{
 		Harness:     harnessID,
 		SessionID:   sid,
@@ -1887,6 +1931,8 @@ func (d *Daemon) verbSetAgentSession(cs *connState, params json.RawMessage) (any
 		foreignPane: d.harnessOutsidePane(cs, sess, target, p.HarnessPID),
 
 		HarnessIsCaller: callerRunsHarness(cs, p.HarnessPID),
+		TranscriptOnly:  p.TranscriptPath != "" || p.TranscriptLeaf != nil,
+		harnessGone:     d.harnessLeftPane(cs, sess, target, p.HarnessPID),
 	})
 	if err != nil {
 		return nil, mapResolveErr(err, sess)
@@ -1899,7 +1945,40 @@ func (d *Daemon) verbSetAgentSession(cs *connState, params json.RawMessage) (any
 	if reason != "" {
 		out["reason"] = reason
 	}
+	transcriptRefused := ""
+	if applied && p.TranscriptPath != "" {
+		transcriptRefused = d.joinReportedTranscript(cs, sess, target, harnessID, p.TranscriptPath, "", p.TranscriptLeaf)
+		if transcriptRefused != "" {
+			out["transcript_refused"] = transcriptRefused
+		}
+	}
+	if applied && treeWindow != "" && previousSession != stored && (p.TranscriptPath == "" || transcriptRefused != "") {
+		sess.DropAgentTranscript(treeWindow)
+		sess.emit(SessionEvent{Type: EventTranscript, Window: treeWindow})
+	}
 	return out, nil
+}
+
+// checkTranscriptSelection bounds metadata before a report can change state.
+// Paths are checked independently by joinReportedTranscript, including the
+// caller's own-pane authority. A leaf never grants access to a different file,
+// and only a tree of entries has one.
+func (d *Daemon) checkTranscriptSelection(harnessID, path string, leaf *string) *verbError {
+	if leaf == nil {
+		return nil
+	}
+	if path == "" || !d.transcriptIsTree(strings.TrimSpace(harnessID)) {
+		return invalidParam("transcript_leaf", "a selected leaf needs a harness whose transcript is a tree, and its transcript_path")
+	}
+	if len(*leaf) > 128 {
+		return invalidParam("transcript_leaf", "the selected entry id exceeds 128 bytes")
+	}
+	for _, c := range *leaf {
+		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '-' || c == '_') {
+			return invalidParam("transcript_leaf", "the selected entry id must contain only letters, digits, '-' or '_'")
+		}
+	}
+	return nil
 }
 
 // maxAgentSessionIDLen bounds a reported conversation id. Every harness uses a
@@ -1911,6 +1990,17 @@ const maxAgentSessionIDLen = 256
 // the manifest rule kinds, so a hook and a screen rule describe a block in the
 // same words.
 var agentKindNames = []string{harness.PromptKindApproval, harness.PromptKindQuestion, harness.PromptKindAuth}
+
+// transcriptIsTree says whether the harness's manifest names a reader for a
+// tree of entries, such as Pi's, rather than a log read from an offset.
+func (d *Daemon) transcriptIsTree(harnessID string) bool {
+	reg := d.agentMatcher.registry
+	if harnessID == "" || reg == nil {
+		return false
+	}
+	tr := reg.TranscriptFor(harnessID)
+	return tr != nil && transcriptview.IsTree(tr.Reader)
+}
 
 // joinReportedTranscript binds a window to the transcript file its harness
 // named in a hook. This is the exact join the transcript source was built for:
@@ -1924,7 +2014,7 @@ var agentKindNames = []string{harness.PromptKindApproval, harness.PromptKindQues
 // for its own pane, and the file must be a regular file under the harness's
 // transcript folder. A refusal is returned for the reply, so the hook's
 // --explain shows it, and logged without the path, which is the person's.
-func (d *Daemon) joinReportedTranscript(cs *connState, sess *Session, target, harnessID, path, session string) string {
+func (d *Daemon) joinReportedTranscript(cs *connState, sess *Session, target, harnessID, path, session string, leaf *string) string {
 	state := sess.GetState()
 	idx, err := findWindowStateIndex(state.Windows, target)
 	if err != nil {
@@ -1961,7 +2051,7 @@ func (d *Daemon) joinReportedTranscript(cs *connState, sess *Session, target, ha
 		sess.JoinAgentSession(w.ID, harnessID, tr.Reader, resolved, session)
 		return ""
 	}
-	_ = sess.JoinAgentTranscriptAs(w.ID, harnessID, tr.Reader, resolved, true)
+	_ = sess.joinAgentTranscriptLeaf(w.ID, harnessID, tr.Reader, resolved, true, leaf)
 	return ""
 }
 

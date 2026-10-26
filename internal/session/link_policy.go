@@ -280,7 +280,8 @@ var verbCapabilities = map[string][]string{
 	// agent-activity, list-queued and get-approval return states, counts and
 	// text an agent wrote, which list reaches. review-diff returns file
 	// contents, which write already reaches through a shell and list must
-	// not, as bundle-worktree does. verify-fan opens a window and runs a
+	// not, as bundle-worktree does. compare-fan's detail carries changed
+	// lines, so its handler asks write for it. verify-fan opens a window and runs a
 	// command in it, so it needs open and write. mark-attention is the
 	// person's act, like dismiss-attention.
 	"compare-fan":     {config.LinkAllowList},
@@ -299,6 +300,19 @@ var verbCapabilities = map[string][]string{
 	"keep-fan":       {config.LinkAllowWrite},
 	"verify-fan":     {config.LinkAllowOpen, config.LinkAllowWrite},
 	"mark-attention": {config.LinkAllowRespond},
+
+	// The task cards. The listing carries titles and holders, which list
+	// reaches; a card's prompt is what a pane will be told to do, so a
+	// change needs write.
+	"list-tasks":     {config.LinkAllowList},
+	"get-task":       {config.LinkAllowList},
+	"add-task":       {config.LinkAllowWrite},
+	"claim-task":     {config.LinkAllowWrite},
+	"finish-task":    {config.LinkAllowWrite},
+	"set-task-stage": {config.LinkAllowWrite},
+	"block-task":     {config.LinkAllowWrite},
+	"release-task":   {config.LinkAllowWrite},
+	"remove-task":    {config.LinkAllowWrite},
 
 	// The checkpoints. The listing carries states and the agent's prompts,
 	// which list reaches. The diff carries file contents, and a restore
