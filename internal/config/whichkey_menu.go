@@ -283,7 +283,7 @@ func menuSections(prefixType string, st MenuState) []menuSection {
 			leaderSessionRows[0],
 			pair("Prev/next in space", part("prev_session_in_space", "Previous in space"), part("next_session_in_space", "Next in space")),
 			pair("Prev/next space", part("prev_space", "Previous space"), part("next_space", "Next space")),
-			pair("Sessions/workspaces", part("prefix_session_switcher", "Sessions"), part("prefix_workspace_switcher", "Workspaces")),
+			pair("Switchers/worktree", part("prefix_session_switcher", "Sessions"), part("prefix_workspace_switcher", "Workspaces"), part("new_worktree", "New worktree")),
 		}
 		sessions.rows = append(rows, leaderSessionRows[3:]...)
 	}
