@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 #
-# install-tuios-local.sh — build tuios from this checkout and install it over
-# an existing local binary (including a Homebrew Cellar install) using the
+# install-tuios-local.sh — build tuios and tuios-web from this checkout and
+# install them over an existing local binary (including a Homebrew Cellar
+# install, with tuios-web beside it) using the
 # same build + backup + fresh-inode swap + (macOS) adhoc-codesign steps used
 # for herdr (see herdr/scripts/install-herdr-local.sh).
 #
@@ -15,6 +16,7 @@
 #       scripts/install-tuios-local.sh                # force a specific install path
 #   TUIOS_BACKEND=ghostty scripts/install-tuios-local.sh  # build the libghostty-vt backend
 #   TUIOS_SKIP_BUILD=1 scripts/install-tuios-local.sh     # swap an already-built target
+#   TUIOS_UPGRADE_DAEMON=1 scripts/install-tuios-local.sh # then upgrade the running daemon live
 #
 # Notable choices (the "why"):
 #   * Backend auto-detect: defaults to whatever backend the existing binary
@@ -79,6 +81,7 @@ fi
 
 # ── 1. build ────────────────────────────────────────────────────────────────
 NEW="$ROOT/.install-tuios-local.build"
+NEW_WEB="$ROOT/.install-tuios-local.web.build"
 if [ "${TUIOS_SKIP_BUILD:-0}" != "1" ]; then
   buildtags=()
   if [ "$BACKEND" = ghostty ]; then
@@ -94,7 +97,10 @@ if [ "${TUIOS_SKIP_BUILD:-0}" != "1" ]; then
   # The release the build is based on, kept after "dev+" so tuios still reads
   # it as a source build: a version that parses as a release would be offered
   # updates, and hosts sync would fetch that release instead of building this.
-  base="$(git describe --tags --abbrev=0 --match 'v[0-9]*' --exclude '*-*' 2>/dev/null)"
+  # The highest release tag the build contains, not the nearest one: after an
+  # upstream merge the newest release can sit more commits away than an older
+  # one, and git describe would name the older.
+  base="$(git tag --merged HEAD --list 'v[0-9]*' --sort=-v:refname 2>/dev/null | grep -v -- - | head -n 1 || true)"
   buildversion="dev+${base:+${base#v}.}${SHA}"
   commit="$(git rev-parse HEAD 2>/dev/null || echo unknown)"
   if [ -n "$(git status --porcelain 2>/dev/null)" ]; then
@@ -105,44 +111,55 @@ if [ "${TUIOS_SKIP_BUILD:-0}" != "1" ]; then
 
   echo "==> building ($BACKEND backend)"
   go build "${buildtags[@]}" -trimpath -ldflags "$ldflags" -o "$NEW" ./cmd/tuios
+  go build "${buildtags[@]}" -trimpath -ldflags "$ldflags" -o "$NEW_WEB" ./cmd/tuios-web
 fi
 [ -x "$NEW" ] || { echo "error: $NEW not found — build first (or unset TUIOS_SKIP_BUILD)." >&2; exit 1; }
 echo "==> built: $("$NEW" --version | head -1) ($(file -b "$NEW"))"
 
-# ── 2. backup existing ──────────────────────────────────────────────────────
-mkdir -p "$(dirname "$TARGET")"
-if [ -e "$TARGET" ]; then
-  BACKUP="$TARGET.pre-$SHA"
-  cp -p "$TARGET" "$BACKUP"
-  echo "==> backed up existing -> $BACKUP"
-fi
-
-# ── 3. fresh-inode swap ──────────────────────────────────────────────────────
-OLD_INODE="$( [ -e "$TARGET" ] && { stat -f %i "$TARGET" 2>/dev/null || stat -c %i "$TARGET" 2>/dev/null; } || echo none )"
-rm -f "$TARGET"
-cp "$NEW" "$TARGET"
-rm -f "$NEW"
-chmod 755 "$TARGET"
-NEW_INODE="$(stat -f %i "$TARGET" 2>/dev/null || stat -c %i "$TARGET")"
-echo "==> swapped (inode $OLD_INODE -> $NEW_INODE)"
-
-# ── 4. codesign (macOS only) ─────────────────────────────────────────────────
-if [ "$OS" = "Darwin" ]; then
-  codesign --force --sign - --timestamp=none "$TARGET"
-  signed=0
-  for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do
-    if codesign -dv "$TARGET" 2>&1 | grep -q 'flags=0x2(adhoc)'; then signed=1; break; fi
-    sleep 0.5
-  done
-  if [ "$signed" = 1 ]; then
-    echo "==> adhoc-signed (flags=0x2)"
-  else
-    echo "error: adhoc signature not applied." >&2; exit 1
+# ── 2-4. backup, fresh-inode swap, codesign ──────────────────────────────────
+install_one() {
+  local src="$1" dst="$2"
+  mkdir -p "$(dirname "$dst")"
+  if [ -e "$dst" ]; then
+    cp -p "$dst" "$dst.pre-$SHA"
+    echo "==> backed up existing -> $dst.pre-$SHA"
   fi
+  local old_inode new_inode
+  old_inode="$( [ -e "$dst" ] && { stat -f %i "$dst" 2>/dev/null || stat -c %i "$dst" 2>/dev/null; } || echo none )"
+  rm -f "$dst"
+  cp "$src" "$dst"
+  rm -f "$src"
+  chmod 755 "$dst"
+  new_inode="$(stat -f %i "$dst" 2>/dev/null || stat -c %i "$dst")"
+  echo "==> swapped $(basename "$dst") (inode $old_inode -> $new_inode)"
+
+  if [ "$OS" = "Darwin" ]; then
+    codesign --force --sign - --timestamp=none "$dst"
+    local signed=0
+    for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do
+      if codesign -dv "$dst" 2>&1 | grep -q 'flags=0x2(adhoc)'; then signed=1; break; fi
+      sleep 0.5
+    done
+    if [ "$signed" = 1 ]; then
+      echo "==> adhoc-signed $(basename "$dst") (flags=0x2)"
+    else
+      echo "error: adhoc signature not applied to $dst." >&2; exit 1
+    fi
+  fi
+}
+
+install_one "$NEW" "$TARGET"
+# tuios-web goes beside tuios, so a Homebrew symlink to it reaches the new one.
+WEB_TARGET="$(dirname "$TARGET")/tuios-web"
+if [ -x "$NEW_WEB" ]; then
+  install_one "$NEW_WEB" "$WEB_TARGET"
+else
+  echo "    no tuios-web build at $NEW_WEB; $WEB_TARGET left as it was"
 fi
 
 # ── 5. verify + remind ───────────────────────────────────────────────────────
 echo "==> installed: $("$TARGET" --version | head -1) ($(file -b "$TARGET"))"
+[ -x "$WEB_TARGET" ] && echo "==> installed: $("$WEB_TARGET" --version 2>&1 | head -1)"
 
 if [ -n "${XDG_RUNTIME_DIR:-}" ]; then
   socket="$XDG_RUNTIME_DIR/tuios/tuios.sock"
@@ -150,8 +167,23 @@ else
   socket="/tmp/tuios-$(id -u)/tuios.sock"
 fi
 if [ -f "$socket.pid" ] && pid="$(cat "$socket.pid" 2>/dev/null)" && [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-  echo
-  echo "A daemon (pid $pid) is still running the previous build, and every"
-  echo "attached session goes through it. Restart it to run the new binary:"
-  echo "    tuios kill-server        # layouts and working directories come back with new shells"
+  # The path on PATH, not the Cellar path, so the daemon execs what a shell
+  # runs as tuios after the next install too.
+  live="$(command -v tuios 2>/dev/null || echo "$TARGET")"
+  if [ "${TUIOS_UPGRADE_DAEMON:-}" = 1 ]; then
+    echo "==> upgrading the daemon (pid $pid) live"
+    # Live only: a daemon that cannot be upgraded keeps running the previous
+    # build, and nothing a pane runs is stopped behind the user's back.
+    if ! TUIOS_SERVER='' "$TARGET" daemon upgrade --binary "$live"; then
+      echo "The daemon still runs the previous build. To restart it, which ends running programs:"
+      echo "    tuios kill-server"
+    fi
+  else
+    echo
+    echo "A daemon (pid $pid) is still running the previous build, and every"
+    echo "attached session goes through it. Move it to the new binary:"
+    echo "    tuios daemon upgrade --binary $live   # live: every program keeps running"
+    echo "    tuios kill-server                      # restart: layouts come back with new shells"
+    echo "TUIOS_UPGRADE_DAEMON=1 runs the live upgrade as part of the install."
+  fi
 fi
