@@ -102,6 +102,7 @@ gh release create "$TAG" "${assets[@]}" --repo "$REPO" --target "$COMMIT" --prer
   --title "tuios build $TAG" \
   --notes "Local build $VERSION of $COMMIT, pure-Go backend. Install with scripts/install-tuios-release.sh."
 echo "==> published $REPO $TAG"
+rm -rf "$OUT"
 
 # ── 3. prune ─────────────────────────────────────────────────────────────────
 # Only prereleases this script made, newest first; the rest are never touched.
