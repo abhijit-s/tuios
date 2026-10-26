@@ -1,6 +1,6 @@
 # Local builds: getting a build from this checkout running somewhere
 
-This fork carries three scripts for turning a checkout into a running
+This fork carries four scripts for turning a checkout into a running
 `tuios` binary. They overlap on purpose — each covers a different starting
 point (a shell on the target machine, a Homebrew install to overwrite, a
 remote box with no Go toolchain) — so pick the one that matches where you're
@@ -11,10 +11,31 @@ installing to, not the one you used last time.
 | A shell + Go toolchain on the target machine itself | `scripts/install.sh` |
 | An existing `brew install tuios` on this Mac you want to overwrite | `scripts/install-tuios-local.sh` |
 | A remote Linux box you only have SSH (Secure Shell) access to, no Go toolchain | `scripts/install-tuios-remote.sh` |
+| A machine with no checkout, no Go and no SSH from here (a home machine) | `scripts/publish-tuios-build.sh` here, `scripts/install-tuios-release.sh` there |
 
-These three are personal-fork tooling for the maintainer's own workflow, not
+These are personal-fork tooling for the maintainer's own workflow, not
 part of the upstream project's documented install paths (see the
 [Installation](../README.md#installation) section of the README for those).
+
+## Publish a build, install it anywhere (`scripts/publish-tuios-build.sh`, `scripts/install-tuios-release.sh`)
+
+On the build machine, publish the pushed branch as a GitHub prerelease on the fork. The tag is the branch name with `/` as `-`, and the release carries a `tuios_<os>_<arch>.tar.gz` per target plus `SHA256SUMS`:
+
+```bash
+GH_TOKEN=$(gh auth token --user abhijit-s) scripts/publish-tuios-build.sh
+```
+
+On the target, one command installs the newest published build, with or without `gh`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/abhijit-s/tuios/main/scripts/install-tuios-release.sh \
+  | TUIOS_RELEASE_REPO=abhijit-s/tuios TUIOS_UPGRADE_DAEMON=1 bash
+```
+
+- Name a build by its tag to install that one instead: `bash install-tuios-release.sh integ-2026-10-26b`.
+- `TUIOS_ARCHIVE` installs a copied archive offline, checked against a `SHA256SUMS` beside it.
+- `TUIOS_UPGRADE_DAEMON=1` moves a running daemon to the new binary live.
+- The install is the same backup and fresh-inode swap as the scripts below, signed adhoc on macOS.
 
 ## Native build on the target machine (`scripts/install.sh`)
 

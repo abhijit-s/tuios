@@ -109,7 +109,7 @@ docker run -it --rm ghcr.io/gaurav-gosain/tuios:latest
 
 **Building from source** needs Go 1.26.6 or newer.
 
-**This fork's own local-build scripts** (swapping a Homebrew Cellar install, or pushing a cross-compiled build to a remote box over SSH): [docs/LOCAL_BUILDS.md](docs/LOCAL_BUILDS.md).
+**This fork's own local-build scripts** (swapping a Homebrew Cellar install, pushing a cross-compiled build to a remote box over SSH, or publishing a build to install on any machine): [docs/LOCAL_BUILDS.md](docs/LOCAL_BUILDS.md).
 
 **Updating.** If you installed with the quick install script or a release
 binary, `tuios update` fetches the newest release and puts it in place

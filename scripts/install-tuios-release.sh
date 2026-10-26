@@ -4,8 +4,9 @@
 # scripts/publish-tuios-build.sh made, on a machine with no checkout, no Go and
 # no ssh from the build machine. It needs only this file.
 #
-#   TUIOS_RELEASE_REPO=owner/tuios install-tuios-release.sh         # newest build (needs gh)
-#   TUIOS_RELEASE_REPO=owner/tuios install-tuios-release.sh TAG     # one build (gh, or curl for a public repo)
+#   TUIOS_RELEASE_REPO=owner/tuios install-tuios-release.sh         # newest build (gh, or curl for a public repo)
+#   TUIOS_RELEASE_REPO=owner/tuios install-tuios-release.sh TAG     # one build
+#   curl -fsSL .../install-tuios-release.sh | TUIOS_RELEASE_REPO=owner/tuios bash  # no download step
 #   TUIOS_ARCHIVE=~/tuios_linux_amd64.tar.gz install-tuios-release.sh  # offline: a copied archive
 #   TUIOS_INSTALL_TARGET=~/.local/bin/tuios ...                     # force the install path
 #   TUIOS_UPGRADE_DAEMON=1 ...                                      # then upgrade the running daemon live
@@ -58,7 +59,17 @@ else
     fi
     gh release download "$TAG" --repo "$REPO" --dir "$WORK" --pattern "$archive" --pattern SHA256SUMS
   else
-    [ -n "$TAG" ] || { echo "error: without gh, name the build: $0 TAG" >&2; exit 1; }
+    if [ -z "$TAG" ]; then
+      # The API pretty-prints, and a release's own keys are the ones indented
+      # four spaces; an asset's name and created_at sit deeper.
+      TAG="$(curl -fsSL "https://api.github.com/repos/$REPO/releases?per_page=50" | awk '
+        /^    "tag_name":/ { tag = $2 }
+        /^    "name":/ { build = ($0 ~ /"tuios build /) }
+        /^    "prerelease":/ { pre = ($2 ~ /true/) }
+        /^    "created_at":/ { if (build && pre) print $2, tag }' \
+        | sort | tail -1 | awk '{print $2}' | tr -d '",')"
+      [ -n "$TAG" ] || { echo "error: found no tuios build prerelease on $REPO; name one: install-tuios-release.sh TAG" >&2; exit 1; }
+    fi
     for f in "$archive" SHA256SUMS; do
       curl -fsSL -o "$WORK/$f" "https://github.com/$REPO/releases/download/$TAG/$f"
     done
