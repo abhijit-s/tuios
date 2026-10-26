@@ -122,7 +122,7 @@ func paneStep(c, stock tuitest.Color) bool {
 	if c.Kind != tuitest.ColorRGB || c == matchPaneBg || c == stock || c.B <= c.R {
 		return false
 	}
-	ratio := overlay.ContrastRatio(cellRGB(c), cellRGB(matchPaneBg))
+	ratio := overlay.ContrastRatio(truecolorRGB(c), truecolorRGB(matchPaneBg))
 	return ratio > 1.05 && ratio < 1.6
 }
 
@@ -397,10 +397,10 @@ func readBrowserLook(s tuitest.Screen, b overlayBox) (browserLook, bool) {
 	fmt.Fprintf(&r, "%-12s (%d,%d) %q bg=%+v\n", "selected", sx, sy, s.Cell(sx, sy).Content, l.selected)
 	fmt.Fprintf(&r, "%-12s (%d,%d) %q bg=%+v\n", "key pill", hx, hy, s.Cell(hx, hy).Content, l.pill)
 	if l.selected.Kind == tuitest.ColorRGB {
-		fmt.Fprintf(&r, "selected row to pane ground %.2f:1\n", overlay.ContrastRatio(cellRGB(l.selected), cellRGB(matchPaneBg)))
+		fmt.Fprintf(&r, "selected row to pane ground %.2f:1\n", overlay.ContrastRatio(truecolorRGB(l.selected), truecolorRGB(matchPaneBg)))
 	}
 	if l.pill.Kind == tuitest.ColorRGB {
-		fmt.Fprintf(&r, "key pill to pane ground %.2f:1\n", overlay.ContrastRatio(cellRGB(l.pill), cellRGB(matchPaneBg)))
+		fmt.Fprintf(&r, "key pill to pane ground %.2f:1\n", overlay.ContrastRatio(truecolorRGB(l.pill), truecolorRGB(matchPaneBg)))
 	}
 	l.report = r.String()
 	return l, ok

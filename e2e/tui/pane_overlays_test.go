@@ -150,7 +150,7 @@ func TestPaneOverlaysStepRowsFromThePaneGround(t *testing.T) {
 		fmt.Fprintf(&r, "search line bg=%+v\nselected row bg=%+v\n", ground, sel)
 		good := ground == matchPaneBg && sel.Kind == tuitest.ColorRGB && sel != matchPaneBg && sel != stockTrueColor.paletteSel
 		if sel.Kind == tuitest.ColorRGB {
-			ratio := overlay.ContrastRatio(cellRGB(sel), cellRGB(matchPaneBg))
+			ratio := overlay.ContrastRatio(truecolorRGB(sel), truecolorRGB(matchPaneBg))
 			fmt.Fprintf(&r, "selected row to ground %.2f:1\n", ratio)
 			good = good && sel.B > sel.R && ratio > 1.05 && ratio < 1.6
 		}
@@ -190,8 +190,8 @@ func paletteRows(s tuitest.Screen) (palettePanel, bool) {
 	return p, false
 }
 
-// cellRGB is a 24-bit cell colour as a colour.
-func cellRGB(c tuitest.Color) color.Color { return color.RGBA{R: c.R, G: c.G, B: c.B, A: 0xff} }
+// truecolorRGB is a 24-bit cell colour as a colour.
+func truecolorRGB(c tuitest.Color) color.Color { return color.RGBA{R: c.R, G: c.G, B: c.B, A: 0xff} }
 
 // mochaGround is catppuccin_mocha's background, the ground the rail is drawn
 // on under that theme where it paints none of its own.
@@ -289,7 +289,7 @@ func railInks(t *testing.T, art, name, extra string) map[string]color.Color {
 		}
 		var ground color.Color = mochaGround
 		if bg := s.Cell(col, row).Bg; bg.Kind == tuitest.ColorRGB {
-			ground = cellRGB(bg)
+			ground = truecolorRGB(bg)
 		}
 		ratio := overlay.ContrastRatio(ink, ground)
 		fmt.Fprintf(&report, "%s (%d,%d) ink=%v ground=%v %.2f:1\n", probe.what, col, row, ink, ground, ratio)
