@@ -187,8 +187,11 @@ person stops, the session goes to the other client 1 second after the last
 key of the first.
 
 The first client that attaches sets the size until another client has input.
-When the latest client detaches, the session goes to the client with the most
-recent input.
+When the latest client leaves, by a detach, a switch or a disconnect, the
+session keeps its size until someone types at a client that is still attached.
+If none of the clients that were attached when it left is still there, a new
+client takes its own size at once. When the latest client comes back before
+anyone types, the session takes its size again right away.
 
 A client that is smaller than the session shows a part of it, the part around
 the cursor of the focused pane. This is the rule that tmux uses. In copy mode

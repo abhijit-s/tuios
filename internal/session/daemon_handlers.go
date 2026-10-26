@@ -223,6 +223,8 @@ func (d *Daemon) handleAttach(cs *connState, msg *Message) error {
 			session.attachMu.Unlock()
 		}
 	}()
+	// Asked before cs.mu is taken: the latest state has a lock of its own.
+	returnInput := d.latestReturnInput(session.ID, cs.clientID)
 	cs.mu.Lock()
 	previousSession := cs.sessionID
 	cs.sessionID = session.ID
@@ -237,7 +239,15 @@ func (d *Daemon) handleAttach(cs *connState, msg *Message) error {
 	cs.attachSeq = d.attachCount.Add(1)
 	cs.viewOnly = payload.ViewOnly
 	cs.passive = payload.Passive
-	cs.lastActivity = time.Time{}
+	// A client that comes back to a session it was the latest client of, and
+	// that kept its size for it, takes back the input it had when it left: it
+	// is still the latest there, so the session stays its size rather than
+	// going to a client that typed before it. The time is the one recorded at
+	// the leave, since an attach elsewhere on the way cleared the client's
+	// own. Any other attach starts with none, so the key that switched a
+	// client into a session someone else holds does not count as input there.
+	// See window_size.go.
+	cs.lastActivity = returnInput
 	cs.humanNonce = humanNonce
 	cs.missedStateSync = false
 	cs.mu.Unlock()
@@ -489,6 +499,7 @@ func (d *Daemon) detachClientFrom(cs *connState, want string) bool {
 	cs.mu.Lock()
 	sessionID := cs.sessionID
 	sessionName := cs.sessionName
+	input := cs.lastActivity
 	if sessionID == "" || (want != "" && (sessionID != want || cs.repliedSession != want)) {
 		cs.mu.Unlock()
 		return false
@@ -538,7 +549,7 @@ func (d *Daemon) detachClientFrom(cs *connState, want string) bool {
 	d.forgetPushes(cs, sessionID)
 
 	// Notify other clients that this client left
-	d.notifyClientLeft(sessionID, clientID)
+	d.notifyClientLeft(sessionID, clientID, input)
 	return true
 }
 

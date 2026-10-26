@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"image"
+	"image/draw"
 	"image/png"
 	"math"
 	"os"
@@ -29,13 +31,15 @@ import (
 
 // mermaidOptions are the flags of tuios mermaid.
 type mermaidOptions struct {
-	format  string
-	out     string
-	scale   float64
-	cols    int
-	rows    int
-	diagram int
-	theme   string
+	format     string
+	out        string
+	scale      float64
+	cols       int
+	rows       int
+	diagram    int
+	theme      string
+	background string
+	fit        bool
 }
 
 // liveOptions are the flags of the live view: --watch, --split and --demo.
@@ -57,11 +61,15 @@ func newMermaidCommand() *cobra.Command {
 FILE is a Mermaid source (.mmd), a Markdown file, or - for standard input.
 A Markdown file gives each of its mermaid code blocks.
 
-In a terminal that shows kitty graphics, the diagram is a picture. In other
-terminals it is drawn with box-drawing characters and its labels as text. A
-diagram type with no text drawing yet is written as its source. A drawing
-wider than the terminal is written at its full width. When the output is not a
-terminal, the command writes SVG.
+In a terminal that shows kitty graphics, the diagram is a picture. Its text
+has the size of the terminal's text. A diagram wider than the terminal is made
+smaller to fit the width. A diagram taller than the terminal keeps its size
+and goes up into the scrollback: scroll up to see its top. With --fit it is
+also made smaller to fit the height. A blank line goes between two diagrams.
+In other terminals the diagram is drawn with box-drawing characters and its
+labels as text. A diagram type with no text drawing yet is written as
+its source. A drawing wider than the terminal is written at its full width.
+When the output is not a terminal, the command writes SVG.
 
 With --watch the diagram fills the terminal and is drawn again each time the
 file is saved. In a terminal with kitty graphics it moves to the new layout:
@@ -69,6 +77,10 @@ boxes slide and grow, new parts fade in, removed parts fade out. --split shows
 the source beside it. --demo types a diagram a character at a time, for a
 recording: the diagram of FILE, or a built-in one. Press q to quit and r to
 start the demo again.
+
+A picture has the background colour of the theme. With --background none, or
+background = "none" in [mermaid], a kitty or png picture has no background, so
+the diagram is on the background of your terminal. An SVG has no background.
 
 The colours come from your tuios theme, or from --theme or [mermaid] theme. tuios.dev/sketch draws the diagrams. It
 is a Go port of pele and draws flowcharts, sequence diagrams, state diagrams, class diagrams, ER diagrams, pie charts, mindmaps, gantt charts, XY charts, timelines, quadrant charts, user journeys, kanban boards, git graphs, sankey diagrams, block diagrams, architecture diagrams, requirement diagrams, C4 diagrams, packet diagrams, radar charts, treemaps, info diagrams, tree views, Ishikawa diagrams, Cynefin diagrams, event models, Venn diagrams, Wardley maps, railroad diagrams, use case diagrams, agent flows and swimlane diagrams now.`,
@@ -80,6 +92,12 @@ is a Go port of pele and draws flowcharts, sequence diagrams, state diagrams, cl
 
   # Save a picture
   tuios mermaid flow.mmd -o flow.png
+
+  # Draw on the background of the terminal
+  tuios mermaid flow.mmd --background none
+
+  # Make a tall diagram fit the terminal
+  tuios mermaid flow.mmd --fit
 
   # Write SVG from standard input
   echo 'flowchart LR; A-->B' | tuios mermaid - --format svg
@@ -126,11 +144,16 @@ is a Go port of pele and draws flowcharts, sequence diagrams, state diagrams, cl
 	cmd.Flags().IntVar(&o.rows, "rows", 0, "Height in cells, 0 for the terminal height")
 	cmd.Flags().IntVar(&o.diagram, "diagram", 0, "Draw only diagram N of the file, from 1")
 	cmd.Flags().StringVar(&o.theme, "theme", "", "Colour theme: tuios, or a name such as flexoki, nord or rose-pine")
+	cmd.Flags().BoolVar(&o.fit, "fit", false, "Make each kitty picture fit the terminal height too")
+	cmd.Flags().StringVar(&o.background, "background", "", "Background of a kitty or png picture: theme, or none for the terminal's own")
 	_ = cmd.RegisterFlagCompletionFunc("theme", func(*cobra.Command, []string, string) ([]string, cobra.ShellCompDirective) {
 		return mermaid.ThemeNames(), cobra.ShellCompDirectiveNoFileComp
 	})
 	_ = cmd.RegisterFlagCompletionFunc("format", func(*cobra.Command, []string, string) ([]string, cobra.ShellCompDirective) {
 		return []string{"svg", "png", "kitty", "text"}, cobra.ShellCompDirectiveNoFileComp
+	})
+	_ = cmd.RegisterFlagCompletionFunc("background", func(*cobra.Command, []string, string) ([]string, cobra.ShellCompDirective) {
+		return []string{"theme", "none"}, cobra.ShellCompDirectiveNoFileComp
 	})
 	return cmd
 }
@@ -160,6 +183,9 @@ func runMermaid(name string, o mermaidOptions, stdout *os.File) error {
 	theme.SetColorProfile(profile)
 	th, err := mermaidTheme(o.theme)
 	if err != nil {
+		return err
+	}
+	if o.background, err = mermaidBackground(o.background); err != nil {
 		return err
 	}
 
@@ -205,7 +231,7 @@ func runMermaid(name string, o mermaidOptions, stdout *os.File) error {
 			}
 			continue
 		}
-		if err := writeMermaid(out, src, i, len(sources), format, o, profile, tty, stdout); err != nil {
+		if err := writeMermaid(out, src, i, len(sources), format, o, th, profile, tty, stdout); err != nil {
 			return err
 		}
 	}
@@ -228,6 +254,25 @@ func mermaidTheme(flag string) (*sketch.Theme, error) {
 		}
 	}
 	return mermaid.ThemeFor(name, theme.UI(), theme.GetANSIPalette(), theme.TerminalBg(), theme.TerminalFg())
+}
+
+// mermaidBackground is the background of a picture: the flag, else
+// [mermaid] background, else "theme". "none" leaves it clear, so the diagram
+// sits on the terminal's own background.
+func mermaidBackground(flag string) (string, error) {
+	name := strings.ToLower(strings.TrimSpace(flag))
+	if name == "" {
+		if cfg, err := config.LoadUserConfig(); err == nil && cfg != nil {
+			name = strings.ToLower(strings.TrimSpace(cfg.Mermaid.Background))
+		}
+	}
+	switch name {
+	case "", "theme":
+		return "theme", nil
+	case "none":
+		return "none", nil
+	}
+	return "", fmt.Errorf("unknown background %q: use theme or none", name)
 }
 
 // diagramKinds are the names the help text and the docs give each diagram type.
@@ -285,7 +330,7 @@ func numbered(name string, i, n int) string {
 	return strings.TrimSuffix(name, ext) + "-" + strconv.Itoa(i+1) + ext
 }
 
-func writeMermaid(out sketch.SVG, src string, i, n int, format string, o mermaidOptions, profile colorprofile.Profile, tty bool, stdout *os.File) error {
+func writeMermaid(out sketch.SVG, src string, i, n int, format string, o mermaidOptions, th *sketch.Theme, profile colorprofile.Profile, tty bool, stdout *os.File) error {
 	write := func(data []byte) error {
 		if o.out == "" {
 			_, err := stdout.Write(data)
@@ -343,32 +388,86 @@ func writeMermaid(out sketch.SVG, src string, i, n int, format string, o mermaid
 	if o.rows > 0 {
 		rows = o.rows
 	}
-	scale := o.scale
-	if format == "kitty" {
-		// As large as the terminal allows, leaving two rows for the prompt, and no
-		// larger than twice the SVG size.
-		scale = math.Min(2, math.Min(float64(cols*cellW)/math.Max(1, out.Width), float64(max(rows-2, 4)*cellH)/math.Max(1, out.Height)))
-	}
-	img, err := raster.Draw(out.Data, raster.Options{Scale: scale, Background: true, Readable: true})
-	if err != nil {
-		return fmt.Errorf("cannot draw diagram %d: %w", i+1, err)
-	}
-	switch format {
-	case "png":
+	background := o.background != "none"
+	if format == "png" {
+		img, err := raster.Draw(out.Data, raster.Options{Scale: o.scale, Background: background, Readable: true})
+		if err != nil {
+			return fmt.Errorf("cannot draw diagram %d: %w", i+1, err)
+		}
 		var b bytes.Buffer
 		if err := png.Encode(&b, img); err != nil {
 			return err
 		}
 		return write(b.Bytes())
-	case "kitty":
-		var b bytes.Buffer
-		if err := png.Encode(&b, img); err != nil {
-			return err
-		}
-		c := int(math.Ceil(float64(img.Bounds().Dx()) / float64(cellW)))
-		return mermaid.Kitty(stdout, b.Bytes(), c)
 	}
-	return nil
+
+	// kitty: the diagram's text at the size of the terminal's own, and smaller
+	// only when the diagram is wider than the terminal. A taller diagram runs
+	// into the scrollback. With --fit it is also made to fit the height, less
+	// two rows: one for the gap or the prompt, and one because tuios keeps
+	// the last row of a pane clear of pictures.
+	maxRows := 0
+	if o.fit {
+		maxRows = max(rows-2, 4)
+	}
+	scale := kittyScale(out.Width, out.Height, cols, maxRows, cellW, cellH)
+	img, err := raster.Draw(out.Data, raster.Options{Scale: scale, Background: background, Readable: true})
+	if err != nil {
+		return fmt.Errorf("cannot draw diagram %d: %w", i+1, err)
+	}
+	box, c, r := cellBox(img, cellW, cellH, cols, maxRows, background, th)
+	var b bytes.Buffer
+	if err := png.Encode(&b, box); err != nil {
+		return err
+	}
+	if i > 0 {
+		// A blank line between two diagrams.
+		fmt.Fprintln(stdout)
+	}
+	return mermaid.Kitty(stdout, b.Bytes(), c, r)
+}
+
+// diagramFontSize is the size in SVG units of a diagram's body text. sketch
+// draws labels at 16px, as pele does.
+const diagramFontSize = 16
+
+// kittyScale is the pixels a diagram unit takes in a picture of the terminal.
+// Its body text gets the size of the terminal's own text, about four fifths of
+// a cell's height, so every diagram of a file has one text size. It is
+// smaller only where the diagram would be wider than cols cells, or taller
+// than rows cells when rows is above 0, or larger than a picture can be. A
+// small diagram is not made larger than that.
+func kittyScale(width, height float64, cols, rows, cellW, cellH int) float64 {
+	width, height = math.Max(1, width), math.Max(1, height)
+	scale := math.Min(0.8*float64(cellH)/diagramFontSize, float64(cols*cellW)/width)
+	if rows > 0 {
+		scale = math.Min(scale, float64(rows*cellH)/height)
+	}
+	// raster.Draw refuses a side past 32768 pixels or 40 million pixels in all.
+	return math.Min(scale, math.Min(32000/math.Max(width, height), math.Sqrt(39e6/(width*height))))
+}
+
+// cellBox pads a picture to whole cells, so the box of c by r cells the
+// terminal draws it into has the picture's own aspect. The padding is the
+// diagram's background, or clear when there is none. The box is at most cols
+// cells wide, and rows cells tall when rows is above 0.
+func cellBox(img image.Image, cellW, cellH, cols, rows int, background bool, th *sketch.Theme) (image.Image, int, int) {
+	b := img.Bounds()
+	c := min(max(int(math.Ceil(float64(b.Dx())/float64(cellW))), 1), max(cols, 1))
+	r := max(int(math.Ceil(float64(b.Dy())/float64(cellH))), 1)
+	if rows > 0 {
+		r = min(r, rows)
+	}
+	w, h := c*cellW, r*cellH
+	if w == b.Dx() && h == b.Dy() {
+		return img, c, r
+	}
+	dst := image.NewNRGBA(image.Rect(0, 0, max(w, b.Dx()), max(h, b.Dy())))
+	if background && th != nil && th.Bg != nil {
+		draw.Draw(dst, dst.Bounds(), &image.Uniform{th.Bg}, image.Point{}, draw.Src)
+	}
+	draw.Draw(dst, b.Sub(b.Min), img, b.Min, draw.Over)
+	return dst, c, r
 }
 
 // terminalCells is the width of the terminal in cells and the size of a cell

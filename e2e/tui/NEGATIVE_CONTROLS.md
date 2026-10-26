@@ -10770,3 +10770,73 @@ Run on 2026-10-25 on Linux, based on `f527c102e`.
 | A zoom and an unzoom moved the page place | injected in loom: the anchor lookup given no key | loom `TestPageKeepsItsPlaceAcrossWidths` ("a narrower width moved the top from p14 to p10") | **caught in `loom`** |
 | A narrow row of stats cut their labels; a pane had no view.placement | injected in loom: stats left out of `rowLines`; placement left out of the view variables | loom `TestPlacementAndStatRows` ("the screen has no \"passed\"", "no \"esc close\"") | **caught in `loom`** |
 | Text fields had no visible field on a dark ground; two fields read as one; a checkbox sat far from its label | the loom before the fix | loom `TestGolden/fields` and `TestGolden/deploy` at truecolor, 256, 16 and ASCII (the goldens now hold the box, the rule, the row between fields and `[x] Checked`) | **caught in `loom`** |
+
+## Mermaid diagrams stand one under the other in a pane
+
+`TestMermaidDiagramsStackInAPane` (in `mermaid_live_terminal_test.go`) runs `tuios mermaid` in a 120x60 pane on a kitty host with 10x20 cells, on a Markdown file with a tall, a wide and a small diagram. It rebuilds what the host shows from the host's stream, checks it and saves it as `diagrams.png`. The `other-cell-size` case runs the command under `./cellsize`, which makes the pane report 8x20 cells. `TestKittyOverflowCropKeepsThePicturesScale` has two `fraction` cases: a picture of 19.5 pixels a column and 39 a row. `TestNamedThemesKeepTextReadable` in `sketch/raster` measures each label of a picture with no background on the theme's background colour. Run on 2026-10-26 on Linux against upstream main at 8d463ac7f.
+
+| Control: what was cut | Where it fails | Verdict |
+| --- | --- | --- |
+| The whole branch, which is upstream main | stack test, all three cases: "picture 1 (95x1080) shows pixels 0 to 90 across", "shows pixel rows 216 to 1026, want its bottom row 1080", "picture 2 starts 0 rows after the end of picture 1" | **caught** |
+| `mermaid.Kitty` writes no `r=` | stack test, `other-cell-size`: "the tall diagram (96x1080) is not whole on screen" | **caught** |
+| `placeOne` cuts with whole pixels a cell again, with the rest of the branch | the stack test passes: the picture is padded to whole cells, so the division is exact. The overflow test, `fraction` cases: "41x4 cells show the source rectangle x=0,y=0,w=779,h=156, want ... w=800" | **caught** by the overflow test only |
+| `readableText` reads clear pixels as black (`backdrop(r.dst, b, color.NRGBA{})`) | `TestNamedThemesKeepTextReadable`: 117 findings marked "(no background)" | **caught** |
+
+The stack test also checks that the small diagram keeps its own size, with its text at the terminal's text size. Run on 2026-10-26 against the branch before that rule, where a diagram could be drawn at up to twice its size to fill the pane.
+
+| Control: what was cut | Where it fails | Verdict |
+| --- | --- | --- |
+| `kittyScale` replaced by the old rule, up to twice the SVG size | stack test, all three cases: "the small diagram (215 units wide) takes 43 columns, want about 22" (54, want 27, in the 8x20 pane) | **caught** |
+
+Then the rule changed again: a diagram is made smaller only to fit the width. A diagram taller than the pane keeps the text size and runs into the scrollback, and `--fit` also fits the height. The stack test checks that the tall diagram takes about its own width and height in cells (21x119 in the 10x20 pane), and draws it alone with `--fit`, where it must be whole on screen.
+
+| Control: what was cut | Where it fails | Verdict |
+| --- | --- | --- |
+| Fit to the height always (`if true` for `o.fit`) | stack test, all three cases: "the tall diagram (208 units wide) takes 10 columns, want about 21", "takes 54 rows, want about 119" | **caught** |
+| `ReserveImageSpace` in `vt` scrolls at most one screen again | stack test, all three cases: "picture 2 (208x2380) shows pixel rows 1240 to 2360, want its bottom row 2380", "picture 3 starts -9 rows after the end of picture 2" | **caught** |
+## The agents view: the reply editor's @ list
+
+`TestCockpitReplyMentions` (in `cockpit_test.go`) works the reply editor of
+the agents view at 160x45, in truecolor and at 16 colours. The reply is for
+docs-cli. The test opens and closes the help, checks the footer, presses
+enter on an empty draft, types `@`, checks the marker and the grounds, moves
+the selection with down and ctrl+p, filters, inserts with enter, closes the
+list with esc and by deleting the @, clicks a pane whose name has a space,
+passes the quoted name to `capture-pane -w`, and closes the editor with a
+draft in it. At 16 colours it stops after the selection checks. Run on
+2026-10-25.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|-----|-------------|-----|-----------------|---------|
+| The selected entry looks like the others | the Card ground in `replyStyles` | `st.Selected = l.pal.Card` left out | `TestCockpitReplyMentions/truecolor` ("the selected entry's ground is the ground of the others") | **caught** |
+| The selection has no marker | the marker in `renderMentions` | the selected row gets the plain pad | `TestCockpitReplyMentions/16` ("the first entry does not carry the marker alone") | **caught** |
+| The draft line keeps its lit ground while the list is open | `st.Field = surface` in `render` | the line left out | `TestCockpitReplyMentions/truecolor` ("the draft line keeps a lit ground while the list is open") | **caught** |
+| Enter on the open list sends the reply | enter in the list's keys | `case "tab", "enter":` back to `case "tab":` | `TestCockpitReplyMentions/truecolor` ("waiting for the inserted mention") | **caught** |
+| The list offers the agent the reply is for | the skip in `mentionNames` | the skip made false | `TestCockpitReplyMentions/truecolor` ("the list offers the agent the reply is for") | **caught** |
+| A pane name with a space goes in unquoted | `shellWord` in `mentionAddress` | the address put in as shown | `TestCockpitReplyMentions/truecolor` ("waiting for the clicked mention") | **caught** |
+| ? leaves the agents view for good | `HelpClosed` | it never opens the view | `TestCockpitReplyMentions/truecolor` ("waiting for the agents view after the help") | **caught** |
+| The footer repeats the reply area's keys | the filter in `inboxReplyHints` | nothing filtered | `TestCockpitReplyMentions/truecolor` ("the footer repeats the reply area's keys") | **caught** |
+| enter on an empty draft does nothing and says nothing | the line in `InboxReplySend` | the `SetInfo` call left out | `TestCockpitReplyMentions/truecolor` ("waiting for the empty-reply notice") | **caught** |
+| A kept draft is not shown in the closed reply area | the draft line in `drawReplyArea` | the draft check made false | `TestCockpitReplyMentions/truecolor` ("waiting for the kept draft in the closed area") | **caught** |
+
+The colour of a quiet line (`SetInfo`) is checked by eye in the frames, not
+by the test.
+### The write that follows the frame
+
+The test failed twice in CI after #1123, on shards that run it among other tests, at 5.2 s and 5.9 s. The cause was real. Bubble Tea writes a frame under a lock that its event loop also takes for every message. While a 400x100 frame is parsed, diffed and written, the loop stops. On a loaded machine that write takes as long as the compose, so a budget counted from the end of the compose had run out when the loop came back. The budget now runs from the end of the write too (`motionBudgetFrom`). The controls ran the test binary and tuios on two cores with four busy loops on the same cores, on 2026-10-26 on Linux, against upstream main at 796dffbd3.
+
+| Control: what was cut | Where it fails | Verdict |
+| --- | --- | --- |
+| `motionBudgetFrom` returns the end of the compose only, which is upstream main | "highlighted 5.134s / 2.372s / 5.348s after the pointer stopped; the budget is 1.5s", three runs out of three | **caught** under load |
+
+Without the busy loops, upstream main failed one run in three (2.6 s) with tuios at `GOMAXPROCS=1`, and passed with 0.5 to 1.4 s on two cores with two busy loops. The fixed build passed every run: 30 to 113 ms with no load or two busy loops, 43 to 99 ms with four.
+## window_size latest over a session switch
+
+`window_size_switch_test.go`: `TestWindowSizeLatestRoundTripKeepsSize`, `TestWindowSizeLatestReturnKeepsItsInput` and `TestWindowSizeLatestLeftAloneNewClientTakesItsSize` (switch and close), with `TestSwitchIntoASmallerSessionKeepsItsSize` in `switch_rail_test.go` as the other side of the attach rule. Run on 2026-10-25 on macOS with each control built from the branch with one line changed; every other test of the four passed on each.
+
+| Control: what was cut | Where it fails | Verdict |
+| --- | --- | --- |
+| `handleAttach` clears every attach's input (`cs.lastActivity = time.Time{}` for the returning holder too) | `ReturnKeepsItsInput`: "over the round trip ws was 200x50 80x24, want only 200x50" | **caught** |
+| `pickLatest` keeps the size whoever is attached (`anyAttachedBy` made `true`) | `LeftAloneNewClientTakesItsSize/switch` and `/close`: "the session is 200x50 under latest, want 80x24" | **caught** |
+| `handleAttach` keeps every attach's input (the branch's first commit) | `SwitchIntoASmallerSessionKeepsItsSize`: "the panes span 120 columns, want 80" | **caught** |
+| `pickLatest`'s kept case cut, so the leave hands the session over at once (main) | `RoundTripKeepsSize` and `ReturnKeepsItsInput`: "over the round trip ws was 200x50 80x24" | **caught** |

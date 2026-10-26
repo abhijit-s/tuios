@@ -5052,7 +5052,7 @@ Draw the Mermaid diagrams of a file in the terminal, or save them as SVG or PNG.
 
 **Usage:**
 ```bash
-tuios mermaid FILE [--format svg|png|kitty|text] [-o FILE] [--diagram N] [--theme NAME]
+tuios mermaid FILE [--format svg|png|kitty|text] [-o FILE] [--diagram N] [--theme NAME] [--background theme|none] [--fit]
 ```
 
 FILE is a Mermaid source (`.mmd`), a Markdown file, or `-` for standard input.
@@ -5060,7 +5060,7 @@ A Markdown file gives each of its `mermaid` code blocks.
 
 | Output | When |
 |--------|------|
-| `kitty` | The terminal shows kitty graphics: kitty itself, or tuios on such a terminal. The picture fits the terminal |
+| `kitty` | The terminal shows kitty graphics: kitty itself, or tuios on such a terminal. The picture fits the terminal width |
 | `text` | Any other terminal. Box-drawing characters draw the diagram, and the labels are text |
 | `svg` | The output is not a terminal |
 
@@ -5070,6 +5070,20 @@ charts, user journeys, kanban boards, git graphs, sankey diagrams, block
 diagrams, architecture diagrams and requirement diagrams. Another type is
 written as its source, with a note on stderr. A drawing wider than the terminal
 is written at its full width, with a note on stderr.
+
+The text of a `kitty` picture has the size of the terminal's text, so the
+diagrams of a file have one text size. A small diagram is not made larger. A
+diagram wider than the terminal is made smaller to fit the width. A diagram
+taller than the terminal keeps its size and goes up into the scrollback: scroll
+up to see its top. `--fit` also makes it smaller to fit the height, two rows
+shorter than the terminal at most. The picture takes a fixed box of cells, so
+the next diagram starts under it. A blank line goes between two diagrams.
+
+A `kitty` or `png` picture has the background colour of the theme.
+`--background none`, or `background = "none"` in `[mermaid]`, leaves the
+background clear, so the diagram is on the background of your terminal. The
+labels keep their contrast against the theme's background colour, so use a
+theme that matches your terminal. An SVG has no background.
 
 `-o FILE` saves to a file, as SVG or PNG from its extension. With more than one
 diagram, the files get `-2`, `-3` and so on. `--scale` sets the pixels per SVG

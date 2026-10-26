@@ -1075,6 +1075,8 @@ func handleToggleHelp(_ tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
 	o.ShowHelp = !o.ShowHelp
 	if o.ShowHelp {
 		o.HelpScrollOffset = 0 // Reset scroll when opening
+	} else {
+		o.HelpClosed()
 	}
 	return o, nil
 }
@@ -1083,6 +1085,7 @@ func handleQuit(_ tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
 	// Close help if showing
 	if o.ShowHelp {
 		o.ShowHelp = false
+		o.HelpClosed()
 		return o, nil
 	}
 	return requestQuit(o)
