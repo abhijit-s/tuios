@@ -152,6 +152,8 @@ func (p *PTY) restoreLive(live handoffLive) {
 	}
 
 	p.outputSeq = live.OutputSeq
+	// The ring grows with the output, so an adopted pane's starts empty.
+	p.outputBuffer = make([]byte, outputRingSize(len(live.Ring)))
 	p.outputPos = copy(p.outputBuffer, live.Ring)
 	p.resizeMarks = p.resizeMarks[:0]
 	for _, m := range live.ResizeMarks {
