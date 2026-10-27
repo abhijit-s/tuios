@@ -79,7 +79,9 @@ no border and no title bar. The pane's program gets the full size. With it on,
 `dock_mode_icon_tiling` set the icon in the dock's mode pill. An empty value
 shows no icon, and `default` puts back the icon of the glyph set. An icon can
 be at most 8 cells wide, with no control characters. To remove the whole pill,
-remove `"mode"` from `[dock] left`.
+remove `"mode"` from `[dock] left`. While tiling is on, the pill shows the
+tiling icon. `appearance.dock_mode_pill = "input"` shows the terminal or window
+icon there, with the split letter after it.
 
 `appearance.dock_prefix_indicator` sets where an armed leader shows: `pill`
 (the default) puts a keyboard icon on the mode pill in the warning colour,
@@ -128,7 +130,8 @@ at the keyboard: to focus a pane, use `focus-window`.
 The pane navigator (`Ctrl+B /`, the `choose_tree` action) is a tree of every
 session, workspace and pane, with a preview and a search over names, folders,
 commands and screen text. `panes.navigator_layout` sets the layout it opens in:
-`tree` (default), `flat` or `cards`. It is for the person at the keyboard: a script reads
+`tree` (default), `flat` or `cards`. `panes.navigator_search = true` opens it
+ready to type a search. It is for the person at the keyboard: a script reads
 the same rows with `tuios list-windows --all --text N --json`.
 
 ## What the person sees

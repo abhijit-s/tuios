@@ -581,6 +581,7 @@ func (m *OS) settingsCategories() []settingsCategory {
 			opt("hints.all_panes"),
 			opt("panes.label_keys"),
 			opt("panes.navigator_layout"),
+			opt("panes.navigator_search"),
 		}),
 	}
 
@@ -603,6 +604,7 @@ func (m *OS) settingsCategories() []settingsCategory {
 			opt("appearance.dock_mode_icon_window"),
 			opt("appearance.dock_mode_icon_terminal"),
 			opt("appearance.dock_mode_icon_tiling"),
+			opt("appearance.dock_mode_pill"),
 			opt("appearance.dock_mode_split_letter"),
 			opt("appearance.dock_compact"),
 		}),

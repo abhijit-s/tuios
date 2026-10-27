@@ -701,6 +701,9 @@ a working negative control look like a broken one for half an hour.
 | `pane edges`, `pane focus --direction` and `pane zoom` unanswered | n/a, injected, cuts the wiring | drop `pane.edges`, `pane.focus_direction` and `pane.zoom` from `herdrMethods` | `TestHerdrFrontVimNavigation` ("pane edges exited 1") | **caught** |
 | A read-only pane swaps panes | n/a, injected | replace the `herdrAdmit(cs, "set-layout", ...)` check in `herdrPaneSwap` with a nil error | `TestHerdrFrontHoldsThePaneToItsGrants` ("swap from a read-only pane: exit 0", and "a refused call changed the layout"). The same cut in the focus and zoom methods is not caught, and that is correct: `focus-window` and `run-command` refuse the pane on the same grant | **caught** for swap |
 | `agent start` unanswered | n/a, injected, cuts the wiring | drop `agent.start` and `workspace.focus` from `herdrMethods` | `TestHerdrFrontStartsAnAgentAndShowsAWorkspace` ("agent start exited 1") | **caught** |
+| `agent start --kind codex` failed with `timeout` at once (#1200) | whole change | the binary from `origin/main` (`fd50e7b8`) | `TestHerdrFrontStartsCodexAndPi` ("agent start --kind codex exited 1", `timeout` after 1.3 s with `--timeout 8000`) | **caught** |
+| `agent start` ended its wait on the first `agent_not_found`, before the pane counted as an agent (#1200) | n/a, injected | the `agent_not_found` retry in `waitAgentStart` (`internal/herdrcli/run.go`) never matches | `TestHerdrFrontStartsCodexAndPi` ("agent start --kind codex exited 1", `timeout` after 1.4 s) | **caught** |
+| A pane at idle from a report that named no harness, such as Codex's OSC 7501 idle, never got the harness its process is, so the herdr front listed no agent in it (#1200) | n/a, injected | the harness fill in the `detected && !owned` case of `detectionPass` (`internal/session/agent_detect.go`) never runs | `TestHerdrFrontStartsCodexAndPi` ("agent start --kind codex exited 1", `timeout` at the 8 s deadline) | **caught** |
 | `workspace focus` unanswered | n/a, injected, cuts the wiring | drop `workspace.focus` from `herdrMethods` | `TestHerdrFrontStartsAnAgentAndShowsAWorkspace` ("workspace focus exited 1") | **caught** |
 | `pane zoom` zoomed the pane that had the focus before, not the one named (review finding 1) | n/a, injected, cuts the wiring | drop `m.FocusWindow(i)` for the named pane in `ZoomWindowByID` (`internal/app/os_minimize.go`) | `TestHerdrFrontVimNavigation` ("pane zoom --on exited 1": the client zoomed the focused pane and reported the named one unzoomed). Stress on `taskset -c 0-1`: the binary before the fix failed the new test 8 of 20, after it 0 of 20 | **caught** |
 | `agent start` quoted fish arguments the POSIX way (review finding 2) | n/a, injected | the `fish` case of `herdrShellQuote` returns the POSIX quoting | `TestHerdrFrontAgentStartQuotesForTheShell` ("the agent in the fish pane got the arguments" changed). In this corpus the touch commands did not run under the control, so the catch is the changed arguments | **caught** |
@@ -10129,6 +10132,32 @@ Each control cuts one change from the fix, rebuilds, runs the test twice, and re
 ```sh
 go test -count=1 -run '^TestReadGateNeverReportsOutputAfterAFailedWait$' ./internal/session/
 ```
+
+### PR 3: the handoff format
+
+- `TestSelfExecCarriesPaneState`: one pane's program prints a line on the main screen, reports a folder over OSC 7, marks a prompt and a command (`make build`, exit 3) with OSC 133, reports an OSC 7501 record, pushes a title onto the title stack and sets another, turns on bracketed paste, X10 and SGR mouse and the kitty keyboard flags, and draws on the alternate screen before it runs `cat -v`. After a self-exec the stream-pane snapshot of the pane is byte for byte the one before (626 bytes in the recorded run), and list-windows, get-agent-state and command-history say the same folder, title, record and command. A paste then reaches `cat -v` as `^[[200~PASTED^[[201~`.
+- `TestWireCarriesAnOpenCluster` (internal/session) flips from a known bug to a plain check: a snapshot taken between a thumbs up and its skin tone carries the open cluster, and the client's cursor matches the daemon's after the tone arrives.
+- `TestTokenOnlyCallerSurvivesSelfExec`: the test process, which runs in no pane, proves a pane with its `TUIOS_PANE_TOKEN` before and after a self-exec. The positive half is a call from inside the pane with `TUIOS_PANE_ID` and `TUIOS_PANE_TOKEN` removed from its environment, which only the kernel's pid can place: it is placed in the pane before and after.
+- `TestPaneViewResumesAcrossSelfExec`: a stream-pane opened before a self-exec is resumed after it with its `from_seq` and `boot_id`, as pane-view does. The reply must be a resume at that position under the same boot id, and the first output frame must start exactly there.
+
+Run on 2026-10-17 on macOS arm64, one build per control.
+
+| Control | How | Test that fails | Verdict |
+| --- | --- | --- | --- |
+| Drop `Modes` | `rec.State.Modes = nil` before `ApplyTerminalState` in `adoptPTY` | `TestSelfExecCarriesPaneState`: "the pane's snapshot differs after the handoff" and "a paste after the handoff reached the program as \"PASTED\"" | **caught** |
+| Drop `place` | drop `p.place.restore(live.Place)` from `restoreLive` | `TestSelfExecCarriesPaneState`: "the pane's facts differ after the handoff", "the pane's folder is \".../e2e/tui\" after the handoff" | **caught** |
+| Do not carry the open cluster | drop the `OpenCluster` capture from `vt/snapshot/capture.go` | `TestWireCarriesAnOpenCluster`: "the snapshot carries no open cluster after a thumbs up" | **caught** |
+| A fresh pane-token key | drop `d.manager.paneTokenKey = m.Daemon.PaneTokenKey` from `adopt` | `TestTokenOnlyCallerSurvivesSelfExec`: "after the handoff the token no longer proves the pane: ... pane_token does not prove pane_id" | **caught** |
+| No pid-to-pane map from the carried pids | `ShellPID` reads `p.cmd.Process.Pid`, which an adopted pane does not have | `TestTokenOnlyCallerSurvivesSelfExec`: "after the handoff the in-pane call was placed as \":\", want pid:<window>" | **caught** |
+| A new boot id | drop `h.bootID = ev.BootID` from `eventHub.restore` | `TestPaneViewResumesAcrossSelfExec`: "the boot id changed", "the stream came back as \"snapshot\" at 15, want a resume at 5" | **caught** |
+| No room for the carried ring | `restoreLive` copies `live.Ring` into the adopted pane's ring without sizing it first, and that ring starts empty (run on 2026-10-27) | `TestPaneViewResumesAcrossSelfExec`: "the stream came back as \"snapshot\" at 25, want a resume at 10" | **caught** |
+
+```sh
+TUIOS_E2E=1 TUIOS_E2E_BIN=/path/to/tuios \
+  go test -count=1 -run '^(TestSelfExecCarriesPaneState|TestTokenOnlyCallerSurvivesSelfExec|TestPaneViewResumesAcrossSelfExec)$' .
+go test -count=1 -run '^TestWireCarriesAnOpenCluster$' ./internal/session/
+```
+
 ## Deleting a worktree from the close-confirmation dialog
 
 `TestSidebarCloseDeletesWorktree` takes the third row of the close dialog on
@@ -11066,3 +11095,84 @@ The fixed build passes. With `TUIOS_E2E_FRAMES` set, the case writes
 `thread-codex-live.png` and `thread-codex.png`. Set `TUIOS_E2E_FONT_FALLBACK`
 to a list of font files that have Hangul and CJK, so that the frames draw
 them.
+## The pane navigator opens ready to type
+
+`TestNavigatorOpensReadyToType` in `navigator_test.go` writes `panes.navigator_search = true`, makes sessions home and work with a pane logs in work that prints a marker, and attaches a real client to home. ctrl+b / then esc with nothing typed must close the navigator. ctrl+b / then the marker typed at once, with no / first, must find logs on a row, in the preview and in the search line, and enter must switch to work with logs focused. Each control is a build to a separate binary, the source put back before the next. Run on 2026-10-26 on macOS, based on origin/main at 6d122034a.
+
+| Control: what was cut | Tests that fail | Verdict |
+| --- | --- | --- |
+| The fix removed (origin/main at 6d122034a) | "the marker typed right after prefix / was not a search" | **caught** |
+| `OpenNavigator` does not read `navigator_search` (`false && ...`) | "the marker typed right after prefix / was not a search" | **caught** |
+| The esc rule cut (`if false && o.NavigatorTypeFirst() ...`) | "esc with nothing typed did not close the navigator" | **caught** |
+
+## Agent-state marks from the glyph set
+
+`TestAgentMarksFollowTheGlyphSet` writes a glyph set naming `✋` for
+`state_needs_input` and `◆` for `state_working`, reports three agents over the
+CLI and reads the rail, the front window's title bar and the cockpit by cell,
+against a run on the shipped marks: the rail's names one column right of where
+the shipped marks put them, the wide cockpit's names where they put them.
+`TestAgentMarksLineUpInEveryList` uses the same set with two more panes that
+have no agent and reads the navigator's Panes box, its preview and the
+aggregate view: names in one column whether the row wears ✋, a one-cell mark
+or none, and the preview's location line under its header's name.
+`TestAgentMarksKeepTheirDefaults` is the positive half: no set, `--ascii-only`
+and the built-in `ascii` set. `TestAgentMarksRefuseWhatTheyCannotDraw` writes
+a four-cell mark, a mark wide only through the emoji variation selector and
+one carrying an escape, beside one good mark. The first and fourth rows were
+run on 2026-10-23, the rest on 2026-10-24.
+
+| Wiring | Cut | Tests that fail | Verdict |
+| --- | --- | --- | --- |
+| A set names the state marks at all | the binary built from the commit before the feature | `TestAgentMarksFollowTheGlyphSet` ("the rail never drew the set's marks"), `TestAgentMarksKeepTheirDefaults/ascii-set` ("the rail never drew \"! hand-pane\""), `TestAgentMarksRefuseWhatTheyCannotDraw` ("the rail did not fall back to ▲ and ○ beside the set's ◆") | **caught** |
+| A mark and its gap take the set's widest mark and one blank, so with ✋ in the set every rail name moves one column right and all stay in one column | `agentMarkLead` in `internal/app/render_helpers.go` returns 2, the shipped marks' lead, whatever the set draws | `TestAgentMarksFollowTheGlyphSet` ("work-pane starts at column 120, and at 120 with the shipped marks: want one column further right for the set's two-cell mark", the same for rest-pane, "work-pane has \"w\" at column 120, in the two blanks after its narrow mark", the same for rest-pane), `TestAgentMarksLineUpInEveryList` ("the navigator starts work-pane (mark \"◆\") at column 13 and hand-pane (mark ✋) at 14: the names are not in one column", the same for rest-pane and plain-a, and "the aggregate view starts plain-a (mark \"\") at column 30 and hand-pane (mark ✋) at 31", the same for work-pane and rest-pane) | **caught** |
+| A wide cockpit keeps its two blanks after the mark, so its names stay where the shipped marks put them | the `max(nx, x+5)` clause for a wide cockpit in `drawFleetRow` (`internal/app/render_cockpit.go`) cut, so every cockpit takes the rail's lead | `TestAgentMarksFollowTheGlyphSet` ("the cockpit starts hand-pane at column 5, and at 4 with the shipped marks", the same for work-pane and rest-pane) | **caught** |
+| A mark that is not one or two cells, or wide only through what follows it, keeps the default | the `MarkWidth` check in `sanitizeGlyphSet` cut | `TestAgentMarksRefuseWhatTheyCannotDraw` ("the rail did not fall back to ▲ and ○") | **caught** |
+| The navigator's pane rows lead with the set's mark and its gap | `navPaneName` in `internal/app/render_navigator.go` back to two hand-padded blanks for no mark and one blank after a mark | `TestAgentMarksLineUpInEveryList` ("the navigator starts work-pane (mark \"◆\") at column 13 and hand-pane (mark ✋) at 14: the names are not in one column", the same for rest-pane and plain-a, and "the preview's location line starts at column 64 and its header's name at 63", the header being drawn by the same function) | **caught** |
+| The navigator preview's location line starts under its header's name | the location line in `navigatorPreview` back to a two-blank lead | `TestAgentMarksLineUpInEveryList` ("the preview's location line starts at column 63 and its header's name at 64") | **caught** |
+| The aggregate view's rows lead with the set's mark and its gap | `aggregateViewRow` in `internal/app/render_aggregate_view.go` back to `mark, markW := pad+pad, 2` and one blank after the focus accent | `TestAgentMarksLineUpInEveryList` ("the aggregate view starts plain-a (mark \"\") at column 30 and hand-pane (mark ✋) at 31: the names are not in one column") | **caught** |
+| The navigator and the aggregate view, together | the binary built from the branch as it stood before the fix that moved both onto the lead | `TestAgentMarksLineUpInEveryList` (the navigator's three rows as in the navigator row above, and the aggregate view's plain-a row as in the aggregate row above) | **caught** |
+| A narrow cockpit, under 48 columns, starts its names after the set's lead | not cut | none: the tests draw a wide cockpit | **not caught** |
+| The title bar reserves the mark's measured width | not cut | none: the test's titles have room to spare | **not caught** |
+
+Repeat with `TUIOS_E2E=1 TUIOS_E2E_BIN=/path/to/tuios go test -count=1 -run
+'^TestAgentMarks' -v .` from `e2e/tui`.
+## Overlay frames match the pane borders
+
+`TestOverlayFramesMatchPaneBorders` attaches a truecolor client with `frame_panels = true`, `border_focused_color = "#ff8800"` and `pane_background = "#203040"`, tiles the one pane so the overlay covers pane content, and reads the command palette (`/panel`) and the rename dialog (`/dialog`). The four corners, a top-edge cell and a left-edge cell must carry `#ff8800` as ink and `#203040` as ground, and so must a blank padding cell inside the frame and a cell under body text no row highlight covers (the palette's `New window` row, the dialog's sigil). The cell just outside the frame is `#203040` and a pane border cell outside the overlay carries `#ff8800`. `/dialog` also holds every cell of the frame rows, title and hints included, to `#203040` (`wantFrameRowsOnPane`). `/overlay-border-color` adds `overlay_border_color = "#00c0ff"` and expects both frames in `#00c0ff` while the pane border still carries `#ff8800`. Each control was built into its own binary and the test run against it, the positive run on the same commit passing all three subtests. Run on 2026-10-20, and again on 2026-10-21 rebased on upstream `b0c27a481`, with the results below.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| A framed overlay's interior stays on its shade, leaving a band between the frame line and the content | The `onGround` passes at the end of `overlay.Panel.Render`, `overlay.Dialog.Render` and `overlay.FrameBlock` | Skipped | `/panel` (frame, padding and body text bg `#3a3943`, the panel surface), `/dialog` (bg `#201f26`, the dialog canvas), `/overlay-border-color` (the same palette cells) | **caught** |
+| `overlay_border_color` is ignored | The setting in `overlayFrameInk` | The `ConfigColor` branch deleted | `/overlay-border-color` (palette frame fg `#ff8800`, want `#00c0ff`) | **caught** |
+| A frame is drawn in the overlay's own edge colour | The focused border ink in `syncOverlayFrame` | `Ink` pushed as nil | `/panel` (fg `#646269`, the palette's edge), `/dialog` (fg `#858392`, its muted ink), `/overlay-border-color` (fg `#646269`, since the option reaches the frame through the same ink) | **caught** |
+
+An earlier design had the frame cells carry a marker colour that the compositor replaced with the cell beneath (`cellLayer.blit`), the interior keeping its shade. That design's controls for the frame cell's ground (`overlay.frameStyle`), the compositor's see-through pass and the dialog labels' frame ground no longer have code to remove: a framed overlay is one solid ground, so the first row covers all three.
+
+## Pane-styled overlays are opt-in and drawn from a per-client palette
+
+After review of #966 (overlay frames drawn like pane borders): the pane look moves behind `appearance.pane_overlays`, the overlay's ground and row grounds come from a palette built on the pane ground (`theme.PaneUI`) that the client passes to the renderers, and the frame ink travels on that palette (`overlay.Palette.Frame`). `onGround`, `swapBg`, `FrameColors` and `MeasuredOn` are gone, so the first and third rows of the section above have no code left to remove; `TestOverlayFramesMatchPaneBorders` now sets `pane_overlays = true` and passes as before.
+
+`TestStockOverlaysKeepTheirOwnLook` reads the rename dialog's frame and interior and the palette's search line and selected row with no appearance keys (`/stock`), with only `pane_background = "#203040"` (`/pane-background`) and at 16 colours (`/stock-16`). Its expected values were read off an upstream main build (`b90ef7e71`), against which the test passes: frame `#858392` on `#201f26`, interior `#201f26`, palette `#3a3943` with the selected row `#2d2c36`, and at 16 colours a bright black (index 8) frame on the default ground. `TestPaneOverlaysStepRowsFromThePaneGround` sets `pane_overlays` with `pane_background = "#203040"` and holds the palette's selected row to a navy step of it (`#15212d`, 1.21:1), not the ground and not the stock `#2d2c36`. `TestRailReadsOnALightPaneGround` holds the rail's session names and section header under catppuccin_mocha to their floors and to the inks a plain run draws, with `pane_overlays` and `pane_background = "#f4f2ea"`. `TestPaneOverlayPalettesStayWithTheirClient` (`internal/app`, run with `-race`) builds two clients with different session tints and pane backgrounds and has eight goroutines draw their overlay palettes interleaved. Run on 2026-10-21 on top of #965's commits at `b43e2fa07`.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| The pane look is the default | The `PaneOverlays` checks in `overlayGround` and `overlayFrameInk` | Both deleted | `TestStockOverlaysKeepTheirOwnLook/stock` (frame fg `#afffff` bg `#000000`, want `#858392` on `#201f26`), `/pane-background` (bg `#203040`), `/stock-16` (frame index 14, want 8), `TestOverlayFramesMatchPaneBorders/overlay-border-color-alone` (frame bg `#203040`, want `#201f26`) | **caught** |
+| Row grounds stay on the chrome's ramp | The ramp `buildUIOn` builds on the pane ground (`paneChrome`) | `PaneUI` returns `UI()` with only `Surface` and `Canvas` set to the ground | `TestPaneOverlaysStepRowsFromThePaneGround` (`selected row bg={R:45 G:44 B:54}`, 1.02:1 to the ground) | **caught** |
+| Frame ink and ground shared between the clients of one process | `overlayUI` computing both from its own client | Stored in a package `atomic.Pointer` and read back, as `overlay.SetFrameColors` did | `TestPaneOverlayPalettesStayWithTheirClient` (`green client drew Frame in another client's colour`, `red client drew Surface in another client's colour`); with a plain package variable `-race` also reports `WARNING: DATA RACE` | **caught** |
+| Text inks lifted against the pane ground for every caller | `theme.UI` left unmeasured, the lift only in `PaneUI` | Run against the previous head of #966, `684198a4d` | `TestRailReadsOnALightPaneGround` (`the rail's attached session is {193 189 185 255} with a light pane ground and pane_overlays, {255 250 241 255} without`) | **caught** |
+
+## Mode pill shows the input mode while tiling is on (discussion #1182)
+
+The `mode-pill` case of `TestDockModeIconsFollowTheConfig` turns tiling on and
+opens a pane, then reads the dock in window mode and in terminal mode. With the
+default `dock_mode_pill = "tiling"` both modes show the tiling icon and the
+split letter. With `dock_mode_pill = "input"` window mode shows the window icon
+and terminal mode shows the terminal icon, each with the split letter. Run on
+2026-10-27 on Linux.
+
+| Control: what was cut | Where it fails | Verdict |
+| --- | --- | --- |
+| The `input` branch in `tiledModeLabel` never taken | input: window mode never shows "WM" and the split letter | **caught** |
+
+With `TUIOS_E2E_FRAMES` set, the case writes `mode-pill-<setting>-<mode>.png`.

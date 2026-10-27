@@ -380,6 +380,12 @@ type Settings struct {
 	// drawn either way when the dock is hidden or has no mode pill.
 	DockPrefixIndicator string
 
+	// DockModePill is what the mode pill shows while tiling is on: "tiling"
+	// draws the tiling icon in both input modes, "input" draws the terminal
+	// or window icon, so the two modes differ by more than colour. The split
+	// letter follows either icon.
+	DockModePill string
+
 	// BorderFocusedGradient and BorderGradientAngle are
 	// appearance.border_focused_gradient and border_gradient_angle. Read the
 	// stops through BorderGradientStops.
@@ -932,6 +938,7 @@ func DefaultSettings() Settings {
 		DockPillCaps:                true,
 		DockModeSplitLetter:         true,
 		DockPrefixIndicator:         DefaultDockPrefixIndicator,
+		DockModePill:                DefaultDockModePill,
 		BorderGradientAngle:         DefaultBorderGradientAngle,
 		HideWindowButtons:           false,
 		WindowButtonStyle:           WindowButtonStyleDots,
