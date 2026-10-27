@@ -839,6 +839,8 @@ var ActionDescriptions = map[string]string{
 	"prev_session_in_space": "Previous session in this space",
 	"next_space":            "Next space",
 	"prev_space":            "Previous space",
+	"next_agent":            "Next agent pane, in the rail's order",
+	"prev_agent":            "Previous agent pane, in the rail's order",
 	"switch_session_1":      "Switch to session 1",
 	"switch_session_2":      "Switch to session 2",
 	"switch_session_3":      "Switch to session 3",

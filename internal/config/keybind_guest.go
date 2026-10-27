@@ -153,7 +153,8 @@ func terminalSafeAction(action string) bool {
 		strings.HasPrefix(action, "switch_space_") ||
 		action == "next_session" || action == "prev_session" ||
 		action == "next_session_in_space" || action == "prev_session_in_space" ||
-		action == "next_space" || action == "prev_space"
+		action == "next_space" || action == "prev_space" ||
+		action == "next_agent" || action == "prev_agent"
 }
 
 // reservedTerminalChord mirrors input.isReservedTerminalChord for a key written
