@@ -153,7 +153,9 @@ on a terminal too.
 
 ## Editing sidebar files
 
-Focus the sidebar with `s` in window mode or `Ctrl+B e`, then select a file.
+Focus the sidebar with `s` in window mode or `Ctrl+B e`, or walk into it with
+the terminal-mode focus keys from the outermost window (see Moving focus), then
+select a file.
 With both sidebar edges visible, `e` while the sidebar has keyboard focus
 switches focus to the other edge; press it again to return. `Ctrl+B H` toggles
 the independently configured opposite rail without changing the original
@@ -243,6 +245,8 @@ Four keys move focus to the window in a direction. Each key has a binding in win
 | Right | `l` | `alt+right` | `right` |
 
 Focus goes to the nearest window that lies in that direction and faces the focused window. At the edge of a tiled layout, focus stays where it is. With tiling off, a window that does not face the focused window can also get focus.
+
+The terminal-mode and prefix keys go on into the sidebar. When no window lies in that direction and the sidebar is shown on that edge, the sidebar gets the keyboard, as `s` in window mode does. The key in the opposite direction gives the keyboard back to the window you came from. A hidden sidebar stays hidden.
 
 With tiling off, `h` and `l` snap the focused window to the left or right half of the screen. `j` and `k` always move focus. The actions are `snap_left`, `snap_right`, `focus_down` and `focus_up` in `[keybindings.layout]`.
 
@@ -379,7 +383,8 @@ Workspaces and panes are listed for the sessions on the machine you are attached
 The optional [tuios-nvim-navigator](https://github.com/Tim4c/tuios-nvim-navigator)
 plugin lets the terminal-mode focus keys move through Neovim splits first. The
 feature is off by default. Set `appearance.nvim_navigation = true` to enable
-it. At a split edge, TUIOS moves to the adjacent pane instead. The plugin
+it. At a split edge, TUIOS moves to the adjacent pane instead, or into the
+sidebar when the pane is the outermost one on that side. The plugin
 announces when it is active, so the same keys keep their normal TUIOS behaviour
 in shells and other programs.
 
@@ -596,6 +601,16 @@ its repository in the sidebar, and tuios switches to it. This is what
 If the focused pane is not in a git repository, a message says so. The action
 is `new_worktree`, and the command palette has it too. A right-click on a
 session or a repository in the sidebar opens the same dialog.
+
+## Session note
+
+`Ctrl+B I` opens a one-line editor with the note of the session. A note says
+what the session is for or what comes next. `enter` saves the note. An empty
+note removes it. `esc` closes the editor. The action is `set_note`. The command
+palette and the menu of a session row in the sidebar have it too.
+
+The dock shows the note when you attach or switch to the session. See
+[SESSIONS.md](SESSIONS.md#return-notes).
 
 ## Picture in picture
 

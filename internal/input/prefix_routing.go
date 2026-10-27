@@ -158,19 +158,25 @@ func HandleTuiosPrefixCommand(msg tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd)
 // handleTerminalModeBinds dispatches the direct (prefix-less) binds from the
 // [keybindings.terminal_mode] section, plus the handful of main-section actions
 // that must keep working while typing into a shell. It reports whether the key
-// was consumed, and the command the action returned, which the caller must
-// pass on: an action that does its work off the UI goroutine (a session
-// switch, a space pick) does it in that command.
-func handleTerminalModeBinds(msg tea.KeyPressMsg, o *app.OS) (bool, tea.Cmd) {
+// was consumed.
+func handleTerminalModeBinds(msg tea.KeyPressMsg, o *app.OS) bool {
+	_, ok := runTerminalModeBinds(msg, o)
+	return ok
+}
+
+// runTerminalModeBinds is handleTerminalModeBinds with the action's command,
+// which the caller has to return: move_workspace_left/right do their work in
+// it, and dropping it left the move in flight forever (#1217).
+func runTerminalModeBinds(msg tea.KeyPressMsg, o *app.OS) (tea.Cmd, bool) {
 	if o.KeybindRegistry == nil {
-		return false, nil
+		return nil, false
 	}
 	action := lookupAction(o, msg, o.KeybindRegistry.GetTerminalModeAction)
 	if o.Mode == app.TerminalMode && isTerminalFocusAction(action) && o.ArmNvimNavigation(nvimNavigationDirection(action)) {
-		return false, nil
+		return nil, false
 	}
 	if _, cmd, ok := dispatchAction(action, msg, o); ok {
-		return true, cmd
+		return cmd, true
 	}
 
 	// Workspace switching is bound in the main section and has to work from
@@ -179,14 +185,14 @@ func handleTerminalModeBinds(msg tea.KeyPressMsg, o *app.OS) (bool, tea.Cmd) {
 	// Option glyph, which arrives with no modifier at all) are eligible, so
 	// rebinding a workspace onto a bare letter cannot start swallowing input.
 	if !isReservedTerminalChord(msg) {
-		return false, nil
+		return nil, false
 	}
 	action = lookupAction(o, msg, o.KeybindRegistry.GetAction)
 	if !isTerminalSafeAction(action) {
-		return false, nil
+		return nil, false
 	}
 	_, cmd, ok := dispatchAction(action, msg, o)
-	return ok, cmd
+	return cmd, ok
 }
 
 func isTerminalFocusAction(action string) bool {

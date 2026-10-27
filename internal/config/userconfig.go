@@ -133,6 +133,10 @@ type NotificationsConfig struct {
 	// BellModes.
 	Bell string `toml:"bell"`
 
+	// Style is how a dock message looks: full or plain. See
+	// NotificationStyles.
+	Style string `toml:"style"`
+
 	// Agent is the [notifications.agent] table: what happens when a pane's
 	// agent state changes. See agent_alerts.go.
 	Agent AgentAlertsConfig `toml:"agent"`
@@ -1430,6 +1434,8 @@ func DefaultConfig() *UserConfig {
 				// E opens the scrollback in the editor, one shift from the e
 				// that focuses the rail. Copy mode has it on ctrl+g.
 				ActionEditScrollback: {"E"},
+				// I writes the session's return note. i is the Inbox.
+				"set_note": {"I"},
 			},
 			WindowPrefix: map[string][]string{
 				"window_prefix_new":    {"n"},
@@ -1553,6 +1559,7 @@ func DefaultConfig() *UserConfig {
 	}
 	// Written out so the file shows the key and its default.
 	cfg.Notifications.Bell = BellToast
+	cfg.Notifications.Style = NotificationStyleFull
 	return cfg
 }
 
@@ -3190,20 +3197,30 @@ func (f FPSLimit) Valid() bool {
 	return ok
 }
 
+// notificationDurationMax is the longest lifetime, in seconds, that
+// notifications.KEY takes: the Max the option registry gives it, which is also
+// what the settings page and set-config allow.
+func notificationDurationMax(key string) int {
+	if opt, ok := LookupOption("notifications." + key); ok && opt.Max > 0 {
+		return opt.Max
+	}
+	return 3600
+}
+
 // ApplyNotificationConfig applies the [notifications] section to the package
-// globals the renderer reads. Absent or non-positive values leave the built-in
-// default in place rather than collapsing a message to zero seconds, which is
-// the failure mode the old 1500ms default was already close enough to.
+// settings the renderer reads. Absent or non-positive values leave the built-in
+// default in place rather than collapsing a message to zero seconds. A value
+// past the registry's Max is cut to it.
 func ApplyNotificationConfig(cfg *UserConfig, s *Settings) {
-	if cfg.Notifications.Duration > 0 {
-		s.NotificationDuration = time.Duration(cfg.Notifications.Duration) * time.Second
+	apply := func(key string, seconds int, into *time.Duration) {
+		if seconds <= 0 {
+			return
+		}
+		*into = time.Duration(min(seconds, notificationDurationMax(key))) * time.Second
 	}
-	if cfg.Notifications.WarningDuration > 0 {
-		s.NotificationWarningDuration = time.Duration(cfg.Notifications.WarningDuration) * time.Second
-	}
-	if cfg.Notifications.ErrorDuration > 0 {
-		s.NotificationErrorDuration = time.Duration(cfg.Notifications.ErrorDuration) * time.Second
-	}
+	apply("duration", cfg.Notifications.Duration, &s.NotificationDuration)
+	apply("warning_duration", cfg.Notifications.WarningDuration, &s.NotificationWarningDuration)
+	apply("error_duration", cfg.Notifications.ErrorDuration, &s.NotificationErrorDuration)
 	// ErrorSticky defaults to true, so nil means "keep the default" and only an
 	// explicit false turns it off.
 	if cfg.Notifications.ErrorSticky != nil {
@@ -3213,6 +3230,10 @@ func ApplyNotificationConfig(cfg *UserConfig, s *Settings) {
 	s.Bell = BellToast
 	if slices.Contains(BellModes, cfg.Notifications.Bell) {
 		s.Bell = cfg.Notifications.Bell
+	}
+	s.NotificationStyle = NotificationStyleFull
+	if slices.Contains(NotificationStyles, cfg.Notifications.Style) {
+		s.NotificationStyle = cfg.Notifications.Style
 	}
 }
 
@@ -3685,6 +3706,8 @@ var yieldingDefaults = map[string]bool{
 	"goto_picker": true,
 	// U after the prefix, new with the worktree key.
 	"new_worktree": true,
+	// I after the prefix, new with the return notes.
+	"set_note": true,
 	// p in window mode, new in the release after v0.8.2.
 	"toggle_pip": true,
 	// V after the prefix, new in the release after v0.8.2.

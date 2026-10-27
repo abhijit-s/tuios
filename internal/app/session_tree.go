@@ -114,6 +114,7 @@ func (m *OS) currentSessionInput() sessiontree.SessionInput {
 		CurrentWorkspace: m.dockWorkspace(),
 		Worktree:         worktreeRef(m.SessionWorktree),
 		Space:            m.SessionSpace,
+		Note:             m.SessionNote,
 		Windows:          windows,
 	}
 }
@@ -164,6 +165,7 @@ func (m *OS) foreignSessionInput(client *session.TUIClient, name string) session
 		Worktree:         worktreeRef(client.SessionWorktree(name)),
 		Space:            client.SessionSpace(name),
 		Attached:         client.SessionAttached(name),
+		Note:             client.SessionNote(name),
 		Windows:          windows,
 	}
 }

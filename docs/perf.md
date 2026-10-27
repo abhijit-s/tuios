@@ -3426,6 +3426,18 @@ the cut is 53,248 bytes on linux/amd64 and 67,104 on darwin/arm64. Sorts on
 render, key, event or broadcast paths, and over a type a hot path also sorts,
 keep slices.
 
+The sketch stable sorts over struct elements cut 65,536 bytes from linux/amd64
+and 51,632 from darwin/arm64. js.Sort (arrays of 64 or more elements), the
+requirement diagram's end lists and the text flowchart's end lists now go
+through sort.SliceStable, which is compiled once, where each used to compile
+its own copy of slices.SortStableFunc. The order is the same, ties included,
+because both run the same algorithm. Each call allocates about 3 times, and
+the layout runs once per source and width in loom, once per Show, Resize or
+Redraw of the area for text diagrams (internal/mermaid/live.go), never per
+compositor frame. On origin/main at dfc93341d (Go 1.26.10, as CI builds it)
+the build measured 47,972,514 and 44,528,114 bytes, and the branch measured
+47,906,978 and 44,476,482. The binary stays under the 50 MB ceiling.
+
 To raise the ceiling, do it on purpose in its own commit: change `ceiling` in
 `scripts/binary-size.sh`, record the new value and the reason here, and say in
 the commit message what grew and why it is worth the bytes. A Go version bump
@@ -3621,6 +3633,36 @@ benchmark's repeated reads used to find it in the cache.
 `TestCopyModeSearchKeyBudget` holds one search key to 4 MB, and
 `TestHistoryCaptureBudget` holds the locked part of a history save to 4 MB.
 Both fail on the tree before this change, at 258 MB and 24.7 MB.
+
+## 2026-10 copy-mode search, one-byte cells
+
+Measured on an Intel Core Ultra 9 185H with `GOMAXPROCS=6` under
+`taskset -c 0-5`, on a shared host at a load average of 5 to 6. The base and
+branch test binaries were built with `go test -c` and run alternately, 16
+rounds each, as `<bin> -test.run '^$'
+-test.bench '^BenchmarkCopyModeSearch(Key|Typing)$' -test.benchmem
+-test.count 1`, and compared with benchstat on the pooled rounds.
+
+`searchLine.add` runs once per cell of the whole history on every search key,
+and about 63% of `CopyModeSearchKey` was in it. A cell of one ASCII byte, the
+common cell, now appends its byte (folded as before) and its index and
+returns, skipping the decode loop and the fill loop. The text, the cell
+indexes and the columns are the ones the generic path builds. A wide cell
+whose content is one ASCII byte takes the fast path and records the same
+entries; empty, sixel, multi-byte and combining cells take the generic path.
+
+| Benchmark | before | after |
+|---|---|---|
+| `CopyModeSearchKey` | 8.959 ms | 6.990 ms (-21.97%, p=0.000) |
+| `CopyModeSearchTyping` | 29.35 ms | 24.87 ms (-15.24%, p=0.003) |
+
+B/op and allocs/op are identical (386.6 KiB and 505 per key, 8.111 MiB and
+17.65k per 16 keys). Single 8-round runs gave a Typing p between 0.007 and
+0.105 on this host, so the Key result is the firm one.
+
+The copy-mode search tests in `internal/input` pin the behaviour,
+`TestMultiCopyCountBeforeYankTakesEverySelection` pins the case fold, and the
+e2e `TestCopyModeSearchColumnInScrollback` pins the columns.
 
 ## 2026-10 emulator allocations, scroll window, idle ticker, memory trim
 
@@ -4974,3 +5016,51 @@ copy and its allocations, not those walks.
 
 - The `cappedSize` and measure walks, which keep the cost of a keystroke
   proportional to the size of the state.
+
+## 2026-10 the client drops the decoded scrollback lines
+
+Scrolling a pane back decodes every history row it shows into a fresh line
+and keeps it in the scrollback's line cache (up to 256 lines or 65,536 cells,
+about 7.3 MB at 112 bytes a cell). After the pane is scrolled down again
+nothing reads the cache, and it was held for the pane's life.
+
+### What changed
+
+- `Emulator.ReleaseScrollbackCache` drops the main screen's cache map and its
+  cell count under the cache lock. It leaves the ring and the generation
+  alone, and a line already handed out stays valid.
+- The client's emulator release (`TryReleaseEmulatorScratch`, at most once
+  every 30 s, only after a frame changed) calls it beside the reflow scratch
+  and alternate screen releases.
+
+### Numbers
+
+`GOTOOLCHAIN=go1.26.10`. End to end, `TestClientReleasesScrollbackCache` runs
+two clients over the real daemon, each with four tiled panes in a 240x72
+terminal. The panes are 118x68, 118x33, 58x33 and 58x33, as `stty size` prints
+them in the test. Both clients scroll every pane back to its oldest line, page
+down through about 200 lines and return, and the test compares the heap gap
+between the client that releases and the one that keeps the cache. Run with
+`-v` on this branch, the gap went from -120 KiB before the scrolling to
+8120 KiB after it, so the releasing client held 8240 KiB (2060 KiB a pane)
+less.
+
+Cost: after a release the next render decodes the lines of a scrolled pane
+again. A throwaway program outside the tree (`GOTOOLCHAIN=go1.26.10`, one
+emulator per pane size with 600 lines of scrollback) calls
+`ReleaseScrollbackCache` and then `ScrollbackLine` for as many lines as the
+pane has rows, 200 times per pane. The median time and allocation of one
+decode of a screen of history:
+
+| pane | rows | median | p90 | allocated |
+|---|---|---|---|---|
+| 118x68 | 68 | 464 us | 1.16 ms | 910 KiB |
+| 118x33 | 33 | 69 us | 370 us | 442 KiB |
+| 58x33 | 33 | 30 us | 208 us | 215 KiB |
+| 58x33 | 33 | 30 us | 221 us | 215 KiB |
+
+The four panes together are 593 us at the median, once every 30 s while a
+pane stays scrolled.
+
+The libghostty backend's `scrollCache` (`vt/ghostty_scrollback.go`) holds the
+same kind of cache and is not covered.

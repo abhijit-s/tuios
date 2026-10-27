@@ -192,7 +192,9 @@ var leaderSessionRows = []menuRow{
 	// The worktree key shares the switcher's row: a row more makes the
 	// leader's menu too tall for a 120x40 screen.
 	{parts: []menuPart{{"prefix_session_switcher", "Sessions"}, {"new_worktree", "New worktree"}}, desc: "Sessions/new worktree"},
-	{parts: []menuPart{{"prefix_workspace_switcher", "Workspaces"}}, desc: "Workspaces"},
+	// The session note shares the workspace switcher's row, for the same
+	// height reason.
+	{parts: []menuPart{{"prefix_workspace_switcher", "Workspaces"}, {"set_note", "Session note"}}, desc: "Workspaces/session note"},
 	{parts: []menuPart{{"choose_tree", "Find a pane"}}, desc: "Find a pane"},
 	{parts: []menuPart{{"goto_picker", "Go to anything"}}, desc: "Go to anything"},
 	{parts: []menuPart{{"prefix_close_session", "Close session"}}, desc: "Close session"},
@@ -275,18 +277,20 @@ func menuSections(prefixType string, st MenuState) []menuSection {
 	// panel stays short enough to read without scrolling the eye down a list.
 	sessions := menuSection{title: "Sessions", rows: slices.Clip(leaderSessionRows)}
 	if st.Spaces {
-		// The two switchers share a row, and so do detach and quit below,
-		// which pays for the two space rows: the leader's menu fills an 80x24
-		// screen, and a row more pushes it off the bottom. A key label wider
-		// than five cells widens its column and drops the menu to three
-		// columns at 80, so the space keys keep a row each.
+		// The two switchers share a row, as do the pane finder and the session
+		// note, and detach and quit below, which pays for the two space rows:
+		// the leader's menu fills an 80x24 screen, and a row more pushes it off
+		// the bottom. A key label wider than five cells widens its column and
+		// drops the menu to three columns at 80, so the space keys keep a row
+		// each.
 		rows := []menuRow{
 			leaderSessionRows[0],
 			pair("Prev/next in space", part("prev_session_in_space", "Previous in space"), part("next_session_in_space", "Next in space")),
 			pair("Prev/next space", part("prev_space", "Previous space"), part("next_space", "Next space")),
 			pair("Switchers/worktree", part("prefix_session_switcher", "Sessions"), part("prefix_workspace_switcher", "Workspaces"), part("new_worktree", "New worktree")),
+			pair("Find a pane/session note", part("choose_tree", "Find a pane"), part("set_note", "Session note")),
 		}
-		sessions.rows = append(rows, leaderSessionRows[3:]...)
+		sessions.rows = append(rows, leaderSessionRows[4:]...)
 	}
 	modes := menuSection{title: "Modes"}
 	// In daemon mode d detaches and Esc leaves for window mode; in local mode

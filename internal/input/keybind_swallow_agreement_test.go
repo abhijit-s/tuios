@@ -66,7 +66,7 @@ func TestSwallowSetMatchesTheInputPath(t *testing.T) {
 			kb.WindowManagement["next_session"] = []string{"alt+shift+n"}
 			kb.WindowManagement["close_window"] = []string{"alt+q"}
 		})
-		router, _ := handleTerminalModeBinds(tc.msg, fresh)
+		router := handleTerminalModeBinds(tc.msg, fresh)
 		if got := swallowed[config.CanonicalKey(tc.key)]; got != router {
 			t.Errorf("key %q: the report says the pane loses it (%v), the router says (%v)",
 				tc.key, got, router)
@@ -145,7 +145,7 @@ func TestAltGrTextReachesThePane(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			o := osWithBindings(t, func(*config.KeybindingsConfig) {})
-			if got, _ := handleTerminalModeBinds(tc.msg, o); got != tc.want {
+			if got := handleTerminalModeBinds(tc.msg, o); got != tc.want {
 				t.Errorf("handleTerminalModeBinds took the key: %v, want %v", got, tc.want)
 			}
 		})

@@ -43,6 +43,9 @@ const (
 	// a session in the typed space and switches to it, as new_session_in_space
 	// does for a space that exists.
 	RenameNewSpace
+	// RenameNote edits a session's return note, which the daemon owns. The
+	// same one-line editor, and an empty note clears it.
+	RenameNote
 )
 
 // Renaming reports whether a rename editor is open, whatever it targets.
@@ -71,6 +74,17 @@ func (m *OS) BeginRenameSession(name string) {
 	m.RenameKind = RenameSession
 	m.RenameTargetID = name
 	m.RenameBuffer = m.SessionLabel(name)
+}
+
+// BeginEditNote opens the one-line editor on a session's return note, seeded
+// with the note it has now.
+func (m *OS) BeginEditNote(name string) {
+	if name == "" {
+		return
+	}
+	m.RenameKind = RenameNote
+	m.RenameTargetID = name
+	m.RenameBuffer = m.sessionNote(name)
 }
 
 // BeginRenameWorkspace starts a rename of a workspace, seeded with its current
@@ -168,6 +182,10 @@ func (m *OS) RenameAppend(text string) {
 	if add == "" || combiningOnly(add) {
 		return
 	}
+	if m.RenameKind == RenameNote && len(m.RenameBuffer)+len(add) > session.NoteMaxBytes {
+		// The daemon keeps no more than this, so the editor takes no more.
+		return
+	}
 	m.RenameBuffer += add
 	if t := m.RenameTarget(); t != nil {
 		t.InvalidateCache()
@@ -261,6 +279,8 @@ func (m *OS) RenameDialogTitle() string {
 		return "move " + printableTitle(m.SessionLabel(m.RenameTargetID)) + " to space"
 	case RenameNewSpace:
 		return "new space"
+	case RenameNote:
+		return "note for " + m.SessionLabel(m.RenameTargetID)
 	default:
 		return "rename"
 	}
@@ -281,6 +301,12 @@ func (m *OS) CommitRename() tea.Cmd {
 			w.InvalidateCache()
 		}
 		return nil
+	}
+	if kind == RenameNote {
+		if target == "" || label == m.sessionNote(target) {
+			return nil
+		}
+		return labelVerbCmd(m.verbDialer(), "Note", "set-note", map[string]any{"session": target, "note": label})
 	}
 	if kind == RenameSession && label == m.SessionLabel(target) {
 		// Nothing changed, so there is nothing to send. A session that

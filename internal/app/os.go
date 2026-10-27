@@ -724,6 +724,14 @@ type OS struct {
 	// switch and the daemon's own addressing use.
 	SessionDisplayName string
 	SessionAccent      string
+	// SessionNote is the attached session's return note, daemon-owned like
+	// the label. noteAnnouncedFor is the session whose note the dock last
+	// showed on arrival, so the note is shown once per attach or switch and
+	// not again when it changes while you stay. paneNotes are the attached
+	// session's pane notes by window id, only the panes that have one.
+	SessionNote      string
+	noteAnnouncedFor string
+	paneNotes        map[string]string
 	// sessionColors is the automatic colour each session was arbitrated onto for
 	// the surface currently being drawn, settled once per render by
 	// refreshSessionColors. Derived state, never persisted and never synced: it
@@ -1590,6 +1598,14 @@ type OS struct {
 	SidebarScrollC            int
 	// SidebarScrollSp is the spaces section's, drawn by the split space layout.
 	SidebarScrollSp int
+
+	// stopCh is closed by Cleanup. Every listener command takes it when it is
+	// armed, so a session that ends leaves none of them parked on a channel
+	// nothing will send to again. See stopSignal.
+	stopMu sync.Mutex
+	stopCh chan struct{}
+	stopOn bool
+
 	// sidebarAgentAnchor keeps the agents section's viewport on the row it was
 	// left on rather than on the index that row happened to have, since that
 	// section resorts itself on live agent state. See sidebar_anchor.go.
@@ -2308,6 +2324,34 @@ func (m *OS) rebuildForSession(state *session.SessionState, savedWidth, savedHei
 	m.TriggerAltScreenRedraws()
 }
 
+// stopSignal returns the channel Cleanup closes. It is made on first use, so an
+// OS built as a literal has one too, and a command armed after Cleanup gets a
+// channel that is already closed. A command takes it when it is armed, on the
+// Update goroutine, rather than reading the field from inside itself, where it
+// would race Cleanup running on the connection's goroutine.
+func (m *OS) stopSignal() <-chan struct{} {
+	m.stopMu.Lock()
+	defer m.stopMu.Unlock()
+	if m.stopCh == nil {
+		m.stopCh = make(chan struct{})
+	}
+	return m.stopCh
+}
+
+// signalStop closes the channel stopSignal returns. A deliberate quit reaches
+// Cleanup twice, so only the first call closes it.
+func (m *OS) signalStop() {
+	m.stopMu.Lock()
+	defer m.stopMu.Unlock()
+	if m.stopCh == nil {
+		m.stopCh = make(chan struct{})
+	}
+	if !m.stopOn {
+		m.stopOn = true
+		close(m.stopCh)
+	}
+}
+
 // Cleanup performs cleanup operations when the application exits.
 // Cleanup releases per-session resources. It closes the daemon client, which
 // stops the client read loop and drops the daemon-side connection, so an SSH or
@@ -2344,6 +2388,12 @@ func (m *OS) Cleanup() {
 	m.endInboxWatch()
 	m.endTransfersWatch()
 	m.stopFileWatch()
+	m.stopThreadWatch()
+	// Ends every listener command the model armed, and the video frame writer.
+	// Without it an SSH or web session that ended would stay reachable from the
+	// goroutines bubbletea keeps for those commands, for the life of the server.
+	m.signalStop()
+	m.KittyPassthrough.stopAsyncWriter()
 	// The dock's components are subprocesses this client started, and a push
 	// component is a process that never exits on its own. An ephemeral SSH or
 	// web session is a goroutine inside a long-lived server, so without this
@@ -2352,6 +2402,13 @@ func (m *OS) Cleanup() {
 	m.StopDockComponents()
 	if m.DaemonClient != nil {
 		_ = m.DaemonClient.Close()
+		// The client's windows keep a writer, a coalescer and the emulator's
+		// reader running until they are closed, and those hold the model. Closing
+		// one only ends this client's side; the daemon owns the PTY. The client is
+		// closed first so no output arrives for a closed window.
+		for _, w := range m.Windows {
+			w.Close()
+		}
 		return
 	}
 

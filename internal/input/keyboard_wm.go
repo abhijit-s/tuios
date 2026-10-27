@@ -186,7 +186,7 @@ func HandleWindowManagementModeKey(msg tea.KeyPressMsg, o *app.OS) (*app.OS, tea
 
 	// The direct terminal-mode binds (window cycling) are honoured here too, so
 	// the same chord cycles windows in both modes.
-	if ok, cmd := handleTerminalModeBinds(msg, o); ok {
+	if cmd, ok := runTerminalModeBinds(msg, o); ok {
 		return o, cmd
 	}
 

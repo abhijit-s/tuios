@@ -25,7 +25,13 @@ type NvimNavigationMsg struct {
 }
 
 func ListenForNvimNavigation(ch chan NvimNavigationMsg) tea.Cmd {
-	return listenOnce(ch, func(msg NvimNavigationMsg) tea.Msg { return msg })
+	return listenNvimNavigationUntil(nil, ch)
+}
+
+// listenNvimNavigationUntil is ListenForNvimNavigation for a session that ends:
+// the command returns nil once stop is closed.
+func listenNvimNavigationUntil(stop <-chan struct{}, ch chan NvimNavigationMsg) tea.Cmd {
+	return listenOnce(stop, ch, func(msg NvimNavigationMsg) tea.Msg { return msg })
 }
 
 func (m *OS) ensureNvimNavigationChan() chan NvimNavigationMsg {
@@ -92,6 +98,16 @@ func (m *OS) onNvimNavigation(msg NvimNavigationMsg) {
 // FocusTerminalDirection moves terminal focus and refreshes its pane cache.
 func (m *OS) FocusTerminalDirection(direction string) int {
 	previous := m.FocusedWindow
+	// A key pointing from the focused rail back at the panes only leaves the
+	// rail, onto the pane it was entered from.
+	if m.LeaveRailToward(direction) {
+		return previous
+	}
+	// Any other focus key while the rail holds the keyboard would move pane
+	// focus under it, out of sight; it does nothing instead.
+	if m.SidebarFocused {
+		return previous
+	}
 	if m.AutoTiling && m.UseScrollingLayout && (direction == "left" || direction == "right") {
 		if direction == "left" {
 			m.ScrollingFocusLeft()
@@ -105,6 +121,8 @@ func (m *OS) FocusTerminalDirection(direction string) int {
 		if focused := m.GetFocusedWindow(); focused != nil {
 			focused.InvalidateCache()
 		}
+	} else {
+		m.enterRailAtEdge(direction)
 	}
 	return previous
 }

@@ -60,6 +60,7 @@ var learnUnavailable = map[string]string{
 	"kill_session":            learnNoteSessions,
 	"kill_session_next":       learnNoteSessions,
 	"rename_session":          learnNoteSessions,
+	"set_note":                learnNoteSessions,
 	"session_new_worktree":    learnNoteSessions,
 	"repo_new_worktree":       learnNoteSessions,
 	"set_session_space":       learnNoteSessions,

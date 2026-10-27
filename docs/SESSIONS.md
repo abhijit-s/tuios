@@ -17,6 +17,7 @@ what does and does not come back after each kind of interruption.
 - [Sessionizer](#sessionizer)
 - [The Scratch Terminal](#the-scratch-terminal)
 - [Picture in Picture](#picture-in-picture)
+- [Return Notes](#return-notes)
 - [What Survives](#what-survives)
 - [Upgrading the Daemon Without Ending Programs](#upgrading-the-daemon-without-ending-programs)
 - [Resurrection](#resurrection)
@@ -29,6 +30,7 @@ what does and does not come back after each kind of interruption.
 - [Adding a Phone](#adding-a-phone)
 - [Machines on a Tailnet](#machines-on-a-tailnet)
 - [Where State Lives](#where-state-lives)
+- [Local Network Access on macOS](#local-network-access-on-macos)
 - [Limitations](#limitations)
 - [Related Documentation](#related-documentation)
 
@@ -477,6 +479,25 @@ corner = "bottom-right"  # bottom-right, bottom-left, top-right or top-left
 The action is `toggle_pip`. If your config puts `p` on a different window
 mode action, `toggle_pip` has no key. `tuios keybinds doctor` shows this.
 
+## Return Notes
+
+A layout comes back after a detach or a restart. It does not tell you what you
+wanted to do next. A return note does. It is one short line on a session, or on
+one pane.
+
+```bash
+tuios note set next: run the migration
+```
+
+When you attach or switch to the session, the dock shows `Note: next: run the
+migration`. The sidebar shows the note after the session name, in place of the
+branch. The session switcher shows it after the label. The focus of the Inbox
+shows the note of the pane, else the note of its session.
+
+`Ctrl+B I` edits the note of the session in the app. An agent can leave a note
+from its pane before it stops. The note is saved with the session, so it
+survives a daemon restart. See [`tuios note`](CLI_REFERENCE.md#tuios-note).
+
 ## What Survives
 
 Five tiers of interruption, and what comes back after each. "Structure" means
@@ -496,6 +517,7 @@ BSP tree and the layout mode.
 | Agent conversations (resumable harnesses) | Yes, the agent keeps running | Yes, the agent keeps running | The conversation, not the process: see below | Same | Same |
 | Sidebar shown or hidden | Yes | Yes | Yes | Partial: as of the last save | Partial: as of the last save |
 | Space membership | Yes | Yes | Yes | Partial: as of the last save | Partial: as of the last save |
+| Return notes | Yes | Yes | Yes | Partial: as of the last save | Partial: as of the last save |
 | Copy-mode position, selection | No, per-client | No, per-client: the client attaches again | No | No | No |
 | Input mode (window vs terminal) | No, per-client | No, per-client: the client attaches again | No | No | No |
 
@@ -1292,6 +1314,78 @@ and says what to set, because that is someone expecting it to select a daemon.
 When it names the socket the command uses, or another live daemon (a script in
 a pane that set its own `XDG_RUNTIME_DIR`), the command runs against the daemon
 `XDG_RUNTIME_DIR` names.
+
+## Local Network Access on macOS
+
+On macOS 15 and later, a program needs permission to connect to devices on
+your local network. The permission belongs to an app, not to a command-line
+program. A daemon that a terminal started gets the permission of that terminal
+app. When the terminal app quits, the daemon continues without an app. Then
+programs in your panes get `No route to host` for local addresses, such as a
+NAS, a router or a Kubernetes API server. Programs from Apple, such as
+`/usr/bin/curl` and `/usr/bin/nc`, and connections to the internet continue to
+work. See [issue #1133](https://github.com/Gaurav-Gosain/tuios/issues/1133).
+
+To check for this problem, look at the parent of the daemon. A parent process
+ID of 1 means that the app that started the daemon is gone:
+
+```bash
+ps -o pid,ppid,command -p "$(pgrep -f 'tuios daemon' | head -1)"
+```
+
+To fix it, run the daemon as an app of its own:
+
+```bash
+tuios daemon-app install          # write and sign ~/Applications/TUIOS Daemon.app
+tuios kill-server                 # run this in a terminal outside tuios
+tuios                             # starts the daemon through the app
+```
+
+Then, in a pane, connect to a device on your local network. When macOS asks
+about TUIOS Daemon, click Allow. If you see no question, turn on TUIOS Daemon
+in System Settings > Privacy & Security > Local Network. The permission is for
+all panes of every daemon that the app starts.
+
+- **Each new daemon starts through the app.** `tuios`, `tuios new`,
+  `tuios start-server` and `tuios restart-server` start the daemon with
+  `open -a`, and give it the environment of the command that started it. Set
+  `TUIOS_NO_DAEMON_APP=1` to start a daemon directly for one command.
+- **Do not install the app again after you allow it.** The permission is tied
+  to the signature of the app, and each install makes a new signature.
+  `tuios daemon-app install` stops when the app exists. `--force` replaces
+  it, and then you must allow TUIOS Daemon again.
+- **An update of tuios does not change the app.** The app starts the tuios at
+  the path that `tuios daemon-app status` shows, normally the link that your
+  package manager keeps, such as `/opt/homebrew/bin/tuios`.
+- **To start the daemon at login**, add `--login`. It writes a LaunchAgent and
+  shows the `launchctl` command that loads it. A daemon that the login item
+  starts gets the environment of your login shell.
+- **Other protected resources.** macOS checks pane programs against the app.
+  The app asks for the local network and the microphone. A request for
+  another resource, such as the camera, is refused without a question.
+- `tuios daemon-app status` shows the app, the tuios it starts and the login
+  item. `tuios daemon-app uninstall` removes the app and the login item. The
+  entry in System Settings can stay.
+
+### If Local Network never turns on
+
+Sometimes macOS keeps an old decision for the app and does not ask again. This
+can occur after you used another app that started the daemon. Then panes still
+get `No route to host`. Reset the permissions of the app, so that macOS asks
+again. Run these commands in a terminal outside tuios:
+
+```bash
+tccutil reset All "$(osascript -e 'id of app "TUIOS Daemon"')"
+tuios kill-server && tuios
+```
+
+Click Allow on each question. If macOS does not ask about the local network,
+look in System Settings > Privacy & Security > Local Network. If that does not
+help, restart the Mac. `tccutil` can only reset a permission. It cannot give one.
+
+- `tccutil list` does not show the local network permission. To check it,
+  connect to a device on your local network from a pane.
+- The Local Network list can show the app as `tuios`, not as TUIOS Daemon.
 
 ## Limitations
 

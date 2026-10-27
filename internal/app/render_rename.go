@@ -12,6 +12,10 @@ import (
 // picker and the file dialogs, and keeps all three hints in the border.
 const renameDialogWidth = 44
 
+// noteDialogWidth is the editor's inner width for a return note, which is a
+// line of words rather than a name.
+const noteDialogWidth = 60
+
 // renameHintClear is the clear hint's index in renameHints, which is how its
 // drawn rect is found to make it pressable.
 const renameHintClear = 1
@@ -48,7 +52,11 @@ func (m *OS) renderRenameDialog() (string, overlay.Geometry, int, int, bool) {
 	}
 	pal := m.overlayUI()
 	renderW := m.GetRenderWidth()
-	inner := overlay.DialogFitWidth(renameDialogWidth, renderW)
+	want := renameDialogWidth
+	if m.RenameKind == RenameNote {
+		want = noteDialogWidth
+	}
+	inner := overlay.DialogFitWidth(want, renderW)
 
 	// Sigil, a space, the field, and one cell of right pad, so the cursor never
 	// sits against the frame.

@@ -1393,6 +1393,27 @@ With attached clients the last line adds how many were told to attach again, suc
 **Crash of the new binary:** before any pane pauses, the daemon starts a keeper, `tuios.prev daemon handoff-keeper`, that holds a copy of every pane's terminal, the sockets and the start lock until the new image is up, then exits. If the new image dies first (a crash, the out-of-memory killer, `SIGKILL`), the keeper runs `tuios.prev` in its own place, which takes the panes back: every program keeps running with the same pid, and the daemon comes back under the keeper's pid. The command says the new binary died before it was up and names both pids, and `--json` has `recovered` and `fallback` set; it exits 1. The daemon brought back this way is not the parent of the programs it took back: it still learns when one ends, with its exit status on macOS and without it (`-1`) on Linux. If the new image had already started reading the panes when it died, what it read is lost from their screens. A daemon stopped on purpose (`kill-server`) during the upgrade is not brought back.
 
 The design is in [design/live-handoff.md](design/live-handoff.md). What each kind of restart keeps is in [SESSIONS.md](SESSIONS.md#what-survives).
+### `tuios daemon-app`
+
+macOS only. Write a small app, TUIOS Daemon, that starts the daemon. Panes of
+a daemon that the app started keep local network access after the terminal
+quits. See [Local Network Access on macOS](SESSIONS.md#local-network-access-on-macos).
+
+**Usage:**
+```bash
+tuios daemon-app install [--login] [--force] [--binary PATH] [--path PATH]
+tuios daemon-app status
+tuios daemon-app uninstall [--path PATH]
+```
+
+**Flags of `install`:**
+- `--login`: Also write a LaunchAgent that opens the app at login
+- `--force`: Replace an app that is already there. This removes its Local Network permission
+- `--binary <path>`: The tuios that the app starts. The default is the tuios on `PATH`
+- `--path <path>`: Where to write the app. The default is `~/Applications/TUIOS Daemon.app`
+
+When the app is installed, each new daemon starts through it. Set
+`TUIOS_NO_DAEMON_APP=1` to start a daemon directly.
 
 ### Workflow Example
 
@@ -3195,6 +3216,46 @@ tuios set-session-accent -s work cyan
 
 # Clear the accent
 tuios set-session-accent
+```
+
+### `tuios note`
+
+Set, read or clear the return note of a session or a pane. A note is one short
+line. It says what the session is for or what comes next. tuios shows it in
+the dock when you attach or switch to the session. The sidebar, the session
+switcher and the Inbox show it too.
+
+The note is kept with the session. It survives a detach and a daemon restart.
+A note is at most 200 bytes. Newlines become spaces.
+
+**Usage:**
+```bash
+tuios note set TEXT... [flags]
+tuios note get [flags]
+tuios note clear [flags]
+```
+
+**Flags:**
+- `-s, --session <name>`: Target session (default: this pane's session, else the most recently active)
+- `-w, --window <pane>`: A pane by name or id, for the pane's note (default: the session's note)
+- `--json`: Output result as JSON
+
+`tuios note get` prints the note, and prints nothing when there is none.
+`tuios ls --json` also gives each session's `note`.
+
+**Examples:**
+```bash
+# Say what comes next before you stop
+tuios note set next: run the migration
+
+# Read it back
+tuios note get
+
+# A note on one pane
+tuios note set -w build waiting for CI
+
+# Remove the note
+tuios note clear
 ```
 
 ### `tuios set-session-space`

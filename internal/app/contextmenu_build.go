@@ -419,6 +419,7 @@ func (m *OS) sessionMenu(sessionID string) (string, []ContextMenuItem) {
 		// which no space can hold.
 		m.item(glyphSwitch, "Move to space...", "set_session_space", m.sessionIsGlobal(sessionID)),
 		m.item(glyphPalette, "Session color", "set_session_accent", false),
+		m.item(glyphRename, "Note...", "set_note", false),
 		m.item(glyphDetach, "Detach", "prefix_detach", !attached),
 		m.item(glyphSwitch, "Switch session...", "prefix_session_switcher", false),
 		// Dimmed off the attached session for the same reason detach is: the
