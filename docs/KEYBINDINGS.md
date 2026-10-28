@@ -1450,6 +1450,14 @@ edit_scrollback = ["ctrl+o"]
 The tmux preset uses `Ctrl+B E` to make the splits equal. With that preset,
 the editor key is `Ctrl+B Ctrl+T E`.
 
+### Other end of a selection
+
+In a `v` or `V` selection, `o` moves the copy cursor to the other end of the
+selection. The selected text does not change. The next motion moves the end
+that the cursor is on now. Press `o` again to go back. If the other end is
+outside the pane, the pane scrolls to show it. tmux and vim use `o` the same
+way.
+
 ### Clear the scrollback
 
 The `clear_scrollback` action clears the scrollback of the focused pane. It
@@ -1702,7 +1710,7 @@ the Inbox held is the Needs you group. See
 |---|---|
 | `ctrl+b i` | Open the agents view |
 | `ctrl+b o` | Go to the oldest item that needs you; `o` again, inside the repeat window, goes to the next |
-| `opt+shift+j` / `opt+shift+k` (`alt+shift+j` / `alt+shift+k` off macOS), or `ctrl+b J` / `ctrl+b K` | Next and previous agent pane (`next_agent`, `prev_agent`), in the order the rail's agents section lists them, wrapping at the ends. From a pane with no agent they go to the first and the last. An agent in another session or workspace is switched to, as choosing its row does. The chords work in terminal mode too |
+| `opt+shift+j` / `opt+shift+k` (`alt+shift+j` / `alt+shift+k` off macOS), or `ctrl+b J` / `ctrl+b K` | Next and previous agent pane (`next_agent`, `prev_agent`), in the order the rail's agents section lists them, wrapping at the ends. From a pane with no agent they go to the first and the last. An agent in another session or workspace is switched to, as choosing its row does. The chords also work in terminal mode and while the rail has the keyboard |
 | `ctrl+b M` | Open the agents view on the mail for you (`m` there opens the whole mailbox) |
 
 Inside it:
@@ -1716,6 +1724,8 @@ Inside it:
 | `space` | Read an approval's or a question's prompt and answer it here |
 | `n` | Open the New agent sheet. See below |
 | `c` | On an attempt of a fan: compare the attempts. See below |
+| `b` | Show the task board, the cards grouped by stage, or the agents again |
+| `t` | On a card: take it for the pane behind the agents view. `n` on a card opens the New agent sheet on it |
 | `o` | Open what the agent has shown, such as a TML form, on its Artifacts tab, and use it. `esc` goes back to the list |
 | `f` | Show only what needs you, then each kind of item, then every agent |
 | `s` | Step the order inside each group |
@@ -1724,7 +1734,7 @@ Inside it:
 | `y` `p` `m` | Resume, pass held mail on, open the mailbox |
 | `x` `*` | Mark an agent, or every agent shown, for a bulk answer. A marked row shows a mark, and the header counts the marks |
 | `1` `3` with marks | Allow every marked approval once, after a sheet that lists them, or reject them |
-| `[` `]` | Switch the focus tabs: Thread, Changes, Artifacts, Checkpoints and Pane |
+| `[` `]` | Switch the focus tabs: Card on the board, Thread, Changes, Artifacts, Checkpoints and Pane |
 | `J` `K` | Scroll the thread, or a long plan waiting for a yes. On the Artifacts tab, move between the artifacts |
 | `e` | Show every line of every card in the thread |
 | `v` | Review the agent's changes |
@@ -1841,7 +1851,8 @@ These keys are in three sections of their own, rebindable like any other:
 `inbox_write`, `inbox_sort`, `inbox_view_pane`, `inbox_new_agent`,
 `inbox_allow`, `inbox_allow_always`, `inbox_open`, `inbox_back`,
 `inbox_help`, `inbox_mark`, `inbox_mark_all`, `inbox_tab_prev`,
-`inbox_tab_next`, `inbox_expand`, `inbox_compare`, `inbox_artifact`),
+`inbox_tab_next`, `inbox_expand`, `inbox_compare`, `inbox_artifact`,
+`inbox_board`, `inbox_take`),
 `[keybindings.inbox_peek]` (the prompt: `peek_approve`, `peek_approve_always`,
 `peek_deny`, `peek_type`, `peek_read_again`, `peek_go`, `peek_back`) and
 `[keybindings.mail]` (the mailbox: `mail_down`, `mail_up`, `mail_page_down`,

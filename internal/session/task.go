@@ -3,6 +3,8 @@ package session
 import (
 	"slices"
 	"strconv"
+
+	"github.com/Gaurav-Gosain/tuios/internal/config"
 )
 
 // Task cards: one unit of work each, kept by the daemon in the session it
@@ -30,18 +32,19 @@ import (
 // The stages, in the order a card usually moves through them. They are wire
 // values. claim-task moves a card in todo or plan to doing, and finish-task
 // moves it to done; every other move is set-task-stage's.
+// They live in config, which validates [tasks] stages without this package.
 const (
-	TaskStageTodo    = "todo"
-	TaskStagePlan    = "plan"
-	TaskStageDoing   = "doing"
-	TaskStageVerify  = "verify"
-	TaskStageReview  = "review"
-	TaskStageShipped = "shipped"
-	TaskStageDone    = "done"
+	TaskStageTodo    = config.TaskStageTodo
+	TaskStagePlan    = config.TaskStagePlan
+	TaskStageDoing   = config.TaskStageDoing
+	TaskStageVerify  = config.TaskStageVerify
+	TaskStageReview  = config.TaskStageReview
+	TaskStageShipped = config.TaskStageShipped
+	TaskStageDone    = config.TaskStageDone
 )
 
 // TaskStages is every stage, in order.
-var TaskStages = []string{TaskStageTodo, TaskStagePlan, TaskStageDoing, TaskStageVerify, TaskStageReview, TaskStageShipped, TaskStageDone}
+var TaskStages = config.TaskStages
 
 // The actions a card's history records. They are wire values, and the ones
 // task-changed carries in action.
@@ -187,18 +190,18 @@ func newTaskID(st *SessionState) string {
 	return "t" + strconv.FormatUint(st.NextTaskID, 10)
 }
 
-// heldTasks maps each window that holds a card to the ids of the cards it
-// holds, oldest first.
-func heldTasks(tasks []TaskState) map[string][]string {
-	var out map[string][]string
+// heldTasks maps each window that holds a card to the cards it holds, oldest
+// first.
+func heldTasks(tasks []TaskState) map[string][]TaskState {
+	var out map[string][]TaskState
 	for _, tk := range tasks {
 		if tk.Holder == "" {
 			continue
 		}
 		if out == nil {
-			out = map[string][]string{}
+			out = map[string][]TaskState{}
 		}
-		out[tk.Holder] = append(out[tk.Holder], tk.ID)
+		out[tk.Holder] = append(out[tk.Holder], tk)
 	}
 	return out
 }

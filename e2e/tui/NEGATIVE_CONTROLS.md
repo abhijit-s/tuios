@@ -11103,6 +11103,31 @@ The artifacts `tasks-claim-and-restart.txt` and `tasks-release-with-pane.txt`
 hold each pane's claim output, the card histories after the pane closed and
 the agent left, and the listings after the restart and after the client sync.
 
+## Task board (#1093)
+
+`TestTaskBoardGroupsCardsByStage` in `tasks_board_test.go` adds six cards in
+session S, holds two from fake agent panes, blocks one, stages one to verify
+and finishes one. It lists them with `tuios task ls --all-sessions`, opens the
+agents view, presses `b`, and reads the board: the stage heads in order with
+their counts, Done folded, the blocked card first in Todo, a holder that needs
+you before one that works, the Card tab's history. A claim from the CLI must
+reach the open board, `t` must take a card for the focused pane, `n` must open
+the sheet with the card's title, the rows must be one line at 70x16, and
+`[tasks] stages` must hide Verify and Done. Run on 2026-10-28 on macOS against
+`tasks-board` on upstream main at `ecdeec289`. Each control is a text
+replacement, built and put back before the next.
+
+| Control: what was changed | Where it fails | Verdict |
+| --- | --- | --- |
+| The task types left off the Inbox subscription (`inboxWatchOnce`, `inbox.go`) | "the CLI claim of t4 never showed on the board", after the 10 s wait | **caught** |
+| No blocked rank inside a stage (`rank` in `buildBoardRows`, `cockpit_board.go`) | "the blocked card is not the first row of Todo" | **caught** |
+| The stage order inside a stage cut to oldest first (the `rank` compare in `buildBoardRows`) | "t2, held by an agent that needs you, is below t1" | **caught** |
+| `[tasks] stages` ignored (`ckStageShows` returns true) | "[tasks] stages = [doing, todo] still shows Verify or Done" | **caught** |
+| `list-tasks` all_sessions handler cut (`verbListTasks`, `verb_task.go`) | "task ls --all-sessions listed 6 cards (all_sessions false)": the daemon answers for one session | **caught** |
+
+The frames are `task-board-200x55`, `task-board-spawn-200x55`,
+`task-board-70x16` and `task-board-stages-200x55`, as text and PNG.
+
 ## Border prominence by mode and on light grounds (discussion #850)
 
 `TestFocusedBorderStandsOutOnTheHostGround` runs on Nord, Catppuccin Mocha
@@ -11260,23 +11285,6 @@ and terminal mode shows the terminal icon, each with the split letter. Run on
 
 With `TUIOS_E2E_FRAMES` set, the case writes `mode-pill-<setting>-<mode>.png`.
 
-## Next and previous agent walk the rail's order
-
-`TestCycleAgentsWalksTheRailOrder` makes two working agents in `alpha` and one in `bravo` waiting on an approval, so the rail's default needs-you order (`bravo/ag-b1`, `alpha/ag-a1`, `alpha/ag-a2`) differs from the order the panes were opened in. It checks the rail draws that order, then presses `alt+shift+j` and `alt+shift+k` in terminal mode from `alpha`'s plain shell, and the leader's `J` and `K`, and after each press reads the attached session from `ls --json` and its focused pane from `list-windows`. Each press moves to the next row, crossing sessions both ways, and next past the last and previous before the first wrap. A line typed at the end runs in the focused pane, so the keys never left terminal mode. Each control was built into its own binary from the feature commit and the test run against it; the unmodified binary passed. Run on 2026-10-27 on macOS.
-
-| Control: what was cut | Where it fails | Verdict |
-| --- | --- | --- |
-| `m.sidebarSortAgents(agents)` removed from `railAgentOrder`, leaving tree order | step 1: `want bravo/ag-b1 focused, have attached [alpha] with 5b4890ae-… focused there` (it went to `ag-a1`, first in tree order) | **caught** |
-| The wrap in `CycleAgent` clamped: `next = min(max(i+delta, 0), n-1)` | step 4, next past the last: `want bravo/ag-b1 focused, have attached [alpha] with 25163ad7-… focused there` | **caught** |
-| `next_agent` and `prev_agent` dropped from `isTerminalSafeAction` | step 1: `want bravo/ag-b1 focused, have attached [alpha] with d3ed3ea6-… focused there` (the chord went to the shell) | **caught** |
-
-With `TUIOS_E2E_FRAMES` set, the test writes `step-NN.txt` and `step-NN.styled.txt` for each press and `cycle-agents.txt`, the walk step by step, under `TestCycleAgentsWalksTheRailOrder/`.
-
-`TestCycleAgentsLeaderKeysYieldToTheUsers` writes a config that gives `J` and `K` after the prefix to `swap_down` and `swap_up`, as a tmux-style config does. It checks that `keybinds explain` says those keys still swap after the prefix, and that `keybinds doctor` reports `next_agent` and `prev_agent` as defaults left off for the swaps. Run on 2026-10-28 on macOS; the unmodified binary passed.
-
-| Control: what was cut | Where it fails | Verdict |
-| --- | --- | --- |
-| `next_agent` and `prev_agent` dropped from `yieldingDefaults` | `explain says J after the prefix runs [next_agent], want swap_down` | **caught** |
 ## Return notes
 
 `TestReturnNotesComeBackWithTheSession` sets a note on a detached session and
@@ -11350,3 +11358,85 @@ machine, in a folder under that machine's home. Run on 2026-10-27 on Linux.
 | Control: what was cut | Where it fails | Verdict |
 | --- | --- | --- |
 | The keys `dropStaleDuplicateKeys` returns left out of `RetiredKeybinds` (its result ignored, as before the change) | `the doctor does not report , taken from swap_down by prefix_settings` | **caught** |
+## The other end of a copy-mode selection (#1226)
+
+`TestCopyModeVisualOtherEnd` presses `o` in a `v` and a `V` selection and
+reads each copy off the wire. The issue's case `0 v l l o l y` copies `bc`
+only when `o` moves the cursor to the start. The positive halves: `0 v l l o
+y` still copies `abc`, `o o l` copies `abcd`, and in a `V` selection whose
+start is off screen, `o` brings the start row back with the cursor on it, and
+`j y` copies ROW06 to ROW50. Run on 2026-10-27 on Linux.
+
+| Control: what was cut | Where it fails | Verdict |
+| --- | --- | --- |
+| The `case "o"` in `handleVisualInput` | `0 [v l l o l y] copied "abcd", want "bc"` | **caught** |
+
+With `TUIOS_E2E_FRAMES` set, the test writes `other-end-v.png`,
+`other-end-V-before.png` and `other-end-V-after.png`.
+## External new-window takes the preselection (issue #1228)
+
+The `cli_*` cases of `TestBSPNewWindowSplitsTheFocusedPane` lay out three tiled
+panes over a daemon session and focus the full-height left pane. They set the
+preselection with `tuios run-command Preselect SIDE` and make the window with
+`tuios new-window --cwd DIR`, from outside the client. The new pane must split
+the focused pane on the preselected side, and the other panes must not move.
+Run on 2026-10-27 on Linux.
+
+| Control: what was cut | Where it fails | Verdict |
+| --- | --- | --- |
+| The preselection fallback in `insertSyncedWindow` (a binary built from main before the fix) | `cli_spiral_preselect_left`: "the new pane is not left of the focused pane", new pane at (0,23) 80x23 below the focused pane. `cli_alternate_preselect_up`: "the new pane is not above the focused pane", new pane at (40,0) 40x46 beside it. `cli_spiral_no_preselection` passes on both binaries | **caught** |
+
+With `TUIOS_E2E_FRAMES` set, each `cli_*` case writes `before.png` and `after.png`.
+## Sidebar peek option
+
+`TestRailPeekOnTheDefaultOrderListsEveryPane` first peeks `pk-six` by hovering
+its row. It then runs `tuios set-config appearance.sidebar.peek false` and
+hovers the same row again. The terminals header must not name `pk-six`, and
+no line under it may be a `pk-six` pane (issue #1227). The first hover proves
+that the pointer reaches the row, so a hover that never lands cannot pass for
+a peek that is off. Run on 2026-10-27 on Linux, on branch
+`feat/sidebar-peek-option` from `main` (`3d91716c0`).
+
+| Control: what was cut | Where it fails | Verdict |
+| --- | --- | --- |
+| The setting check in `sidebarPeekAt` never taken (`if false && !m.sidebarPeekAllowed()`) | with the peek off, hovering `pk-six` names it on the terminals header | **caught** |
+| The key never read (`s.SidebarPeekEnabled = true` in `ApplyAppearanceConfig`) | the same assertion | **caught** |
+| The positive half | none: the peek with the default config lists the six panes, and with `peek = false` the section keeps `pk-one`'s pane | **guard** |
+
+With `TUIOS_E2E_FRAMES` set, the test writes `peek-on.png` and `peek-off.png`.
+## A new pane's shell starts at the size of its tile (#1205)
+
+`TestNewPaneShellStartsAtItsSize` opens three panes into a tiled layout in four
+setups: daemon and standalone, each with animations on and off. The shell is
+bash, with an rc file that logs the size at start, every SIGWINCH and every
+prompt. Each new pane is judged when its shell has drawn a prompt and its frame
+on screen holds the size the shell last logged. A new pane's shell must take no
+SIGWINCH before the next pane is made. Run on 2026-10-28 on Linux, four test
+processes at once, three runs each.
+
+| Control: what was cut | Where it fails | Verdict |
+| --- | --- | --- |
+| The whole fix (main at `3d91716c0`) | daemon, daemon-animated and standalone-animated, 12 of 12 runs: "new pane N started at 43x158 and took 1 SIGWINCH" (19x78 in standalone-animated). The standalone setup passes, as it did on main before the fix | **caught** |
+
+The fixed build passes 12 of 12 runs under the same load. The first draft of
+the test waited a fixed 1.5 s and used zsh. The CI runners have no zsh, so no
+pane was made. A draft that made the next pane right after the prompt caught
+only 5 of 48 cases: the client resized the new pane after its prompt.
+## Next and previous agent walk the rail's order
+
+`TestCycleAgentsWalksTheRailOrder` makes two working agents in `alpha` and one in `bravo` waiting on an approval, so the rail's default needs-you order (`bravo/ag-b1`, `alpha/ag-a1`, `alpha/ag-a2`) differs from the order the panes were opened in. It checks the rail draws that order, then presses `alt+shift+j` and `alt+shift+k` in terminal mode from `alpha`'s plain shell, and the leader's `J` and `K`, and after each press reads the attached session from `ls --json` and its focused pane from `list-windows`. Each press moves to the next row, crossing sessions both ways, and next past the last and previous before the first wrap. A line typed at the end runs in the focused pane, so the keys never left terminal mode. Each control was built into its own binary from the feature commit and the test run against it; the unmodified binary passed. Run on 2026-10-27 on macOS.
+
+| Control: what was cut | Where it fails | Verdict |
+| --- | --- | --- |
+| `m.sidebarSortAgents(agents)` removed from `railAgentOrder`, leaving tree order | step 1: `want bravo/ag-b1 focused, have attached [alpha] with 5b4890ae-… focused there` (it went to `ag-a1`, first in tree order) | **caught** |
+| The wrap in `CycleAgent` clamped: `next = min(max(i+delta, 0), n-1)` | step 4, next past the last: `want bravo/ag-b1 focused, have attached [alpha] with 25163ad7-… focused there` | **caught** |
+| `next_agent` and `prev_agent` dropped from `isTerminalSafeAction` | step 1: `want bravo/ag-b1 focused, have attached [alpha] with d3ed3ea6-… focused there` (the chord went to the shell) | **caught** |
+| The rail's hand-off of terminal-safe chords in `handleSidebarKey` cut (`sidebar_keyboard.go`) | step 9, next with the rail focused: `want alpha/ag-a2 focused, have attached [alpha] with 99173718-… focused there` (the rail swallowed the chord). Run on 2026-10-28 on Linux | **caught** |
+
+With `TUIOS_E2E_FRAMES` set, the test writes `step-NN.txt` and `step-NN.styled.txt` for each press and `cycle-agents.txt`, the walk step by step, under `TestCycleAgentsWalksTheRailOrder/`.
+
+`TestCycleAgentsLeaderKeysYieldToTheUsers` writes a config that gives `J` and `K` after the prefix to `swap_down` and `swap_up`, as a tmux-style config does. It checks that `keybinds explain` says those keys still swap after the prefix, and that `keybinds doctor` reports `next_agent` and `prev_agent` as defaults left off for the swaps. Run on 2026-10-28 on macOS; the unmodified binary passed.
+
+| Control: what was cut | Where it fails | Verdict |
+| --- | --- | --- |
+| `next_agent` and `prev_agent` dropped from `yieldingDefaults` | `explain says J after the prefix runs [next_agent], want swap_down` | **caught** |

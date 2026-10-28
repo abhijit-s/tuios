@@ -27,6 +27,23 @@ It covers the whole `config.toml`: the `[appearance]` table and its `sidebar`, `
 
 `tuios list-options` describes every settable path with its type, default, and accepted values, straight from the registry the validator uses. The in-app settings page (`Ctrl+B ,`) edits and persists the same options, and its rows are derived from that same registry: an option an agent can set is an option a person can reach, and a test fails the build if one is not.
 
+## Sidebar peek
+
+When you put the pointer on a session row in the sidebar, the terminals
+section shows the panes of that session. When you move the rail cursor onto a
+session row, the same thing occurs. This is the peek. To turn it off, set
+`appearance.sidebar.peek` to `false`:
+
+```toml
+[appearance.sidebar]
+peek = false   # true is the default
+```
+
+With the peek off, the terminals section shows the panes of the attached
+session. It changes only when you attach to a different session. The setting
+also shows in Settings, Sidebar, and `tuios set-config appearance.sidebar.peek
+false` changes it while tuios runs.
+
 ## Split the config into several files
 
 You can keep part of the config in other files. Use this to share one
@@ -2429,6 +2446,20 @@ claude-code --statusline` is installed, from the opencode and Kilo plugin, and
 from protocol panes, and a key the harness never states draws nothing (see
 [Agent metadata](AGENT_STATE.md#what-feeds-it)). No option is needed to turn
 the feeds on, and there is nothing to configure for them.
+
+## The task board
+
+`b` in the agents view shows the task board: the cards of every session,
+grouped by stage ([AGENT_STATE.md](AGENT_STATE.md#the-agents-view)). `[tasks]
+stages` picks the stages it shows. The order stays todo, plan, doing, verify,
+review, shipped, done whatever the list's order, and a stage the list leaves
+out has no head. Empty, or naming no known stage, shows every stage. An
+unknown name is reported as a config warning and ignored.
+
+```toml
+[tasks]
+stages = ["todo", "doing", "verify"]
+```
 
 ## What a pane may do
 

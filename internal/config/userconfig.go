@@ -103,6 +103,9 @@ type UserConfig struct {
 	// panes. Outside the option registry for the same reason as the tables
 	// above. See agents.go.
 	Agents AgentsConfig `toml:"agents,omitempty"`
+	// Tasks is the [tasks] table: which stages the task board shows. See
+	// tasks.go.
+	Tasks TasksConfig `toml:"tasks,omitempty"`
 	// Notify is the [notify] table: push notifications for the Inbox, sent
 	// by the daemon. Outside the option registry for the same reason as
 	// [hosts]. See notify.go.
@@ -835,6 +838,9 @@ type SidebarConfig struct {
 	Workspaces string `toml:"workspaces"`
 	Marquee    *bool  `toml:"marquee"`  // Scroll a hovered row's overflowing title (default: true)
 	Tooltips   *bool  `toml:"tooltips"` // Label the collapsed strip on hover (default: true)
+	// Peek shows a session's panes in the terminals section while the pointer
+	// or the rail cursor rests on that session's row (default: true).
+	Peek *bool `toml:"peek"`
 	// Sections is the rail's layout: which sections it stacks, in what order,
 	// and the share of it each may claim. See SidebarDefaultSections.
 	Sections string `toml:"sections"`
@@ -1681,6 +1687,11 @@ const (
 	// ActionInboxCompare opens the comparison of the attempts of the fan
 	// under the cursor.
 	ActionInboxCompare = "inbox_compare"
+	// ActionInboxBoard groups the fleet by task stage, or by agent state
+	// again; ActionInboxTake claims the card under the cursor for the
+	// focused pane.
+	ActionInboxBoard = "inbox_board"
+	ActionInboxTake  = "inbox_take"
 	// ActionInboxArtifact opens what the agent under the cursor has shown,
 	// such as a TML form, on its Artifacts tab, and gives it the keys.
 	ActionInboxArtifact   = "inbox_artifact"
@@ -1768,6 +1779,8 @@ func getDefaultInboxKeybinds() map[string][]string {
 		ActionInboxDenyReason:  {"R"},
 		ActionInboxNewAgent:    {"n"},
 		ActionInboxCompare:     {"c"},
+		ActionInboxBoard:       {"b"},
+		ActionInboxTake:        {"t"},
 		ActionInboxArtifact:    {"o"},
 		ActionInboxDetailDown:  {"J", "ctrl+d"},
 		ActionInboxDetailUp:    {"K", "ctrl+u"},
@@ -2633,6 +2646,9 @@ func ApplyAppearanceConfig(cfg *UserConfig, s *Settings) {
 	if sb.Marquee != nil {
 		s.SidebarMarquee = *sb.Marquee
 	}
+	// Assigned whatever the file says, so a key removed from it turns the
+	// peek back on at the next reload.
+	s.SidebarPeekEnabled = sb.Peek == nil || *sb.Peek
 	// The layout falls back to the shipped one when unset, so a config file
 	// written before the files section existed lays the rail out the way it
 	// always did plus the new section, rather than drawing nothing at all.
