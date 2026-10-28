@@ -11283,3 +11283,10 @@ machine, in a folder under that machine's home. Run on 2026-10-27 on Linux.
 | Control: what was cut | Where it fails | Verdict |
 | --- | --- | --- |
 | `pathPickerHome` answers no home for a far pane | the picker's title never reads `~/farproj` | **caught** |
+## keybinds doctor names a key a default took
+
+`TestDoctorNamesAKeyADefaultTook` writes a config that gives `,` after the prefix to `swap_down` as well as `shift+down`. `,` is the default key of `prefix_settings`, so on load `dropStaleDuplicateKeys` keeps it there and takes it from `swap_down`. The test checks that `keybinds explain ,` names `prefix_settings`, that `keybinds doctor --json` lists `,` under `retired` for `swap_down` in `prefix_mode` with a note naming `prefix_settings`, and that the text report prints it under DROPPED BINDINGS. The control was built into its own binary and the test run against it; the unmodified binary passed. Run on 2026-10-28 on macOS.
+
+| Control: what was cut | Where it fails | Verdict |
+| --- | --- | --- |
+| The keys `dropStaleDuplicateKeys` returns left out of `RetiredKeybinds` (its result ignored, as before the change) | `the doctor does not report , taken from swap_down by prefix_settings` | **caught** |
