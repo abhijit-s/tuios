@@ -9822,3 +9822,11 @@ on Linux.
 | --- | --- | --- |
 | The dock notice in `adoptNotes` | the dock never shows "Note: next: run the migration" on attach | **caught** |
 | Pane notes collected after `UpdateState` in the restore, which rewrites the restored windows in place (the first draft of the change) | after a daemon restart `note get -w worker` prints nothing | **caught** |
+
+## An empty paste waits for a slow clipboard tool
+
+`TestAnEmptyPasteWaitsForASlowClipboardTool` sends the empty bracketed paste a terminal sends when the clipboard holds only an image, with a `wl-paste` stand-in that takes 0.6 s to list the types: about what a clipboard tool run for the first time takes on macOS. The image has to be pasted into the pane as a file path, and the pane's shell has to read the file. The control was built into its own binary and the test run against it 5 times; the unmodified binary passed 5 of 5. Run on 2026-10-28 on macOS.
+
+| Control: what was cut | Where it fails | Verdict |
+| --- | --- | --- |
+| The empty paste given the paste key's 0.3 s bound (`mode != imagePasteAction` in `probeImageCmd`, as before the fix) | `no path was pasted into the pane`, 5 of 5 runs | **caught** |
