@@ -77,9 +77,9 @@ func TestHandoffTestHooksNeedTheirVariable(t *testing.T) {
 // as the daemon, which holds every pane's terminal and the key that signs
 // every pane's token, so a pane held to its grants must not reach it: it
 // needs admin, as every verb outside the grants' own classes does. The
-// daemon's image must not change. Under the default open mode every pane
-// holds admin, and the same user's processes may upgrade, as they may run any
-// binary (docs/design/live-handoff.md, section 6).
+// daemon's image must not change. A pane that holds admin is refused too, by
+// the handler, whatever its grants (TestDaemonUpgradeFromAPaneIsRefused,
+// docs/design/live-handoff.md, section 6).
 func TestDaemonUpgradeFromAPaneNeedsAdmin(t *testing.T) {
 	base := t.TempDir()
 	startHandoffDaemon(t, base)
