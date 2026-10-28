@@ -31,6 +31,25 @@ import (
 // descriptor number the manifest names to the number the keeper holds it at.
 const handoffKeptEnv = "TUIOS_HANDOFF_KEPT"
 
+// keeperFirstHeld is the first descriptor a keeper holds the carried ones at:
+// after stdin, stdout, stderr and its end of the socket.
+const (
+	keeperConnFD    = 3
+	keeperFirstHeld = 4
+)
+
+// keeperBinary is the path the keeper runs the previous binary by, and
+// restores the daemon with. On Linux that binary is a descriptor
+// (handoff_prev.go), the last one in hold, which the keeper holds at
+// keeperFirstHeld+len(hold)-1: the daemon's /proc/self/fd/N names another
+// file in the keeper.
+func keeperBinary(prev *prevBinary, hold []int) string {
+	if prev.fd() < 0 {
+		return prev.path
+	}
+	return "/proc/self/fd/" + strconv.Itoa(keeperFirstHeld+len(hold)-1)
+}
+
 // keeperCommand is the daemon subcommand a keeper runs as.
 const keeperCommand = "handoff-keeper"
 
@@ -165,6 +184,9 @@ func (m *handoffManifest) remapKept(kept map[int]int) error {
 		}
 	}
 	if m.Daemon.LockFD, err = keptAt(kept, m.Daemon.LockFD); err != nil {
+		return err
+	}
+	if m.Daemon.FallbackFD, err = keptAt(kept, m.Daemon.FallbackFD); err != nil {
 		return err
 	}
 	for i := range m.Panes {

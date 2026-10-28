@@ -9,11 +9,11 @@ import (
 )
 
 // Hooks across a live handoff. A hook runs as a child of the daemon, and one
-// started after the handoff's wait for the hooks still runs at the exec: the
-// new image never waits for it, and it stays a zombie of the daemon's pid
-// once it exits. So the handoff holds every hook fired from its wait on. A
-// put-back starts the held ones; the exec drops them (docs/design/live-handoff.md,
-// section 7.3).
+// started late in the handoff would still run at the exec: the new image never
+// waits for it, and it stays a zombie of the daemon's pid once it exits. So
+// every hook fired once the handoff has shut the pipe holds waits on them. A
+// put-back starts the waiting ones; the exec ends them unstarted
+// (docs/design/live-handoff.md, section 7.3).
 //
 // NEGATIVE CONTROLS (e2e/tui/NEGATIVE_CONTROLS.md, "Live handoff").
 

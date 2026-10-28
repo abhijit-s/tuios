@@ -156,6 +156,9 @@ type handoffDaemon struct {
 	// Fallback is the binary the writing image runs, kept for the new image
 	// to re-exec when it cannot adopt the panes. See handoff_prev.go.
 	Fallback string `json:"fallback"`
+	// FallbackFD is the descriptor Fallback names, carried across the exec,
+	// or -1 when Fallback is a file by name.
+	FallbackFD int `json:"fallback_fd"`
 	// Keeper is the process holding a copy of the descriptors until the new
 	// image is up. See handoff_keeper.go.
 	Keeper handoffKeeperRecord `json:"keeper"`
@@ -302,6 +305,9 @@ func readHandoffManifest(r io.Reader) (*handoffManifest, error) {
 				m.Panes = append(m.Panes, p)
 			}
 		case handoffRecDaemon:
+			// A record from an image without fallback_fd names its binary
+			// by path; left at zero, the field would name stdin.
+			m.Daemon.FallbackFD = -1
 			err = json.Unmarshal(payload, &m.Daemon)
 		case handoffRecEnd:
 			m.Size = read.Load() - int64(br.Buffered())

@@ -14,13 +14,6 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// keeperFirstHeld is the first descriptor a keeper holds the carried ones at:
-// after stdin, stdout, stderr and its end of the socket.
-const (
-	keeperConnFD    = 3
-	keeperFirstHeld = 4
-)
-
 // startKeeper starts bin as the keeper of a handoff, holding a copy of every
 // descriptor in hold. argv is the command line it execs if the daemon dies
 // before it is released: the previous binary, adopting the manifest.

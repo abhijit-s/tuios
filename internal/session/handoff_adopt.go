@@ -59,7 +59,11 @@ func (d *Daemon) RunAdopted(fd int) error {
 	stopWatch()
 	if err != nil {
 		LogError("Live upgrade: adopting the panes failed: %v", err)
-		fb.reexec(err)
+		if !fb.reexec(err) {
+			// The watchdog's fallback is under way, and it execs or ends
+			// the process itself.
+			select {}
+		}
 		// Asked to stop: the panes end with this image, as a stop ends
 		// them, and the keeper does not bring them back.
 		if d.ctx.Err() != nil {
@@ -147,6 +151,13 @@ func (d *Daemon) adopt(fd int, fb *adoptFallback, kept map[int]int) error {
 			ul.SetUnlinkOnClose(false)
 		}
 		listeners[name] = l
+	}
+	// The previous binary's descriptor stays open for the fallback, and is
+	// closed with the listeners' once the adoption has gone through.
+	if m.Daemon.FallbackFD >= 0 {
+		f := adoptedFile(m.Daemon.FallbackFD, "tuios-prev")
+		fb.keep(f)
+		inherited = append(inherited, f)
 	}
 	if m.Daemon.LockFD >= 0 {
 		lock := adoptedFile(m.Daemon.LockFD, startLockPath(socketPath))

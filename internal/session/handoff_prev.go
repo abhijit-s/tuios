@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 )
 
 // The binary a handoff falls back to.
@@ -19,9 +20,12 @@ import (
 // same manifest, and that binary adopts them as it wrote them. By the time
 // someone upgrades, an installer has usually put the new binary where the old
 // one was (install.sh renames over it, Homebrew repoints its link and may
-// delete the old copy), and a file with no name left cannot be run. So the
-// running binary is kept at daemon start, as a hard link to its own inode
-// where the file system allows, and as a copy where it does not.
+// delete the old copy), and a file with no name left cannot be run by name.
+// So the running binary is kept at daemon start. On Linux that is an open
+// descriptor of /proc/self/exe, which the handoff carries across its exec and
+// the fallback execs as /proc/self/fd/N, so nothing is linked or copied.
+// Elsewhere it is a hard link to its own inode where the file system allows,
+// and a copy where it does not.
 
 // prevBinaryName is the file the running image is kept as, in handoffDir.
 const prevBinaryName = "tuios.prev"
@@ -30,6 +34,9 @@ const prevBinaryName = "tuios.prev"
 type prevBinary struct {
 	path string
 	file fileID
+	// open is the kept descriptor on Linux, where path is /proc/self/fd/N.
+	// It names the running image's inode, which cannot change.
+	open *os.File
 	// size and modified are the file's when it was kept. A hard link shares
 	// its inode with the path the binary was installed at, so a write in
 	// place there (cp onto it, an editor, a truncate) changes what the link
@@ -80,8 +87,16 @@ func (d *Daemon) keepPrevBinaryLocked() {
 	d.prev = prev
 }
 
-// keepRunningBinary links or copies the running executable into dir.
+// keepRunningBinary keeps the running executable open on Linux, and links or
+// copies it into dir elsewhere.
 func keepRunningBinary(dir string) (*prevBinary, error) {
+	if runtime.GOOS == "linux" {
+		f, err := os.Open("/proc/self/exe")
+		if err != nil {
+			return nil, err
+		}
+		return &prevBinary{path: "/proc/self/fd/" + strconv.Itoa(int(f.Fd())), open: f}, nil //nolint:gosec // a descriptor number
+	}
 	exe, err := os.Executable()
 	if err != nil {
 		return nil, err
@@ -102,13 +117,8 @@ func keepRunningBinary(dir string) (*prevBinary, error) {
 		return keptBinary(dst)
 	}
 
-	// Another file system, or a binary whose name is gone already (Linux
-	// names it "(deleted)"): copy what is running.
-	src := exe
-	if runtime.GOOS == "linux" {
-		src = "/proc/self/exe"
-	}
-	sum, err := copyExecutable(src, tmp)
+	// Another file system: copy what is running.
+	sum, err := copyExecutable(exe, tmp)
 	if err != nil {
 		_ = os.Remove(tmp)
 		return nil, err
@@ -152,6 +162,15 @@ func copyExecutable(src, dst string) ([]byte, error) {
 	return h.Sum(nil), nil
 }
 
+// fd is the kept descriptor the exec hands on, -1 when the binary is kept
+// by name.
+func (p *prevBinary) fd() int {
+	if p.open == nil {
+		return -1
+	}
+	return int(p.open.Fd()) //nolint:gosec // a descriptor number
+}
+
 // checkPrevBinary says whether the kept binary is still the one kept.
 func (d *Daemon) checkPrevBinary() (*prevBinary, error) {
 	d.prevMu.Lock()
@@ -159,6 +178,9 @@ func (d *Daemon) checkPrevBinary() (*prevBinary, error) {
 	d.prevMu.Unlock()
 	if prev == nil {
 		return nil, errors.New("this daemon kept no copy of its binary to fall back to (see the daemon log); restart it with 'tuios kill-server' to upgrade")
+	}
+	if prev.open != nil {
+		return prev, nil
 	}
 	now, err := keptBinary(prev.path)
 	if err != nil || !prev.same(now) {

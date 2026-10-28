@@ -244,17 +244,14 @@ func (r *handoffRun) prepare() error {
 	if d.federation != nil {
 		d.federation.Stop()
 	}
-	// A hook fired from here on is held, not started: one started after the
-	// wait would still run at the exec, a child the new image never waits
-	// for. A put-back starts the held ones; the exec drops them.
+	// A hook that started since the refusal check is waited for here. One
+	// fired later either holds a pipe when the holds shut below, and the
+	// handoff is refused, or waits on them: a put-back starts it, and the
+	// exec ends it before it ran (handoff_refuse.go).
 	if d.hooks != nil {
-		d.hooks.Hold()
 		d.hooks.WaitTimeout(hookDrainTimeout)
 	}
 	r.undo = append(r.undo, func() {
-		if d.hooks != nil {
-			d.hooks.Release()
-		}
 		if d.federation != nil {
 			d.federation.Resume(d.ctx)
 		}
@@ -290,6 +287,12 @@ func (r *handoffRun) prepare() error {
 	if err := d.handoffRefusal(); err != nil {
 		return err
 	}
+	// A hook or a plugin command does not wait on paneLife: from here one
+	// that starts waits, or is refused, until the handoff is put back.
+	if what := d.pipes.shut(); what != "" {
+		return pipeRefusal(what)
+	}
+	r.undo = append(r.undo, d.pipes.open)
 
 	// handoffRefusal counted the hosted panes, but an open-pane from a link
 	// does not wait on paneLife, so the count and the shut are one step.
@@ -338,8 +341,10 @@ func (r *handoffRun) prepare() error {
 	}
 	r.file = f
 	r.undo = append(r.undo, func() { _ = f.Close() })
-	restore := append([]string{r.prev.path}, d.handoffArgs(int(f.Fd()))...) //nolint:gosec // a descriptor number
-	k, err := startKeeper(r.prev.path, r.keptDescriptors(refs), restore)
+	hold := r.keptDescriptors(refs)
+	bin := keeperBinary(r.prev, hold)
+	restore := append([]string{bin}, d.handoffArgs(int(f.Fd()))...) //nolint:gosec // a descriptor number
+	k, err := startKeeper(bin, hold, restore)
 	if err != nil {
 		return fmt.Errorf("starting the handoff keeper: %w", err)
 	}
@@ -453,7 +458,11 @@ func (r *handoffRun) writeManifest(sessions []*Session, refs []handoffPaneRef) e
 		Activity:     d.activity.handoffState(),
 		Queue:        d.queue.handoffState(),
 		Fallback:     r.prev.path,
+		FallbackFD:   r.prev.fd(),
 		Stats:        r.stats,
+	}
+	if dr.FallbackFD >= 0 {
+		r.fds = append(r.fds, dr.FallbackFD)
 	}
 	dr.Buffers, dr.BufferNext = d.buffers.Snapshot()
 	d.handoffWindowRecords(&dr)
@@ -494,8 +503,8 @@ func (r *handoffRun) writeManifest(sessions []*Session, refs []handoffPaneRef) e
 }
 
 // keptDescriptors is every descriptor the exec carries, which the keeper
-// holds a copy of: the manifest, each pane's master, the sockets and the start
-// lock.
+// holds a copy of: the manifest, each pane's master, the sockets, the start
+// lock and, last, the previous binary where it is a descriptor.
 func (r *handoffRun) keptDescriptors(refs []handoffPaneRef) []int {
 	d := r.d
 	out := []int{int(r.file.Fd())} //nolint:gosec // a descriptor number
@@ -507,6 +516,9 @@ func (r *handoffRun) keptDescriptors(refs []handoffPaneRef) []int {
 	}
 	if d.startLock != nil {
 		out = append(out, int(d.startLock.Fd())) //nolint:gosec // a descriptor number
+	}
+	if fd := r.prev.fd(); fd >= 0 {
+		out = append(out, fd)
 	}
 	return out
 }
