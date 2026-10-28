@@ -582,6 +582,7 @@ func (m *OS) settingsCategories() []settingsCategory {
 			opt("panes.label_keys"),
 			opt("panes.navigator_layout"),
 			opt("panes.navigator_search"),
+			opt("path_picker.show_hidden"),
 		}),
 	}
 

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Gaurav-Gosain/tuitest"
+	"tuios.dev/shot"
 )
 
 // The rail's files section, on the host's own grid.
@@ -609,4 +610,178 @@ func TestRailFilesSectionScrollsWithTheCursor(t *testing.T) {
 			alive(t, term, "after browsing the files tree")
 		})
 	}
+}
+
+// TestPathPickerTypesAPath opens the path picker at a shell prompt, filters
+// the pane's folder, walks into a folder with Tab, and types the chosen file's
+// path into the shell line with Enter. The shell then runs the line, so the
+// path is proved by the shell reading the file, not by the text on screen.
+//
+// How this could pass wrongly, written down first:
+//   - The names could be on screen in the pane, not the picker. The pane
+//     never prints a name the test waits for: the cd is echoed by its path,
+//     and the file's content is the marker.
+//   - Enter could type a path the shell cannot read: a name with a space must
+//     arrive quoted. The file's name has a space, and cat must print it.
+//   - The filter could do nothing and Tab walk into the first folder anyway.
+//     The first folder is alpha, so the filter picks zulu, the second one.
+//   - The picker could type into the pane while it is open. The line is
+//     checked to hold only "cat " until Enter.
+//
+// NEGATIVE CONTROL: with PathPickerAccept returning before w.Paste, the wait
+// for the typed path times out (run on the standalone subtest).
+func TestPathPickerTypesAPath(t *testing.T) {
+	for _, daemon := range []bool{false, true} {
+		t.Run(map[bool]string{false: "standalone", true: "daemon"}[daemon], func(t *testing.T) {
+			dir := fileViewFixture(t)
+			if err := os.WriteFile(filepath.Join(dir, "zulu", "release notes.md"), []byte("PICKED-"+"FILE-OK\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, "zulu", "build.log"), nil, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			term, _ := start(t, startOpts{daemonDefault: daemon})
+			waitBoot(t, term)
+			newWindow(t, term)
+			waitWindowCount(t, term, 1, "opening a shell")
+			enterTerminalMode(t, term)
+			runInShell(t, term, "cd "+dir+" && clear && printf 'in-the-%s\\n' dir", "in-the-dir", uiTimeout)
+
+			sendKeys(t, term, "cat ", tuitest.Alt(";"))
+			if err := term.WaitFor(func(s tuitest.Screen) bool {
+				txt := s.Text()
+				return strings.Contains(txt, "brief.txt") && strings.Contains(txt, "zulu/")
+			}, uiTimeout); err != nil {
+				t.Fatalf("alt+; did not open the picker on the pane's folder: %v\n%s", err, term.Snapshot())
+			}
+
+			sendKeys(t, term, "zu")
+			if err := term.WaitFor(func(s tuitest.Screen) bool {
+				txt := s.Text()
+				return !strings.Contains(txt, "brief.txt") && strings.Contains(txt, "zulu/")
+			}, uiTimeout); err != nil {
+				t.Fatalf("the filter did not narrow the list: %v\n%s", err, term.Snapshot())
+			}
+
+			sendKeys(t, term, tuitest.Tab)
+			if err := term.WaitFor(func(s tuitest.Screen) bool {
+				txt := s.Text()
+				return strings.Contains(txt, "release notes.md") && strings.Contains(txt, "build.log")
+			}, uiTimeout); err != nil {
+				t.Fatalf("Tab did not walk into zulu: %v\n%s", err, term.Snapshot())
+			}
+			if strings.Contains(term.Screen().Text(), "cat z") {
+				t.Fatalf("the picker typed into the pane while it was open:\n%s", term.Snapshot())
+			}
+			sendKeys(t, term, "rel")
+			if err := term.WaitForText("zulu/rel", uiTimeout); err != nil {
+				t.Fatalf("the filter line does not show the path walked: %v\n%s", err, term.Snapshot())
+			}
+			savePNG(t, term.Screen(), shot.XTermPalette(), artifactDir(t), "path-picker")
+			saveArtifact(t, term, artifactDir(t), "path-picker")
+
+			sendKeys(t, term, tuitest.Enter)
+			if err := term.WaitForText("cat 'zulu/release notes.md'", uiTimeout); err != nil {
+				t.Fatalf("Enter did not type the quoted path at the prompt: %v\n%s", err, term.Snapshot())
+			}
+			sendKeys(t, term, tuitest.Enter)
+			if err := term.WaitForText("PICKED-FILE-OK", uiTimeout); err != nil {
+				t.Fatalf("the shell could not read the typed path: %v\n%s", err, term.Snapshot())
+			}
+			if daemon {
+				pathPickerStaysInANarrowPane(t, term, dir)
+			}
+			alive(t, term, "after typing a path with the picker")
+		})
+	}
+}
+
+// pathPickerStaysInANarrowPane splits the pane, puts the rail beside it, and
+// opens the picker with the cursor near the new pane's right edge. The box
+// must stay inside the pane: fitted only to the screen, it ran over the next
+// pane and the rail.
+//
+// NEGATIVE CONTROL: with placePathPicker fitting the box to the screen (the
+// room from pathPickerRoom ignored), the box's right edge lands on or past
+// the pane's right border and the assertion fails.
+func pathPickerStaysInANarrowPane(t *testing.T, term *tuitest.Terminal, dir string) {
+	t.Helper()
+	sendKeys(t, term, tuitest.Ctrl('b'), "|")
+	waitWindowCount(t, term, 2, "splitting the pane")
+	toggleSidebarViaPalette(t, term)
+	if err := term.WaitForText(sidebarHeader, uiTimeout); err != nil {
+		t.Fatalf("the rail never came up: %v\n%s", err, term.Snapshot())
+	}
+	runInShell(t, term, "cd "+dir+" && clear && echo nar\"\"row", "narrow", uiTimeout)
+
+	// The pane's content starts where the shell printed narrow, and its
+	// right border is the first border cell after it on that row.
+	scr := term.Screen()
+	left, row, ok := findOnGrid(scr, "narrow")
+	if !ok {
+		t.Fatalf("no output line to measure the pane by:\n%s", term.Snapshot())
+	}
+	right := gridCellAfter(scr, row, left, "│")
+	if right < 0 {
+		t.Fatalf("the pane has no right border on row %d:\n%s", row, term.Snapshot())
+	}
+	// The prompt is two cells, so this puts the cursor four cells from the
+	// border, where a box anchored at the cursor would run past it.
+	sendKeys(t, term, strings.Repeat("x", max(right-left-6, 1)), tuitest.Alt(";"))
+	// The box's top border is the only "╭─ " on the screen: a pane's border
+	// starts with its buttons, and the rail lists the same names as the box.
+	if err := term.WaitForText("╭─ ", uiTimeout); err != nil {
+		t.Fatalf("alt+; did not open the picker in the narrow pane: %v\n%s", err, term.Snapshot())
+	}
+	time.Sleep(200 * time.Millisecond)
+	scr = term.Screen()
+	boxLeft, boxTop := pathPickerCorner(scr)
+	boxRight := gridCellAfter(scr, boxTop, boxLeft, "╮")
+	savePNG(t, scr, shot.XTermPalette(), artifactDir(t), "path-picker-narrow-pane")
+	saveArtifact(t, term, artifactDir(t), "path-picker-narrow-pane")
+	if boxLeft < left || boxRight < 0 || boxRight >= right {
+		t.Fatalf("the picker box spans columns %d to %d, outside the pane's content %d to %d:\n%s",
+			boxLeft, boxRight, left, right-1, term.Snapshot())
+	}
+	sendKeys(t, term, tuitest.Esc)
+	if err := term.WaitFor(func(s tuitest.Screen) bool { return !strings.Contains(s.Text(), "╭─ ") }, uiTimeout); err != nil {
+		t.Fatalf("esc did not close the picker: %v\n%s", err, term.Snapshot())
+	}
+}
+
+// pathPickerCorner is the cell of the picker box's top-left corner: a "╭"
+// followed by "─" and a space, or (-1, -1).
+func pathPickerCorner(s tuitest.Screen) (int, int) {
+	cols, rows := s.Size()
+	for r := range rows {
+		for c := range cols - 2 {
+			if s.Cell(c, r).Content == "╭" && s.Cell(c+1, r).Content == "─" && s.Cell(c+2, r).Content == " " {
+				return c, r
+			}
+		}
+	}
+	return -1, -1
+}
+
+// gridCellAfter is the first column right of col on row whose cell is want,
+// or -1.
+func gridCellAfter(s tuitest.Screen, row, col int, want string) int {
+	cols, _ := s.Size()
+	for c := col + 1; c < cols; c++ {
+		if s.Cell(c, row).Content == want {
+			return c
+		}
+	}
+	return -1
+}
+
+// gridCellBefore is the last column left of col on row whose cell is want,
+// or -1.
+func gridCellBefore(s tuitest.Screen, row, col int, want string) int {
+	for c := col - 1; c >= 0; c-- {
+		if s.Cell(c, row).Content == want {
+			return c
+		}
+	}
+	return -1
 }

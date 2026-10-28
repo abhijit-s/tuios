@@ -1502,6 +1502,13 @@ var optionSpecs = []Option{
 		Default:     "false",
 	},
 
+	// [path_picker]. Read each time the picker opens.
+	{
+		Path: "path_picker.show_hidden", Type: OptionBool, Section: "panes",
+		Description: "The path picker lists hidden files. Alt+h in the picker shows or hides them",
+		Default:     "false",
+	},
+
 	// [panes]. Read each time display_panes opens.
 	{
 		Path: "panes.label_keys", Type: OptionString, Section: "panes",

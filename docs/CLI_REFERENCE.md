@@ -152,7 +152,7 @@ tuios --standalone
 - `--debug`: Enable debug logging
 - `--server <name>`: Use the daemon named `<name>`. It has its own socket and saved sessions. See [Running a separate daemon](SESSIONS.md#running-a-separate-daemon)
 - `--cpuprofile <file>`: Write CPU profile to file
-- `--pprof <addr>`: Serve /debug/pprof profiles on this address for live profiling, such as `:6060`. With no host, the server listens on 127.0.0.1 only. The profiles have no password. Name `0.0.0.0` only on a network you trust. Delta profiles (`?seconds=` on heap and the like) are not served. Take two and compare them with `go tool pprof -diff_base`. With `start-server`, the daemon that the command starts serves the profiles
+- `--pprof <addr>`: Serve /debug/pprof profiles on this address for live profiling, such as `:6060`. With no host, the server listens on 127.0.0.1 only. The profiles have no password. Name `0.0.0.0` only on a network you trust. Delta profiles (`?seconds=` on heap and the like) are not served. Take two and compare them with `go tool pprof -diff_base`. With `start-server`, the daemon that the command starts serves the profiles. With `ssh`, the SSH server serves the profiles
 - `-h, --help`: Show help for tuios
 - `-v, --version`: Show version information
 
@@ -829,6 +829,13 @@ tuios remove-space payments
 A git worktree as a session. `worktree new` makes a worktree of the repository
 you are in and a session whose directory is that worktree. The rail groups these
 sessions under the repository and labels each by its branch.
+
+A worktree of a bare repository is grouped under the project's name: `api` for
+`api.git`, and for a bare repository kept as `api/.bare` or `api/git` beside
+its worktrees, the `api` directory. A repository whose refs are in reftable
+(`git clone --ref-format=reftable`) holds no branch name in its HEAD file.
+tuios asks git for its branches instead, so it needs git 2.45 or later on
+`PATH`, and asks again only after a ref changes.
 
 The same verb is reachable from the rail. Right-click a repository's group
 header, or a worktree session's row, and take "New worktree...". The dialog
