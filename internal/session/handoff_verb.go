@@ -26,24 +26,38 @@ func (d *Daemon) verbDaemonUpgrade(cs *connState, params json.RawMessage) (any, 
 	}
 	// Whatever the caller's grants: the binary named runs as the daemon, which
 	// holds every pane's terminal and the key that signs every pane's token.
-	if !d.mayActAsHuman(cs) {
-		return nil, hintedVerbError(ErrVerbForbidden, "daemon-upgrade is for the person: the caller runs inside a pane of this daemon or is a plugin, and an upgrade is refused there whatever its grants", &VerbHint{
-			Detail: "Nothing was changed. Run tuios daemon upgrade from a terminal outside tuios.",
+	// A plugin never may. A pane may when the person says yes in a dialog at
+	// an attached client (upgrade_confirm.go).
+	// The CLI prints only the message, so each says what to do as well.
+	notPerson := hintedVerbError(ErrVerbForbidden, "daemon-upgrade is for the person. An upgrade asked for from a pane needs a Yes in the dialog at an attached client, and none came. Nothing was changed. Answer Yes in the dialog, or run tuios daemon upgrade from a terminal outside tuios", &VerbHint{
+		Detail: "The dialog opens on every attached client and shows the binary, its version and the pane that asked. No, Esc, a minute without an answer, or no attached client refuses.",
+	})
+	confirm := !d.mayActAsHuman(cs)
+	if confirm && d.callerIsPlugin(cs) {
+		return nil, hintedVerbError(ErrVerbForbidden, "daemon-upgrade is for the person. A plugin cannot upgrade the daemon, and no dialog is shown for one. Nothing was changed. Run tuios daemon upgrade from a terminal outside tuios", &VerbHint{
+			Detail: "From a pane, the upgrade asks the person in a dialog at an attached client instead.",
 		})
 	}
 	if p.Binary == "" || !filepath.IsAbs(p.Binary) {
 		return nil, invalidParam("binary", "binary must be the absolute path of a tuios binary")
 	}
-	clients := d.tuiClientCount()
-	run, err := d.prepareHandoff(handoffRequest{binary: p.Binary, holdAfterWrite: handoffTestHold()})
-	if err != nil {
-		code := ErrVerbUpgradeRefused
-		if errors.Is(err, errHandoffBusy) {
-			code = ErrVerbBusy
+	req := handoffRequest{binary: p.Binary, holdAfterWrite: handoffTestHold()}
+	if confirm {
+		// The dialog shows the binary's path and version, so the preflight
+		// runs first, and the upgrade then takes only the file it ran.
+		bin, err := preflightBinary(p.Binary)
+		if err != nil {
+			return nil, upgradeRefusal(err)
 		}
-		return nil, hintedVerbError(code, err.Error(), &VerbHint{
-			Detail: "Nothing was changed. Every pane and client is as it was. " + restartAdvice(),
-		})
+		if !d.confirmUpgrade(cs, bin) {
+			return nil, notPerson
+		}
+		req.binary, req.pinned = bin.path, &bin.file
+	}
+	clients := d.tuiClientCount()
+	run, err := d.prepareHandoff(req)
+	if err != nil {
+		return nil, upgradeRefusal(err)
 	}
 	// commit returns only when the exec failed.
 	cs.takeover = func(*bufio.Reader) { LogError("Live upgrade: %v", run.commit()) }
@@ -60,4 +74,15 @@ func (d *Daemon) verbDaemonUpgrade(cs *connState, params json.RawMessage) (any, 
 		"clients":        clients,
 		"preflight_ms":   int64(run.stats.PreflightMS),
 	}, nil
+}
+
+// upgradeRefusal is the refusal of an upgrade that changed nothing.
+func upgradeRefusal(err error) *verbError {
+	code := ErrVerbUpgradeRefused
+	if errors.Is(err, errHandoffBusy) {
+		code = ErrVerbBusy
+	}
+	return hintedVerbError(code, err.Error(), &VerbHint{
+		Detail: "Nothing was changed. Every pane and client is as it was. " + restartAdvice(),
+	})
 }

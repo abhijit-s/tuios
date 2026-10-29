@@ -125,14 +125,22 @@ state. A refusal changes nothing. If the new binary starts and cannot take
 the panes over, the daemon goes back to the binary it was running, with every
 pane, and the command says so.
 
+Run from inside a pane, the upgrade waits for you to confirm it: every
+attached client shows a dialog with the binary's full path, its version and
+the pane that asked. Only a key you press at a client answers it, and No is
+the default. No, Esc, a minute without an answer, or no attached client
+refuses it. A plugin is always refused.
+
 --or-restart is for an installer or a script that wants the daemon on the new
 binary in any case. When the daemon cannot be upgraded live, because it
-predates live upgrades, it refuses (a pane on another machine, a running fan
-check), or the binary cannot take its state, the command says why and
-restarts the daemon with the binary instead, which ends running programs.
-With no daemon running, it starts one. A daemon that went back to its old
-binary is not restarted: its programs are still running, and the command
-fails so the reason can be read in 'tuios logs'.
+predates live upgrades, it holds what cannot be handed over (a pane on
+another machine, a running fan check), or the binary cannot take its state,
+the command says why and restarts the daemon with the binary instead, which
+ends running programs. With no daemon running, it starts one. A daemon that
+went back to its old binary is not restarted: its programs are still
+running, and the command fails so the reason can be read in 'tuios logs'.
+Nor is a daemon that refused because the command runs in one of its panes
+and no Yes came in the dialog: a restart would end that pane.
 
 Live upgrades are experimental, macOS and Linux only, and need a daemon from
 a build that has them. 'tuios restart-server' moves any daemon to the newest
@@ -188,6 +196,9 @@ type upgradeOutcome struct {
 	Handoff   *session.HandoffStats `json:"handoff,omitempty"`
 	// Reason is why the daemon was not upgraded live.
 	Reason string `json:"reason,omitempty"`
+	// Unconfirmed is a refusal of the caller rather than of the binary: the
+	// call came from a pane of the daemon, and no Yes came in its dialog.
+	Unconfirmed bool `json:"unconfirmed,omitempty"`
 	// Error is the failure, when the command failed.
 	Error string `json:"error,omitempty"`
 }
@@ -201,7 +212,10 @@ type notLiveError struct {
 	running bool
 	// from is the version of the running daemon, when it is known.
 	from string
-	err  error
+	// unconfirmed is the daemon refusing the caller, a pane with no Yes in
+	// the dialog: a restart would end that pane.
+	unconfirmed bool
+	err         error
 }
 
 func (e *notLiveError) Error() string { return e.err.Error() }
@@ -245,8 +259,13 @@ func upgradeDaemon(say func(string, ...any), binary string, orRestart bool) (upg
 	if !ok {
 		return o, err
 	}
-	if !orRestart {
-		return upgradeOutcome{Action: upgradeActionRefused, Binary: binary, From: notLive.from, Reason: notLive.reason}, err
+	if orRestart && notLive.unconfirmed {
+		// The daemon refused this caller because it runs in one of its
+		// panes, and a restart would end that pane with this command in it.
+		say("The daemon was not restarted, because a restart would end the pane this command runs in. It still runs %s.\n", cmp.Or(notLive.from, "the old version"))
+	}
+	if !orRestart || notLive.unconfirmed {
+		return upgradeOutcome{Action: upgradeActionRefused, Binary: binary, From: notLive.from, Reason: notLive.reason, Unconfirmed: notLive.unconfirmed}, err
 	}
 	say("Not upgraded live: %s.\n", notLive.reason)
 	return restartDaemonWith(say, binary, notLive)
@@ -302,6 +321,9 @@ func upgradeLive(say func(string, ...any), binary string) (upgradeOutcome, error
 			},
 		}
 	}
+	if os.Getenv("TUIOS_PANE_ID") != "" {
+		say("Asking you to confirm the upgrade in the tuios dialog...\n")
+	}
 	if before.Handoff > 0 {
 		say("Checking %s (%s) accepts this daemon's state (handoff v%d)... ", binary, acc.Version, before.Handoff)
 	} else {
@@ -309,7 +331,8 @@ func upgradeLive(say func(string, ...any), binary string) (upgradeOutcome, error
 	}
 
 	started := time.Now()
-	raw, err = client.CallWithTimeout("daemon-upgrade", map[string]any{"binary": binary}, daemonUpgradeWait)
+	// From a pane the daemon waits for the person's answer before it starts.
+	raw, err = client.CallWithTimeout("daemon-upgrade", map[string]any{"binary": binary}, session.UpgradeConfirmWait+daemonUpgradeWait)
 	_ = client.Close()
 	if err != nil {
 		say("refused\n")
@@ -327,7 +350,8 @@ func upgradeLive(say func(string, ...any), binary string) (upgradeOutcome, error
 		if errors.As(err, &verr) {
 			return o, &notLiveError{
 				reason: "the daemon refused: " + verr.Message, running: true, from: before.Version,
-				err: &diagnosticError{What: verr.Message + ".", Cause: "the daemon refused the upgrade.", Fix: "nothing was changed. Fix what the message names and run 'tuios daemon upgrade' again."},
+				unconfirmed: verr.Code == session.ErrVerbForbidden,
+				err:         &diagnosticError{What: verr.Message + ".", Cause: "the daemon refused the upgrade.", Fix: "nothing was changed. Fix what the message names and run 'tuios daemon upgrade' again."},
 			}
 		}
 		return o, err

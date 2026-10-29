@@ -26,6 +26,7 @@ import (
 	"github.com/Gaurav-Gosain/tuios/internal/plural"
 	"github.com/Gaurav-Gosain/tuios/internal/release"
 	"github.com/Gaurav-Gosain/tuios/internal/restartplan"
+	"github.com/Gaurav-Gosain/tuios/internal/session"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 )
@@ -60,8 +61,9 @@ const (
 	syncProbeTimeout   = 90 * time.Second
 	syncInstallTimeout = 15 * time.Minute
 	// A restart may be a live upgrade, which waits up to a minute for the
-	// new image, then a restart if the upgrade could not start.
-	syncRestartTimeout = 150 * time.Second
+	// new image, then a restart if the upgrade could not start. Asked for
+	// from a pane, the upgrade first waits for a Yes in the tuios dialog.
+	syncRestartTimeout = 150*time.Second + session.UpgradeConfirmWait
 )
 
 // syncOptions are the flags.
@@ -292,8 +294,10 @@ lists the sessions and the panes with a running program that a restart would
 end on each host. Then it asks you to agree. Without a terminal, add --yes. A
 daemon with no sessions is moved without a question. A daemon with the new
 version is never touched. Run in a pane of this machine's daemon, --local
-installs and leaves that daemon: it refuses an upgrade from its own panes,
-and a restart would end the pane.
+upgrades that daemon live only once you answer Yes in the tuios dialog on an
+attached client. No, a minute without an answer, or no attached client
+leaves it running the old version. It is never restarted, because a restart
+would end the pane the command runs in.
 
 If Tailscale SSH asks you to approve a login, sync shows the link to open.
 On a terminal, sync asks to wait for the approvals. Each host continues when
@@ -444,6 +448,10 @@ func runHostsSync(opts syncOptions) error {
 
 	// 3. Apply.
 	if !opts.dryRun {
+		if slices.ContainsFunc(targets, func(t *syncTarget) bool { return t.liveOnly && !t.failed }) {
+			fmt.Fprintln(opts.errOut, "This command runs in a pane of this machine's daemon, so its upgrade asks you first.")
+			fmt.Fprintln(opts.errOut, "Answer Yes in the tuios dialog on an attached client. It waits up to a minute.")
+		}
 		forEachTarget(targets, func(t *syncTarget) {
 			if t.failed {
 				return
@@ -1017,7 +1025,7 @@ func restartResult(t *syncTarget, f syncFacts) {
 	}
 	switch {
 	case f.has("nolive"):
-		t.note("The new binary cannot upgrade a daemon live, and this command runs in a pane of that daemon, so the daemon was left running the old version. Run the restart from a terminal outside tuios.")
+		t.note(fmt.Sprintf("The new binary cannot upgrade a daemon live. This command runs in a pane of that daemon, so it was not restarted. It still runs %s. Run the restart from a terminal outside tuios.", cmp.Or(t.res.Daemon.Version, "the old version")))
 	case f.has("stopfail"):
 		t.fail(errors.New("the old daemon did not stop. It still runs the old version"))
 	case f.has("startfail"):
@@ -1038,6 +1046,9 @@ func upgradeResult(t *syncTarget, line string) {
 		Panes  int    `json:"panes"`
 		Reason string `json:"reason"`
 		Error  string `json:"error"`
+		// Unconfirmed is a refusal of the caller: the daemon asked the
+		// person in its dialog, and no Yes came.
+		Unconfirmed bool `json:"unconfirmed"`
 	}
 	if err := json.Unmarshal([]byte(line), &o); err != nil {
 		t.fail(fmt.Errorf("the daemon upgrade answered with something that is not its answer: %s", plainLine(line)))
@@ -1070,7 +1081,11 @@ func upgradeResult(t *syncTarget, line string) {
 	case upgradeActionFallback:
 		t.fail(fmt.Errorf("the new binary could not take the panes over, so the daemon went back to %s with every program still running. Run 'tuios logs' on the host to see why", cmp.Or(plainLine(o.To), "the old version")))
 	case upgradeActionRefused:
-		t.note("The daemon could not be upgraded live: " + reason + ". This command runs in a pane of that daemon, so it was not restarted, and it still runs the old version. Run the restart from a terminal outside tuios.")
+		if o.Unconfirmed {
+			t.note(fmt.Sprintf("The new binary is installed. The daemon was not upgraded live. It needs a Yes in the tuios dialog on an attached client, and none came. This command runs in a pane of that daemon, so it was not restarted. It still runs %s. Run the sync again with a client attached and answer Yes, or run tuios daemon upgrade from a terminal outside tuios.", cmp.Or(d.Version, "the old version")))
+			return
+		}
+		t.note(fmt.Sprintf("The new binary is installed. The daemon could not be upgraded live: %s. This command runs in a pane of that daemon, so it was not restarted. It still runs %s. Run the restart from a terminal outside tuios.", reason, cmp.Or(d.Version, "the old version")))
 	default:
 		t.fail(fmt.Errorf("the daemon was not moved to the new version: %s", plainLine(cmp.Or(o.Error, "the upgrade did not say why"))))
 	}
@@ -1142,6 +1157,7 @@ func finishSyncTarget(t *syncTarget, src *syncSource, opts syncOptions) {
 		}
 	case opts.dryRun && t.liveOnly:
 		parts = append(parts, "would upgrade daemon live")
+		t.note("This command runs in a pane of that daemon. The upgrade waits for a Yes in the tuios dialog. Without one the daemon keeps the old version. It is never restarted.")
 	case opts.dryRun && t.restart:
 		parts = append(parts, "would upgrade or restart daemon")
 	case r.RestartNeeded:
