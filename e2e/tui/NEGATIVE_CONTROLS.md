@@ -10612,3 +10612,12 @@ The positive half is in the same runs: `pill` and `flat` pass on every build. Th
 | Control: what was cut | Where it fails | Verdict |
 | --- | --- | --- |
 | `notePaneExitedAlone` no longer starts the hold, so a save after a pane is killed by a signal writes the smaller layout (`internal/session/workspace_renumber.go`) | `attached`: "session \"reboot-attached\" never appeared in the listing". The client closed each pane, the daemon saved a session with no windows, and the next start discarded it. `detached` passes on both builds, because no client removes the windows | **caught** |
+## A subagent's prompt clears when the subagent goes on
+
+`TestSubagentApprovalClearsWhenTheSubagentGoesOn` drives a subagent's `PermissionRequest` and the main agent's `permission_prompt` Notification through the real `tuios agent-hook claude-code`, in both orders, then the subagent's `PostToolUse`, another subagent's, a `PermissionDenied`, and a subagent's `PostToolUse` under the main agent's own prompt. Each control was built into its own binary. Run on 2026-10-30 on macOS arm64.
+
+| Control: what was cut | Where it fails | Verdict |
+| --- | --- | --- |
+| The build before this change (upstream main at `92258aafe`) | "subagent A ran the tool it asked for: the pane is needs_input ("Claude needs your permission to use Bash"), want working" | **caught** |
+| The `if_subagent_id` check in `applyAgentReport` (`internal/session/agent_state.go`) | "subagent B ran a tool: the pane is working (""), want needs_input" | **caught** |
+| The `if_state` on the `permission_prompt` Notification (`internal/integration/hook_claude.go`) | "subagent A ran the tool it asked for: the pane is needs_input ("Claude needs your permission to use Bash"), want working": the Notification took the subagent's prompt over | **caught** |
