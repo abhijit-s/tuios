@@ -12147,3 +12147,12 @@ The positive half is in the same runs: `pill` and `flat` pass on every build. Th
 | The build before this change (upstream main at `92258aafe`) | "subagent A ran the tool it asked for: the pane is needs_input ("Claude needs your permission to use Bash"), want working" | **caught** |
 | The `if_subagent_id` check in `applyAgentReport` (`internal/session/agent_state.go`) | "subagent B ran a tool: the pane is working (""), want needs_input" | **caught** |
 | The `if_state` on the `permission_prompt` Notification (`internal/integration/hook_claude.go`) | "subagent A ran the tool it asked for: the pane is needs_input ("Claude needs your permission to use Bash"), want working": the Notification took the subagent's prompt over | **caught** |
+## The risk root of a worktree reached through a link (#1316)
+
+`riskWorktree` reaches its isolation root through a symlink on every OS, as the temp folder is on macOS (`/var` is a link to `/private/var`), so tuios records the worktree through it. `TestRiskInWorktree` holds the clipped Inbox line of an Edit inside the worktree to "not outside", and `TestRiskLinkedRoot` does the same from a window of the worktree's session that starts outside the worktree, which only the managed worktree root can hold. Each control was built into its own binary. Run on 2026-10-30 on macOS arm64.
+
+| Control: what was cut | Where it fails | Verdict |
+| --- | --- | --- |
+| The build before this change (upstream main at `92258aafe`) | `TestRiskInWorktree`: "ASSERTION: repo-feat-kinder-greeting marks an Edit inside its worktree outside the worktree: [outside the worktree cut short]", the same for `demo`; `TestRiskLinkedRoot`: the same assertion | **caught** |
+| `resolveAbove` in `approvalRoot` (`internal/session/approval_risk.go`): the managed worktree is taken as recorded, through the link | `TestRiskLinkedRoot`: "ASSERTION: repo-feat-kinder-greeting marks an Edit inside its worktree outside the worktree". `TestRiskInWorktree` passes, since its panes start in the worktree and the start folder is resolved when recorded | **caught** |
+| The `resolve` of the shown directories in `shownOutside` (`internal/risk/risk.go`) | `TestRiskInWorktree`: both panes' Edits marked "outside the worktree" | **caught** |
