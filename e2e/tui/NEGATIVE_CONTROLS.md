@@ -6625,6 +6625,19 @@ The control was run on 2026-10-26 on the branch fix/ssh-pprof.
 | --- | --- | --- | --- |
 | The call cut | startPprofServer() removed from the ssh command | `TestSSHServesPprof/daemon`: "ASSERTION: tuios ssh (daemon) never served /debug/pprof on 127.0.0.1:39865: … connect: connection refused"; `TestSSHServesPprof/ephemeral`: the same | **caught** |
 | A default listener | startPprofServer listening on 127.0.0.1:6060 when the flag is empty | `TestSSHWithoutPprofOpensNoProfileListener/daemon`: "ASSERTION: tuios ssh (daemon) without --pprof listens on [6060 38499], want only the SSH port 38499" | **caught** |
+
+## Long-running commands serve --pprof
+
+`TestPprofServedByLongRunningCommands` starts mcp, stdio-proxy, pair, subscribe, agent-proto, tape play and `mermaid --watch` with `--pprof :P`, reads the heap profile from 127.0.0.1:P and checks the process holds that listener on IPv4 loopback only; then it starts each again without the flag and checks, once the command is running and again a second later, that it listens on no extra port.
+
+The control was run on 2026-10-28 on the branch fix/pprof-long-running.
+
+| Control | How | Tests that fail | Verdict |
+| --- | --- | --- | --- |
+| The call cut | startPprofServer() removed from the mcp command | `TestPprofServedByLongRunningCommands/mcp`: "ASSERTION: mcp --pprof :40343 never served the heap profile on 127.0.0.1:40343: status 0, 0 bytes, ... connect: connection refused" | **caught** |
+| A default listener | startPprofServer listening on 127.0.0.1:6060 when the flag is empty | `TestPprofServedByLongRunningCommands/agent-proto`: "ASSERTION: agent-proto without --pprof listens on [6060], want []" | **caught** |
+| Every interface | listenPprof bypassed (net.Listen on :P) | `TestPprofServedByLongRunningCommands/mcp`: "ASSERTION: mcp --pprof :39101 listens on port 39101 over IPv6, not on loopback only" | **caught** |
+
 ## Panes do not inherit the agent tool call that started the daemon
 
 `TestPanesDoNotInheritTheAgentThatStartedTheDaemon` starts the daemon with
@@ -11823,3 +11836,39 @@ refused.
 | Control: what was cut | Where it fails | Verdict |
 | --- | --- | --- |
 | `slowStart` dropped from the timeout check in `probeImageCmd`, so a timeout under WSL sets `keyProbeOff`, as before the fix | `no path was pasted into the pane`, 5 of 5 runs | **caught** |
+
+## Claude Code's form under its titled rule (#1272)
+
+`TestClaudeFormUnderATitledRuleIsAPrompt` paints an AskUserQuestion form as
+Claude Code 2.1.311 draws it, with a rule carrying the session's name under it,
+once with the footer on one line and once wrapped at a space as in a pane 39
+columns wide. It asks `peek-prompt` for each. The wrapped case needs both
+halves of the fix: the skipped titled rule and the joined substrings.
+`TestClaudeTitledRuleWithALineUnderItIsNotAForm` holds the other direction: a
+form above a titled rule with a line under it is settled output.
+`TestClaudePermissionUnderATitledRuleStillApproves` guards the permission menu
+under the same titled rule.
+
+Run on 2026-10-28 on macOS with Go 1.26.8, on `111bdfbe7` (main) and the
+branch. Each cut was built with `go build -overlay`, and read back in the
+overlay file before the run.
+
+| Control: what was cut | Where it fails | Verdict |
+| --- | --- | --- |
+| The whole fix (main at `111bdfbe7`) | form, wide and narrow: "not answerable by choose" | **caught** |
+| The titled rule skip in `regionBounds` (`if false && …`) | form, wide and narrow: not answerable | **caught** |
+| The joined form in `regionText.get` (lines joined with a newline only) | form, narrow only. Wide passes | **caught** |
+| `blankFrom` dropped from the skip | settled form: "answerable" | **caught** |
+
+The settled form test passes on main, where the titled rule counted as the last
+rule. The permission guard passes on main, on the branch and under every cut:
+rule 0 reads that menu by its `1. Yes` line from the whole tail. It is there so
+that a later change to the region cannot take the permission menu with it
+unnoticed.
+
+The unit and fixture guards in `internal/harness` were cut the same way:
+joining every region fails the whole-tail prose case and the `claude-code.txt`
+fixture of wrapped prose with a draft (rule 6, needs_input instead of idle).
+Reading the whole tail when the titled line has no rule above it fails the
+answered-form fixture (rule 3, needs_input instead of none). Dropping the
+corner check fails the case of a box's bottom with a title.
