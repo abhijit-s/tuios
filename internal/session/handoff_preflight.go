@@ -66,6 +66,12 @@ type fileID struct {
 	mtime, ctime int64
 }
 
+// withoutChange is f without its change time.
+func (f fileID) withoutChange() fileID {
+	f.ctime = 0
+	return f
+}
+
 // preflightBinary runs path's handoff-accepts and checks it reads the
 // manifest this build writes.
 func preflightBinary(path string) (handoffBinary, error) {

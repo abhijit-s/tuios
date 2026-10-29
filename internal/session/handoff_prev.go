@@ -63,9 +63,11 @@ func keptBinary(path string) (*prevBinary, error) {
 	return &prevBinary{path: path, file: fileIDOf(info), size: info.Size(), modified: info.ModTime().UnixNano()}, nil
 }
 
-// same says now is the file p was kept as.
+// same says now is the file p was kept as. The change time is left out: the
+// kept file is a hard link to the binary that was running, and an install
+// that replaces that binary drops the link count, which moves it.
 func (p *prevBinary) same(now *prevBinary) bool {
-	return now.file == p.file && now.size == p.size && now.modified == p.modified
+	return now.file.withoutChange() == p.file.withoutChange() && now.size == p.size && now.modified == p.modified
 }
 
 // keepPrevBinary keeps this image's binary for a later handoff to fall back
