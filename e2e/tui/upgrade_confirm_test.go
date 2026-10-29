@@ -97,7 +97,7 @@ func waitNoDialog(t *testing.T, term *tuitest.Terminal, what string) {
 	}
 }
 
-func pressKeys(t *testing.T, term *tuitest.Terminal, keys ...string) {
+func pressUpgradeKeys(t *testing.T, term *tuitest.Terminal, keys ...string) {
 	t.Helper()
 	for _, k := range keys {
 		if err := term.SendKeys(k); err != nil {
@@ -169,7 +169,7 @@ func TestPaneUpgradeConfirmedAtTheClient(t *testing.T) {
 		"version": dialogShows(screen, "version "+r.img.Version),
 		"pane":    dialogShows(screen, "agent asks"),
 	}
-	pressKeys(t, term, keyDown, keyEnter)
+	pressUpgradeKeys(t, term, keyDown, keyEnter)
 	code, took := done()
 	after := awaitNewImage(t, r.base, r.img, 30*time.Second)
 	exe := executableOf(t, after.PID)
@@ -207,7 +207,7 @@ func TestPaneUpgradeRefusedWithoutYes(t *testing.T) {
 	} {
 		done := r.paneUpgrade(t)
 		r.waitDialog(t, term, tc.name)
-		pressKeys(t, term, tc.keys...)
+		pressUpgradeKeys(t, term, tc.keys...)
 		code, _ := done()
 		waitNoDialog(t, term, tc.name)
 		r.unchanged(t, tc.name)
@@ -272,7 +272,7 @@ func TestPaneUpgradeTakesOnlyKeysAtTheClient(t *testing.T) {
 	attempts["tape"] = out + errString(err)
 	still("a tape's Press of j and Enter")
 
-	pressKeys(t, term, "\x1b[200~j\r\x1b[201~")
+	pressUpgradeKeys(t, term, "\x1b[200~j\r\x1b[201~")
 	still("a paste of j and Enter")
 
 	items := mustCall(t, r.base, "list-attention", map[string]any{})
@@ -299,7 +299,7 @@ func TestPaneUpgradeTakesOnlyKeysAtTheClient(t *testing.T) {
 	}
 	saveArtifact(t, term, r.art, "dialog-after-attempts")
 
-	pressKeys(t, term, keyEsc)
+	pressUpgradeKeys(t, term, keyEsc)
 	code, _ := done()
 	waitNoDialog(t, term, "Esc")
 	r.unchanged(t, "Esc after the attempts")
@@ -317,8 +317,8 @@ func TestPaneUpgradeFirstAnswerWins(t *testing.T) {
 	done := r.paneUpgrade(t)
 	r.waitDialog(t, first, "first")
 	r.waitDialog(t, second, "second")
-	pressKeys(t, first, keyEsc)
-	pressKeys(t, second, keyDown, keyEnter)
+	pressUpgradeKeys(t, first, keyEsc)
+	pressUpgradeKeys(t, second, keyDown, keyEnter)
 	waitNoDialog(t, second, "the first client answered")
 	saveArtifact(t, second, r.art, "second-after-answer")
 	code, _ := done()
