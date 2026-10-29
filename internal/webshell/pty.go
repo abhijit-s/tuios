@@ -137,10 +137,10 @@ func (p *Pty) Start(cmd *exec.Cmd) error {
 	if !p.started.CompareAndSwap(false, true) {
 		return errors.New("webshell: already started")
 	}
-	name := ""
+	name, dir := "", ""
 	var args []string
 	if cmd != nil {
-		name = filepath.Base(cmd.Path)
+		name, dir = filepath.Base(cmd.Path), cmd.Dir
 		if len(cmd.Args) > 1 {
 			args = cmd.Args[1:]
 		}
@@ -161,11 +161,15 @@ func (p *Pty) Start(cmd *exec.Cmd) error {
 		defer close(p.done)
 		defer func() { _ = p.Close() }()
 		defer t.stop()
-		if _, ok := commands[name]; ok && !shellNames[name] {
-			p.exitErr = exitError(runProgram(t, name, args))
+		if hold, ok := holders[name]; ok {
+			p.exitErr = exitError(hold(t))
 			return
 		}
-		p.exitErr = exitError(runShell(t))
+		if _, ok := commands[name]; ok && !shellNames[name] {
+			p.exitErr = exitError(runProgram(t, dir, name, args))
+			return
+		}
+		p.exitErr = exitError(runShell(t, dir))
 	}()
 	return nil
 }

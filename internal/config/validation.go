@@ -89,6 +89,31 @@ func ValidateConfig(cfg *UserConfig) *ValidationResult {
 		}
 	}
 
+	// The key that ends nest mode is read as the leader is: a key that cannot
+	// be pressed would leave nest mode with no way out, and one that programs
+	// type would end it in the middle of typing.
+	if k := cfg.Keybindings.NestExitKey; k != "" {
+		if valid, errMsg := normalizer.ValidateKey(k); !valid {
+			result.Errors = append(result.Errors, ValidationError{
+				Field:   "keybindings",
+				Key:     "nest_exit_key",
+				Message: errMsg,
+			})
+		} else if KeyTypes(k) {
+			result.Warnings = append(result.Warnings, ValidationError{
+				Field:   "keybindings",
+				Key:     "nest_exit_key",
+				Message: fmt.Sprintf("%q is a key programs type, so nest mode ends each time it is typed. Use a function key, such as %s, or a key with ctrl or alt", k, DefaultNestExitKey),
+			})
+		} else if leader := cfg.Keybindings.LeaderKey; leader != "" && IsKeyPress(CanonicalKey(leader), k) {
+			result.Warnings = append(result.Warnings, ValidationError{
+				Field:   "keybindings",
+				Key:     "nest_exit_key",
+				Message: fmt.Sprintf("%q is the leader, so the program in the pane never gets it in nest mode. Use another key, such as %s", k, DefaultNestExitKey),
+			})
+		}
+	}
+
 	if p := cfg.Keybindings.Preset; p != "" && !slices.Contains(Presets(), p) {
 		result.Warnings = append(result.Warnings, ValidationError{
 			Field: "keybindings",
@@ -116,6 +141,7 @@ func ValidateConfig(cfg *UserConfig) *ValidationResult {
 	validateResumeAgents(cfg, result)
 	validateWindowSize(cfg, result)
 	validateSSHAgent(cfg, result)
+	validateSSH(cfg, result)
 	validateDisplay(cfg, result)
 	validateLinkPolicies(cfg, result)
 	validatePanePermissions(cfg, result)
@@ -788,7 +814,8 @@ type DroppedKey struct {
 	File string `json:"file"`
 	// Section is the config table, or "keybindings" for the leader.
 	Section string `json:"section"`
-	// Action is the action the key was bound to, or "leader_key".
+	// Action is the action the key was bound to, or "leader_key" or
+	// "nest_exit_key".
 	Action string `json:"action"`
 	Key    string `json:"key"`
 	// Problem is what is wrong, in the validator's words.
@@ -826,8 +853,8 @@ func (d DroppedKey) Outcome() string {
 // Warning is the line the TUI logs for the dropped key.
 func (d DroppedKey) Warning() string {
 	name := d.Key
-	if d.IsLeader() {
-		name = "leader_key = " + d.Key
+	if d.IsLeader() || d.Action == "nest_exit_key" {
+		name = d.Action + " = " + d.Key
 	}
 	return fmt.Sprintf("%s: [%s] %s: %s. tuios ignores this key. %s", d.File, d.Section, name, d.Problem, d.Outcome())
 }
@@ -882,6 +909,17 @@ func DropUnreadableKeys(cfg *UserConfig, lc *LayeredConfig) []DroppedKey {
 				Key: kb.LeaderKey, Problem: msg, Fallback: []string{defaults.LeaderKey},
 			})
 			kb.LeaderKey = defaults.LeaderKey
+		}
+	}
+	// A nest exit key that cannot be read goes back to F12, for the same
+	// reason: nest mode must always have a way out.
+	if kb.NestExitKey != "" {
+		if ok, msg := normalizer.ValidateKey(kb.NestExitKey); !ok {
+			dropped = append(dropped, DroppedKey{
+				File: fileOf("keybindings", "nest_exit_key"), Section: "keybindings", Action: "nest_exit_key",
+				Key: kb.NestExitKey, Problem: msg, Fallback: []string{DefaultNestExitKey},
+			})
+			kb.NestExitKey = ""
 		}
 	}
 

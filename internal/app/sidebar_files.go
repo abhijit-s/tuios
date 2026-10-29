@@ -181,8 +181,14 @@ var readDirFunc = session.ReadDirCapped
 // its way out instead, which is the same shape the guest's own clipboard writes
 // already take through the model.
 func (m *OS) queueSidebarCmd(cmd tea.Cmd) {
-	if cmd != nil {
+	// A drop on another space's group queues the move and then the order, so
+	// a second command joins the first rather than replacing it.
+	switch {
+	case cmd == nil:
+	case m.sidebarPendingCmd == nil:
 		m.sidebarPendingCmd = cmd
+	default:
+		m.sidebarPendingCmd = tea.Sequence(m.sidebarPendingCmd, cmd)
 	}
 }
 
@@ -938,6 +944,13 @@ func (m *OS) fileViewOpen(dir, name string, isDir bool) tea.Cmd {
 			m.sendCdToOrigin(full)
 		}
 		return cmd
+	}
+	if m.learnFiles() {
+		// The browser has no clipboard to put the path on, so the file
+		// opens in the fake viewer instead, and the dock says what enter
+		// does on a real machine.
+		m.learnOpenFile(full, false)
+		return nil
 	}
 	return m.copyFilePath(full)
 }

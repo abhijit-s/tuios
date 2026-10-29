@@ -154,7 +154,7 @@ type HostsChangedMsg struct{}
 func (m *OS) federationRefreshTick(after time.Duration) tea.Cmd {
 	m.federationTickGen++
 	gen := m.federationTickGen
-	return tea.Tick(after, func(time.Time) tea.Msg { return FederationRefreshTickMsg{Gen: gen} })
+	return m.tickUntilStop(after, func(time.Time) tea.Msg { return FederationRefreshTickMsg{Gen: gen} })
 }
 
 // federationRefreshPlan decides the next poll interval and whether to poll at
@@ -746,6 +746,12 @@ func (m *OS) SidebarToggleHostCollapsed(host string) {
 // sidebarSessionOrderFor is the user's drag order for one machine's sessions:
 // SidebarOrder for this machine, and the per-host order for any other.
 func (m *OS) sidebarSessionOrderFor(host string) []string {
+	// The attached machine's daemon keeps the order every client shows, and
+	// its listing is already in it, except while a move of this client's is
+	// on its way there. See session_order.go.
+	if host == m.attachedMachine() && m.sessionOrderFromDaemon(host) && !m.sessionOrderPending(host) {
+		return nil
+	}
 	if host == federation.LocalHostName {
 		return m.SidebarOrder
 	}

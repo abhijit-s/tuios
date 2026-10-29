@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"reflect"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -2227,6 +2228,20 @@ func (c *TUIClient) AvailableSessionNames() []string {
 	return names
 }
 
+// SessionOrderSet reports whether the cached listing carries the daemon's
+// session order (set-session-order): a rank on any session. The listing is
+// sorted by it, so a client shows it as it comes.
+func (c *TUIClient) SessionOrderSet() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, s := range c.availableSessions {
+		if s.Rank > 0 {
+			return true
+		}
+	}
+	return false
+}
+
 // SessionLabel returns the cached display name and accent for the named
 // session, both empty when it is unknown or carries neither. The caller falls
 // back to the session name, which stays the identity in every case.
@@ -2553,6 +2568,19 @@ func listingsAgree(a, b []SessionInfo) bool {
 		// Filing a session under a space moves no window, and the rail draws
 		// the row under the space's heading.
 		if a[i].Space != b[i].Space {
+			return false
+		}
+		// A shell that walks into a worktree moves no window either, and the
+		// rail draws the row under its repository from this record. The first
+		// listing can carry the session before the daemon has read its
+		// worktree, so the record that arrives later must count as a change.
+		if !reflect.DeepEqual(a[i].Worktree, b[i].Worktree) {
+			return false
+		}
+		// The first set-session-order can leave the names where they were and
+		// still change what the rail shows: from then on the daemon's order
+		// is applied, not the client's own.
+		if a[i].Rank != b[i].Rank {
 			return false
 		}
 		if !slices.EqualFunc(a[i].Windows, b[i].Windows, windowSummariesAgree) {

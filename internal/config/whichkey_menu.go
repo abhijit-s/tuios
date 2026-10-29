@@ -303,10 +303,10 @@ func menuSections(prefixType string, st MenuState) []menuSection {
 		} else {
 			sessions.rows = append(sessions.rows, row("prefix_detach", "Detach session"), row("prefix_quit", "Quit menu"))
 		}
-		modes.rows = append(modes.rows, row("prefix_exit_mode", "Window mode"))
+		modes.rows = append(modes.rows, pair("Window/nest mode", part("prefix_exit_mode", "Window mode"), part("nest", "Nest mode")))
 	} else {
 		sessions.rows = append(sessions.rows, row("prefix_quit", "Quit application"))
-		modes.rows = append(modes.rows, pair("Window mode", part("prefix_detach", "Window mode"), part("prefix_exit_mode", "Window mode")))
+		modes.rows = append(modes.rows, pair("Window/nest mode", part("prefix_detach", "Window mode"), part("prefix_exit_mode", "Window mode"), part("nest", "Nest mode")))
 	}
 	// With multifocus on, the copy-mode key enters multi copy mode, and the
 	// menu says so: this is where a multifocus user finds out it exists.
@@ -333,6 +333,12 @@ func menuSections(prefixType string, st MenuState) []menuSection {
 		sidebarRow,
 		row("prefix_explore", "Focus sidebar"),
 		row("prefix_file_search", "Search files"),
+		// Calm mode is a row of its own at the end of Modes. A key added to
+		// a shared row widens that row's key column, and the zoom row's
+		// description has to stay "Toggle zoom" for a rebind to read as one
+		// key. At 80x24 the end of Modes flows into a column of one-cell
+		// keys, so the row costs no width there.
+		row("toggle_calm", "Calm mode"),
 	)
 	return []menuSection{
 		{title: "Workspaces", rows: leaderWorkspaceRows},
@@ -609,9 +615,11 @@ func numberedLabel(keys []string) string {
 	return strings.Join(pieces, "/")
 }
 
-// keyNames is how a which-key row spells a named key.
+// keyNames is how a which-key row spells a named key. enter is the ↵ arrow,
+// as the arrows are arrows: one cell, so the leader's menu still fits 80x24
+// with nest on the window mode line (Esc/↵).
 var keyNames = map[string]string{
-	"esc": "Esc", "escape": "Esc", "tab": "Tab", "enter": "Enter", "return": "Enter",
+	"esc": "Esc", "escape": "Esc", "tab": "Tab", "enter": "↵", "return": "↵",
 	"space": "Space", "backspace": "Backspace", "delete": "Delete", "insert": "Insert",
 	"home": "Home", "end": "End", "pgup": "PgUp", "pgdown": "PgDn",
 	"left": "←", "right": "→", "up": "↑", "down": "↓",

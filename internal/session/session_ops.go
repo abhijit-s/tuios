@@ -456,8 +456,8 @@ func (s *Session) AddDaemonWindowWith(opts NewWindowOptions, onExit func(ptyID s
 		if detectIn == "" {
 			detectIn, _ = pty.ProcessCwd()
 		}
-		if info, ok := worktree.Detect(detectIn); ok {
-			detected = &WorktreeInfo{Info: info}
+		if info, main, ok := worktree.DetectEither(detectIn); ok {
+			detected = &WorktreeInfo{Info: info, Main: main}
 		}
 	}
 

@@ -3944,6 +3944,26 @@ Response:
 
 Surrounding whitespace is trimmed first. A space name then follows the session name rules and is at most 64 bytes. Any other is refused with `invalid_params` on `space`. A global session cannot be in a space, so filing one is refused with `invalid_params` (`a global session cannot be in a space`) and nothing changes. `new-session` takes the same `space` param, refused the same way, and files the session as it is made, so it never exists in no space. Its result echoes `space`. Only these two verbs write a session's space: a client's state sync never moves it. A pane needs the `admin` grant, and over a link the verb needs `write`.
 
+### set-session-order
+
+Put the sessions in an order. The daemon keeps one order for all its clients: `list-sessions` is sorted by it, so the sidebar, the session switcher and `tuios ls` list the sessions the same way on every client, and it is saved and restored with the sessions. Moving a session on the sidebar sends this verb. The daemon tells every listing client at once, without waiting for the listing's next look. `list-sessions` carries `rank` (1 first) on every session the order places.
+
+Params: `order` (required), the session names in their new order. Every name must be a live session, or nothing changes and the call is refused with `session_not_found`. Repeats are dropped. A session the list leaves out, and one made later, goes after the named ones in creation order. `skip_missing` leaves out a name that is no live session instead, and the result lists it under `missing`. The sidebar sets it, since another client may have ended a session it drew.
+
+Request:
+
+```json
+{"verb": "set-session-order", "params": {"order": ["work", "notes"]}}
+```
+
+Response:
+
+```json
+{"result": {"type": "session_order_set", "order": ["work", "notes", "scratch"]}}
+```
+
+`order` in the result is every session, in the order the daemon lists them now. Only this verb writes a session's rank: a client's state sync never moves it. A pane needs the `admin` grant, and over a link the verb needs `write`.
+
 ### new-worktree
 
 Create a git worktree of a repository and a session in it. The worktree goes
@@ -3993,7 +4013,9 @@ the same way, by reading the directory. `list-sessions` carries the record as
 
 ### list-worktrees
 
-List the sessions whose directory is a git worktree.
+List the sessions whose directory is a git worktree. A session in the
+repository's main checkout reads as a row with `main` true. No worktree verb
+acts on such a row.
 
 Params: `repo` (filter by repository name), `group` (filter by fan-out stem),
 `changes` (run git in each and report `changes`, `ahead`, `merged` and
@@ -4011,7 +4033,7 @@ Response:
 {"result": {"type": "worktree_list", "total": 1, "worktrees": [
   {"session": "api-feat-retry", "repo": "api", "repo_root": "/src/api", "branch": "feat/retry",
    "path": "/home/u/.local/share/tuios/worktrees/api/feat-retry", "base": "main", "group": "",
-   "managed": true, "gone": false, "state": "working", "harness": "claude-code", "windows": 1,
+   "managed": true, "gone": false, "main": false, "state": "working", "harness": "claude-code", "windows": 1,
    "attached": false, "prompt_status": "", "prompt_note": "", "changes": 3, "ahead": 1,
    "merged": false}]}}
 ```
@@ -6279,7 +6301,8 @@ gives (up to 32 hex digits). A caller with no `part_id` writes
 opened must be the regular file at the part's name, so a link put there turns
 the copy into a failure, not a write to the link's target. `file-commit` sets
 the original's permission bits and modification time on the part, renames it
-into place, and syncs the folder.
+into place, and syncs the folder. Over a link, the bits are masked by the
+daemon's umask and lose group and world write. The execute bits stay.
 
 **Tree streams.** A folder copy sends each file of 8 MiB or less in one tree
 stream each way, with no round trip between files. A file sent by itself
@@ -6503,6 +6526,11 @@ checked before a byte moves:
   or off one.
 - One machine may have at most 8 write streams and 64 unfinished part files
   open. Past that the write is `busy`, which a copy retries.
+- One machine may make at most `files_max_entries` (20,000 unless set) new
+  files and folders in ten minutes. A write that starts a new part counts as
+  one. `file-mkdir`, `file-drop-dir` and a tree stream's `dir` record count
+  each folder they make. Past that the call is `busy`, which a copy retries.
+  The count goes down evenly over the ten minutes.
 
 A job is logged in the daemon log when it starts and ends, with both ends
 and the byte count.

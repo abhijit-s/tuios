@@ -707,7 +707,7 @@ func (m *transferManager) resolveTarget(ctx context.Context, j *transferJob, dst
 		}
 		switch {
 		case st.exists && st.isDir:
-			target = joinRemote(target, path.Base(filepath.ToSlash(j.src.Path)))
+			target = joinRemote(target, transferName(j.src.Path))
 		case place == "into" && !st.exists:
 			return "", permanent(ErrVerbNoFile, "the folder "+j.dst.String()+" does not exist")
 		case place == "into":
@@ -753,7 +753,7 @@ func keepAction(policy string) string {
 
 // attemptFile copies one file.
 func (m *transferManager) attemptFile(ctx context.Context, j *transferJob, src, dst fileEnd, info statResult, target string) error {
-	name := path.Base(filepath.ToSlash(j.src.Path))
+	name := transferName(j.src.Path)
 	j.set(func(j *transferJob) {
 		j.size, j.files, j.isDir = info.size, 1, false
 		j.current = name
@@ -1024,6 +1024,13 @@ func (m *transferManager) attemptDir(ctx context.Context, j *transferJob, src, d
 			return classify(err)
 		}
 		for _, r := range res {
+			if r.code == ErrVerbBusy {
+				// The far machine takes no more new files for now
+				// (files_max_entries). The job waits and goes on; the
+				// files that landed are the same next time and are not
+				// sent again.
+				return &transferError{code: r.code, msg: r.msg, retry: true}
+			}
 			if r.code == ErrVerbHashMismatch {
 				// Once more by itself, which reads it again on both sides.
 				for _, t := range small {
@@ -1740,7 +1747,7 @@ func (j *transferJob) row() TransferRow {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	r := TransferRow{
-		ID: j.id, Name: path.Base(filepath.ToSlash(j.src.Path)), Src: j.src, Dst: j.dst, Final: j.final, Target: j.target,
+		ID: j.id, Name: transferName(j.src.Path), Src: j.src, Dst: j.dst, Final: j.final, Target: j.target,
 		Kind: "file", Move: j.opts.Move, State: j.state, Size: j.size, Done: j.done.Load(), Wire: j.wire.Load(),
 		Files: j.files, FilesDone: j.filesDone, Current: j.current,
 		Error: j.errText, Code: j.errCode, ResumedFrom: j.resumedAt, Resumes: j.resumes,
@@ -1830,13 +1837,42 @@ func (d *Daemon) checkEndpoint(name string, e *Endpoint) *verbError {
 		e.Path = p
 		return nil
 	}
-	if !strings.HasPrefix(e.Path, "/") && !strings.HasPrefix(e.Path, "~") {
+	if !IsHostPath(e.Path) {
 		return invalidParam(name+".path", "give an absolute path, or one that starts with ~")
 	}
 	if strings.ContainsRune(e.Path, 0) {
 		return invalidParam(name+".path", "a path cannot hold a NUL byte")
 	}
 	return d.checkHostParam(e.Host)
+}
+
+// IsHostPath reports whether p can name a path on a host whose system this
+// machine does not know: absolute on Unix ("/..."), under its home ("~..."),
+// or a Windows drive path ("C:\..." or "C:/..."). It is only a first check.
+// The host takes the path through expandPath, which holds it to that host's
+// own rules.
+func IsHostPath(p string) bool {
+	return strings.HasPrefix(p, "/") || strings.HasPrefix(p, "~") || isDrivePath(p)
+}
+
+// isDrivePath reports whether p is a Windows drive path, "C:\..." or "C:/...".
+func isDrivePath(p string) bool {
+	if len(p) < 3 || p[1] != ':' || (p[2] != '\\' && p[2] != '/') {
+		return false
+	}
+	c := p[0] | 0x20
+	return c >= 'a' && c <= 'z'
+}
+
+// transferName is the last element of a copy's source path, the name the copy
+// gets in a folder. A Windows drive path splits at \ too, whatever system this
+// machine runs: the path may be a Windows host's. Elsewhere a \ is part of a
+// name on Unix, so only the separator this machine uses splits it.
+func transferName(p string) string {
+	if isDrivePath(p) {
+		p = strings.ReplaceAll(p, `\`, "/")
+	}
+	return path.Base(filepath.ToSlash(p))
 }
 
 // thisMachineLabel is the name a keep-both copy from this machine carries on
@@ -2208,7 +2244,7 @@ func transferVerbs() map[string]verbEntry {
 	idParam := verbParam{Name: "id", Type: "string", Required: true, Description: "The transfer's id."}
 	return map[string]verbEntry{
 		"transfer-start": {
-			description: "Copy a file or a folder between this machine and a host, or between two hosts. The daemon runs the copy, so a client may quit, and a daemon restart goes on with it. A machine that goes away pauses it, and it goes on from where it stopped when the machine is back. Every file's sha256 is checked before it is put in place, and it keeps the original's permission bits and modification time. A file that is there with the same sha256 is not copied again. A destination that exists answers file_exists unless conflict says what to do. A destination another copy writes now answers busy. Each change is a transfer event on the event stream.",
+			description: "Copy a file or a folder between this machine and a host, or between two hosts. The daemon runs the copy, so a client may quit, and a daemon restart goes on with it. A machine that goes away pauses it, and it goes on from where it stopped when the machine is back. Every file's sha256 is checked before it is put in place, and it keeps the original's permission bits and modification time. A file that arrives over a link gets the receiving machine's umask and never group or world write. A file that is there with the same sha256 is not copied again. A destination that exists answers file_exists unless conflict says what to do. A destination another copy writes now answers busy. Each change is a transfer event on the event stream.",
 			params: []verbParam{
 				endpoint("src", "What to copy"),
 				endpoint("dst", "Where it goes: the full path of the copy, or with place a folder"),

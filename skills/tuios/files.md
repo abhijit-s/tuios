@@ -43,7 +43,9 @@ is there and differs follows `--conflict`:
 | `replace` | `-f` | Replace it. Ask the person first unless they told you to |
 | `keep-both` | `-b` | Keep it, and name the copy `name (from HOST).ext` |
 
-Each file keeps its permission bits and modification time. `--no-perms` and
+Each file keeps its permission bits and modification time. A file that
+arrives on another machine gets that machine's umask and loses group and
+world write. `--no-perms` and
 `--no-times` turn that off. `--bwlimit 5M` caps the rate. `--no-compress`
 sends the bytes as they are. `--detach` prints the copy's id and returns.
 A detached copy skips a file that differs unless you pass `--conflict`.
@@ -122,8 +124,9 @@ machine in the config there. A machine can also hold reads to
 
 A write over a link must leave `files_min_free` (1 GiB unless set) free on
 the far disk, or it fails with `disk_full`. A machine may have 8 write
-streams and 64 unfinished copies open on another at once. Past that a call
-is `busy`. A copy waits and tries again by itself.
+streams and 64 unfinished copies open on another at once. It may make
+`files_max_entries` (20,000 unless set) new files and folders there in ten
+minutes. Past that a call is `busy`. A copy waits and tries again by itself.
 
 `tuios hosts test build --speed` measures how fast a copy to a host can be.
 

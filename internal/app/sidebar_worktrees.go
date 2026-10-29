@@ -8,6 +8,7 @@ import (
 	"github.com/Gaurav-Gosain/tuios/internal/overlay"
 	"github.com/Gaurav-Gosain/tuios/internal/session"
 	"github.com/Gaurav-Gosain/tuios/internal/sessiontree"
+	"github.com/Gaurav-Gosain/tuios/internal/worktree"
 )
 
 // The rail's worktree groups.
@@ -29,9 +30,14 @@ import (
 const sidebarWorktreeGoneTag = "gone"
 
 // worktreeRef adapts the daemon's record to the shared row model, which knows
-// nothing about internal/session.
-func worktreeRef(info *session.WorktreeInfo) *sessiontree.WorktreeRef {
+// nothing about internal/session. A main-checkout record is a record only for
+// a rail that has opted into it: group_main off reads it as no record at all,
+// which is exactly the shape the sessions had before it existed.
+func (m *OS) worktreeRef(info *session.WorktreeInfo) *sessiontree.WorktreeRef {
 	if info == nil {
+		return nil
+	}
+	if info.Main && !m.Settings.SidebarGroupMain {
 		return nil
 	}
 	ref := &sessiontree.WorktreeRef{
@@ -40,6 +46,7 @@ func worktreeRef(info *session.WorktreeInfo) *sessiontree.WorktreeRef {
 		Group:    info.Group,
 		FanID:    info.FanID,
 		Gone:     info.Gone,
+		Main:     info.Main,
 		PR:       info.PR.Badge(),
 		Path:     info.Path,
 		RepoRoot: info.RepoRoot,
@@ -60,6 +67,32 @@ func worktreeRef(info *session.WorktreeInfo) *sessiontree.WorktreeRef {
 		}
 	}
 	return ref
+}
+
+// sidebarRepoGotoMain opens the repo group's session in the main checkout —
+// the one whose directory is the repository itself, usually on main or
+// master — and reports whether there was one. It is what a repo header's
+// activation does once group_main gathers the main checkout in; without it,
+// or when the group holds no main-checkout session, the header keeps its
+// fold gesture.
+func (m *OS) sidebarRepoGotoMain(repo string) bool {
+	if !m.Settings.SidebarGroupMain {
+		return false
+	}
+	for _, n := range m.BuildSessionTree().Sessions {
+		if n.Kind == sessiontree.KindSession && n.Host == "" &&
+			n.Worktree != nil && n.Worktree.Repo == repo && n.Worktree.Main {
+			// Open the group, so the session the header pointed at is on
+			// screen under it rather than hidden behind a count.
+			if m.SidebarRepoCollapsed(repo) {
+				m.SidebarToggleRepoCollapsed(repo)
+			}
+			m.sidebarSwitchSession(n.ID)
+			m.sidebarFollowSession = n.ID
+			return true
+		}
+	}
+	return false
 }
 
 // sidebarSessionRows is the sessions section's own row list: the attached
@@ -127,6 +160,11 @@ func (m *OS) SidebarToggleRepoCollapsed(repo string) {
 // behind the tree mark that says whether the group goes on below it. It
 // reports false for a session that is not a worktree, whose row is unchanged.
 //
+// A Named session keeps its own title behind the mark instead, and the branch
+// rides after it like on any other row (#1245): a name a person chose says
+// more than the branch, and the documented promise is that a session with a
+// custom name keeps it.
+//
 // The branch is laundered like any other title, and the mark is not: the mark
 // is one of ours, chosen by the glyph settings, and already ASCII in the mode
 // that asks for ASCII.
@@ -137,6 +175,9 @@ func (m *OS) sidebarWorktreeLabel(node sessiontree.Node) (string, bool) {
 	mark := m.Settings.GetRailTreeBranch()
 	if node.GroupLast {
 		mark = m.Settings.GetRailTreeLast()
+	}
+	if node.Named {
+		return mark + printableTitle(node.Title), true
 	}
 	label := printableTitle(node.Worktree.Branch)
 	if label == "" {
@@ -196,4 +237,19 @@ func (m *OS) sidebarRepoRow(node sessiontree.Node, cw int, pal overlay.Palette, 
 		Render(overlay.Truncate(printableTitle(node.Title), sidebarNameAvailIn(cw, rightW, indent)))
 	gutter := sidebarGutter(false, state, rowBg, pal, &m.Settings)
 	return sidebarComposeGroupRow(indent, gutter, glyph, name, right, cw, rowBg)
+}
+
+// sessionNamed reports whether a person chose the label of the session called
+// name: it has a display name, or a name tuios did not make up. Two names are
+// made up: the generated session-N, and the <repo>-<branch> name that
+// worktree new and fan give the session they make, which only repeats what
+// the repository row and the branch already say.
+func sessionNamed(name, display string, wt *session.WorktreeInfo) bool {
+	if display != "" {
+		return true
+	}
+	if session.IsGeneratedSessionName(name) {
+		return false
+	}
+	return wt == nil || name != worktree.SessionName(wt.Repo, wt.Branch)
 }

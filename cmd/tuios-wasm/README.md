@@ -71,7 +71,7 @@ call that sent the output or the event then throws a `TypeError`.
 Every event is `{type, data, windowId?, state?}`. `windowId` is set when the
 event is about one pane. `state` is the snapshot after the change, and is set
 on every event that comes from a state change: all but `key`, `action`,
-`notification` and the `shell.*` events.
+`notification`, the `shell.*` and the `tml.*` events.
 
 Events come in a fixed order for one key press: `key` first, then any
 `action`, then the state changes it caused.
@@ -80,7 +80,7 @@ Events come in a fixed order for one key press: `key` first, then any
 |---|---|---|
 | `ready` | `{}` | the program started. Carries `state` |
 | `key` | `{key, mode}` | a key press, before tuios handles it. `key` is Bubble Tea's name for it (`"ctrl+b"`, `"n"`, `"enter"`), `mode` is `"window"` or `"terminal"` |
-| `action` | `{name, mode}` | the exact keybinding action a key, a prefix chord, a menu row or `command("action")` ran, such as `"prefix_new_window"` or `"toggle_tiling"`. Also sent for an action Learn mode turns off |
+| `action` | `{name, mode}` | the exact keybinding action a key, a prefix chord, a menu row or `command("action")` ran, such as `"prefix_new_window"` or `"toggle_tiling"`. The keys of the agents view and its peek send theirs too, such as `"inbox_allow"` or `"peek_back"`. Also sent for an action Learn mode turns off |
 | `mode` | `{from, to}` | `"window"` or `"terminal"` |
 | `prefix` | `{from, to}` | the prefix state: `""`, `"prefix"`, `"workspace"`, `"window"`, `"minimize"`, `"layout"`, `"debug"` or `"tape"`. The leader key gives `to: "prefix"` |
 | `window.open` | `{id, title, workspace, count}` | a window opened. `count` is the total over every workspace |
@@ -91,15 +91,30 @@ Events come in a fixed order for one key press: `key` first, then any
 | `window.zoom` | `{id, zoomed}` | zoomed or unzoomed |
 | `window.move` | `{id, x, y, width, height, from}` | a window's place or size changed, in cells. `from` is `{x, y, width, height}` before. Sent once any animation has finished, so a snap or a retile is one event per window, not one per frame. A window that opened or closed is left out |
 | `window.float` | `{id, floating}` | the window floats above the tiling, or went back into it |
+| `window.workspace` | `{id, from, to}` | the window moved to another workspace. The scratch pane's workspace is 1000 |
 | `workspace` | `{from, to}` | the current workspace, 1 to 9 |
 | `tiling` | `{from, to}` | tiling on (`true`) or off |
 | `layout` | `{from, to}` | the layout mode: `"bsp"`, `"master-stack"` or `"scrolling"` |
 | `theme` | `{from, to}` | the theme id, such as `"catppuccin_mocha"` |
-| `setting` | `{name, from, to}` | a look changed. `name` is `"glyphs"` (the glyph set, `"default"` for the shipped one) or `"borderStyle"` (such as `"rounded"`) |
+| `setting` | `{name, from, to}` | a look changed. `name` is `"glyphs"` (the glyph set, `"default"` for the shipped one), `"borderStyle"` (such as `"rounded"`), or the config path of one of the looks below. Values are strings, as `tuios get-config` prints them, and an enum left unset reads as its default |
+| `themeEdit` | `{changed}` | the theme editor's draft changed: `changed` is `true` once a colour differs from the saved theme, and `false` again after an undo, a save or a close |
 | `overlay.open` | `{name}` | an overlay opened. Names below |
 | `overlay.close` | `{name}` | an overlay closed |
 | `notification` | `{message, level}` | a message in the dock. `level` is `"info"`, `"success"`, `"warning"` or `"error"`. Learn mode's notes are `"info"` |
 | `agent` | `{id, from, to, message, kind, harness}` | a pane's agent state: `""`, `"working"`, `"needs_input"`, `"idle"`, `"done"`, `"errored"` or `"unknown"`. `kind` is `"approval"` or `"question"` for `needs_input` |
+| `keys` | `{from, to}` | the keymap changed. Each side is `{preset, leader, lock}`: the preset (`"tuios"`, `"tmux"`, `"screen"` or `"zellij"`), the leader key, and whether lock mode is on |
+| `pip` | `{from, to}` | the window picture-in-picture shows changed. `to` is `""` when it is off |
+| `agents.select` | `{from, to, title, agent, kind, harness}` | the agents view's cursor moved to another agent. `from` and `to` are window ids, `""` while the view is closed. `title`, `agent` (its state), `kind` and `harness` are the agent's under the cursor now |
+| `agents.tab` | `{from, to}` | the agents view's focus tab changed: `"thread"`, `"changes"`, `"checkpoints"`, `"artifacts"` or `"pane"`. `""` while the view is closed |
+| `files` | `{from, to}` | the rail's files section changed. Each side is `{dir, cursor}`: the folder it lists, and the path of the row under the rail's cursor while the rail has the keyboard. Each is `""` when there is none |
+| `review.move` | `{file, hunk, from}` | the review's cursor moved to another file or hunk. `file` is the path in the repository, `hunk` the index of the hunk the cursor is in, `-1` for none. `from` is `{file, hunk}` before. Opening and closing the review are `overlay.*` events |
+| `review.note` | `{action, path?, line?, text?, notes}` | a review note was saved. `action` is `"add"`, `"edit"` or `"remove"`. `notes` is how many notes the review holds now |
+| `review.send` | `{notes}` | `S` in the review marked this many notes as sent. Nothing leaves the tab: the dock says what `S` does on a real machine |
+| `worktree` | `{repo, branch, path}` | a worktree of the fake repository was made, with `ctrl+b U` |
+| `tml.open` | `{surface, windowId, title, owner, target}` | `tuios tml show` opened a TML surface. `target` is `"popup"` or `"pane"`. `owner` names the pane that ran the command, as the window's frame does |
+| `tml.input` | `{surface, state}` | the person changed the surface's state: a key, a click or typed text in a field that binds a state path. `state` is the whole state after it |
+| `tml.place` | `{surface, windowId, target}` | the person moved the surface to a popup or a pane (`ctrl+b t f`). A `window.float` event follows |
+| `tml.close` | `{surface, windowId, title, reason, value}` | the surface closed. `reason` is `"closed"` (a close action in the document, `value` is the answer), or `"dismissed"` (esc, or its window closed, and `value` is `null`) |
 | `tape.start` | `{name?}` | a tape started playing |
 | `tape.finish` | `{}` | the tape finished |
 | `shell.start` | `{command, line, cwd}` | the fake shell started a command. `command` is the first word |
@@ -110,7 +125,36 @@ Events come in a fixed order for one key press: `key` first, then any
 Overlay names: `help`, `whichkey`, `commandPalette`, `launcher`, `settings`,
 `themePicker`, `keybinds`, `copyMode`, `search` (copy mode or scrollback
 search), `scrollback`, `quitMenu`, `workspaceSwitcher`, `layoutPicker`,
-`sidebar`, `logs`, `screensaver`.
+`sidebar`, `logs`, `screensaver`, `agents` (the agents view), `mail`,
+`presets` (the keybind preset picker), `goto` (the go-to picker), `hints`,
+`paneLabels`, `spotlight`, `scratch` (the scratch pane is up), and over the
+agents view `peek` (the prompt an agent waits on), `reply` (the reply editor),
+`newAgent` (the New agent sheet) and `compare` (the attempts of a fan side by
+side).
+`paneLabels`, `spotlight`, `scratch` (the scratch pane is up), `railFocus`
+(the rail has the keyboard, `ctrl+b e`), `fileSearch` (the palette searches
+files, `ctrl+b f`), `review` (the review overlay, `ctrl+b v`) and
+`worktree` (the new worktree dialog, `ctrl+b U`).
+`themePicker`, `themeEditor`, `glyphPicker` (the settings page's glyph set
+picker, which previews each set as the cursor moves: a `setting` event for
+`glyphs` comes before the picker closes), `keybinds`, `copyMode`, `search`
+(copy mode or scrollback search), `scrollback`, `quitMenu`, `workspaceSwitcher`,
+`layoutPicker`, `sidebar`, `logs`, `screensaver`, `agents` (the agents view),
+`mail`, `presets` (the keybind preset picker), `goto` (the go-to picker),
+`hints`, `paneLabels`, `spotlight` and `scratch` (the scratch pane is up).
+
+The looks a `setting` event names by config path:
+`appearance.window_title_style`, `appearance.window_title_position`,
+`appearance.window_title_align`, `appearance.border_focused_color`,
+`appearance.border_focused_color_window`,
+`appearance.border_focused_color_terminal`,
+`appearance.border_unfocused_color`, `appearance.theme_light`,
+`appearance.frame_panels`, `appearance.popup_dim`, `appearance.modal_dim`,
+`appearance.gap`, `appearance.sidebar.row_style`,
+`appearance.sidebar.header_style`, `appearance.dock_pill_caps` and
+`appearance.dock_mode_pill`. tuios reads them again after a key, a mouse
+press, a command or a tape step, so a change shows in the event that follows
+that input.
 
 ## State
 
@@ -133,11 +177,20 @@ search), `scrollback`, `quitMenu`, `workspaceSwitcher`, `layoutPicker`,
   minimized: 0,              // on the current workspace
   totalWindows: 3,           // on every workspace
   windowList: [              // every window, in tuios's order
-    { id, title, workspace, x, y, width, height, minimized, zoomed, floating, agent, agentMessage }
+    { id, title, workspace, x, y, width, height, minimized, zoomed, floating,
+      agent, agentMessage, agentKind, harness }
   ],                         // x, y, width, height are in cells
+    { id, title, workspace, x, y, width, height, minimized, zoomed, floating, agent, agentMessage, kind, popup }
+  ],                         // x, y, width, height are in cells. kind is "tml"
+                             // for a TML surface, else "". popup: it floats as a popup
   tape: false,               // a tape is playing
   glyphs: "default",         // the glyph set
   borderStyle: "rounded",
+  keys: { preset: "tuios", leader: "ctrl+b", lock: false },
+  pip: "",                   // the window picture-in-picture shows
+  agentsView: { selected: "<window id>", tab: "thread" }, // "" for both while the agents view is closed
+  files: { dir: "/home/guest/projects/hello", cursor: "" },  // as in the files event
+  review: { file: "greet.go", hunk: 0 },  // null while the review is closed
   cols: 120, rows: 36
 }
 ```
@@ -159,13 +212,13 @@ races a key. An unknown command or a bad argument does nothing.
 | `mode` | `"window"` or `"terminal"` | set the mode |
 | `theme` | `id` | set the theme |
 | `themeJSON` | `id`, `json` | load a theme file's JSON and set it, for a look that carries its own theme. The theme gets the id `look-<id>` in this tab only. tuios checks it as `tuios look apply` does. A theme that fails the check, such as one with a bad id, a control character or a missing base, does nothing. A `theme` event follows |
-| `set` | `path`, `value` | set an option by its `tuios set-config` path, such as `set("appearance.glyphs", "ascii")`. It changes this tab's config and nothing else. It takes the look and input options only, and every key `tuios look keys` lists. A list, such as `dock.left`, is a JSON array: `set("dock.left", '["mode","workspaces"]')`. A dock list or `appearance.sidebar.sections` with an item a look leaves out, such as `custom/clock`, does nothing. `startup.tiled` and `startup.layout` change the tiling of the tab at once. An option that runs a program, names a file or writes the clipboard does nothing. A `setting` event follows for the glyph set and the border style, and a `theme` event for the theme |
+| `set` | `path`, `value` | set an option by its `tuios set-config` path, such as `set("appearance.glyphs", "ascii")`. It changes this tab's config and nothing else. It takes the look and input options only, and every key `tuios look keys` lists. A list, such as `dock.left`, is a JSON array: `set("dock.left", '["mode","workspaces"]')`. A dock list or `appearance.sidebar.sections` with an item a look leaves out, such as `custom/clock`, does nothing. `startup.tiled` and `startup.layout` change the tiling of the tab at once. An option that runs a program, names a file or writes the clipboard does nothing. A `setting` event follows for the glyph set, the border style and the looks listed under the events, and a `theme` event for the theme |
 | `type` | `text` | type into the focused pane, as if typed |
 | `action` | `name` | run a keybinding action by name, as its key would. The page then sees the same `action` event |
 | `agent` | `state`, `message?`, `kind?` | set the focused pane's agent state, without waiting for the fake agent |
 | `tape` | `script`, `name?` | play a tape script |
 | `celebrate` | `"big"?`, `"still"?`, `"x,y"?` or a window id | confetti drawn by tuios in terminal cells. `still` is a static sparkle for reduced motion |
-| `reset` | | no windows, workspace 1, tiling on in bsp, window mode, the starting theme, no overlay |
+| `reset` | | no windows, workspace 1, tiling on in bsp, window mode, the starting theme, the shipped keys, the rail closed, no overlay, beam or picture-in-picture. The fake files and repository stay as they are |
 
 ## Learn mode
 
@@ -173,11 +226,38 @@ The browser build runs in Learn mode (`app.OSOptions.LearnMode`):
 
 - Nothing quits. The quit keys, the quit menu, Ctrl+C in window mode and any
   other quit show a note in the dock instead, and every pane stays open.
+- The keybind preset picker (`U` in window mode) changes the keys of the tab
+  at once. Nothing is written, and `reset` brings back the shipped keys.
+- The rail's files section lists the fake shell's files and follows `cd` in
+  the focused pane. Its tree, `ctrl+b f` (file search) and walking into
+  folders work. `enter` on a file opens it in the `less` viewer in a new
+  pane, and `shift+enter` in the `vim` viewer. On a real machine `enter`
+  copies the path and `shift+enter` opens the editor, and the dock says so.
+- `ctrl+b v` reviews the focused pane's change in the fake repository:
+  files, hunks and notes work as on a real machine. `S` marks the notes as
+  sent, and the dock says that a real machine sends them to the pane's agent.
+- `ctrl+b U` in a pane under `~/projects/hello` makes a worktree on a new
+  branch under `~/.local/share/tuios/worktrees/hello/`, and opens a pane in
+  it. A real machine makes a session there instead. The dock names it.
 - An action that needs a daemon, a real process, the network or the host's
   files shows a note instead of an error. `tuios.unavailable()` lists them.
   Sessions (switcher, detach, new session), screenshots, tape recording and
+  the tape manager, the rail's file changes (new, rename, delete, copy,
+  paste), agent mail and host clipboard paste are the ones turned off.
+- The agents view (`ctrl+b i`) works with the pretend agents, with no daemon.
+  `internal/learn/fleet.go` answers the verbs the view calls from the agents'
+  own records: the thread with its edits, checkpoints, the peek, the answer
+  keys, a reply, and the New agent sheet, which starts agents in new panes.
+  More than one attempt starts a fan: its attempts are grouped under one row,
+  and `c` compares them. The judge (`j`) picks the attempt that changed the
+  most lines, and a keep (`k` twice) closes the panes of the others. claude's
+  approvals are held for the view, as with the tuios hooks installed, so
+  `a`, `A`, `r` and `R` answer them from the view. A question is answered
+  from the peek (`space`, then its number).
   the tape manager, the rail's file actions, agent mail and host clipboard
   paste are the ones turned off.
+- The go-to picker (`Ctrl+B G`) works. It lists the tab's one session,
+  `local`, with its workspaces, its panes and any agent.
 
 ## The fake shell
 
@@ -187,18 +267,63 @@ lesson:
 
 - `~/projects/hello` is a tiny Go project and a git repository with four
   commits and a change in the working tree. `git status`, `git log`,
-  `git diff`, `git add`, `git commit -m`, `git restore` work, and so do
-  `go run .` and `go test` (which fails until the change is restored).
+  `git diff`, `git add`, `git commit -m`, `git restore`, `git branch` and
+  `git worktree list` work, and so do `go run .` and `go test` (which fails
+  until the change is restored). Every worktree made with `ctrl+b U` is a
+  checkout of its own, on its own branch.
+- `tuios ship` lists the steps from the pane's worktree to a merged change.
+  `tuios ship commit -m MSG` and `tuios ship merge` work on the fake
+  repository. The merge refuses a main checkout with uncommitted changes, as
+  on a real machine, and the demo repository has one. `tuios ship push` and
+  `tuios ship pr` show what they would send, and what a real machine prints
+  after you say yes. `tuios ship status` shows the pull request `pr` opened.
+- Every pane announces its folder with OSC 7 when it starts, where a real
+  tuios reads the folder of the pane's process.
 - `less`, `more`, `view` and `vim` open a read-only viewer: `j`, `k`, space,
   `g`, `G`, `/` to search, `q` or `:q` to quit.
-- `claude` is a scripted agent in the style of Claude Code. It reads two
-  files, thinks for about three seconds, then asks to edit `style.css` with
-  three options. `y`, `1`, `2` or Enter approve, `n`, `3` or Esc turn it down,
-  arrows move the choice. It reports `working`, `needs_input` (kind
-  `approval`) and `done` through the same in-process path a local pane's
-  set-agent-state takes, so the rail, the title glyph and the `agent` event
-  all follow it. Its screen also matches the claude-code harness rules.
+- `claude`, `codex` and `gemini` are scripted agents in the style of Claude
+  Code, Codex and Gemini CLI. Each one names its pane after its task and
+  reports `working`, `needs_input` and `done` through the same in-process
+  path a local pane's set-agent-state takes, so the rail, the title glyph,
+  the `agent` event and the agents view all follow it. With no task, each
+  one runs its own script:
+  - `claude` (harness `claude-code`) reads two files, thinks for about three
+    seconds, then asks to edit `style.css` with three options (kind
+    `approval`). `y`, `1`, `2` or Enter approve, `n`, `3` or Esc turn it
+    down, arrows move the choice. Its screen matches the claude-code harness
+    rules.
+  - `gemini` (harness `gemini-cli`) reads `style.css`, then asks which
+    colors the dark theme uses (kind `question`, options 1 to 3), and writes
+    `theme.css`.
+  - `codex` (harness `codex`) reads the Go project, adds a test and runs
+    `go vet`, and is done in about four seconds. It asks nothing.
+
+  With a task of the person's own (`claude add a footer`), the agent writes
+  a short plan for it to a notes file and is done. At the end of a turn the
+  agent waits at its input line: the next line typed there is a new turn,
+  and ctrl+d or `/exit` goes back to the shell.
 - `tuios tape play demo.tape` plays a tape that opens two windows and runs
   commands in them. `tuios tape list` lists the tapes.
+- `tuios theme share NAME` prints the real share line of a shipped theme.
+- Other `tuios` commands that need a daemon or the network print what they
+  print on a real machine, under a line that says so: `ls`, `attach`, `new`,
+  `move-window`, `note set`, `note get`, `restart-server --dry-run`, `hosts`,
+  `task add`, `task ls`, `task claim`, `look list`, `list-agents`,
+  `send-agent-message`, `fan`, `worktree`, `list-verbs` and `list-hooks`.
+- `cat .config/tuios/config.toml` shows the theme, the border style, the glyph
+  set and every look above that changed in the tab.
+- `tuios tml show FILE` opens a TML surface in tuios, as a popup or with
+  `--pane` as a pane, with no daemon: the tab holds it
+  (`internal/learn/surfaces.go`). As on a real machine, a surface opened
+  from a pane leaves the keys in that pane. A click, or `ctrl+b` and the
+  window's number, moves them to it. `--wait` blocks until it closes and prints the answer as JSON. Its
+  exit status is 0 for an answer and 1 for esc. `tuios tml render FILE`,
+  `tuios tml validate FILE` and `tml --check FILE` draw and check a document
+  with the real libraries. `~/deploy.tml` is a form and `~/status.tml` a
+  dashboard with a table, a chart and a diagram.
+- `tuios mermaid FILE` and `sketch FILE` draw a Mermaid diagram as text at
+  the pane's width (`~/flow.mmd`). `tplot FILE --kind bar` draws a chart
+  from CSV (`~/sales.csv`) in the theme's colours. Each draws again when the
+  pane changes width.
 - `top`, `rain`, `fastfetch`, `tree`, `fortune`, `cowsay` and `colors` are
   there for fun. `neofetch` is another name for `fastfetch`. The launcher (Alt+Space) lists the full-screen ones.

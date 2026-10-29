@@ -392,6 +392,7 @@ func (m *OS) settingsCategories() []settingsCategory {
 			custom("", m.themeEditItem()),
 			opt("appearance.theme_light"),
 			custom("appearance.glyphs", m.glyphItem()),
+			custom("", m.shareLookItem()),
 			opt("appearance.border_style"),
 			opt("appearance.frame_panels"),
 			opt("appearance.pane_overlays"),
@@ -490,6 +491,7 @@ func (m *OS) settingsCategories() []settingsCategory {
 			opt("appearance.sidebar.editor"),
 			opt("appearance.sidebar.file_actions"),
 			opt("appearance.sidebar.file_delete"),
+			opt("appearance.sidebar.group_main"),
 			opt("appearance.sidebar.marquee"),
 			opt("appearance.sidebar.peek"),
 			opt("appearance.sidebar.tooltips"),
@@ -615,6 +617,7 @@ func (m *OS) settingsCategories() []settingsCategory {
 	behavior := settingsCategory{
 		Name: "Behavior",
 		Items: m.resolveRows([]settingsRow{
+			custom("appearance.calm", m.calmItem()),
 			opt("appearance.motion"),
 			opt("appearance.animation_speed"),
 			opt("appearance.theme_transition"),
@@ -634,6 +637,7 @@ func (m *OS) settingsCategories() []settingsCategory {
 			opt("appearance.new_window_follow_ssh"),
 			opt("appearance.niri_reverse_scroll"),
 			opt("appearance.niri_scroll_cells"),
+			opt("appearance.niri_scroll_snap"),
 			opt("appearance.niri_click_reveals"),
 			opt("appearance.niri_hover_reveals"),
 			opt("appearance.prefix_repeat_time"),
@@ -896,6 +900,22 @@ func (m *OS) themeEditItem() settingItem {
 	}
 }
 
+// shareLookItem shares the look in the setups discussion: the comment goes
+// on the clipboard and the discussion opens. The page closes first, so the
+// screenshot shows the screen and not the page.
+func (m *OS) shareLookItem() settingItem {
+	return settingItem{
+		Label:   "Share my look",
+		Desc:    "Put your look and a screenshot in the setups discussion on GitHub. Press enter to start.",
+		Control: controlEnum,
+		value:   func(*OS) string { return "GitHub" },
+		activate: func(m *OS) tea.Cmd {
+			m.CloseSettings()
+			return m.ShareLook("", "", "")
+		},
+	}
+}
+
 func (m *OS) dockComponentsItem() settingItem {
 	return settingItem{
 		Label:   "Components",
@@ -1114,6 +1134,16 @@ func (m *OS) spotlightItem() settingItem {
 			m.setOption("spotlight.enabled", strconv.FormatBool(v))
 		})
 	item.differs = differsFromDefault("spotlight.enabled", func(m *OS) string { return strconv.FormatBool(m.SpotlightOn()) })
+	return item
+}
+
+// calmItem is the calm mode switch. Hand-written, as the spotlight row is,
+// because turning calm off also reports and resets the held messages.
+func (m *OS) calmItem() settingItem {
+	item := boolItem("Calm mode", "Stop motion and blinking. Show only messages that need you.",
+		func() bool { return m.CalmOn() },
+		func(m *OS, v bool) { m.SetCalm(v) })
+	item.differs = differsFromDefault("appearance.calm", func(m *OS) string { return strconv.FormatBool(m.CalmOn()) })
 	return item
 }
 

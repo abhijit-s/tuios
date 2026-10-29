@@ -450,6 +450,12 @@ func (m *OS) SidebarActivateCursor() bool {
 	case sidebarRowCollapse:
 		m.SidebarToggleCollapsed()
 	case sidebarRowRepo:
+		if m.sidebarRepoGotoMain(row.SessionID) {
+			// The header pointed at the main checkout's session, and the
+			// session took the focus, so the row hands the keyboard over the
+			// way a session row does.
+			return false
+		}
 		// Folding a group is a change to the rail, not a place to go, so the
 		// keyboard stays in the rail on the row that was folded.
 		m.SidebarToggleRepoCollapsed(row.SessionID)
@@ -510,8 +516,7 @@ func (m *OS) SidebarReorderCursor(delta int) {
 		return
 	}
 	order[from], order[to] = order[to], order[from]
-	m.setSidebarSessionOrder(m.attachedMachine(), order)
-	m.saveSidebarState()
+	m.commitSessionOrder(order)
 	// The rail relays out next frame; follow the moved session so the cursor and
 	// its highlight ride to the new slot rather than staying on a fixed index.
 	m.sidebarFollowSession = row.SessionID

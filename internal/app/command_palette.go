@@ -958,6 +958,13 @@ func GetCommandPaletteItems(s *config.Settings) []CommandPaletteItem {
 			},
 		},
 		{
+			Name:     "Share my look",
+			Category: "Session",
+			Action: func(m *OS) (*OS, tea.Cmd) {
+				return m, m.ShareLook("", "", "")
+			},
+		},
+		{
 			Name:     "Edit theme",
 			Category: "Session",
 			Action: func(m *OS) (*OS, tea.Cmd) {
@@ -1225,6 +1232,15 @@ func GetCommandPaletteItems(s *config.Settings) []CommandPaletteItem {
 			Action: func(m *OS) (*OS, tea.Cmd) {
 				m.OpenHints()
 				return m, nil
+			},
+		},
+		{
+			Name:     "Calm mode: stop motion and quiet messages",
+			Shortcut: "prefix+Z",
+			Bind:     "toggle_calm",
+			Category: "View",
+			Action: func(m *OS) (*OS, tea.Cmd) {
+				return m, m.ToggleCalm()
 			},
 		},
 		{

@@ -334,7 +334,8 @@ type KeybindReport struct {
 	// Yielded are new default bindings tuios left off because the key was
 	// already bound to another action in the same table.
 	Yielded []YieldedDefault `json:"yielded_defaults,omitempty"`
-	// Retired are bindings to actions tuios no longer has.
+	// Retired are the user's bindings dropped on load: to an action tuios no
+	// longer has, or a key another action took as its default.
 	Retired []RetiredKeybind `json:"retired,omitempty"`
 }
 
@@ -502,6 +503,9 @@ func (r *KeybindRegistry) OptionKeys() []KeyReadAs {
 	if kb.LeaderKey != "" {
 		check("keybindings", "leader_key", kb.LeaderKey)
 	}
+	if kb.NestExitKey != "" {
+		check("keybindings", "nest_exit_key", kb.NestExitKey)
+	}
 	for _, name := range kb.SectionNamesFor() {
 		section := kb.section(name)
 		actions := make([]string, 0, len(section))
@@ -548,6 +552,9 @@ func (r *KeybindRegistry) KeyProblems() []KeyProblem {
 	}
 	if kb.LeaderKey != "" {
 		check("keybindings", "leader_key", kb.LeaderKey)
+	}
+	if kb.NestExitKey != "" {
+		check("keybindings", "nest_exit_key", kb.NestExitKey)
 	}
 	for _, name := range kb.SectionNamesFor() {
 		section := kb.section(name)

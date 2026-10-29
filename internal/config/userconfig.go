@@ -57,6 +57,9 @@ type UserConfig struct {
 	// view that toggle_pip pins. Client-local, like the spotlight. See pip.go.
 	PiP PiPConfig `toml:"pip"`
 
+	// SSH is the [ssh] table: the limits of the tuios ssh server. See ssh.go.
+	SSH SSHConfig `toml:"ssh"`
+
 	// Mermaid is the [mermaid] table: the colours of tuios mermaid. See mermaid.go.
 	Mermaid MermaidConfig `toml:"mermaid"`
 	// Launcher is the [launcher] table: how the app launcher starts a
@@ -74,8 +77,9 @@ type UserConfig struct {
 	// was already the user's for another action in the same table. It is
 	// worked out on load and never written. See yieldingDefaults.
 	YieldedDefaults []YieldedDefault `toml:"-"`
-	// RetiredKeybinds are the user's bindings to actions tuios no longer
-	// has, dropped on load. See migrateInboxKeys.
+	// RetiredKeybinds are the user's bindings dropped on load: to an action
+	// tuios no longer has, or a key another action took as its default. See
+	// migrateInboxKeys and dropStaleDuplicateKeys.
 	RetiredKeybinds []RetiredKeybind `toml:"-"`
 	// LoadWarnings say what the load of a config split over several files
 	// skipped: an included file that is not there, or an include cycle. It is
@@ -375,6 +379,7 @@ type AppearanceConfig struct {
 	PreferredShell           string                  `toml:"preferred_shell"`              // Preferred shell: if empty, auto-detect based on platform.
 	AnimationsEnabled        *bool                   `toml:"animations_enabled,omitempty"` // Deprecated: folded into motion on load (false is none)
 	Motion                   string                  `toml:"motion"`                       // How much moves: none, basic (window slides, copy sweep), full (also fades and the working shimmer) (default: full)
+	Calm                     *bool                   `toml:"calm"`                         // Calm mode: no motion or blinking, and only messages that need you reach the dock (default: false)
 	ModalDim                 *int                    `toml:"modal_dim"`                    // Percent the screen behind a modal overlay is darkened; 0 is off (default: 30)
 	PopupDim                 *int                    `toml:"popup_dim"`                    // Percent the screen behind a popup is darkened; 0 is off (default: 0)
 	ConfirmQuit              *bool                   `toml:"confirm_quit"`                 // Always show quit confirmation dialog (default: false). When false, only shown if foreground processes are running.
@@ -407,6 +412,7 @@ type AppearanceConfig struct {
 	ZoomMaxWidth         int    `toml:"zoom_max_width"`         // Max width in cells for zoom mode (0 = fullscreen, e.g. 120 centers at 120 cols)
 	NiriReverseScroll    bool   `toml:"niri_reverse_scroll"`    // Reverse mouse scroll direction in niri scrolling mode (default: false)
 	NiriScrollCells      int    `toml:"niri_scroll_cells"`      // Cells the niri viewport moves per mouse wheel event (default: 8, min: 1, max: 200)
+	NiriScrollSnap       bool   `toml:"niri_scroll_snap"`       // Snap the strip to the nearest column when a wheel or a drag stops (default: false)
 	// PrefixRepeatTime is how long the prefix stays armed after a repeatable
 	// prefix command, in milliseconds, so ctrl+b then left left left walks
 	// three columns. Zero turns it off. This is tmux's repeat-time.
@@ -911,6 +917,13 @@ type SidebarConfig struct {
 	// Spaces is how the rail lays out spaces: grouped, split or off
 	// (default: grouped). See SidebarSpacesValues.
 	Spaces string `toml:"spaces"`
+	// GroupMain gathers the repository's main checkout — the session whose
+	// directory is the repository itself, usually on main or master — under
+	// the repo row with its worktrees (default: false, the main checkout's
+	// sessions stay flat). With it on, the repo header's activation goes to
+	// the main checkout's session; the fold gesture moves to the header's
+	// right-click menu.
+	GroupMain *bool `toml:"group_main"`
 	// Custom is the [appearance.sidebar.custom] table: the command whose
 	// output the custom section draws, its heading, and when it runs. Read
 	// from the file only; see SidebarCustomConfig for why.
@@ -971,6 +984,11 @@ type KeybindingsConfig struct {
 	// Repeat) keeps its menu open until esc, and that menu takes only the
 	// repeatable actions. Unset is false, or the preset's.
 	Lock *bool `toml:"lock,omitempty"`
+	// NestExitKey is the key that ends nest mode, the mode the nest
+	// action turns on, in which the focused pane gets every key, the leader
+	// included, as tmux-matryoshka's prefix Enter does. Empty is
+	// DefaultNestExitKey.
+	NestExitKey string `toml:"nest_exit_key,omitempty"`
 	// Repeat lists the actions that stay armed after the leader, as tmux's
 	// bind -r does: the same key pressed again inside
 	// appearance.prefix_repeat_time runs the action again without the leader.
@@ -1174,6 +1192,7 @@ func DefaultConfig() *UserConfig {
 		Hints:        defaultHintsConfig(),
 		Scratch:      defaultScratchConfig(),
 		PiP:          defaultPiPConfig(),
+		SSH:          defaultSSHConfig(),
 		Mermaid:      MermaidConfig{Theme: "tuios", Background: "theme"},
 		Panes:        defaultPanesConfig(),
 		PasteBuffers: defaultPasteBuffersConfig(),
@@ -1422,6 +1441,9 @@ func DefaultConfig() *UserConfig {
 				"hints": {"F"},
 				// . as in the current folder: the path picker lists it.
 				"pick_path": {"."},
+				// enter, as tmux-matryoshka's prefix Enter. Free in every
+				// preset.
+				"nest": {"enter"},
 				// Q, as in tmux's display-panes, which is q there. q is the
 				// quit menu here, and the slip from Q to q opens a menu that
 				// asks first.
@@ -1429,6 +1451,10 @@ func DefaultConfig() *UserConfig {
 				// g shows or hides the scratch terminal in a popup. It was
 				// free here, and f is kept free for the reason above.
 				"toggle_scratch": {"g"},
+				// Z for calm (zen): no motion, no blinking, and only the
+				// messages that need you. z zooms, and the slip from Z to z
+				// costs nothing.
+				"toggle_calm": {"Z"},
 				// V pastes the clipboard's image into the pane as the path of a
 				// file on the pane's machine. Capital, one shift from the v
 				// that reviews.
@@ -2712,6 +2738,9 @@ func ApplyAppearanceConfig(cfg *UserConfig, s *Settings) {
 	if slices.Contains(SidebarSpacesValues, sb.Spaces) {
 		s.SidebarSpaces = sb.Spaces
 	}
+	if sb.GroupMain != nil {
+		s.SidebarGroupMain = *sb.GroupMain
+	}
 	if sb.Tooltips != nil {
 		s.Tooltips = *sb.Tooltips
 	}
@@ -2908,6 +2937,7 @@ func ApplyAppearanceConfig(cfg *UserConfig, s *Settings) {
 	s.ShowCPU = cfg.Appearance.ShowCPU
 	s.ShowRAM = cfg.Appearance.ShowRAM
 	s.NiriReverseScroll = cfg.Appearance.NiriReverseScroll
+	s.NiriScrollSnap = cfg.Appearance.NiriScrollSnap
 	s.NiriScrollCells = clampPercent(cfg.Appearance.NiriScrollCells, NiriScrollCellsMin, NiriScrollCellsMax, NiriScrollCellsDefault)
 
 	if cfg.Appearance.ScrollbackLines > 0 {
@@ -2933,6 +2963,7 @@ func ApplyAppearanceConfig(cfg *UserConfig, s *Settings) {
 	s.KeyboardLayout = cfg.Keybindings.KeyboardLayout
 	s.OptionGlyphs = cfg.Keybindings.OptionGlyphs
 	s.Lock = cfg.Keybindings.Lock != nil && *cfg.Keybindings.Lock
+	s.NestExitKey = cfg.Keybindings.NestExitKey
 
 	// The motion level. A config that was not run through the load path (one
 	// built in code) can still carry the old boolean, so it is folded here as
@@ -2945,6 +2976,7 @@ func ApplyAppearanceConfig(cfg *UserConfig, s *Settings) {
 	if s.NoAnimationsFlag {
 		s.Motion = MotionNone
 	}
+	s.Calm = a.Calm != nil && *a.Calm
 	if a.ModalDim != nil {
 		s.ModalDim = min(max(*a.ModalDim, 0), ModalDimMax)
 	}
@@ -3708,14 +3740,21 @@ func fillMissingKeybinds(cfg, defaultCfg *UserConfig) {
 	// The GUI section is newer than every config written before it.
 	fillMapDefaults(cfg.Keybindings.GUI, defaultCfg.Keybindings.GUI)
 
+	var dropped []RetiredKeybind
 	for _, section := range keybindSectionPairs(cfg, defaultCfg) {
 		for _, d := range dropStaleDuplicateKeys(section.target, section.defaults) {
-			cfg.RetiredKeybinds = append(cfg.RetiredKeybinds, RetiredKeybind{
+			dropped = append(dropped, RetiredKeybind{
 				Section: section.name, Action: d.action, Keys: []string{d.key},
-				Note: fmt.Sprintf("%s runs %s, whose default key it is. To keep %s on %s, bind %s to another key.", d.key, d.owner, d.key, d.action, d.owner),
+				Note: fmt.Sprintf("%q is the default key of %s. To keep %q on %s, bind %s to another key.", d.key, d.owner, d.key, d.action, d.owner),
 			})
 		}
 	}
+	// The drops come out of a map walk; sorted, the report reads the same on
+	// every run.
+	slices.SortFunc(dropped, func(a, b RetiredKeybind) int {
+		return cmp.Or(cmp.Compare(a.Section, b.Section), cmp.Compare(a.Action, b.Action), cmp.Compare(a.Keys[0], b.Keys[0]))
+	})
+	cfg.RetiredKeybinds = append(cfg.RetiredKeybinds, dropped...)
 }
 
 // yieldingDefaults are the actions whose default key arrived after users could
@@ -3729,12 +3768,16 @@ var yieldingDefaults = map[string]bool{
 	"toggle_scratch": true,
 	// alt+; and prefix ., new in the release after v0.10.1.
 	"pick_path": true,
+	// Z after the prefix, new with calm mode.
+	"toggle_calm": true,
 	// Q after the prefix, new in the release after v0.8.5.
 	"display_panes": true,
 	// U in window mode, new with the keybind presets.
 	"open_keybind_presets": true,
 	// / after the prefix, new in the release after v0.8.5.
 	"choose_tree": true,
+	// enter after the prefix, new with nest mode.
+	"nest": true,
 	// G after the prefix, new with the go-to picker.
 	"goto_picker": true,
 	// U after the prefix, new with the worktree key.

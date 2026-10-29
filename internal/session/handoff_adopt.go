@@ -414,7 +414,7 @@ func (d *Daemon) adoptSession(rec handoffSession, panes []adoptedPane, fb *adopt
 	if height <= 0 {
 		height = 24
 	}
-	cfg := &SessionConfig{restoreID: rec.ID, Space: st.Space, ScrollbackLines: rec.ScrollbackLines}
+	cfg := &SessionConfig{restoreID: rec.ID, Space: st.Space, Rank: st.Rank, ScrollbackLines: rec.ScrollbackLines}
 	if rec.Created > 0 {
 		cfg.restoreCreated = time.Unix(0, rec.Created)
 	}

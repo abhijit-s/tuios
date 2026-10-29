@@ -463,7 +463,9 @@ func (m *OS) sidebarClick(x, y int, right bool) bool {
 	case sidebarRowCollapse:
 		m.SidebarToggleCollapsed()
 	case sidebarRowRepo:
-		m.SidebarToggleRepoCollapsed(hit.SessionID)
+		if !m.sidebarRepoGotoMain(hit.SessionID) {
+			m.SidebarToggleRepoCollapsed(hit.SessionID)
+		}
 	case sidebarRowSpace:
 		m.SidebarToggleSpaceCollapsed(hit.SessionID)
 	case sidebarRowSpaceSwitch:
@@ -653,7 +655,9 @@ func (m *OS) sidebarActivateRow(hit sidebarRowHit) {
 	case sidebarRowCollapse:
 		m.SidebarToggleCollapsed()
 	case sidebarRowRepo:
-		m.SidebarToggleRepoCollapsed(hit.SessionID)
+		if !m.sidebarRepoGotoMain(hit.SessionID) {
+			m.SidebarToggleRepoCollapsed(hit.SessionID)
+		}
 	case sidebarRowSpace:
 		m.SidebarToggleSpaceCollapsed(hit.SessionID)
 	case sidebarRowSpaceSwitch:
@@ -820,14 +824,14 @@ func (m *OS) sidebarRelease(x, y int) bool {
 	if d.Dragging {
 		if d.Host {
 			m.SidebarHostOrder = d.Order
+			m.saveSidebarState()
 		} else {
 			order := d.Order
 			if d.SpaceDrop.Active {
 				order = m.commitSpaceDrop(d)
 			}
-			m.setSidebarSessionOrder(m.attachedMachine(), order)
+			m.commitSessionOrder(order)
 		}
-		m.saveSidebarState()
 		return true
 	}
 

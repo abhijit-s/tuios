@@ -288,6 +288,14 @@ tuios look remove
 # List the keys a look can set
 tuios look keys
 tuios look keys --json
+
+# Print your look as a look file, or write it to a file
+tuios look export
+tuios look export -o my.look.toml --name "Neon 84"
+
+# Share your look in the setups discussion on GitHub
+tuios look share
+tuios look share --print
 ```
 
 `tuios look apply <source>`:
@@ -350,6 +358,38 @@ it puts your saved values back:
 A new look applied over a take-over puts back the saved keys that the new look
 does not set. tuios reads each file again before it writes it. If a file
 changed while tuios asked its questions, tuios stops and changes nothing.
+
+`tuios look export` prints the look in force as a look file.
+`tuios look apply` takes the file unchanged.
+
+- `-o FILE` writes the file instead of stdout.
+- `--name` sets the name. `--author` sets the author. The author is your
+  GitHub login when `gh` is signed in.
+- The file sets the keys that differ from the defaults. `--all` sets every
+  look key.
+- A theme or glyph set from your own folder goes into the file. A built-in
+  one goes in by name. tuios names on stderr each key or item it leaves out.
+
+`tuios look share` shares your look in
+[discussion #849](https://github.com/Gaurav-Gosain/tuios/discussions/849).
+The command palette has it as "Share my look". The Appearance page of the
+settings has it too. There the dock says "Look copied. Paste it in the browser
+page." Press prefix+N to read the full message with the path of the
+screenshot.
+
+- tuios exports the look and takes a screenshot of the screen. The running
+  tuios takes it, and the screenshot goes to Downloads or the cache folder.
+- tuios puts the comment on the clipboard through the terminal (OSC 52), also
+  over ssh. Where a clipboard tool is on this machine, tuios uses it too.
+- tuios opens the discussion in the browser: `appearance.link_opener`, then
+  `$BROWSER`, then the system opener. Over ssh, or with no browser, it prints
+  the address.
+- The command prints at most three lines: what is on the clipboard, where the
+  screenshot is, and the address when no browser opened.
+- `--print` writes the comment to stdout and opens nothing.
+- `--name` and `--author` work as they do for `tuios look export`.
+- With no tuios attached, the command writes the clipboard through its own
+  terminal. The daemon then captures the focused pane, if there is one.
 
 ---
 
@@ -3292,6 +3332,23 @@ tuios set-session-space -s work payments
 tuios set-session-space
 ```
 
+### `tuios set-session-order`
+
+Put the sessions in an order. Every client attached to the daemon lists them in it, at once: the sidebar, the session switcher and `tuios ls`. Moving a session up or down on the sidebar does the same. The order survives a daemon restart.
+
+Every name must be a live session. A session you leave out, and one made later, goes after the named ones in creation order.
+
+**Usage:**
+```bash
+tuios set-session-order <session>... [flags]
+```
+
+**Examples:**
+```bash
+# List work first, then notes, then everything else
+tuios set-session-order work notes
+```
+
 ### `tuios set-workspace-name`
 
 Name a workspace so the dock and the sidebar show the label instead of the
@@ -4727,6 +4784,9 @@ command stops with exit code 2.
 #### What a copy keeps
 
 A copy keeps the permission bits and the modification time of each file.
+A file that arrives over a link is the exception. It gets the permission bits
+under the receiving machine's umask, and never group or world write. The
+execute bits stay. A copy from this machine to a host arrives over a link.
 `--no-perms` gives each file the default permission bits. `--no-times` gives
 each file the time of the copy. A copy never keeps the owner.
 
@@ -5364,6 +5424,14 @@ tuios ssh [flags]
 - `--ephemeral`: Run in ephemeral mode (standalone, no daemon)
 - `--authorized-keys <string>`: Path to the public keys allowed to connect (default: `~/.config/tuios/authorized_keys`). Keys with options are not accepted
 - `--no-auth`: Give every connection a shell without checking who it is (trusted networks only)
+- `--handshake-timeout <duration>`: Close a connection that does not log in within this time (default: `2m0s`). `0` turns the limit off
+- `--idle-timeout <duration>`: Close a connection after this time with no traffic (default: `0`, off)
+- `--max-handshakes <int>`: Close a new connection at once when this many connections are logging in (default: `32`). `0` turns the limit off
+- `--max-sessions <int>`: Refuse a new session when this many sessions are open (default: `64`). `0` turns the limit off
+
+The four limit flags replace the same values in the `[ssh]` section of the
+config file. A limit flag that you do not give keeps the value in the file. See
+[SSH server limits](CONFIGURATION.md#ssh-server-limits).
 
 **Who can connect:**
 

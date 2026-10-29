@@ -11334,6 +11334,16 @@ passes both, and the build of main they are based on fails both.
 | `RepoName` in `gitstate.Read`, back to the base name of the shared git directory's parent | `TestRailGitReftable` (the git section names the test's directory, not `delta`) | **caught** |
 | The `.bare` and `git` names in `RepoName` | `TestReftableWorktrees` (`alpha-one is ".bare"`, `gamma-three is "git"`) | **caught** |
 | The `.git` suffix rule in `RepoName` | `TestReftableWorktrees` (`beta-two is "beta.git"`); `TestRailGitReftable` | **caught** |
+
+Since #1245 a worktree row keeps a name the test gave its session and shows
+the branch after it, so `TestReftableWorktrees` gives the rail 40 columns and
+reads each row as its project's row, then the session's name and branch.
+Run on 2026-10-28 on Linux amd64 with git 2.56:
+
+| Control: what was cut | Test that fails | Verdict |
+| --- | --- | --- |
+| The `node.Named` case that shows the branch after a named worktree row, in `sidebarSessionRow` | `TestReftableWorktrees` (`the rail never grouped the reftable worktrees by project and branch`: the rows read `├─ alpha-one`, `└─ alpha-later`, `└─ beta-two`, `└─ gamma-three`, with no branch) | **caught** |
+
 ## Path picker
 
 `TestPathPickerTypesAPath` opens the picker with `alt+;` at a shell prompt,
@@ -11440,3 +11450,303 @@ With `TUIOS_E2E_FRAMES` set, the test writes `step-NN.txt` and `step-NN.styled.t
 | Control: what was cut | Where it fails | Verdict |
 | --- | --- | --- |
 | `next_agent` and `prev_agent` dropped from `yieldingDefaults` | `explain says J after the prefix runs [next_agent], want swap_down` | **caught** |
+## Browser sixel pictures clear and scroll (#587)
+
+`clienttests/graphics.spec.mjs` sends a 120x96 red sixel through a real
+pane's shell and reads the browser's composited screenshot, including both
+the native sixel canvas and the kitty overlay. Each case first proves the
+picture is visible, then requires zero red pixels after clear or scrolling.
+Run on 2026-10-26 against main at `6307241`.
+
+| Control: what was cut | Where it fails | Verdict |
+| --- | --- | --- |
+| The whole change (main) | Both cases: expected 0 red pixels after clear/scroll, received 11520 | **caught** |
+| `webHostCaps` restored from main, including `SixelGraphics: true`; fixed factory kept | Both cases: expected 0, received 11520 | **caught** |
+| `NewOS` restores the unconditional sixel `ForceEnable: opts.ForceGraphicsEnabled`; web native sixel remains off | Both cases: expected 0, received 11520 | **caught** |
+
+The two partial controls use `go build -overlay` and leave the working tree
+fixed. The fixed browser cases pass three consecutive runs; the full browser
+suite passes all 34 tests. The native `TestSixelShowsClippedAndClears`,
+`TestSixelScrollsWithThePane` and `TestSixelFallbacks` cases also pass.
+Browser artifacts are `image.png`, `after-clear.png` and `after-scroll.png`
+under each test's results directory.
+## An empty paste waits for a slow clipboard tool
+
+`TestAnEmptyPasteWaitsForASlowClipboardTool` sends the empty bracketed paste a terminal sends when the clipboard holds only an image, with a `wl-paste` stand-in that takes 0.6 s to list the types: about what a clipboard tool run for the first time takes on macOS. The image has to be pasted into the pane as a file path, and the pane's shell has to read the file. The control was built into its own binary and the test run against it 5 times; the unmodified binary passed 5 of 5. Run on 2026-10-28 on macOS.
+
+| Control: what was cut | Where it fails | Verdict |
+| --- | --- | --- |
+| The empty paste given the paste key's 0.3 s bound (`mode != imagePasteAction` in `probeImageCmd`, as before the fix) | `no path was pasted into the pane`, 5 of 5 runs | **caught** |
+## The agents view: peek after esc, enter in the comparison
+
+`TestInboxPeekAnswersAnApproval` closes the peek with esc and reads the
+agents view again before it opens the peek a second time.
+`TestCockpitFanCompare` presses enter in the comparison of the fan, waits for
+the client to be in B's session, then opens the comparison again. Run on
+2026-10-28 on Linux.
+
+| Control: what was cut | Where it fails | Verdict |
+| --- | --- | --- |
+| `renderCockpit` keeps the frame key of a transient frame (the peek) | after esc the peek's answers stay on screen | **caught** |
+| `ckCompareGo` looks for the row by the agent's row key, `a:` and the agent | the client never goes to `repo-cache-2`: the attempt's row is its finished item | **caught** |
+## A named session keeps its name in a worktree group (#1245)
+
+`TestSidebarGroupsWorktrees` creates a session called `mine` outside the
+repository and moves its pane into the `feat/one` worktree with `send-text`.
+The rail files it under the repository row. The row must read `└─ mine
+feat/one`, and after `set-session-name -s mine "My label"` it must read
+`└─ My label`. Run on 2026-10-28 on Linux.
+
+| Control: what was cut | Where it fails | Verdict |
+| --- | --- | --- |
+| The whole fix: `Named` on the session node, `sessionNamed`, and the named branch in `sidebarWorktreeLabel` and the row's branch | the row reads `└─ feat/one`, the same label as the session that tuios made for that branch | **caught** |
+
+With `TUIOS_E2E_FRAMES` set, the test writes `rail-worktree-named.png` and
+`rail-worktree-display-name.png`.
+## A panel opened over the focused rail takes the keys (#1239)
+
+`TestNavigatorOpensOverTheFocusedRail` attaches at 200x50 with the rail on
+and gives the rail the keyboard with ctrl+b e. It opens the navigator with
+ctrl+b /, reads the panel's box from the cells of its ground, then types a
+search and waits for the marker on a row, in the preview and in the search
+line. It closes the navigator and checks that the mode pill still says
+SIDEBAR. The go-to picker gets the same check with a typed query. Run on
+2026-10-27 on Linux, each control built from the fix with one change, through
+a `go build -overlay`.
+
+| Control: what was cut | Where it fails | Verdict |
+| --- | --- | --- |
+| The `PanelOwnsKeyboard` check in the rail gate of `routeKey`, back to the six panels it named before | the typed marker never reaches the navigator's search line | **caught** |
+| The bottom reserve in `panelRoomHeight`, back to the rows under the top dock | the navigator runs from row 0 to the dock's rule: margins top 0, bottom 0 | **caught** |
+| Both, which is main before the fix | the margin check fails first: top 0, bottom 0 | **caught** |
+
+The fixed build reads margins of 1 row above and below and 4 columns each
+side beside the rail. With `TUIOS_E2E_FRAMES` set, the test writes
+`navigator-over-rail.png` and `navigator-over-rail-search.png`.
+## Calm mode quiets a working session (discussion #1207)
+
+`TestCalmModeQuietsAWorkingSession` runs one working agent at motion full, with
+calm off and then with calm on, and counts the shimmer's looks, the bytes the
+client writes and its motion clock frames over 3s.
+
+| Control: what was cut | Where it fails | Verdict |
+| --- | --- | --- |
+| `Settings.Calm` dropped from `MotionAllows` (`internal/config/motion.go`) | calm-on: "the working name took 9 looks" (925 bytes, 24 motion frames, as with calm off) | **caught** |
+| The `calmHolds` gate in `showNotification` never taken (`internal/app/os_notify.go`) | calm-on: "the dock never counted the held message" | **caught** |
+
+With `TUIOS_E2E_FRAMES` set, each run writes `working-N.png`, and the calm run
+writes `held.png`, `needs-you.png` and `off.png`.
+## keybinds doctor names a key a default took
+
+`TestDoctorNamesAKeyADefaultTook` writes a config that gives four keys after the prefix to the swap actions as well as their arrows: `,` to `swap_down`, `c` to `swap_up`, `d` to `swap_left` and `x` to `swap_right`. Each is the default key of another prefix action (`prefix_settings`, `prefix_new_window`, `prefix_detach`, `prefix_close_window`), so on load `dropStaleDuplicateKeys` keeps it there and takes it from the swap. The test checks that `keybinds explain ,` names `prefix_settings`; that five runs of `keybinds doctor --json` each list the four under `retired` in `prefix_mode`, sorted by section, action and key, with a note naming `prefix_settings` for the quoted `","`; and that the text report prints `","` quoted under DROPPED BINDINGS. Each control was built into its own binary and the test run against it; the unmodified binary passed. Run on 2026-10-28 on macOS.
+
+| Control: what was cut | Where it fails | Verdict |
+| --- | --- | --- |
+| The keys `dropStaleDuplicateKeys` returns left out of `RetiredKeybinds` (its result ignored, as before the change) | `the doctor does not report , taken from swap_down by prefix_settings` | **caught** |
+| The sort of the dropped keys removed, so they keep the map walk's order | `run 2: the dropped keys are ["swap_right x" "swap_down ," "swap_up c" "swap_left d"], want ["swap_down ," "swap_left d" "swap_right x" "swap_up c"] in that order`; a second run failed at run 1 in another order | **caught** |
+## The session order is the daemon's
+
+`TestSessionOrderIsTheDaemons` in `session_order_test.go` makes sessions alpha, bravo and charlie, and attaches two real clients with the rail open: A to alpha, B to bravo. Both must list alpha, bravo, charlie. On A, ctrl+b e and shift+down twice move alpha to the bottom of A's rail. B, which nobody touched, must list bravo, charlie, alpha within two seconds, and `tuios ls` the same. Then `tuios set-session-order charlie alpha` must move both rails to charlie, alpha, bravo. `TestSessionOrderAnOlderClientDoesNotUndoIt` sets bravo, charlie, alpha, then attaches a client with `TUIOS_SESSION_ORDER_LEGACY=1`, which behaves as a build from before the order. On bravo it moves bravo to the bottom of its own rail and opens a pane in bravo. `tuios ls` must still list bravo, charlie, alpha, and a new client started after it, which reads the state file the older one wrote, must list the same. `TestSessionOrderSurvivesTheDaemon` sets charlie, alpha, bravo, which is neither the creation order nor the name order, runs kill-server, starts a daemon that restores the three, and must list charlie, alpha, bravo first. Each control is a build to a separate binary, the source put back before the next. Run on 2026-10-26 on macOS, based on origin/main at 6d122034a.
+
+The fixed build passes three runs of three.
+
+| Control: what was cut | Tests that fail | Verdict |
+| --- | --- | --- |
+| The fix removed (origin/main at 6d122034a) | "client B does not list the order A set"; the other two at their first `set-session-order` | **caught** |
+| `TUIOS_SESSION_ORDER_LEGACY` not read, so the older client sends its order | the older client test: "tuios ls lists [charlie alpha bravo], want [bravo charlie alpha]" | **caught** |
+| `retainDaemonExclusive` does not keep the rank (`incoming.Rank = canonical.Rank` cut) | the older client test: the push from the older client takes bravo's rank, "tuios ls lists [charlie alpha bravo]" | **caught** |
+| `sidebarSessionOrderFor` applies the kept order over the daemon's (`if false && ...`) | the older client test: "a new client lists another order than the daemon's" | **caught** |
+| The restore drops the rank (`Rank: state.Rank` cut from `daemon_resurrect.go`) | "after a restart: tuios ls lists [alpha bravo charlie trigger]" | **caught** |
+| `Manager.ListSessions` ignores the ranks (`0 * session.rank()`) | all three: the listing stays in creation order | **caught** |
+| `commitSessionOrder` does not send the order (no `queueSidebarCmd`) | "client B does not list the order A set" | **caught** |
+
+### Review of #1191: quick moves and a restored rank
+
+`TestSessionOrderTakesQuickMoves` makes four sessions, sets their creation order with `set-session-order` (the bug is in an order the daemon keeps), and attaches a client with the rail open. ctrl+b e, then shift+down three times in one burst, must leave bravo, charlie, delta, alpha on the rail and in `tuios ls`. A mouse drag of delta to the top, then at once a second drag of alpha onto the row above it, must leave delta, bravo, alpha, charlie. `TestSessionOrderRestoredSessionDoesNotTie` orders alpha and bravo, stops the daemon, starts one with `--no-restore`, makes and orders charlie and delta, and runs `tuios resurrect alpha`: `tuios ls` must list charlie, delta, alpha. Run on 2026-10-27 on macOS, based on origin/main at 859cef306.
+
+| Control: what was cut | Tests that fail | Verdict |
+| --- | --- | --- |
+| The PR before these fixes (224880265) | "three quick shift+down: the rail does not list [bravo charlie delta alpha]", as in the review | **caught** |
+| `sidebarSessionOrderFor` not drawing the order of a move on its way (`&& !m.sessionOrderPending(host)` cut) | the same | **caught** |
+| The restore keeping the saved rank (`Rank: state.Rank`) | "tuios ls lists [charlie alpha delta], want [charlie delta alpha]" | **caught** |
+
+The controls fail at the burst, before the two drags, which cover the drag the review asked for. The per-machine `sessionOrderLocal` and the one lock for a whole order have no e2e: the first needs an older daemon on another machine, and the second is a race between two callers.
+
+### Adversarial review of #1191
+
+A second review, by an agent that read only the code, found the rows below.
+`TestSessionOrderRestoredSessionDoesNotTie` now also restarts the daemon in
+full after the resurrect: bravo, saved with rank 2 and in no order set since,
+must not take delta's place. `TestSessionOrderBuildsOnAnotherClientsMove`
+moves alpha down, puts it back on top from another client, presses shift+down
+twice in one burst, and then reads the sidebar state file: the client must
+keep no order of its own once the daemon has answered.
+`TestSessionOrderSkipsAnEndedSession` sends an order with a gone name, refused
+without `skip_missing` and set with it. Run on 2026-10-27 on macOS, based on
+origin/main at ecdeec289.
+
+| Control: what was cut | Tests that fail | Verdict |
+| --- | --- | --- |
+| `unrankSavedSessions` not called | "after a full restart: tuios ls lists [charlie bravo alpha delta trigger], want [charlie delta] first" | **caught** |
+| The branch before this review (c7fe27eed) | "the client kept its own order after the daemon answered" | **caught** |
+| The reply comparing against the drawn order (`sidebarSessionOrderFor`) | the same | **caught** |
+| The pending move and the daemon's order out of the rail cache key | none: another change (the cursor) redraws the rail in time in every run | **not caught** |
+## Nest mode gives the pane every key, the leader too
+
+`TestNestModeGivesEveryKeyToThePane` in `nest_mode_test.go` attaches a real client in terminal mode with the default keys, with `cat -v` in the pane. ctrl+b enter must make the dock pill say `NEST F12`. ctrl+b, alt+2, ctrl+p and x must then reach `cat -v` as `^B^[2^Px`, with the session on workspace 1, one pane and no palette. F12 must take `NEST F12` off the pill without reaching the pane, and ctrl+b c must then open a second pane. `TestNestModeHandsTheLeaderToANestedTmux` runs a tmux of its own (`-L`, `-f /dev/null`) in the pane: in nest mode ctrl+b c must open the tmux's window `W1` with no tuios pane added, ctrl+b d must print tmux's `[detached`, and after F12 ctrl+b c must open a tuios pane. `TestNestModeIsTheLeaderThenEnterInEveryPreset` runs the tmux, screen and zellij presets: each preset's leader then enter must turn nest mode on, and F12 off. Each control is a build to a separate binary, the source put back before the next. Run on 2026-10-26 on macOS, based on origin/main at 6d122034a.
+
+The fixed build passes.
+
+| Control: what was cut | Tests that fail | Verdict |
+| --- | --- | --- |
+| The nest path in `HandleTerminalModeKey` (`if false && o.Nested()`), the dock pill kept | "ctrl+b alt+2 ctrl+p x did not reach cat -v as bytes"; the tmux test: "ctrl+b c did not open a window in the nested tmux"; each preset: "F12 did not turn nest mode off" | **caught** |
+| The exit key check (`if false && config.IsKeyPress(...)`) | all three: "F12 did not turn nest mode off" | **caught** |
+| The default key (`"nest": {"enter"}` removed from `DefaultConfig`) | all three: "ctrl+b enter did not turn nest mode on", and each preset's leader then enter | **caught** |
+
+### Review of #1190: the exit key and the mode
+
+`TestNestExitKeyThatCannotBeReadIsF12` sets `nest_exit_key = "ctrl+"`, which cannot be read: the pill must name F12 and F12 must end nest mode. With `nest_exit_key = "x"` the log viewer must hold a line for nest_exit_key. `TestNestExitKeyFiresOnTheComposedCharacter` sets `nest_exit_key = "opt+1"` with `option_glyphs = "bind"` on a Mac terminal: the composed "¡" must end nest mode. `TestNestModeDoesNotComeBackAfterWindowMode` turns nest mode on, closes the last pane with close-window (the client drops to window mode by assignment), then moves the client to another session with switch-session (terminal mode restored by assignment): the pill must not say NEST, and ctrl+b c must open a pane there. Run on 2026-10-27 on macOS, based on origin/main at 859cef306.
+
+| Control: what was cut | Tests that fail | Verdict |
+| --- | --- | --- |
+| `kb.NestExitKey = ""` cut from `DropUnreadableKeys` | "an unreadable nest_exit_key did not fall back to F12 on the pill" | **caught** |
+| the `KeyTypes` warning in `ValidateConfig` | "the log has no warning for nest_exit_key = \"x\"" | **caught** |
+| `isNestExitKey` matching only the key produced | "the composed character did not end nest mode" | **caught** |
+| `defer m.settleNest()` cut from `Update` | "nest mode came back after the session switch" | **caught** |
+
+### Adversarial review of #1190
+
+A second review, by an agent that read only the code, found the rows below.
+`TestNestModeSurvivesAMouseGesture` turns nest mode on over `cat -v` and
+alt-drags the pane: the pill must still say NEST F12 after the release, and
+ctrl+b x must reach `cat -v`. `TestNestModeWaitsBehindTheRail` clicks the rail
+in nest mode: the pill must say SIDEBAR and not NEST F12, esc must give the
+keys back to nest mode, and F12 must end it. `TestNestExitKeyThatCannotBeReadIsF12`
+gains `nest_exit_key = "ctrl+m"`, which a terminal without the kitty keyboard
+protocol sends as enter, and `nest_exit_key = "ctrl+b"`, the leader: the log
+must warn about each. Run on 2026-10-27 on macOS, based on origin/main at
+ecdeec289.
+
+| Control: what was cut | Tests that fail | Verdict |
+| --- | --- | --- |
+| `modeBorrowed` returning false, so a gesture's press ends nest mode | "the drag ended nest mode" | **caught** |
+| `Nested()` true while the rail has the keyboard | "after a click on the rail the pill does not say SIDEBAR, and not NEST F12" | **caught** |
+| `ctrl+m` out of `KeyTypes` | "the log has no warning for nest_exit_key = \"ctrl+m\"" | **caught** |
+| the leader warning cut from `ValidateConfig` | "the log has no warning for nest_exit_key = \"ctrl+b\"" | **caught** |
+
+A first control of `modeBorrowed` wrote `false && a || b ...`, which is still
+true while the pane is dragged, and the test passed. The control above returns
+false outright.
+
+### #1190: nest mode in a rail session pane
+
+`TestNestModeReachesARailSessionPane` docks a session running `cat -v` in the right rail, clicks its pane, turns nest mode on with ctrl+b enter, and checks that ctrl+b x reaches `cat -v` as `^Bx`, that F12 ends nest mode from there, and that the next ctrl+b does not reach the pane. A control run after the conflict with be53d5685 was resolved showed no test covered the rail pane's nest path in `routeKey`. Run on 2026-10-28 on macOS, on feat/nest at 125e54007 (on origin/main at c793b00d1).
+
+| Control: what was cut | Tests that fail | Verdict |
+| --- | --- | --- |
+| The rail pane's nest path in `routeKey` (`if false && ...`) | "F12 did not end nest mode from the rail pane" (`^Bx` still reaches the pane, through the terminal handler) | **caught** |
+| `PanelOwnsKeyboard()` back to main's old list of six panels, where the two meet in `routeKey` | `TestNavigatorOpensOverTheFocusedRail`: "the navigator opened over the focused rail did not take the keys" | **caught** |
+## Scroll the strip with a finger, and snap it to a column
+
+`TestStripSnapsToTheNearestColumn` in `strip_snap_test.go` runs the scrolling layout with three columns of 55 cells on a 100-cell screen, `niri_scroll_cells = 3` and `niri_scroll_snap = true`. One `Alt` wheel step (3 cells) must snap back to the first column, so the frame is the frame before the step. Ten steps (30 cells) must line the strip up on BRAVO at the left edge, with none of ALPHA on screen. `clienttests/strip-touch.spec.mjs` runs tuios-web with `?renderer=engine` on a phone viewport. A drag to the left must hand `window.sip.send` at least two `Alt` wheel-right reports (`CSI < 75`), a drag to the right wheel-left reports (`CSI < 74`), and a vertical drag none. Each control is a build to a separate binary, the source put back before the next. Run on 2026-10-26 on macOS, based on origin/main at 6d122034a.
+
+| Control: what was cut | Tests that fail | Verdict |
+| --- | --- | --- |
+| `SnapStrip` does nothing (`if true \|\| ...`) | "one step did not snap back to the first column" | **caught** |
+| tuios-web without the page script (`installStripTouch` not called) | the browser test: "a drag to the left sends steps", received 0 | **caught** |
+
+### Review of #1193: the finger's drag
+
+`TestStripTouchSnapsWhenTheFingerLifts` sends ten finger steps (Ctrl and Alt with a sideways wheel, as `strip_touch.js` writes them) with `niri_scroll_snap` on: after a 600 ms rest the strip must not have snapped, and the lift (Ctrl, Alt and Shift) must line it up on BRAVO. `TestStripTouchStepReachesNoPaneOffTheStrip` runs `cat -v` with the mouse on in a BSP pane: a finger's step and lift must not reach it, and a plain Alt sideways wheel must. `clienttests/strip-touch.spec.mjs` checks that a drag to the left sends steps to the right and ends with the lift, and that a tap still down when a quick swipe's long press would have fired reaches sip's worker as a press of button 1, not 2. Run on 2026-10-27 on macOS, based on origin/main at 859cef306.
+
+| Control: what was cut | Tests that fail | Verdict |
+| --- | --- | --- |
+| The PR before these fixes (5747d0828) | "the strip snapped while the finger rested"; "a finger's step reached the pane off the strip" | **caught** |
+| The `pointercancel` the page sends sip as it takes the drag | "the tap is a press of button 1": received [2], the right click of the review | **caught** |
+
+### Second round on #1193: the finger's own report, and the snap's direction
+
+The finger is now `CSI 7503 ; kind ; col ; row ; cells ~` (`internal/app/strip_touch.go`) and not a wheel with Ctrl and Alt, the wheel's pause snap goes to the next column in the way it went, and the snap is sent to the daemon. `TestStripSnapsToTheNearestColumn` became `TestStripSnapsToTheNextColumn`: one `Alt` wheel step (3 cells) must line the strip up on BRAVO and one step back must bring back the first frame. `TestStripSnapReachesTheOtherClient` attaches a second client at the same size and measures when each one lines up on BRAVO: the second may be at most 150 ms behind the first. `TestStripTouchSnapsWhenTheFingerLifts` now also checks that the steps moved the strip, and that a short drag lifts back to the nearest column. `TestStripTouchReachesOnlyTheStrip` opens the rail: a drag that starts on it must not move the strip, the same drag on the strip must. `TestStripTouchLeavesTheWheelToThePane` replaces `TestStripTouchStepReachesNoPaneOffTheStrip`: in a BSP pane running `cat -v` with the mouse on, the finger's report must not arrive and a sideways wheel with Ctrl and Alt must. `TestStripSnapStaysOnItsWorkspace` (unit, `internal/app`) fires a snap armed on another workspace. `clienttests/strip-touch.spec.mjs` checks the cells the reports carry, that a diagonal drag sends none, and that a second finger during the drag leaves one lift and reaches no sip worker. Each control is a build to a separate binary, the source put back before the next. Run on 2026-10-28 on macOS, based on origin/main at ecdeec289.
+
+| Control: what was cut | Tests that fail | Verdict |
+| --- | --- | --- |
+| The PR before these fixes (b3eccbe2f) | all five e2e tests. The one this is about: "a sideways wheel with Ctrl and Alt did not reach the pane" | **caught** |
+| `SnapStrip` snaps to the nearest column (`snapStrip(0)`) | "one step to the right did not line the strip up on BRAVO" | **caught** |
+| The `SyncStateToDaemon` after a snap | "A's snap reached B 513 ms after A lined up, more than 150ms" (three runs: 513, 530, 512 ms) | **caught** |
+| The rail check in `handleStripTouch` | "a finger's drag on the rail moved the strip" | **caught** |
+| A finger's step arms the wheel's pause snap | "the strip snapped while the finger rested" | **caught** |
+| `stripTouchReport` not called in `FilterMouseMotion` | "ten finger steps did not move the strip" | **caught** |
+| The workspace check in `SnapStrip` | "a snap armed on workspace 2 moved the strip of workspace 1 from 62 to 55" | **caught** |
+| The page's second-finger handling | "the first finger's lift is still the last report" | **caught** |
+| The page takes a drag with `abs(dx) > abs(dy)` again, not twice | "a diagonal drag is sip's own swipe" | **caught** |
+
+### #1193: a quick swipe on a busy page
+
+Found while testing the branch under load: the page timed the long press by when it handled the move, not when the finger moved, so a busy page read a quick swipe as a long press and sent nothing (the browser test "a horizontal drag scrolls the strip" failed with 0 steps in about half of the runs under load). It now reads `ev.timeStamp`. `clienttests/strip-touch.spec.mjs` gains "a quick swipe on a busy page is still a swipe", which blocks the page for 700 ms right after the press and then moves the finger at once, and its positive half, "a hold, then a sideways move, is sip's long press", which waits 700 ms with the page free and must send nothing. Run on 2026-10-28 on macOS, on feat/touch-strip merged with origin/main at 111bdfbe7.
+
+| Control: what was cut | Tests that fail | Verdict |
+| --- | --- | --- |
+| The hold timed by `performance.now()` when the move is handled (the code before this fix) | "the swipe sent steps", received 0, three runs of three | **caught** |
+| The hold check cut (`if (false \|\| ...)`) | "a hold is sip's, and the page sends nothing" | **caught** |
+
+A code-only review of the fix found one more case: when the first move stays inside the slop and the page is busy, Chrome hands the later moves on as one event whose `timeStamp` is the last of them, and the hold was read off that. The script now takes the first sample past the slop from `getCoalescedEvents()`. A browser test for it (two small moves, then twelve through 1100 ms of a busy page) was tried and left out: under CDP how Chrome splits the moves into batches is not fixed, and the code before this change failed it in only 2 to 3 runs of 10. A debug build logged all ten runs taking the drag on the first sample past the slop, 70 to 160 ms after the press.
+## Session listing push on a session change
+
+`TestRailRightClickKillsTheSessionUnderThePointer` kills `bravo` from the rail. Then it runs `tuios new charlie --detach` and `tuios kill-session charlie`. After each command, with no key or click, the rail must show the change within 1.5 seconds (issue #1225). The kill of `bravo` and the creation of `charlie` each send a listing push just before the next command. Run on 2026-10-27 on Linux, on branch `fix/listing-push-on-session-change` from `main` (`3d91716c0`).
+
+| Control: what was cut | Where it fails | Verdict |
+| --- | --- | --- |
+| None: `main` itself | "the rail showed charlie gone 2.953s after the command returned" | **caught** |
+| A session change never brings an armed timer forward (`if armed {` for `if armed && !armedAt.After(at) {` in `listingNotifier`) | "the rail showed charlie gone 2.946s after the command returned" | **caught** |
+| The positive half | none: three runs showed charlie in 100 to 103 ms and charlie gone in 102 to 103 ms | **guard** |
+
+With `TUIOS_E2E_FRAMES` set, the test writes `charlie-made.png` and `charlie-gone.png`.
+
+## A worktree record that arrives after the session
+
+`TestSidebarGroupsWorktrees` makes the session `mine`, then moves its shell into the worktree of `feat/one`. The rail must show `mine` under `repo` within 15 seconds. With the listing push sent at once for a new session, the first listing that names `mine` comes before the daemon has read its worktree. The record arrives in a later listing. Run on 2026-10-28 on Linux, on branch `fix/listing-push-on-session-change`, pinned to one core, 20 runs each.
+
+| Control: what was cut | Where it fails | Verdict |
+| --- | --- | --- |
+| The worktree comparison in `listingsAgree` | "the named session in a worktree lost its name to the branch", 20 of 20 runs | **caught** |
+| None: `main` | none: 20 of 20 runs pass, because the first push waits out the gap and already carries the record | **not caught** |
+| The positive half | none: 20 of 20 runs pass with the comparison | **guard** |
+
+## The tuios ssh limits
+
+`TestSSHServerLimits` runs `tuios ssh` in daemon mode with key
+authentication and `[ssh]` set to `handshake_timeout = "3s"`,
+`max_handshakes = 4` and `max_sessions = 1`. Four clients send only the
+version line and get the server's version line back. A fifth must be closed
+before half the timeout, the four must be closed between 2.5 s and 8 s after
+they connect, a key login must draw its session and outlive the timeout, and
+a second login must get the limit message while the server's PTY count and
+the daemon's session list stay the same. Run on 2026-10-28 on Linux, based on
+origin/main at ba756a0ed.
+
+| Control: what was cut | Test failure | Verdict |
+| --- | --- | --- |
+| origin/main, which has no limits | "connection 5 of 5 with max_handshakes = 4 was still open after 1.5s" | **caught** |
+| `s.ConnCallback = gate.admit` in `limitOptions` | the same | **caught** |
+| `s.HandshakeTimeout = l.HandshakeTimeout` set to 0 | "idle connection 0 was still open 8s after it connected, with handshake_timeout = 3s" | **caught** |
+| `sessionLimitMiddleware(limits.MaxSessions)` out of the middleware list | "a second session with max_sessions = 1 got no message about the limit" | **caught** |
+
+Each negative step has its positive half in the same fixture: the four
+admitted clients get a version line and stay open past the fifth, and the
+first key login draws its session and opens a pane before the second is
+refused.
+## An empty paste under WSL reads the Windows clipboard
+
+`TestAnEmptyPasteUnderWSLReadsTheWindowsClipboard` sends the empty bracketed paste Windows Terminal sends when the clipboard holds only an image, from a client under WSL (`WSL_DISTRO_NAME` set). A `powershell.exe` stand-in answers for the Windows clipboard with the image, and a `wl-paste` stand-in for WSLg's lists text only, as WSLg's bridge does when Windows holds an image. The image has to be pasted into the pane as a file path, and the pane's shell has to read the file. The control was built into its own binary and the test run against it 5 times; the unmodified binary passed 5 of 5. Run on 2026-10-28 on Linux (WSL2, x86_64).
+
+| Control: what was cut | Where it fails | Verdict |
+| --- | --- | --- |
+| The WSL check in `detectImageClipboard` (the `wslPowerShell` call site), so WSLg's `wl-paste` is asked, as before the fix | `no path was pasted into the pane`, 5 of 5 runs | **caught** |
+
+## A paste key timeout under WSL leaves the empty paste on
+
+`TestAPasteKeyTimeoutUnderWSLLeavesTheEmptyPasteOn` presses the paste key (`ctrl+shift+v`) from a client under WSL with a `powershell.exe` stand-in that takes 0.6 s to list the types, longer than the key's 0.3 s bound, as `powershell.exe` often takes to start. The key times out and pastes text. An empty bracketed paste follows, and the image has to be pasted into the pane as a file path, which the pane's shell reads. The control was built into its own binary and the test run against it 5 times; the unmodified binary passed 5 of 5. Run on 2026-10-28 on Linux (WSL2, x86_64).
+
+| Control: what was cut | Where it fails | Verdict |
+| --- | --- | --- |
+| `slowStart` dropped from the timeout check in `probeImageCmd`, so a timeout under WSL sets `keyProbeOff`, as before the fix | `no path was pasted into the pane`, 5 of 5 runs | **caught** |

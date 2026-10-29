@@ -19,14 +19,14 @@ replace tuios.dev/plot v0.2.2-0.20261023124927-50c38920e301 => ./plot
 
 replace tuios.dev/progstatus v0.1.1-0.20261023124927-50c38920e301 => ./progstatus
 
-replace tuios.dev/shot v0.2.1-0.20261023124927-50c38920e301 => ./shot
-
 replace tuios.dev/swatch v0.1.1-0.20261025090851-2c1449b0d078 => ./swatch
 
 replace tuios.dev/tml v0.1.2-0.20261027072011-3140277ea47a => ./tml
 
-replace tuios.dev/loom v0.2.3-0.20261027111307-2ff6c64156c1 => ./loom
+replace tuios.dev/vt v0.3.3-0.20261028205255-e913b35f884a => ./vt
 
-replace tuios.dev/sketch v0.4.1-0.20261027111141-0161afeb2e46 => ./sketch
+replace tuios.dev/shot v0.2.2-0.20261028210644-31c5f8a15a38 => ./shot
 
-replace tuios.dev/vt v0.3.3-0.20261027120803-fccfb619e905 => ./vt
+replace tuios.dev/loom v0.2.3-0.20261028211907-1d9d90849128 => ./loom
+
+replace tuios.dev/sketch v0.4.1-0.20261028211901-35f9299d6613 => ./sketch

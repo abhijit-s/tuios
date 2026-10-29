@@ -322,6 +322,11 @@ var optionSpecs = []Option{
 		Accepted:    MotionLevels, Default: MotionFull,
 	},
 	{
+		Path: "appearance.calm", Type: OptionBool, Section: "appearance",
+		Description: "Calm mode: nothing moves or blinks, and only messages that need you show in the dock",
+		Default:     "false",
+	},
+	{
 		Path: "appearance.modal_dim", Type: OptionInt, Section: "appearance",
 		Description: "How much the screen behind a modal panel is darkened, as a percent. 0 is off.",
 		Default:     strconv.Itoa(ModalDimDefault), Min: 0, Max: ModalDimMax,
@@ -432,6 +437,11 @@ var optionSpecs = []Option{
 	{
 		Path: "appearance.niri_reverse_scroll", Type: OptionBool, Section: "appearance",
 		Description: "Reverse the wheel direction in niri scrolling mode",
+		Default:     "false",
+	},
+	{
+		Path: "appearance.niri_scroll_snap", Type: OptionBool, Section: "appearance",
+		Description: "Snap the strip to the nearest column when a scroll stops",
 		Default:     "false",
 	},
 	{
@@ -967,6 +977,11 @@ var optionSpecs = []Option{
 		Path: "appearance.sidebar.files_style", Type: OptionString, Section: "sidebar",
 		Description: "How the files section draws: list shows one folder at a time, tree opens folders in place under one root",
 		Accepted:    SidebarFilesStyles, Default: SidebarFilesList,
+	},
+	{
+		Path: "appearance.sidebar.group_main", Type: OptionBool, Section: "sidebar",
+		Description: "Gather the repository's main checkout under the repo row with its worktrees. The repo header then opens the main checkout's session",
+		Default:     "false",
 	},
 	{
 		Path: "appearance.sidebar.header_case", Type: OptionString, Section: "sidebar",

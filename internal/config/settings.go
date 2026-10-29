@@ -89,6 +89,12 @@ type Settings struct {
 	// Read it through MotionAllows, which also honours AnimationsSuppressed.
 	Motion string
 
+	// Calm is appearance.calm: nothing moves or blinks, and only messages
+	// that need the person reach the dock. It sits over Motion rather than
+	// replacing it, so turning calm off gives back the level the person had.
+	// See internal/app/calm.go.
+	Calm bool
+
 	// NoAnimationsFlag records --no-animations, so re-applying the config at
 	// runtime keeps the level at none until something sets the level itself
 	// (OS.SetMotion).
@@ -275,6 +281,11 @@ type Settings struct {
 	// done and seen) before the rail folds it into one line with the others.
 	// Zero never folds. From appearance.sidebar.agent_rest_fold.
 	SidebarAgentRestFold time.Duration
+
+	// SidebarGroupMain gathers the repository's main checkout under the repo
+	// row with its worktrees, and points the header's activation at it. From
+	// appearance.sidebar.group_main.
+	SidebarGroupMain bool
 
 	// SidebarSubagents is how the rail draws the subagents under an agent
 	// row: rows or the count, tree lines, the heading line that folds them,
@@ -662,6 +673,11 @@ type Settings struct {
 	// Set via appearance.niri_scroll_cells config
 	NiriScrollCells int
 
+	// NiriScrollSnap lines the strip up on the nearest column once a wheel,
+	// a trackpad or a finger has stopped moving it, as niri does at the end
+	// of a gesture. Set via appearance.niri_scroll_snap config
+	NiriScrollSnap bool
+
 	// PrefixRepeatTime is how long the prefix stays armed after a repeatable
 	// prefix command, in milliseconds. Zero turns it off. See
 	// PrefixRepeatTimeDefault.
@@ -678,6 +694,9 @@ type Settings struct {
 	// Lock is keybindings.lock: terminal mode gives every key but the leader
 	// to the focused pane.
 	Lock bool
+	// NestExitKey is keybindings.nest_exit_key, the key that ends nest mode.
+	// Empty is DefaultNestExitKey. See GetNestExitKey.
+	NestExitKey string
 
 	// PaneGap is the cells of empty space the tiler keeps between two neighbouring
 	// panes: i3's inner gap, and about the only spacing a terminal window manager
@@ -1055,6 +1074,18 @@ const DefaultScrollbackLines = 10000
 // asking "what does tuios bind when nobody said otherwise", which is one answer
 // for the whole program and not one per session.
 const DefaultLeaderKey = "ctrl+b"
+
+// DefaultNestExitKey is the key that ends nest mode when
+// keybindings.nest_exit_key is unset: F12, tmux-matryoshka's.
+const DefaultNestExitKey = "f12"
+
+// GetNestExitKey returns the key that ends nest mode.
+func (s *Settings) GetNestExitKey() string {
+	if s.NestExitKey == "" {
+		return DefaultNestExitKey
+	}
+	return s.NestExitKey
+}
 
 // Global is the process seed: the config file and the CLI flags are applied to
 // it once at startup, single-threaded, and every session copies it at

@@ -4,18 +4,21 @@ import (
 	"path"
 	"sort"
 	"strings"
+
+	"github.com/Gaurav-Gosain/tuios/internal/theme"
 )
 
-// cmdTuios is the tuios command inside the demo. The one subcommand that does
-// something is tape play, which hands a tape to the tuios this shell runs in.
-// The rest say what they would do on a real machine.
+// cmdTuios is the tuios command inside the demo. tape play hands a tape to
+// the tuios this shell runs in, tml shows and draws TML surfaces (see
+// surfaces.go), and mermaid draws diagrams (see diagrams.go). The rest say
+// what they would do on a real machine.
 func cmdTuios(s *shell, args []string, _ string) int {
 	t := s.t
 	sub := argOr(args, 1, "")
 	switch sub {
 	case "", "help", "--help", "-h":
 		intro := strings.Fields("You are already in tuios. Press " + bold + "Ctrl+B" + reset + " then " + bold + "?" + reset + " to see every key.")
-		real := []string{"tuios ls", "tuios fan", "tuios worktree", "tuios list-agents", "tuios list-verbs", "tuios list-hooks"}
+		real := []string{"tuios ls", "tuios new", "tuios hosts", "tuios task", "tuios look list", "tuios fan", "tuios worktree", "tuios list-agents", "tuios list-verbs", "tuios list-hooks"}
 		var tokens []string
 		for i, name := range real {
 			tok := green + name + reset
@@ -30,6 +33,11 @@ func cmdTuios(s *shell, args []string, _ string) int {
 			lines = append(lines, table([][2]string{
 				{"tuios tape play demo.tape", "watch tuios drive itself"},
 				{"tuios tape list", "the tapes here"},
+				{"tuios ship", "commit and ship a worktree's change"},
+				{"tuios theme share gilt", "a theme as one line to paste"},
+				{"tuios tml show deploy.tml", "open a form, drawn by tuios"},
+				{"tuios tml render status.tml", "print a surface as text"},
+				{"tuios mermaid flow.mmd", "draw a diagram as text"},
 				{"tuios version", ""},
 			}, 2, green, cols)...)
 			lines = append(lines, "")
@@ -47,11 +55,36 @@ func cmdTuios(s *shell, args []string, _ string) int {
 		return 0
 	case "tape":
 		return tuiosTape(s, args[2:])
+	case "ship":
+		return tuiosShip(s, args[2:])
+	case "theme":
+		if argOr(args, 2, "") == "share" {
+			return tuiosThemeShare(s, args[3:])
+		}
+	case "tml":
+		return cmdTuiosTML(s, args[2:])
+	case "mermaid":
+		return cmdMermaid(s, args[2:])
 	}
-	if printSample(t, sub) {
+	if printSample(t, args) {
 		return 0
 	}
 	t.Print(yellow + "tuios " + sub + reset + " needs a real machine. Install tuios to try it: " + bold + "tuios.dev" + reset + "\r\n")
+	return 0
+}
+
+// tuiosThemeShare is tuios theme share: the real share line, from the theme
+// package the tour runs on. A theme saved on a real machine is not here, so
+// only the shipped themes share.
+func tuiosThemeShare(s *shell, args []string) int {
+	if len(args) != 1 {
+		return s.fail("Which theme? Try " + bold + "tuios theme share gilt" + reset)
+	}
+	line, err := theme.ShareString(args[0])
+	if err != nil {
+		return s.fail("tuios: " + err.Error())
+	}
+	s.t.Print(line + "\r\n")
 	return 0
 }
 

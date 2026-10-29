@@ -828,7 +828,7 @@ func (m *OS) foreignSessionRefreshTick(after time.Duration) tea.Cmd {
 		return nil
 	}
 	gen := m.foreignTickGen
-	return tea.Tick(after, func(time.Time) tea.Msg {
+	return m.tickUntilStop(after, func(time.Time) tea.Msg {
 		return ForeignSessionRefreshTickMsg{Gen: gen}
 	})
 }
@@ -910,6 +910,8 @@ type foreignSessionsChangedMsg struct{}
 // one somebody writes. One comparison, once, is the whole cost, and it answers
 // nil without allocating for a client whose rail has no files section.
 func (m *OS) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// Nest mode does not outlive a window mode a message left the client in.
+	defer m.settleNest()
 	// The frame the last View composed is stored now: write it. Nothing
 	// else changes, so the View after this message serves the same frame.
 	if _, ok := msg.(flushMsg); ok {
@@ -1201,6 +1203,9 @@ func (m *OS) handleMsg(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 
 	case threadGrewMsg:
 		return m, m.applyThreadGrew(msg)
+
+	case LearnTranscriptGrewMsg:
+		return m, m.applyLearnTranscriptGrew(msg)
 
 	case threadWatchEnded:
 		m.applyThreadWatchEnded(msg)
@@ -1650,6 +1655,9 @@ func (m *OS) handleMsg(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 			cmd = tea.Batch(m.refreshChangedFolder(), cmd)
 		}
 		return m, tea.Batch(cmd, listenForFileChange(m.stopSignal(), m.fileWatchChan(), msg.at))
+	case LearnFilesChangedMsg:
+		// A file of the browser build's fake shell changed. See learn_mode.go.
+		return m, m.learnFilesChanged()
 	case fileTreeListMsg:
 		// A folder open in the tree, read on its own goroutine.
 		cmd := m.HandleFileTreeList(msg)
@@ -1974,7 +1982,7 @@ func (m *OS) handleMsg(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 
 	case tea.KeyPressMsg, tea.KeyReleaseMsg, tea.MouseClickMsg, tea.MouseMotionMsg,
 		tea.MouseReleaseMsg, tea.MouseWheelMsg, tea.ClipboardMsg,
-		tea.PasteMsg, tea.PasteStartMsg, tea.PasteEndMsg:
+		tea.PasteMsg, tea.PasteStartMsg, tea.PasteEndMsg, StripTouchMsg:
 		// Reset idle counter on any user input to restore full tick rate
 		// A resize drag is live only while the pointer is still reporting. This
 		// is what lets the deferral in resize_deferral.go expire when a mouse
@@ -2428,6 +2436,15 @@ func (m *OS) handleMsg(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 		m.refreshSwitcherItems()
 		return m, m.refreshListingCmd()
 
+	case SessionOrderAppliedMsg:
+		return m, m.applySessionOrderResult(msg)
+
+	case StripSnapMsg:
+		if m.SnapStrip(msg) && m.IsDaemonSession {
+			m.SyncStateToDaemon()
+		}
+		return m, nil
+
 	case listingRefreshedMsg:
 		m.refreshSwitcherItems()
 		return m, nil
@@ -2861,6 +2878,15 @@ func (m *OS) handleMsg(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 		m.MarkAllDirty()
 		return m, cmd
 
+	case lookShareAuthorMsg:
+		// gh answered with the login. The export reads the config, so it
+		// runs here. See look_share.go.
+		return m, m.handleLookShareAuthor(msg)
+
+	case lookShareDoneMsg:
+		m.handleLookShareDone(msg)
+		return m, nil
+
 	case screenshotCopiedMsg:
 		// The clipboard helper answered. Nothing waited for it, which is the
 		// point: this only decides where to say what it said.
@@ -2971,6 +2997,19 @@ func (m *OS) handleMsg(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 					_ = m.DaemonClient.SendCommandResultWithData(msg.RequestID, true, "command executed", resultData)
 				}
 				return m, relisten
+			case "ShareLook":
+				// tuios look share: the client has the screen to capture and
+				// the terminal that carries the clipboard. TapeArgs are the
+				// name and the author, either one empty. The result is sent
+				// when the share is done. See look_share.go.
+				var name, author string
+				if len(msg.TapeArgs) > 0 {
+					name = msg.TapeArgs[0]
+				}
+				if len(msg.TapeArgs) > 1 {
+					author = msg.TapeArgs[1]
+				}
+				return m, tea.Batch(m.ShareLook(name, author, msg.RequestID), relisten)
 			case "GetWindow":
 				// Return info about a specific window (read-only, no notification)
 				if len(msg.TapeArgs) > 0 {
@@ -3012,7 +3051,7 @@ func (m *OS) handleMsg(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 			if err == nil {
 				// Keys will be processed sequentially via RemoteKeyMsg
 				// Show notification now, result will be sent after all keys processed
-				m.ShowNotification(notificationMsg, "info", m.Settings.NotificationDuration)
+				m.showRemoteNotice(notificationMsg)
 				return m, tea.Batch(cmd, relisten)
 			}
 		// capture_pane never arrives here: the daemon renders the pane from its
@@ -3192,7 +3231,7 @@ func (m *OS) handleMsg(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 			cmd, err = m.executeTapeScript(msg.TapeScript, msg.RequestID)
 			if err == nil {
 				if m.tapeStatusShown() {
-					m.ShowNotification(notificationMsg, "info", m.Settings.NotificationDuration)
+					m.showRemoteNotice(notificationMsg)
 				}
 				return m, tea.Batch(cmd, relisten)
 			}
@@ -3216,7 +3255,7 @@ func (m *OS) handleMsg(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 		if err != nil {
 			m.ShowNotification(fmt.Sprintf("Remote error: %v", err), "error", m.Settings.NotificationDuration)
 		} else if notificationMsg != "" {
-			m.ShowNotification(notificationMsg, "info", m.Settings.NotificationDuration)
+			m.showRemoteNotice(notificationMsg)
 		}
 
 		// Send result back if we have a daemon client

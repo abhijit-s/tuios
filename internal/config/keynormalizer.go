@@ -748,6 +748,39 @@ type leaderSet struct {
 
 var leaderCache atomic.Pointer[leaderSet]
 
+// KeyTypes reports whether a key from the config is one programs type: a
+// printable character, with shift or without, or space, enter, tab, backspace
+// or esc.
+func KeyTypes(key string) bool {
+	k := strings.ToLower(strings.TrimSpace(key))
+	k = strings.TrimPrefix(k, "shift+")
+	if utf8.RuneCountInString(k) == 1 {
+		return unicode.IsPrint([]rune(k)[0])
+	}
+	switch k {
+	case "space", "enter", "return", "tab", "backspace", "esc", "escape",
+		// A terminal without the kitty keyboard protocol sends these as tab,
+		// enter and esc, which programs type.
+		"ctrl+i", "ctrl+m", "ctrl+[", "ctrl+h":
+		return true
+	}
+	return false
+}
+
+// IsKeyPress reports whether pressed, a key event's string in the canonical
+// form, is key as config.toml spells it, normalized as every binding table
+// is. It normalizes key on each call, so it is for a key read only inside a
+// mode of its own, as keybindings.nest_exit_key is in nest mode; the leader,
+// read on every press, has IsLeaderPress and its cache.
+func IsKeyPress(pressed, key string) bool {
+	for _, k := range (&KeyNormalizer{isMacOS: macOSHost}).NormalizeKey(key) {
+		if lookupForm(k) == pressed {
+			return true
+		}
+	}
+	return false
+}
+
 // IsLeaderPress reports whether pressed, a key event's string, is the leader
 // key spelled as leader in config.toml. pressed must be in the canonical form a
 // key event has (see CanonicalKey); it is not normalized here, because this

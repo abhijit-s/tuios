@@ -34,6 +34,7 @@ func (m *OS) ExitTerminalMode() tea.Cmd {
 	}
 
 	m.Mode = WindowManagementMode
+	m.nest = false
 
 	// The raw reader is disabled. Bubbletea handles all input correctly.
 	return nil

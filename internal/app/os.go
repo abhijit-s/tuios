@@ -256,6 +256,8 @@ type OS struct {
 	// bring the client back. RestartFailure is set with ExitRestartFailed.
 	RestartExec    *RestartExec
 	RestartFailure *RestartFailure
+	// calm is calm mode's runtime state. See calm.go.
+	calm calmState
 	// restartLater says the person put the version notice off for this run.
 	restartLater bool
 	// afterRestart is OSOptions.AfterRestart.
@@ -371,7 +373,10 @@ type OS struct {
 	LastPrefixTime        time.Time      // Time when prefix was activated
 	// LockHeld is true while lock mode keeps a menu open after a repeatable
 	// action, until esc. See lock_mode.go.
-	LockHeld         bool
+	LockHeld bool
+	// nest is true while nest mode gives the focused pane every key, the
+	// leader too. See nest_mode.go.
+	nest             bool
 	HelpScrollOffset int    // Scroll offset for help menu
 	HelpCategory     int    // Current help category index (for left/right navigation)
 	HelpSearchMode   bool   // True when help search is active
@@ -882,6 +887,12 @@ type OS struct {
 	// goroutine, like ExitReason.
 	QuitRequested bool
 
+	// stripSnapGen counts the wheel steps that moved the strip, so a snap
+	// timer fires only for the last one, and stripSnapDir is the way the last
+	// one went. See strip_snap.go.
+	stripSnapGen uint64
+	stripSnapDir int
+
 	// clickReveal is a press that focused a pane, held until the button comes
 	// up so the release can tell a click from the start of a drag. See
 	// ArmClickReveal.
@@ -1076,6 +1087,12 @@ type OS struct {
 	// LearnMode is the guided tour in the browser build: nothing quits, and
 	// what the demo cannot do says so. See learn_mode.go.
 	LearnMode bool
+	// learnSpawn is what the New agent sheet reads in Learn mode. See
+	// learn_cockpit.go.
+	learnSpawn func() LearnSpawnInfo
+	// learnFans are the panes Learn mode starts as the attempts of a fan,
+	// by window. See learn_cockpit.go.
+	learnFans map[string]ckWorktree
 	// OnAction, when set, hears the name of every action the dispatcher runs,
 	// before it runs. The browser build reports it to the page, so a lesson
 	// knows which binding a key reached. Nil everywhere else.
@@ -1083,6 +1100,10 @@ type OS struct {
 	// OnNotification, when set, hears every message shown in the dock, with
 	// its level. The browser build reports it to the page. Nil everywhere else.
 	OnNotification func(message, level string)
+	// learn is what Learn mode reads in place of the disk and git: the fake
+	// shell's files and repository. Nil everywhere else. See
+	// SetLearnBackend.
+	learn LearnBackend
 	// configReadOnlyTold keeps the "this will not be saved" notice to once per
 	// session, since it would otherwise fire on every keypress in the settings
 	// page.
@@ -1759,6 +1780,14 @@ type OS struct {
 	// machine, keyed by host name, kept apart from SidebarOrder so a drag while
 	// attached on build cannot write build's names over this machine's order.
 	SidebarHostSessionOrder map[string][]string
+	// sessionOrderLocal holds, by machine, the build of a daemon that turned
+	// set-session-order down, as a verb it does not know or one a link does
+	// not allow: its rail order stays this client's until that machine runs
+	// another build. sessionOrderPush is, by machine, the
+	// order sent and not answered yet, and the one waiting behind it. See
+	// session_order.go.
+	sessionOrderLocal map[string]string
+	sessionOrderPush  map[string]*sessionOrderPush
 	// SidebarOrder is the user's drag-defined session order, applied over the
 	// daemon's creation-order list (sessions not named here keep their natural
 	// order after the named ones). Persisted in the sidebar state file.

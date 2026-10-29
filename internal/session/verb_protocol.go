@@ -655,7 +655,7 @@ func buildVerbRegistry() map[string]verbEntry {
 				{Name: "changes", Type: "bool", Description: "Run git in the matching worktrees and report the count of uncommitted changes, the commits ahead of base, and whether the branch is merged. Off by default because it runs git.", Default: "false"},
 			},
 			returns: []verbParam{
-				{Name: "worktrees", Type: "[]object", Description: "One entry per worktree session: session, repo, repo_root, branch, path, base, group, managed, gone, state, harness, windows, attached, prompt_status, prompt_note, launched_from (the session whose pane ran the fan, only when a pane did), pr (the branch's pull request as ship-status reports it, only when tuios knows of one), and with changes: changes, ahead, merged, and merged_into. merged is true when the branch has commits of its own and merging it into base, or into the upstream of base, changes nothing. A merge commit, a fast-forward, a rebase and a squash all count. merged_into names the ref, only when merged is true. No fetch is run, so a remote ref is as git last fetched it."},
+				{Name: "worktrees", Type: "[]object", Description: "One entry per worktree session: session, repo, repo_root, branch, path, base, group, main (true when the entry is the repository's main checkout, which no worktree verb acts on), managed, gone, state, harness, windows, attached, prompt_status, prompt_note, launched_from (the session whose pane ran the fan, only when a pane did), pr (the branch's pull request as ship-status reports it, only when tuios knows of one), and with changes: changes, ahead, merged, and merged_into. merged is true when the branch has commits of its own and merging it into base, or into the upstream of base, changes nothing. A merge commit, a fast-forward, a rebase and a squash all count. merged_into names the ref, only when merged is true. No fetch is run, so a remote ref is as git last fetched it."},
 				{Name: "total", Type: "int", Description: "How many entries."},
 			},
 			examples: []string{
@@ -2061,6 +2061,20 @@ func buildVerbRegistry() map[string]verbEntry {
 			},
 			examples: []string{`{"id":1,"verb":"set-workspace-name","params":{"session":"work","workspace":2,"name":"review"}}`},
 			handler:  (*Daemon).verbSetWorkspaceName,
+		},
+		"set-session-order": {
+			description: "Put the sessions in an order. Every client lists them in it: the rail, the session switcher, tuios ls. It survives a daemon restart. A session the list leaves out, and one made later, goes after the named ones in creation order.",
+			params: []verbParam{
+				{Name: "order", Type: "[]string", Required: true, Description: "Session names in their new order. Every name must be a live session, or nothing changes. Repeats are dropped."},
+				{Name: "skip_missing", Type: "bool", Description: "Leave out a name that is no live session, rather than refusing the order. The result lists them as missing."},
+			},
+			returns: []verbParam{
+				{Name: "type", Type: "string", Description: "Always session_order_set."},
+				{Name: "order", Type: "[]string", Description: "Every session's name, in the order the daemon lists them now."},
+				{Name: "missing", Type: "[]string", Description: "With skip_missing, the names that were no live session. Omitted when there were none."},
+			},
+			examples: []string{`{"id":1,"verb":"set-session-order","params":{"order":["work"]}}`},
+			handler:  (*Daemon).verbSetSessionOrder,
 		},
 		"set-workspace-order": {
 			description: "Put the workspaces in an order, renumbering them: a workspace's number is its position. Each workspace takes its panes, name, focus and layout to its new number.",

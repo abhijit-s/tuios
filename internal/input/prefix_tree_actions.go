@@ -5,6 +5,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/Gaurav-Gosain/tuios/internal/app"
+	"github.com/Gaurav-Gosain/tuios/internal/config"
 	"github.com/Gaurav-Gosain/tuios/internal/layout"
 )
 
@@ -53,6 +54,18 @@ func (d *ActionDispatcher) registerPrefixTreeHandlers() {
 	// mode, as a key of its own, for screen's C-a a and a nested tmux.
 	d.Register("send_prefix", func(_ tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
 		forwardKeyToFocusedWindow(o.LeaderKeyPress(), o)
+		return o, nil
+	})
+	// Nest mode: every key to the pane, the leader too, until
+	// keybindings.nest_exit_key. tmux-matryoshka's prefix Enter, for a tmux
+	// or a tuios in the pane with the same leader. Unlike the actions above,
+	// it has a default key: the leader, then enter. See app/nest_mode.go.
+	d.Register("nest", func(_ tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
+		if o.EnterNest() {
+			o.ShowNotification("Nest mode is on. Press "+config.KeyLabel(o.Settings.GetNestExitKey())+" to leave it.", "info", o.Settings.NotificationDuration)
+		} else {
+			o.ShowNotification("Nest mode needs a focused pane.", "info", o.Settings.NotificationDuration)
+		}
 		return o, nil
 	})
 	d.Register("move_workspace_left", func(_ tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {

@@ -120,6 +120,37 @@ shows `LOCK` and `UNLOCK`. When the dock is hidden, or
 `appearance.dock_prefix_indicator` is `"badge"`, the floating badge shows
 `PREFIX` and the open lock while a menu waits for a key.
 
+## Nest mode
+
+Nest mode gives every key to the program in the pane, the leader too, until
+you press one key to end it. It is tmux-matryoshka's prefix `Enter`, for a
+tmux in the pane, or a tuios on another machine, that uses the same leader.
+The `nest` action turns it on. Its default key is the leader, then `enter`,
+in every preset. To put it on a key of its own:
+
+```toml
+[keybindings.terminal_mode]
+nest = ["alt+shift+enter"]
+```
+
+- In terminal mode, every key goes to the focused pane: the leader, the keys
+  tuios binds and the hold key. A nested tmux gets its own `ctrl+b`.
+- `F12` ends nest mode. It does not go to the pane. Set
+  `keybindings.nest_exit_key` to use another key. A key that tuios cannot
+  read goes back to `F12`, so nest mode always has a way out, and a key that
+  programs type, such as a letter or `enter`, is reported in the log viewer.
+- Overlays opened with the mouse, copy mode and the mouse itself do not
+  change. A drag or a resize with the mouse keeps nest mode on.
+- While the sidebar has the keyboard, it takes the keys. Press `esc` to give
+  them back to the pane in nest mode.
+- Nest mode belongs to the client, not to the session. Another client on the
+  same session keeps its keys. It ends when the client leaves terminal mode,
+  and on detach.
+
+The mode pill in the dock shows `NEST F12`, and the focused pane's border
+takes the same colour. When the dock has no mode pill, the floating badge
+shows `NEST F12`.
+
 ## The full list
 
 `tuios keybinds list` shows every action and the keys that run it, as your
@@ -676,6 +707,24 @@ open.
 The action is `pick_path`. `path_picker.show_hidden = true` shows the hidden
 files when the picker opens. The default is `false`.
 
+## Calm mode
+
+`Ctrl+B Z` turns calm mode on and off. Use it to keep your attention on one
+task. While calm mode is on:
+
+- Nothing moves. Window slides, panel fades, the working-agent shimmer and the
+  copy sweep stop. Your `appearance.motion` level does not change.
+- Nothing blinks. The cursor is steady.
+- Messages from panes, agents and mail do not show in the dock. The log keeps
+  them. An agent that needs you still shows its message, and so do warnings
+  and errors.
+- The dock tabs do not mark output on other workspaces. The bell mark stays.
+
+The dock shows `calm` while it is on. `calm 3` means that 3 messages are in
+the log. When you turn calm mode off, tuios tells you how many messages came
+in. The action is `toggle_calm`. To keep calm mode on after a restart, set
+`appearance.calm = true`. See [CONFIGURATION.md](CONFIGURATION.md#calm-mode).
+
 ## Paste an image
 
 `Ctrl+B V` pastes the image on your clipboard into the focused pane. tuios
@@ -713,6 +762,7 @@ tuios reads the image with the clipboard tool of your system:
 | Linux, X11 | `xclip`. `xsel` cannot read an image. |
 | macOS | `osascript`, or `pngpaste` when it is installed |
 | Windows | PowerShell |
+| WSL | `powershell.exe`, which reads the Windows clipboard. WSLg's `wl-paste` and `xclip` see no image copied on Windows. |
 
 The file is a PNG, JPEG, GIF, WebP, BMP or TIFF image of 8 MB or less. Only
 you can read it. tuios deletes it after one hour, or when the daemon stops.

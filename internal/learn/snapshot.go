@@ -30,14 +30,122 @@ const (
 	OverlaySidebar           = "sidebar"
 	OverlayLogs              = "logs"
 	OverlayScreensaver       = "screensaver"
+	OverlayAgents            = "agents"
+	OverlayMail              = "mail"
+	OverlayPresets           = "presets"
+	OverlayGoto              = "goto"
+	OverlayHints             = "hints"
+	OverlaySpotlight         = "spotlight"
+	OverlayScratch           = "scratch"
+	OverlayPaneLabels        = "paneLabels"
+	OverlayPeek              = "peek"
+	OverlayNewAgent          = "newAgent"
+	OverlayCompare           = "compare"
+	OverlayReply             = "reply"
+	OverlayRailFocus         = "railFocus"
+	OverlayFileSearch        = "fileSearch"
+	OverlayReview            = "review"
+	OverlayWorktree          = "worktree"
+	OverlayThemeEditor       = "themeEditor"
+	OverlayGlyphPicker       = "glyphPicker"
 )
 
 // Setting names in the setting event: the looks the settings page changes
-// that a lesson checks.
+// that a lesson checks. The looks in lookPaths are named by their config path.
 const (
 	SettingGlyphs      = "glyphs"
 	SettingBorderStyle = "borderStyle"
 )
+
+// lookPaths are the config options a lesson can check for a change, beyond
+// the glyph set and the border style: the looks the settings page and a look
+// change. Each one is a setting event named by its path when its value moves.
+// Reading one walks the config by reflection, so the list stays short and is
+// read only after input (see Model.looksDue).
+var lookPaths = [...]string{
+	"appearance.window_title_style",
+	"appearance.window_title_position",
+	"appearance.window_title_align",
+	"appearance.border_focused_color",
+	"appearance.border_focused_color_window",
+	"appearance.border_focused_color_terminal",
+	"appearance.border_unfocused_color",
+	"appearance.theme_light",
+	"appearance.frame_panels",
+	"appearance.popup_dim",
+	"appearance.modal_dim",
+	"appearance.gap",
+	"appearance.sidebar.row_style",
+	"appearance.sidebar.header_style",
+	"appearance.dock_pill_caps",
+	"appearance.dock_mode_pill",
+}
+
+// looks holds the value of each of lookPaths, in that order. An array, so a
+// snapshot still compares and copies as a value.
+type looks [len(lookPaths)]string
+
+// readLooks reads lookPaths from the config, each as the value in force: an
+// enum left empty reads as its default, as the settings page shows it.
+func readLooks(cfg *config.UserConfig) looks {
+	var out looks
+	if cfg == nil {
+		return out
+	}
+	for i, path := range lookPaths {
+		opt, _ := config.LookupOption(path)
+		v, _ := config.GetOptionValue(cfg, path)
+		if v == "" && len(opt.Accepted) > 0 {
+			v = opt.Default
+			if v == "" {
+				v = opt.Accepted[0]
+			}
+		}
+		out[i] = v
+	}
+	return out
+}
+
+// keysSnap is the keymap in use: the preset, the leader and lock mode.
+type keysSnap struct {
+	Preset string // "tuios", "tmux", "screen" or "zellij"
+	Leader string // such as "ctrl+b"
+	Lock   bool   // keybindings.lock: every key but the leader goes to the pane
+}
+
+func (k keysSnap) toMap() map[string]any {
+	return map[string]any{"preset": k.Preset, "leader": k.Leader, "lock": k.Lock}
+}
+
+// agentsSnap is the agents view's cursor: the pane of the agent under it and
+// the focus tab, both "" while the view is closed.
+type agentsSnap struct {
+	Selected string
+	Tab      string // "thread", "changes", "checkpoints", "artifacts" or "pane"
+}
+
+func (a agentsSnap) toMap() map[string]any {
+	return map[string]any{"selected": a.Selected, "tab": a.Tab}
+}
+
+// filesSnap is the rail's files section: the folder it lists and the path
+// of the row under the rail's cursor, "" for none.
+type filesSnap struct{ Dir, Cursor string }
+
+func (f filesSnap) toMap() map[string]any {
+	return map[string]any{"dir": f.Dir, "cursor": f.Cursor}
+}
+
+// reviewSnap is the review overlay: the file it shows and the hunk the
+// cursor is in, -1 for none.
+type reviewSnap struct {
+	File string
+	Hunk int
+}
+
+func (r reviewSnap) toMap() map[string]any {
+	return map[string]any{"file": r.File, "hunk": r.Hunk}
+}
 
 // rect is a window's place and size in cells.
 type rect struct{ X, Y, W, H int }
@@ -60,6 +168,10 @@ type windowSnap struct {
 	AgentNote string
 	AgentKind string
 	Harness   string
+	// Kind is "tml" for a window that draws a TML surface, "" for a pane
+	// with a program in it. Popup says the window floats as a popup.
+	Kind  string
+	Popup bool
 }
 
 // Snapshot is the part of the app state a lesson checks steps against. It is
@@ -80,6 +192,17 @@ type Snapshot struct {
 	Windows    []windowSnap // every workspace, in the app's order
 	Glyphs     string       // the glyph set, "default" for the shipped one
 	Border     string       // the border style, such as "rounded"
+	Keys       keysSnap
+	PiP        string // the window picture-in-picture shows, "" for none
+	// Agents is the agents view's cursor while it is open.
+	Agents agentsSnap
+	Files  filesSnap
+	Review reviewSnap // zero while the review is closed
+	// Looks is the value of each of lookPaths. take leaves it empty: the
+	// Model fills it, after input only. See Model.looksDue.
+	Looks looks
+	// ThemeEdited is true while the theme editor holds a change not saved.
+	ThemeEdited bool
 	// Moving is true while an animation is running, when window rects are
 	// still on their way. Moves are reported once it is false again.
 	Moving bool
@@ -100,6 +223,12 @@ func take(o *app.OS) Snapshot {
 		Glyphs:    o.Settings.GlyphSet,
 		Border:    o.Settings.BorderStyle,
 		Moving:    len(o.Animations) > 0,
+		Keys:      keysSnap{Preset: config.PresetTuios, Leader: o.Settings.LeaderKey, Lock: o.Settings.Lock},
+		PiP:       o.PiPWindowID(),
+	}
+	s.Agents.Selected, s.Agents.Tab = o.CockpitSelection()
+	if o.UserConfig != nil && o.UserConfig.Keybindings.Preset != "" {
+		s.Keys.Preset = o.UserConfig.Keybindings.Preset
 	}
 	if s.Glyphs == "" {
 		s.Glyphs = "default"
@@ -144,6 +273,29 @@ func take(o *app.OS) Snapshot {
 	ov[OverlayLogs] = o.ShowLogs
 	ov[OverlayScrollback] = o.ShowScrollbackBrowser
 	ov[OverlayScreensaver] = o.ScreensaverActive()
+	ov[OverlayAgents] = o.ShowInbox
+	ov[OverlayMail] = o.ShowAgentMail
+	ov[OverlayPresets] = o.PresetPickerOpen()
+	ov[OverlayGoto] = o.GotoPickerOpen()
+	ov[OverlayHints] = o.HintsOpen()
+	ov[OverlaySpotlight] = o.SpotlightOn()
+	ov[OverlayScratch] = o.InScratchView()
+	ov[OverlayPaneLabels] = o.PaneLabelsOpen()
+	ov[OverlayPeek] = o.ShowInbox && o.InboxPeeking()
+	ov[OverlayNewAgent] = o.CockpitSpawnOpen()
+	ov[OverlayCompare] = o.CockpitCompareOpen()
+	ov[OverlayReply] = o.CockpitReplyOpen()
+	ov[OverlayRailFocus] = o.SidebarActive() && o.SidebarFocused
+	ov[OverlayFileSearch] = o.FileSearchOpen()
+	ov[OverlayWorktree] = o.WorktreePromptOpen()
+	if open, file, hunk := o.LearnReview(); open {
+		ov[OverlayReview] = true
+		s.Review = reviewSnap{File: file, Hunk: hunk}
+	}
+	s.Files.Dir, s.Files.Cursor = o.LearnFiles()
+	ov[OverlayThemeEditor] = o.ThemeEditorOpen()
+	ov[OverlayGlyphPicker] = o.ShowGlyphPicker
+	s.ThemeEdited = o.ThemeEditorDirty()
 	if b, ok := o.ScrollbackBrowser.(*scrollback.Browser); ok && o.ShowScrollbackBrowser && b != nil && b.SearchActive {
 		ov[OverlaySearch] = true
 	}
@@ -168,6 +320,7 @@ func take(o *app.OS) Snapshot {
 			X: w.X, Y: w.Y, W: w.Width, H: w.Height,
 			Minimized: w.Minimized, Zoomed: w.Zoomed, Floating: w.IsFloating,
 			Agent: w.AgentState, AgentNote: w.AgentMessage, AgentKind: w.AgentKind, Harness: w.AgentHarness,
+			Kind: w.Kind, Popup: w.IsPopup,
 		})
 	}
 	return s
@@ -216,6 +369,8 @@ func (s Snapshot) ToMap() map[string]any {
 			"x": w.X, "y": w.Y, "width": w.W, "height": w.H,
 			"minimized": w.Minimized, "zoomed": w.Zoomed, "floating": w.Floating,
 			"agent": w.Agent, "agentMessage": w.AgentNote,
+			"agentKind": w.AgentKind, "harness": w.Harness,
+			"kind": w.Kind, "popup": w.Popup,
 		})
 	}
 	var usedList []any
@@ -243,9 +398,22 @@ func (s Snapshot) ToMap() map[string]any {
 		"tape":           s.Tape,
 		"glyphs":         s.Glyphs,
 		"borderStyle":    s.Border,
+		"keys":           s.Keys.toMap(),
+		"pip":            s.PiP,
+		"agentsView":     s.Agents.toMap(),
+		"files":          s.Files.toMap(),
+		"review":         s.reviewMap(),
 		"cols":           s.Cols,
 		"rows":           s.Rows,
 	}
+}
+
+// reviewMap is the review in the state: nil while it is closed.
+func (s Snapshot) reviewMap() any {
+	if !s.Overlays[OverlayReview] {
+		return nil
+	}
+	return s.Review.toMap()
 }
 
 // diff lists the events that take prev to now, in a fixed order.
@@ -292,6 +460,9 @@ func diff(prev, now Snapshot) []Event {
 		if p.Floating != w.Floating {
 			add(EventWindowFloat, w.ID, map[string]any{"id": w.ID, "floating": w.Floating})
 		}
+		if p.Workspace != w.Workspace {
+			add(EventWindowWorkspace, w.ID, map[string]any{"id": w.ID, "from": p.Workspace, "to": w.Workspace})
+		}
 		if p.Agent != w.Agent {
 			add(EventAgent, w.ID, map[string]any{
 				"id": w.ID, "from": p.Agent, "to": w.Agent,
@@ -317,6 +488,38 @@ func diff(prev, now Snapshot) []Event {
 	}
 	if prev.Border != now.Border {
 		add(EventSetting, "", map[string]any{"name": SettingBorderStyle, "from": prev.Border, "to": now.Border})
+	}
+	for i, path := range lookPaths {
+		if prev.Looks[i] != now.Looks[i] {
+			add(EventSetting, "", map[string]any{"name": path, "from": prev.Looks[i], "to": now.Looks[i]})
+		}
+	}
+	if prev.ThemeEdited != now.ThemeEdited {
+		add(EventThemeEdit, "", map[string]any{"changed": now.ThemeEdited})
+	}
+	if prev.Keys != now.Keys {
+		add(EventKeys, "", map[string]any{"from": prev.Keys.toMap(), "to": now.Keys.toMap()})
+	}
+	if prev.PiP != now.PiP {
+		add(EventPiP, now.PiP, map[string]any{"from": prev.PiP, "to": now.PiP})
+	}
+	if prev.Agents.Selected != now.Agents.Selected {
+		w, _ := now.window(now.Agents.Selected)
+		add(EventAgentsSelect, now.Agents.Selected, map[string]any{
+			"from": prev.Agents.Selected, "to": now.Agents.Selected,
+			"title": w.Title, "agent": w.Agent, "kind": w.AgentKind, "harness": w.Harness,
+		})
+	}
+	if prev.Agents.Tab != now.Agents.Tab {
+		add(EventAgentsTab, "", map[string]any{"from": prev.Agents.Tab, "to": now.Agents.Tab})
+	}
+	if prev.Files != now.Files {
+		add(EventFiles, "", map[string]any{"from": prev.Files.toMap(), "to": now.Files.toMap()})
+	}
+	if prev.Overlays[OverlayReview] && now.Overlays[OverlayReview] && prev.Review != now.Review {
+		data := now.Review.toMap()
+		data["from"] = prev.Review.toMap()
+		add(EventReviewMove, "", data)
 	}
 
 	names := make([]string, 0, len(now.Overlays))

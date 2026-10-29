@@ -140,6 +140,15 @@ func HandleInput(msg tea.Msg, o *app.OS) (tea.Model, tea.Cmd) {
 		} else {
 			result, cmd = handleMouseWheel(msg, o)
 		}
+	case app.StripTouchMsg:
+		// A finger's drag on tuios-web moves the strip out from under the
+		// labels, as a wheel does.
+		o.CloseHints()
+		o.ClosePaneLabels()
+		if o.ReviewOpen() || o.ScreenshotPreviewOpen() || o.ShowScrollbackBrowser {
+			return o, nil
+		}
+		result, cmd = handleStripTouch(msg, o)
 	case tea.PasteMsg:
 		// Incoming bracketed paste from the outer terminal (ESC[200~ ... ESC[201~).
 		// This is passthrough input, not a clipboard operation: the outer terminal
@@ -585,23 +594,32 @@ func routeKey(msg tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
 	// bindings never fire underneath it. Checked after the modal overlays above,
 	// which outrank it, and before the mode split, which it supersedes.
 	//
-	// The leader is the one exception, and a pending chord with it. The rail
+	// The leader is one exception, and a pending chord with it. The rail
 	// swallows what it does not bind, so holding the leader here would strand
 	// every prefix command behind an esc, and ctrl+b e (which toggles the rail's
 	// focus) could never toggle it back off. Both are left to fall through to the
 	// mode handlers below, which already route the whole chord; PrefixActive
 	// stays set for sub-prefixes too, so ctrl+b w 2 works from the rail as well.
-	// The help overlay and the command palette are the other exceptions, for the
-	// same reason as the modals above: the rail's own keys open both, and the rail
-	// swallows what it does not bind, so leaving it in front would strand the
-	// overlay's scroll, search and close keys (and every character of a palette
-	// query) behind an esc that also drops the rail's focus.
-	// The mailbox is the third exception, for the same reason: the rail opens
-	// it, and a reply typed into it must reach it and not the rail.
-	// The Inbox is the fourth: a prefix chord opens it over the rail, and
-	// its keys must reach it.
-	// The message view and the log viewer are the last two: ctrl+b N opens the
-	// view over the rail, and its scroll and close keys must reach it.
+	//
+	// An open panel is the other: the help, the palette, the navigator, the
+	// Inbox, settings and every other overlay. The rail or a prefix chord opens
+	// it over the rail, and the rail swallows what it does not bind, so left in
+	// front it would keep the panel's keys and move its own cursor behind the
+	// panel. The panel takes the keys in the mode handlers below, and the rail
+	// has them again when it closes, since its focus is left as it was.
+	//
+	// In nest mode the rail pane gets every key, the leader too, all but the
+	// exit key. It is handled here, ahead of the terminal handler, whose copy
+	// mode check belongs to the centre pane and would take the rail pane's
+	// keys. See app/nest_mode.go.
+	if o.SidebarSessionFocused() && !o.AnyOverlayOpen() && o.Nested() {
+		if isNestExitKey(msg, &o.Settings, o.HostBaseCode(msg)) {
+			o.LeaveNest()
+			return o, nil
+		}
+		typeIntoRailPane(msg, o)
+		return o, nil
+	}
 	if o.SidebarSessionFocused() && !o.AnyOverlayOpen() {
 		if msg.String() == "alt+esc" {
 			o.BlurSidebarSession()
@@ -617,8 +635,7 @@ func routeKey(msg tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
 			return o, nil
 		}
 	}
-	if o.SidebarFocused && !o.ShowHelp && !o.ShowCommandPalette && !o.ShowAgentMail && !o.ShowInbox &&
-		!o.MessageViewOpen() && !o.ShowLogs && !o.PrefixActive && !isLeaderKey(msg, &o.Settings, o.HostBaseCode(msg)) {
+	if o.SidebarFocused && !o.PanelOwnsKeyboard() && !o.PrefixActive && !isLeaderKey(msg, &o.Settings, o.HostBaseCode(msg)) {
 		return HandleSidebarKey(msg, o)
 	}
 
@@ -802,17 +819,32 @@ func handleRenameMode(msg tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
 // composedChords and optionGlyphsApply). The input path has already taken the
 // base-layout key off msg, so base hands it back; zero when there is none.
 func isLeaderKey(msg tea.KeyPressMsg, s *config.Settings, base rune) bool {
-	if config.IsLeaderPress(producedKey(msg).String(), s.LeaderKey) {
+	return isConfiguredKey(msg, s, base, func(key string) bool { return config.IsLeaderPress(key, s.LeaderKey) })
+}
+
+// isNestExitKey reports whether msg is keybindings.nest_exit_key, matched the
+// way the leader is, so an alt+x exit key still ends nest mode on a non-US
+// layout or with Option composing on macOS.
+func isNestExitKey(msg tea.KeyPressMsg, s *config.Settings, base rune) bool {
+	exit := s.GetNestExitKey()
+	return isConfiguredKey(msg, s, base, func(key string) bool { return config.IsKeyPress(key, exit) })
+}
+
+// isConfiguredKey is isLeaderKey's matching for any one key from the config:
+// the key produced, then the base-layout key, then the characters Option
+// composes. is reports whether a canonical key string is that key.
+func isConfiguredKey(msg tea.KeyPressMsg, s *config.Settings, base rune, is func(string) bool) bool {
+	if is(producedKey(msg).String()) {
 		return true
 	}
-	if pos, ok := baseLayoutKey(msg); ok && config.IsLeaderPress(pos, s.LeaderKey) {
+	if pos, ok := baseLayoutKey(msg); ok && is(pos) {
 		return true
 	}
 	if base == 0 {
 		base = msg.BaseCode
 	}
 	for _, chord := range composedChords(msg, base) {
-		if config.IsLeaderPress(chord, s.LeaderKey) {
+		if is(chord) {
 			return optionGlyphsApply(msg, s.KeyboardLayout, s.OptionGlyphs)
 		}
 	}

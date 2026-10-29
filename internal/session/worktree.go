@@ -24,6 +24,12 @@ import (
 // and it is copied onto SessionInfo for the listing.
 type WorktreeInfo struct {
 	worktree.Info
+	// Main says the record names the repository's main checkout — the
+	// directory holding the shared .git — which Detect alone does not report.
+	// A main-checkout record reaches the tree the same way a worktree's does,
+	// and every surface that has not opted into it (the rail's group_main)
+	// treats it as no record at all.
+	Main bool `json:"main,omitempty"`
 	// Base is the ref the branch was created from, when tuios created it.
 	Base string `json:"base,omitempty"`
 	// StartCommit is the commit the branch was at when tuios made the
@@ -261,15 +267,15 @@ func (s *Session) refreshWorktree(cwd string) {
 	if cwd == "" {
 		return
 	}
-	detected, ok := worktree.Detect(cwd)
+	detected, main, ok := worktree.DetectEither(cwd)
 	switch {
 	case !ok && current == nil:
 		return
 	case !ok:
 		_ = s.SetWorktree(nil)
-	case current != nil && current.Info == detected:
+	case current != nil && current.Info == detected && current.Main == main:
 		return
 	default:
-		_ = s.SetWorktree(&WorktreeInfo{Info: detected})
+		_ = s.SetWorktree(&WorktreeInfo{Info: detected, Main: main})
 	}
 }

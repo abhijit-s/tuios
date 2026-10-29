@@ -591,6 +591,17 @@ On screen, a space appears only once a session is in one. By default the rail's 
 
 Which session of a space a switch lands on is chosen by the daemon alone: `switch-space` moves a client there, and `pick-space` names the session without moving anything. A client chooses only the space, asks `pick-space` on the daemon that holds its session (the far machine's, for a session attached on a host), and switches itself, so with several clients attached only the one that asked moves. A daemon from before `pick-space` refuses it as an unknown verb, and a client attached to one does not switch spaces at all rather than guess the session.
 
+The order of the sessions is the daemon's, not each client's. A session moved
+up or down on the sidebar, by key or by drag, or put in place with
+[`tuios set-session-order`](CLI_REFERENCE.md#tuios-set-session-order), moves on
+every client's sidebar at once, a phone's over SSH too, and in `tuios ls`. The
+order is in each session's state file as `rank`, and a restore puts it back. A
+saved session restored after the order was set again comes back after the
+placed sessions, since a live session may hold its old place. With a daemon
+from before the order, each client keeps its own, as before. A client from
+before the order keeps its own too, and does not change the daemon's: a new
+client ignores the order an older one saved.
+
 When the daemon starts, it restores every session it finds saved state for. For
 each window it spawns a **fresh shell** in that window's saved working directory
 (falling back to the shell's default directory if the saved path no longer

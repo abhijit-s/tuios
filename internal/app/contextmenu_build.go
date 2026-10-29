@@ -394,7 +394,7 @@ func (m *OS) sessionMenu(sessionID string) (string, []ContextMenuItem) {
 	if attached {
 		killNext := m.item(glyphClose, "Kill session, go to next", "kill_session_next", !hasOthers)
 		killQuitAction := "kill_session_quit"
-		if m.sessionWorktreeInfo(m.SessionName) != nil {
+		if m.sessionDeletableWorktree(m.SessionName) != nil {
 			killQuitAction = "prefix_close_session"
 		}
 		killQuit := m.item(glyphClose, "Kill session and quit", killQuitAction, false)
@@ -447,20 +447,29 @@ func (m *OS) sessionMenu(sessionID string) (string, []ContextMenuItem) {
 // row that names the repository, which is exactly where a person looks for
 // "make another worktree of this one".
 //
-// The header's left-click folds and unfolds the group, which the rail draws a
-// mark for and every other group header does from its own menu; this menu's
-// one row is the one thing the header offers that no click on it suggests.
-// What the menu is about rides in ContextMenu.Repo; see TakeMenuRepo.
+// With group_main off, the header's left-click folds and unfolds the group.
+// With it on, activation opens the main checkout and folding lives in this
+// menu alongside the repository-wide New worktree action. What the menu is
+// about rides in ContextMenu.Repo; see TakeMenuRepo.
 func (m *OS) repoHeaderMenu(repo string) (string, []ContextMenuItem) {
 	title := printableTitle(repo)
 	if title == "" {
 		title = "Repository"
+	}
+	// The header's plain activation goes to the main checkout's session once
+	// group_main gathers it in, so the fold gesture lives here instead.
+	fold := "Fold group"
+	icon := glyphUp
+	if m.SidebarRepoCollapsed(repo) {
+		fold = "Unfold group"
+		icon = glyphDown
 	}
 	return title, []ContextMenuItem{
 		// Live only while some cached session names the repository, which for a
 		// header on screen is every moment but the one where the listing changed
 		// since it was drawn.
 		m.item(glyphNew, "New worktree...", "repo_new_worktree", m.worktreeRepoRoot(repo) == ""),
+		m.item(icon, fold, "repo_toggle_fold", false),
 	}
 }
 

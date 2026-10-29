@@ -126,7 +126,12 @@ func (m *OS) BeginWorktreePromptForFocusedPane() {
 		m.ShowNotification("This pane is on another machine. Run tuios worktree new on that machine.", "info", m.Settings.NotificationDuration)
 		return
 	}
-	root := repoRootOf(m.paneDir(w))
+	var root string
+	if m.learnFiles() {
+		root = m.learn.RepoRoot(m.paneDir(w))
+	} else {
+		root = repoRootOf(m.paneDir(w))
+	}
 	if root == "" {
 		m.ShowNotification("This pane is not in a git repository.", "info", m.Settings.NotificationDuration)
 		return
@@ -166,7 +171,29 @@ func (m *OS) sessionWorktreeInfo(name string) *session.WorktreeInfo {
 	if m.DaemonClient == nil || name == "" {
 		return nil
 	}
-	return m.DaemonClient.SessionWorktree(name)
+	info := m.DaemonClient.SessionWorktree(name)
+	// A main-checkout record is a record only for a rail that has opted into
+	// it (group_main). With the option off, every surface here reads it as no
+	// record, which is what they saw before main checkouts were detected at
+	// all; without this, the quit menu and the close dialog would grow rows
+	// that offer to delete the repository's own working tree.
+	if info != nil && info.Main && !m.Settings.SidebarGroupMain {
+		return nil
+	}
+	return info
+}
+
+// sessionDeletableWorktree is the worktree record a delete-worktree surface
+// may act on: a linked worktree, never the repository's main checkout, which
+// the daemon's remove-worktree refuses. The quit menu, the close dialog and
+// the session menu read this, so they offer the delete row only where it can
+// run.
+func (m *OS) sessionDeletableWorktree(name string) *session.WorktreeInfo {
+	info := m.sessionWorktreeInfo(name)
+	if info == nil || info.Main {
+		return nil
+	}
+	return info
 }
 
 // worktreeRepoRoot finds the main checkout a repository's group header stands
@@ -286,6 +313,10 @@ func (m *OS) WorktreePromptSubmit() tea.Cmd {
 	}
 	repoRoot := m.worktreePrompt.RepoRoot
 	m.WorktreePromptCancel()
+	if m.learnFiles() {
+		m.learnNewWorktree(repoRoot, branch)
+		return nil
+	}
 	// Acknowledge the hand-off at once: the dialog is closed, and checking out
 	// a large repository can take a while, so without this the enter reads as
 	// lost until the worktreeCreatedMsg comes back.

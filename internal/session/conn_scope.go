@@ -280,6 +280,7 @@ var verbScopes = map[string]scopeKind{
 	"remove-space":         scopeDeny,
 	"kill-space":           scopeDeny,
 	"switch-space":         scopeDeny,
+	"set-session-order":    scopeDeny,
 	"set-workspace-name":   scopeDeny,
 	"set-workspace-order":  scopeDeny,
 	"compact-workspaces":   scopeDeny,

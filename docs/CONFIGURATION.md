@@ -233,6 +233,22 @@ lock = true
 
 See [Lock mode](KEYBINDINGS.md#lock-mode).
 
+## Nest mode
+
+```toml
+[keybindings]
+nest_exit_key = "f12"
+
+[keybindings.prefix_mode]
+nest = ["enter"]
+```
+
+| Key | Default | What it does |
+|---|---|---|
+| `nest_exit_key` | `"f12"` | The key that ends nest mode. A key that cannot be read goes back to `"f12"`, and a key programs type is reported as a problem. The `nest` action (the leader, then `enter`) turns nest mode on: every key goes to the pane, the leader too, until this key. |
+
+See [Nest mode](KEYBINDINGS.md#nest-mode).
+
 ## Opening links
 
 tuios finds two kinds of link in a pane. An OSC 8 hyperlink is a link that a
@@ -451,6 +467,21 @@ animation_speed = 200   # a number from 25 to 400
 A value outside 25 to 400 moves to the nearest end. `appearance.motion = "none"`
 still turns the animations off, whatever the speed. Overlay fades and the copy
 sweep keep their own timing. The copy sweep uses `appearance.selection.flash_ms`.
+
+## Calm mode
+
+`appearance.calm` turns calm mode on. Nothing moves or blinks, and only the
+messages that need you show in the dock. `Ctrl+B Z` (`toggle_calm`) turns it
+on and off and saves the choice here.
+
+```toml
+[appearance]
+calm = true   # default: false
+```
+
+Calm mode sits over `appearance.motion`. When you turn calm mode off, the
+motion level you set comes back. See
+[KEYBINDINGS.md](KEYBINDINGS.md#calm-mode) for what calm mode changes.
 
 ## Theme transition
 
@@ -1710,6 +1741,31 @@ as the files section: the folder that the shell in the pane is in. Press
 folder, and `Enter` to type the path. See
 [KEYBINDINGS.md](KEYBINDINGS.md#pick-a-path).
 
+## The main checkout in the sessions tree
+
+`appearance.sidebar.group_main` gathers the repository's main checkout under
+the repo row with its worktrees. The main checkout is the session whose
+directory is the repository itself, usually on `main` or `master`. The option
+is `false` by default,
+which leaves the main checkout's sessions flat in the list and groups only
+the worktrees split off the repository.
+
+```toml
+[appearance.sidebar]
+group_main = true
+```
+
+With it on, a session in the main checkout is one of the group's children,
+labelled by its branch like the rest, and the repo header points at it:
+`enter` or a click on the header opens the main checkout's session instead of
+folding the group, and opens the group first when it was folded. The fold
+gesture stays on the header's right-click menu, as `Fold group` and
+`Unfold group`. The option is on the settings page, in the Sidebar section.
+
+Independent of the option, the daemon now records the main checkout the way
+it records a worktree, so `tuios worktree ls` and the worktree verbs see it
+alongside the worktrees it was split into.
+
 ## The files section style
 
 `appearance.sidebar.files_style` sets how the rail's files section shows a
@@ -2526,6 +2582,42 @@ what you copied, so a pane needs `read` to read them, `write` to change them,
 and both to paste one.
 [AGENT_STATE.md](AGENT_STATE.md#what-a-pane-may-do) has the whole model.
 
+## SSH server limits
+
+The `[ssh]` section sets the limits of the `tuios ssh` server. The server reads
+it when it starts. The defaults do not stop a normal login.
+
+```toml
+[ssh]
+handshake_timeout = "120s" # time to finish the login; 0 turns the limit off
+idle_timeout = "0"         # close a connection with no traffic for this long; 0 is off
+max_handshakes = 32        # connections that log in at the same time; 0 is no limit
+max_sessions = 64          # sessions open at the same time; 0 is no limit
+```
+
+- `handshake_timeout`: The server closes a connection that does not log in
+  within this time. It is the same as `LoginGraceTime` in OpenSSH. The limit
+  ends when the login is complete, so it does not close a session that you
+  use.
+- `idle_timeout`: The server closes a connection after this time with no
+  traffic in either direction. It is off by default. A session that shows a
+  clock or other output that changes stays open.
+- `max_handshakes`: When this many connections are logging in, the server
+  closes a new connection at once. A connection that is logged in does not
+  count.
+- `max_sessions`: When this many sessions are open, over all connections, the
+  server refuses a new session. The client sees a message. The refused session
+  does not attach to a session and does not open a pane.
+
+A duration is a value such as `90s`, `30m` or `2h`. A value that does not
+parse, or a negative value, gives a warning and the default.
+`tuios ssh --handshake-timeout`, `--idle-timeout`, `--max-handshakes` and
+`--max-sessions` replace these values for one run. The server writes the limits
+it uses to its log when it starts.
+
+Like `[hosts]`, the section is not in `list-options`, and `tuios set-config`
+cannot change it.
+
 ## What another machine may do here
 
 A `[hosts.NAME]` table names a machine this one links to. Read on the machine
@@ -2584,6 +2676,11 @@ write outside the roots is refused, and the refusal says where writes may land
 and which setting to change. A reload that widens `files_roots`, like one that
 widens `allow`, waits for `tuios config apply`.
 
+**The mode of a file a link writes.** A file that another machine writes here
+gets the sender's permission bits under this machine's umask, as `cp` and
+`scp` without `-p` do. It never gets group or world write. The execute bits
+stay, so a script stays runnable. This holds for a paired device too.
+
 **Where a link may read: `files_read_roots`.** Unset, a machine with `files`
 reads any file you can read, apart from the read deny list: keys, credentials,
 shell start files, `~/.gitconfig`, keyrings, shell histories, browser profiles,
@@ -2611,13 +2708,22 @@ whole number with `B`, `KB`, `MB`, `GB`, `TB`, `KiB`, `MiB`, `GiB` or `TiB`.
 `tuios config apply`. A write that does not fit is refused as
 `disk_full` before a byte moves. One machine may have at most 8 write streams
 and 64 unfinished part files here at once. Past that, a write is `busy`, and
-a copy waits and tries again. The drop folder holds at most 256 MiB for all
+a copy waits and tries again.
+
+A machine may also make at most `files_max_entries` new files and folders
+here in ten minutes: 20,000 unless you set it. An empty file uses no bytes,
+so `files_min_free` does not stop a machine from making millions of them.
+Past the bound, a new file or folder is `busy`, and a copy waits and goes on.
+The count goes down evenly over the ten minutes. A folder copy of 20,000 files
+lands at full speed, and a larger one goes on at about 33 files a second.
+`0` turns the bound off. A reload that raises it waits for `tuios config apply`. The drop folder holds at most 256 MiB for all
 drops together, and a machine writes there only inside a drop that
 `file-drop-dir` made.
 
 ```toml
 [hosts."*"]
 files_min_free = "5GiB"
+files_max_entries = 50000
 ```
 
 A copy that another machine starts here with `transfer-start` or `drop-files`

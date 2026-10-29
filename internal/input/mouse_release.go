@@ -76,8 +76,9 @@ func handleMouseRelease(msg tea.MouseReleaseMsg, o *app.OS) (*app.OS, tea.Cmd) {
 	if o.SidebarDragActive() {
 		mouse := msg.Mouse()
 		o.SidebarRelease(mouse.X, mouse.Y)
-		// A drop on another space's group files the session through the
-		// daemon, which is a command the release leaves on the model.
+		// A drag that moved a session sends the new order to the daemon, and a
+		// drop on another space's group also files the session there. Both
+		// are commands the release leaves on the model.
 		return o, o.TakeSidebarCmd()
 	}
 	if o.SidebarSplitActive() {

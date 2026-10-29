@@ -567,6 +567,9 @@ func (d *Daemon) verbFileMkdir(cs *connState, params json.RawMessage) (any, *ver
 		return nil, verr
 	}
 	defer fsys.Close()
+	if verr := d.claimLinkDirs(cs, fsys, fsys.confineDir(path)); verr != nil {
+		return nil, verr
+	}
 	if err := fsys.MkdirAll(fsys.confineDir(path), 0o755); err != nil {
 		return nil, fileError("make the folder", path, err)
 	}
@@ -1021,7 +1024,7 @@ func commitPart(ctx context.Context, fsys fileFS, path, partID, want, conflict s
 		}
 	}
 	if perm != 0 {
-		_ = fsys.Chmod(part, os.FileMode(perm&0o777))
+		_ = fsys.Chmod(part, fsys.commitMode(perm))
 	}
 	if mtime > 0 {
 		t := time.UnixMilli(mtime)
