@@ -52,7 +52,7 @@ const (
 )
 
 // ErrHandoffUnsupported is a platform with no live handoff.
-var ErrHandoffUnsupported = errors.New("live upgrade is not supported on this platform. 'tuios kill-server' restarts the daemon, which ends running programs")
+var ErrHandoffUnsupported = errors.New("live upgrade is not supported on this platform. To run another tuios, use 'tuios restart-server'. It stops every program in every pane, and lists them before it asks")
 
 var (
 	errHandoffBusy     = errors.New("a live upgrade is already running")
@@ -282,8 +282,9 @@ func (r *handoffRun) prepare() error {
 	r.undo = append(r.undo, d.manager.paneLife.Unlock)
 	// A pane started between the two is in now, and its gate shuts too.
 	shutAll()
-	// Asked again with no pane able to start: a check or a popup that
-	// started after the first answer holds a pipe by now.
+	// Asked again with no pane able to start: a check or a popup takes its
+	// pipe hold before it waits on paneLife, so one asked for after the first
+	// answer holds a pipe by now.
 	if err := d.handoffRefusal(); err != nil {
 		return err
 	}
