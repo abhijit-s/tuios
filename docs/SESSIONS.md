@@ -584,14 +584,14 @@ The daemon refuses an upgrade while it holds something it cannot hand over: a pa
 
 Run from inside a pane, the upgrade asks you first. The binary named runs as the daemon, which holds every pane's terminal, so a pane does not get one by asking. Every attached client shows a dialog with the binary's full path, its version and the pane that asked. No is the default, and only a key you press at a client answers it: bytes a pane writes, a paste, keys sent with `tuios send-keys` or a tape, and a key on another machine do not. The first answer counts and closes the dialog on the other clients. No, Esc, a minute without an answer, or no client attached refuses the upgrade, and nothing changes. A plugin is refused without a dialog, and an upgrade from a terminal outside tuios needs none. The dialog rides the Inbox, so with `[agents] enabled = false` a pane's upgrade is refused.
 
-`--or-restart` is for scripts that install a tuios and want the daemon on it in any case: when the daemon cannot be upgraded live, the command says why and restarts it with the binary instead, which ends the programs. With no daemon running it starts one. A daemon that went back to its old binary is not restarted, since its programs still run. The paths that install tuios use it:
+`--or-restart` is for scripts that install a tuios and want the daemon on it in any case: when the daemon cannot be upgraded live, the command says why and restarts it with the binary instead, which ends the programs. With no daemon running it starts one. A daemon that went back to its old binary is not restarted, since its programs still run. Nor is one that refused because the command runs in one of its panes and no Yes came in the dialog, since a restart would end that pane. The paths that install tuios use it:
 
 | Path | What it does with a running daemon |
 |------|-----------------------------------|
-| `tuios hosts sync --restart` | Upgrades each old daemon live, on its own host, and restarts the ones that cannot be. Run from a pane of this machine's daemon, `--local` installs and leaves that daemon, which refuses an upgrade from its own panes. See [Keeping Hosts on One Version](#keeping-hosts-on-one-version) |
-| `scripts/install.sh --upgrade-server` | Upgrades the default server's daemon live, or leaves it on the previous build and says why. Its prompt offers the same as `u`. `--kill-server` stops the daemon |
+| `tuios hosts sync --restart` | Upgrades each old daemon live, on its own host, and restarts the ones that cannot be. Run from a pane of this machine's daemon, `--local` upgrades it live only after your Yes in the tuios dialog, and otherwise leaves it on the old version. It never restarts it. See [Keeping Hosts on One Version](#keeping-hosts-on-one-version) |
+| `scripts/install.sh --upgrade-server` | Upgrades the default server's daemon live, or leaves it on the previous build and says why. From one of its panes, the upgrade waits for your Yes in the tuios dialog. Its prompt offers the same as `u`. `--kill-server` stops the daemon |
 | `tuios update` | Leaves the daemon, and prints `tuios daemon upgrade`, then `tuios kill-server` for when it cannot be upgraded live |
-| `just restart` (in a checkout) | `tuios daemon upgrade --binary <tuios on PATH> --or-restart` |
+| `just restart` (in a checkout) | `tuios daemon upgrade --binary <tuios on PATH> --or-restart`. From a pane of the daemon it drops `--or-restart`: it upgrades live after your Yes in the tuios dialog, and otherwise leaves the daemon on the old version |
 
 The command, its output and everything it keeps and ends are in [CLI_REFERENCE.md](CLI_REFERENCE.md#tuios-daemon-upgrade). The design is in [design/live-handoff.md](design/live-handoff.md).
 
