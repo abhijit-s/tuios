@@ -125,7 +125,7 @@ func dialogShows(screen, s string) bool {
 	if start < 0 {
 		return false
 	}
-	end := strings.Index(all[start:], squash("Choose with the arrow keys"))
+	end := strings.Index(all[start:], squash("Down or Tab moves to Yes"))
 	if end < 0 {
 		return false
 	}
@@ -167,7 +167,7 @@ func TestPaneUpgradeConfirmedAtTheClient(t *testing.T) {
 	shows := map[string]bool{
 		"path":    dialogShows(screen, r.second),
 		"version": dialogShows(screen, "version "+r.img.Version),
-		"pane":    dialogShows(screen, "agent asks"),
+		"pane":    dialogShows(screen, "agent (pane "+r.agent[:min(8, len(r.agent))]+" in session "+r.sess+") asks"),
 	}
 	pressUpgradeKeys(t, term, keyDown, keyEnter)
 	code, took := done()
@@ -189,8 +189,9 @@ func TestPaneUpgradeConfirmedAtTheClient(t *testing.T) {
 	}
 }
 
-// TestPaneUpgradeRefusedWithoutYes: Enter on the default row, Esc, and
-// Enter after moving to Yes and back to No each refuse the pane's upgrade
+// TestPaneUpgradeRefusedWithoutYes: Enter on the default row, Esc, Enter
+// after moving to Yes and back to No, and Up then Enter (a shell's "run
+// that again", which a toggle would have turned into Yes) each refuse the pane's upgrade
 // with the refusal for the person, close the dialog, and leave the daemon as
 // it was.
 func TestPaneUpgradeRefusedWithoutYes(t *testing.T) {
@@ -204,6 +205,7 @@ func TestPaneUpgradeRefusedWithoutYes(t *testing.T) {
 		{"default", []string{keyEnter}},
 		{"esc", []string{keyEsc}},
 		{"no", []string{keyDown, keyUp, keyEnter}},
+		{"up", []string{keyUp, keyEnter}},
 	} {
 		done := r.paneUpgrade(t)
 		r.waitDialog(t, term, tc.name)
@@ -211,10 +213,54 @@ func TestPaneUpgradeRefusedWithoutYes(t *testing.T) {
 		code, _ := done()
 		waitNoDialog(t, term, tc.name)
 		r.unchanged(t, tc.name)
-		r.refused(t, code, tc.name)
+		lines := r.refused(t, code, tc.name)
+		if said := strings.Join(strings.Fields(strings.Join(lines, "")), ""); !strings.Contains(said, "ThepersonansweredNo") {
+			t.Errorf("ASSERTION: the refusal after %s does not say the person answered No:\n%s", tc.name, strings.Join(lines, "\n"))
+		}
 		results[tc.name] = code
 	}
 	writeHandoffArtifact(t, map[string]any{"exits": results, "image": r.img, "screen": mustScrollback(t, r.base, r.sess, r.agent)})
+}
+
+// TestPaneUpgradeRefusesAFileChangedAfterTheDialog: while the dialog shows
+// the copy, its last byte is written over in place with the same byte and
+// its modification time set back, so the path, the inode, the size and the
+// modification time are what the person was shown. Only the change time
+// moved. Yes must then refuse the upgrade, since the file the person
+// confirmed is not the one that would run.
+func TestPaneUpgradeRefusesAFileChangedAfterTheDialog(t *testing.T) {
+	r := newConfirmRig(t, "e2e-confirm-changed")
+	term := r.attach(t)
+	done := r.paneUpgrade(t)
+	r.waitDialog(t, term, "changed")
+	info, err := os.Stat(r.second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.OpenFile(r.second, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	last := make([]byte, 1)
+	if _, err := f.ReadAt(last, info.Size()-1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteAt(last, info.Size()-1); err != nil {
+		t.Fatal(err)
+	}
+	_ = f.Close()
+	if err := os.Chtimes(r.second, info.ModTime(), info.ModTime()); err != nil {
+		t.Fatal(err)
+	}
+	pressKeys(t, term, keyDown, keyEnter)
+	code, _ := done()
+	waitNoDialog(t, term, "a Yes for a changed file")
+	r.unchanged(t, "a Yes for a file changed after the dialog opened")
+	lines := mustScrollback(t, r.base, r.sess, r.agent)
+	writeHandoffArtifact(t, map[string]any{"exit": code, "screen": lines})
+	if said := strings.Join(strings.Fields(strings.Join(lines, "")), ""); code == "0" || !strings.Contains(said, "waschangedaftertheupgradetoitwasconfirmed") {
+		t.Errorf("ASSERTION: a Yes for a file changed in place after the dialog opened was not refused as changed (exit %s):\n%s", code, strings.Join(lines, "\n"))
+	}
 }
 
 // TestPaneUpgradeTimesOut: nobody answers, and once the wait (3 s here, under
@@ -229,6 +275,9 @@ func TestPaneUpgradeTimesOut(t *testing.T) {
 	waitNoDialog(t, term, "the wait ran out")
 	r.unchanged(t, "an unanswered dialog")
 	lines := r.refused(t, code, "the wait running out")
+	if said := strings.Join(strings.Fields(strings.Join(lines, "")), ""); !strings.Contains(said, "Nobodyansweredthedialog") {
+		t.Errorf("ASSERTION: the refusal after the wait does not say nobody answered:\n%s", strings.Join(lines, "\n"))
+	}
 	writeHandoffArtifact(t, map[string]any{"exit": code, "seconds": took.Seconds(), "screen": lines})
 	if took < 3*time.Second {
 		t.Errorf("ASSERTION: the upgrade ended %s after it asked, before the 3 s wait ran out", took)
@@ -237,10 +286,11 @@ func TestPaneUpgradeTimesOut(t *testing.T) {
 
 // TestPaneUpgradeTakesOnlyKeysAtTheClient: while the dialog is up, nothing
 // that is not a key pressed at the client answers it: the other pane printing
-// the keys of Yes, send-keys and a tape's Press of j (which moves to Yes) and
-// Enter through the client, a bracketed paste of them, and answer-ask called from the other pane. The
-// dialog stays, the daemon is unchanged, and Esc then refuses. Each attempt
-// says yes, so a single one that got through would upgrade the daemon.
+// the keys of Yes, send-keys and a tape's Press of j and Enter through the
+// client, a bracketed paste of them, and answer-ask called from the other
+// pane. The dialog stays, the daemon is unchanged, and Esc then refuses. Each
+// attempt ends in Enter, so a single one that got through would answer the
+// dialog and close it.
 func TestPaneUpgradeTakesOnlyKeysAtTheClient(t *testing.T) {
 	r := newConfirmRig(t, "e2e-confirm-keys")
 	term := r.attach(t)

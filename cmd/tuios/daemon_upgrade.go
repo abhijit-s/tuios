@@ -317,7 +317,7 @@ func upgradeLive(say func(string, ...any), binary string) (upgradeOutcome, error
 			err: &diagnosticError{
 				What:  fmt.Sprintf("%s cannot take the daemon over: %v.", binary, err),
 				Cause: "it is not a tuios, or a tuios from before live upgrades.",
-				Fix:   "pass a tuios with --binary, or run '" + killServerCommand() + "' to restart the daemon, which ends running programs.",
+				Fix:   "pass a tuios with --binary. To run another tuios, use '" + serverCommand("restart-server") + "'. It stops every program in every pane, and lists them before it asks.",
 			},
 		}
 	}
