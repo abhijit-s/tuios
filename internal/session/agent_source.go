@@ -185,6 +185,9 @@ type agentClaim struct {
 	// when it could not be read. See promptStillShown.
 	promptHold int64
 	holdFg     int
+	// subagent is the subagent the needs_input this claim holds waits on.
+	// See AgentReport.Subagent.
+	subagent string
 }
 
 // herdrAnchor is one process a herdr claim follows, named by pid and start
