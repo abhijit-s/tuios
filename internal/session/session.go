@@ -1116,7 +1116,7 @@ type PTY struct {
 	// exitedAlone is told, before onExit, when the process exits without
 	// the PTY having been closed and the window will not be kept open. See
 	// Session.notePaneExitedAlone.
-	exitedAlone func(ptyID string, shell bool)
+	exitedAlone func(ptyID string, shell bool, signal int)
 	// ownShell is set when the pane runs the daemon's own shell on this
 	// machine: it was started with no command and without close_on_exit.
 	// That process ends when a person types exit, which is a person's close.
@@ -1416,6 +1416,10 @@ type Session struct {
 	// See notePaneExitedAlone.
 	exitedAloneMu sync.Mutex
 	exitedAlone   map[string]bool
+	// signalHold is when the last pane killed from outside by a signal
+	// stops holding the saved layout, in unix nanoseconds. See
+	// holdingCheckpoint.
+	signalHold atomic.Int64
 	// tabKeys is the state's WorkspaceTabKeys as last written, readable
 	// without stateMu, for a shell started while the state is being written.
 	// See herdrTabFor.
@@ -2055,6 +2059,9 @@ func (s *Session) persist(state *SessionState) error {
 	s.persistMu.Lock()
 	defer s.persistMu.Unlock()
 	if state == nil || state.Name != s.Name() {
+		return nil
+	}
+	if s.holdingCheckpoint() {
 		return nil
 	}
 	state.SessionID = s.ID
@@ -3680,14 +3687,18 @@ func (s *Session) Stop() {
 	// difference between it coming back and not; it is reported rather than
 	// dropped even though Stop cannot act on it.
 	final := s.ResurrectionState()
-	if err := s.persist(final); err != nil {
-		LogError("Final resurrection save for session %q failed, it will not come back: %v", s.Name(), err)
+	if s.holdingCheckpoint() {
+		log.Printf("Session %q keeps its last saved layout: panes were killed by a signal just before the stop", s.Name())
+	} else {
+		if err := s.persist(final); err != nil {
+			LogError("Final resurrection save for session %q failed, it will not come back: %v", s.Name(), err)
+		}
+		// Every pane with output since its last save, whatever the interval:
+		// this is the save a restart restores from.
+		s.persistMu.Lock()
+		s.saveHistory(final, true)
+		s.persistMu.Unlock()
 	}
-	// Every pane with output since its last save, whatever the interval: this
-	// is the save a restart restores from.
-	s.persistMu.Lock()
-	s.saveHistory(final, true)
-	s.persistMu.Unlock()
 
 	// Before the panes go, so a hold cannot publish a state against a session
 	// that has already saved and stopped.
@@ -4014,7 +4025,7 @@ func (s *Session) buildEnvFor(windowID string, workspace int, restored bool, ext
 	env = append(env, "COLORTERM="+colorTerm)
 	kitty, sixel := s.GraphicsCapabilities()
 	env = append(env, "TERM_PROGRAM="+guestenv.TermProgramFor(command, kitty, sixel))
-	env = append(env, "TERM_PROGRAM_VERSION=0.1.0")
+	env = append(env, "TERM_PROGRAM_VERSION="+guestenv.TermProgramVersion())
 	env = append(env, "TUIOS_SESSION="+s.Name())
 	// TUIOS_HOST names the machine this pane runs on. A pane is always local
 	// to the daemon that made it, so this is the daemon's own hostname, on
@@ -5398,7 +5409,7 @@ func (p *PTY) noteExit(code int) {
 	}
 
 	if p.exitedAlone != nil && p.ctx.Err() == nil && p.keepOpen == nil {
-		p.exitedAlone(p.ID, p.ownShell)
+		p.exitedAlone(p.ID, p.ownShell, p.ExitSignal())
 	}
 
 	// Notify callback (used by daemon to inform clients)

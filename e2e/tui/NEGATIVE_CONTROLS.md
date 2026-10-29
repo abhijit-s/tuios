@@ -1493,6 +1493,9 @@ person enables it.
 | The warning for a `plugin_action` key that no plugin has | `validateCommands`: the `validatePluginActionKeys` call cut | `TestHerdrPluginPalette` (never shows "1 config problem") | **caught** |
 | A plugin's pane tags another pane with metadata, as herdr-sidebar tags its preview panes | `herdrPane`: the `pluginPaneMetadataTarget` branch made `ok && false` | `TestHerdrPluginPanes` ("the plugin pane could not tag the pane it was opened from", with `a pane may report only for itself`) | **caught** |
 | A bare action id prefers the enabled plugin | `FindAction`: the enabled-only return cut | `TestHerdrPluginPalette` (run-1.env never holds the key's run: the id is ambiguous) | **caught** |
+| A command from a herdr install holds the install's `.in-use` lease while it runs | `pluginHost.run`: the `HoldLease` call replaced by a release that does nothing | `TestHerdrPluginActions` ("herdr's cleanup got the lease of an install whose plugin command runs") | **caught** |
+| The lease goes when the run ends | `Runner.Start`: the `lease()` call at the end of the run cut | `TestHerdrPluginActions` ("the lease is still held after the command ended") | **caught** |
+| The whole lease change | the binary from `origin/main` (`172918f0`) | `TestHerdrPluginActions` (the lease is free while the command runs) | **caught** |
 
 ## send-keys in the pane's keyboard mode
 
@@ -6676,6 +6679,7 @@ alone.
 | --- | --- | --- |
 | Unmodified main | `the pane inherited NO_COLOR=[1] CLICOLOR=[0] FORCE_COLOR=[0] CODEX_THREAD_ID=[outer-thread] CODEX_CI=[1] CODEX_SHELL=[1] CLAUDECODE=[1] CLAUDE_CODE_SESSION_ID=[outer-session]`; the hook skipped the pane's Codex as `nested Codex session`, and the agent state stayed `none` | every variable reads unset, and the state reads `idle` |
 | Cut the filter at the daemon's call site, `env := guestenv.WithoutHostMultiplexer(os.Environ())` in `buildEnvFor` replaced by `os.Environ()` | the same three failures | as above |
+| `TERM_PROGRAM_VERSION` was the fixed `0.1.0`: the binary from `origin/main` (`172918f0`), run on Linux | `the pane has TERM_PROGRAM_VERSION=[0.1.0], want the build version [dev]` | the pane reads the version `tuios --version` prints, and not the caller's `9.9.9-outer` |
 
 The positive halves are in the same fixture. The command that starts the
 daemon also passes `CODEX_HOME`, `CLAUDE_CONFIG_DIR` and an ordinary variable,
@@ -12096,3 +12100,41 @@ under `TUIOS_E2E_FRAMES`.
 | The same cut, with the "on build" wait passed by a comment in the file that held those words (an earlier draft of the test) | `TestQuickLookOnAFarFile`: "the far machine did not judge the file with two names", linked.txt read locally | **caught** |
 | `quickLookCellsKey` keeps the panes' glyph set (quadrants) | `TestRailQuickLook`: "the picture has 7 quadrant glyphs; the preview draws half blocks" | **caught** |
 | `quickLookPlacement` answers false | `TestRailQuickLookKittyPicture`: "no kitty placement of the picture at its own size was sent" | **caught** |
+## Long-running commands write --cpuprofile
+
+`TestCPUProfileWrittenByLongRunningCommands` starts each command that keeps
+running (the daemon, ssh, the bare client, the standalone TUI, pair,
+agent-proto, mcp, stdio-proxy, gui-bridge, tape play and the mermaid live
+view) with `--cpuprofile FILE`, waits until it is ready, and ends it the clean
+way: its signal, or the end of its input. Once the process has exited, FILE
+must read as a whole gzip stream with a non-empty body. For the daemon, the
+bare client, the standalone TUI and agent-proto, a run without the flag must
+leave no new file in its directory. Run on 2026-10-28 on Linux with Go
+1.26.10. Each control cuts one start from the fixed build and runs the test
+against the cut binary; the fixed build passes every subtest.
+
+| Control: what was cut | Where it fails | Verdict |
+| --- | --- | --- |
+| `startCPUProfile` in the daemon's RunE | `daemon`: `ASSERTION: daemon --cpuprofile /tmp/TestCPUProfileWrittenByLongRunningCommandsdaemon3744679393/001/cpu.prof wrote no profile: open /tmp/TestCPUProfileWrittenByLongRunningCommandsdaemon3744679393/001/cpu.prof: no such file or directory` | **caught** |
+| `startCPUProfile` in `runDaemonSessionOn` | `bare tuios`: `ASSERTION: bare tuios --cpuprofile /tmp/TestCPUProfileWrittenByLongRunningCommandsbare_tuios1589251332/001/cpu.prof wrote no profile: open /tmp/TestCPUProfileWrittenByLongRunningCommandsbare_tuios1589251332/001/cpu.prof: no such file or directory` | **caught** |
+| `startCPUProfile` in `runLocal` (its deferred stop kept) | `standalone`: `ASSERTION: standalone --cpuprofile /tmp/TestCPUProfileWrittenByLongRunningCommandsstandalone2986448861/001/cpu.prof wrote no profile: open /tmp/TestCPUProfileWrittenByLongRunningCommandsstandalone2986448861/001/cpu.prof: no such file or directory` | **caught** |
+## Dock tabs: caps on flat tabs, pill colours, active underline (#1340)
+
+`TestDockTabsCapsAndColours` draws two workspaces in five strips: the default pill, the default flat strip, flat with `caps = true` and colours, pill with colours and `active_underline = false`, and flat with `active_underline = true`. It reads each cap's glyph and ink, the tabs' grounds and the current tab's underline. `TestDockTabsFlatStyle/flat_caps` counts the caps on a flat strip with `caps = true`. Each control was built into its own binary. Run on 2026-10-29 on Linux.
+
+| Control: what was cut | Where it fails | Verdict |
+| --- | --- | --- |
+| `flatWorkspaceTab` returns the tab without `capTab` | `flat_caps`: "column 5 holds " ", want a cap = true" | **caught** |
+| `workspacePill` reads no `[dock.tabs]` colour | `pill_colours`: "the current tab is not drawn in active_fg on active_bg" | **caught** |
+| The underline on the current pill is hard-coded again | `pill_colours`: "the current tab underlined = true, want false" | **caught** |
+| The build before this change (origin/main at `cac3ce8fd`) | `TestDockTabsFlatStyle/flat_caps`, `flat_caps`, `pill_colours`, `flat_underline` | **caught** |
+| The same build, for the `caps` warning on pills | `TestDockTabsConfigWarnings/bad`: the dock says "2 config problems", not 3 | **caught** |
+
+The positive half is in the same runs: `pill` and `flat` pass on every build. Their styled frames and PNGs from origin/main and from this change are byte for byte the same, so the default strips did not change.
+## The layout survives an OS shutdown
+
+`TestLayoutSurvivesAnOSShutdown` makes a session with three panes and waits until the saved state holds all three. It sends SIGHUP to every shell, waits 5 s and sends SIGTERM to the daemon, as a shutdown does. A new daemon must then restore the session with three windows, and an attach must show three panes. It runs once without a client and once with a client attached. The control is the build of `main` at `172918f06` without the checkpoint hold. Run on 2026-10-29 on Linux.
+
+| Control: what was cut | Where it fails | Verdict |
+| --- | --- | --- |
+| `notePaneExitedAlone` no longer starts the hold, so a save after a pane is killed by a signal writes the smaller layout (`internal/session/workspace_renumber.go`) | `attached`: "session \"reboot-attached\" never appeared in the listing". The client closed each pane, the daemon saved a session with no windows, and the next start discarded it. `detached` passes on both builds, because no client removes the windows | **caught** |
