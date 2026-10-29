@@ -9,6 +9,7 @@ import (
 	"log"
 	"reflect"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -468,14 +469,18 @@ type AppearanceConfig struct {
 	// because that is what a settings stepper and a CLI argument can carry: the
 	// option registry holds ints, and "50" is a value a person types. The model
 	// keeps the master ratio as the fraction the tilers want.
-	MasterRatio       int    `toml:"master_ratio"`        // Master pane width in the master-stack layout, percent of the screen (default: 50)
-	ScrollColumnWidth int    `toml:"scroll_column_width"` // New column width in the scrolling layout, percent of the screen (default: 55)
-	ScrollColumnMax   int    `toml:"scroll_column_max"`   // Highest that width may be set to, percent of the screen (default: 90, up to 100)
-	ZoomSize          int    `toml:"zoom_size"`           // How much of the screen a zoomed pane takes, percent (default: 95)
-	PanelPadding      int    `toml:"panel_padding"`       // Columns of surface padding inside every overlay panel (default: 2)
-	ClockFormat       string `toml:"clock_format"`        // Go time layout the clock overlay is drawn with (default: 15:04)
-	DimUnfocused      int    `toml:"dim_unfocused"`       // Percent an unfocused pane's content is carried toward its own ground (default: 0)
-	DimMultifocus     bool   `toml:"dim_multifocus"`      // Dim the panes in the multifocus set too (default: false)
+	MasterRatio       int `toml:"master_ratio"`        // Master pane width in the master-stack layout, percent of the screen (default: 50)
+	ScrollColumnWidth int `toml:"scroll_column_width"` // New column width in the scrolling layout, percent of the screen (default: 55)
+	ScrollColumnMax   int `toml:"scroll_column_max"`   // Highest that width may be set to, percent of the screen (default: 90, up to 100)
+	// ScrollColumnPresets are the widths scroll_cycle_width steps through, in
+	// percent of the screen, like niri's preset-column-widths. Empty keeps the
+	// built-in 33, 50, 55, 67, 90 and 100.
+	ScrollColumnPresets []int  `toml:"scroll_column_presets,omitempty"` // Widths scroll_cycle_width steps through, percent of the screen (default: built-in presets)
+	ZoomSize            int    `toml:"zoom_size"`                       // How much of the screen a zoomed pane takes, percent (default: 95)
+	PanelPadding        int    `toml:"panel_padding"`                   // Columns of surface padding inside every overlay panel (default: 2)
+	ClockFormat         string `toml:"clock_format"`                    // Go time layout the clock overlay is drawn with (default: 15:04)
+	DimUnfocused        int    `toml:"dim_unfocused"`                   // Percent an unfocused pane's content is carried toward its own ground (default: 0)
+	DimMultifocus       bool   `toml:"dim_multifocus"`                  // Dim the panes in the multifocus set too (default: false)
 
 	// DimForeground is a pointer because it defaults to true.
 	DimForeground *bool `toml:"dim_foreground"` // Let dim_unfocused dim the pane's text too, not only its background (default: true)
@@ -870,6 +875,9 @@ type SidebarConfig struct {
 	// FolderClick is what a click on a folder row does: navigate, cd or both
 	// (default: navigate).
 	FolderClick string `toml:"folder_click"`
+	// FileDrag lets a row of the files section be dragged into a pane to
+	// paste its path (default: true).
+	FileDrag *bool `toml:"file_drag"`
 	// FilesStyle is how the files section draws: list or tree (default:
 	// list). See SidebarFilesStyles.
 	FilesStyle string `toml:"files_style"`
@@ -1087,6 +1095,9 @@ type KeybindingsConfig struct {
 	// visual selection. Copy mode's vim motions are fixed keys and are not
 	// here. See getDefaultCopyModeKeybinds.
 	CopyMode map[string][]string `toml:"copy_mode"`
+	// Review binds are live while the review overlay is open and no note is
+	// being typed: its hunk and file motions. See getDefaultReviewKeybinds.
+	Review map[string][]string `toml:"review"`
 	// GUI binds are read only by a native GUI client (tuios-gpui), through
 	// the GUI bridge's keybinds event. They are desktop chords that need no
 	// leader, such as ctrl+shift+t. The terminal client never looks them up,
@@ -1597,6 +1608,7 @@ func DefaultConfig() *UserConfig {
 			Mail:          getDefaultMailKeybinds(),
 			Transfers:     getDefaultTransfersKeybinds(),
 			CopyMode:      getDefaultCopyModeKeybinds(),
+			Review:        getDefaultReviewKeybinds(),
 			GUI:           getDefaultGUIKeybinds(),
 			Global: map[string][]string{
 				// ctrl+p is fish's history-back and vim's keyword completion, and
@@ -1960,6 +1972,12 @@ func getDefaultSidebarFilesKeybinds() map[string][]string {
 		// S sends the file or folder to another machine. Capital, because it
 		// starts a copy over a link, and one shift from nothing else here.
 		"file_send": {"S"},
+		// I pastes the path into the focused pane, quoted for its shell: the
+		// keyboard form of dragging the row onto the pane.
+		"file_insert_path": {"I"},
+		// space previews the row, as Finder and yazi do. Free in the rail:
+		// nothing else in the rail's scope takes it.
+		"file_quick_look": {"space"},
 	}
 }
 
@@ -2716,6 +2734,9 @@ func ApplyAppearanceConfig(cfg *UserConfig, s *Settings) {
 	if sb.FolderClick != "" {
 		s.SidebarFolderClick = sb.FolderClick
 	}
+	if sb.FileDrag != nil {
+		s.SidebarFileDrag = *sb.FileDrag
+	}
 	// A typo reads as the default, the same contract the other enum options
 	// keep, and the validator says so.
 	s.SidebarFilesStyle = SidebarFilesList
@@ -2936,6 +2957,9 @@ func ApplyAppearanceConfig(cfg *UserConfig, s *Settings) {
 	s.ThemeTransitionMs = clampPercent(cfg.Appearance.ThemeTransitionMs, ThemeTransitionMsMin, ThemeTransitionMsMax, ThemeTransitionMsDefault)
 	s.ScrollColumnMax = clampPercent(cfg.Appearance.ScrollColumnMax, ScrollColumnWidthMin, ScrollColumnWidthCeiling, ScrollColumnWidthMax)
 	s.ScrollColumnWidth = clampPercent(cfg.Appearance.ScrollColumnWidth, ScrollColumnWidthMin, s.ScrollColumnMax, ScrollColumnWidthDefault)
+	// Assigned unconditionally, so a reload that removes the list goes back to
+	// the built-in presets.
+	s.ScrollColumnPresets = ScrollColumnPresetFractions(cfg.Appearance.ScrollColumnPresets)
 	s.DimUnfocused = min(max(cfg.Appearance.DimUnfocused, 0), DimUnfocusedMax)
 	// DimForeground defaults to true, so it is a pointer: an unset key has to
 	// read as on, and only an explicit false turns it off.
@@ -3661,6 +3685,9 @@ func fillMissingKeybinds(cfg, defaultCfg *UserConfig) {
 	if cfg.Keybindings.CopyMode == nil {
 		cfg.Keybindings.CopyMode = make(map[string][]string)
 	}
+	if cfg.Keybindings.Review == nil {
+		cfg.Keybindings.Review = make(map[string][]string)
+	}
 
 	migrateLegacyKeybinds(cfg)
 	migrateSettingsComma(cfg)
@@ -3759,6 +3786,8 @@ func fillMissingKeybinds(cfg, defaultCfg *UserConfig) {
 	fillMapDefaults(cfg.Keybindings.Transfers, defaultCfg.Keybindings.Transfers)
 	// Copy mode's section is newer than every config written before it.
 	fillMapDefaults(cfg.Keybindings.CopyMode, defaultCfg.Keybindings.CopyMode)
+	// The review overlay's section is newer than every config written before it.
+	fillMapDefaults(cfg.Keybindings.Review, defaultCfg.Keybindings.Review)
 	// The GUI section is newer than every config written before it.
 	fillMapDefaults(cfg.Keybindings.GUI, defaultCfg.Keybindings.GUI)
 
@@ -3773,8 +3802,10 @@ func fillMissingKeybinds(cfg, defaultCfg *UserConfig) {
 	}
 	// The drops come out of a map walk; sorted, the report reads the same on
 	// every run.
-	slices.SortFunc(dropped, func(a, b RetiredKeybind) int {
-		return cmp.Or(cmp.Compare(a.Section, b.Section), cmp.Compare(a.Action, b.Action), cmp.Compare(a.Keys[0], b.Keys[0]))
+	// sort.Slice, not slices.SortFunc: see docs/perf.md, "Where the bytes go".
+	sort.Slice(dropped, func(i, j int) bool {
+		a, b := dropped[i], dropped[j]
+		return cmp.Or(cmp.Compare(a.Section, b.Section), cmp.Compare(a.Action, b.Action), cmp.Compare(a.Keys[0], b.Keys[0])) < 0
 	})
 	cfg.RetiredKeybinds = append(cfg.RetiredKeybinds, dropped...)
 }
@@ -4038,6 +4069,7 @@ func keybindSectionPairs(cfg, defaultCfg *UserConfig) []keybindSection {
 		{"mail", c.Mail, d.Mail},
 		{"transfers", c.Transfers, d.Transfers},
 		{"copy_mode", c.CopyMode, d.CopyMode},
+		{"review", c.Review, d.Review},
 		{"gui", c.GUI, d.GUI},
 		{"global", c.Global, d.Global},
 		{"script", c.Script, d.Script},

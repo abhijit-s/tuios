@@ -700,6 +700,9 @@ type OS struct {
 	// current workspace and session, for last_workspace and last_session.
 	lastWorkspace int
 	lastSession   lastSession
+	// shownOn is the session this client last showed on each machine, by
+	// machine name, for next_host and prev_host. See host_cycle.go.
+	shownOn map[string]string
 	// AttachedHost is the host DaemonClient reaches its daemon through, or ""
 	// for the daemon on this machine. See SwitchToHostSession.
 	AttachedHost string
@@ -806,6 +809,9 @@ type OS struct {
 	// dropLook is the preview's colours and its memo of washed text colours,
 	// kept across a drag's frames. See drop_zone_render.go.
 	dropLook dropLook
+	// fileDrag is a row of the rail's files section held by the pointer, on
+	// its way to a pane. See file_drop.go.
+	fileDrag fileDragState
 	// dropLayout is the map the landing rectangle of an edge drop is laid out
 	// into, kept so that working one out does not allocate a map each time.
 	dropLayout map[int]layout.Rect
@@ -1312,6 +1318,10 @@ type OS struct {
 	// replyPreview draws the images of a reply's draft, nil until one does.
 	// See inbox_reply_preview.go.
 	replyPreview *replyPreview
+
+	// quickLook is the rail's preview of the file under the files cursor.
+	// See quicklook.go.
+	quickLook quickLookState
 	// replyEditorDir is the private folder of the file $EDITOR has open for
 	// a draft, removed when it closes. See inbox_reply_history.go.
 	replyEditorDir string

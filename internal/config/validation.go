@@ -76,6 +76,7 @@ func ValidateConfig(cfg *UserConfig) *ValidationResult {
 	validateCommands(cfg, result)
 	validateCopyPipes(cfg, result)
 	validateCopyModeKeys(cfg, result)
+	validateReviewKeys(cfg, result)
 
 	// Validate leader key
 	if cfg.Keybindings.LeaderKey != "" {
@@ -170,21 +171,35 @@ func ValidateConfig(cfg *UserConfig) *ValidationResult {
 		})
 	}
 
-	// Check for essential actions that should have keybindings
-	essentialActions := map[string]string{
-		"new_window":          "window_management",
-		"close_window":        "window_management",
-		"enter_terminal_mode": "mode_control",
-		"enter_window_mode":   "mode_control",
-		"quit":                "mode_control",
+	// Check for essential actions that should have keybindings. An action
+	// counts as bound when any key reaches it or another action that does the
+	// same thing: window mode is entered as well from terminal mode's exit key
+	// and the leader's exit key, and a config that clears enter_window_mode for
+	// one of those has lost nothing.
+	essentialActions := []struct {
+		section, action string
+		alternatives    [][2]string
+	}{
+		{section: "window_management", action: "new_window"},
+		{section: "window_management", action: "close_window"},
+		{section: "mode_control", action: "enter_terminal_mode"},
+		{section: "mode_control", action: "enter_window_mode", alternatives: [][2]string{
+			{"prefix_mode", "prefix_exit_mode"},
+			{"terminal_mode", "terminal_exit_mode"},
+		}},
+		{section: "mode_control", action: "quit"},
 	}
 
-	for action, section := range essentialActions {
-		if !hasKeybinding(cfg, section, action) {
+	for _, e := range essentialActions {
+		bound := hasKeybinding(cfg, e.section, e.action)
+		for _, alt := range e.alternatives {
+			bound = bound || hasKeybinding(cfg, alt[0], alt[1])
+		}
+		if !bound {
 			result.Warnings = append(result.Warnings, ValidationError{
-				Field:   section,
-				Key:     action,
-				Message: fmt.Sprintf("Essential action '%s' has no keybinding, so TUIOS may be difficult to use", action),
+				Field:   e.section,
+				Key:     e.action,
+				Message: fmt.Sprintf("Essential action '%s' has no keybinding, so TUIOS may be difficult to use", e.action),
 			})
 		}
 	}
@@ -451,6 +466,7 @@ func validateAppearanceEnums(cfg *UserConfig, result *ValidationResult) {
 	validateBorderColors(cfg, result)
 	validateSelectionColors(cfg, result)
 	validateScrollbar(cfg, result)
+	validateScrollColumnPresets(cfg, result)
 	validateDockModeIcons(cfg, result)
 	validateBackgrounds(cfg, result)
 	warnColours(result, "appearance", "The cursor row keeps the theme's background",
@@ -679,6 +695,22 @@ func validateDockModeIcons(cfg *UserConfig, result *ValidationResult) {
 	}
 }
 
+// validateScrollColumnPresets warns about a column width preset outside 1 to
+// 100 percent. ScrollColumnPresetFractions drops it, and the cycle steps
+// through the rest.
+func validateScrollColumnPresets(cfg *UserConfig, result *ValidationResult) {
+	for _, p := range cfg.Appearance.ScrollColumnPresets {
+		if p > 0 && p <= ScrollColumnWidthCeiling {
+			continue
+		}
+		result.Warnings = append(result.Warnings, ValidationError{
+			Field:   "appearance",
+			Key:     "scroll_column_presets",
+			Message: fmt.Sprintf("%d is not a width from 1 to %d percent. tuios ignores it", p, ScrollColumnWidthCeiling),
+		})
+	}
+}
+
 // validateScrollbar warns about the scrollbar's free-form keys, which no enum
 // covers: the two glyphs have to measure exactly one cell or they would shift
 // the content column they float over, and the tint is either a keyword or a hex
@@ -797,6 +829,7 @@ func keySections(kb *KeybindingsConfig) []keySection {
 		{"mail", kb.Mail},
 		{"transfers", kb.Transfers},
 		{"copy_mode", kb.CopyMode},
+		{"review", kb.Review},
 		{"global", kb.Global},
 		{"script", kb.Script},
 		{"lists", kb.Lists},
@@ -1042,6 +1075,8 @@ func hasKeybinding(cfg *UserConfig, sectionName, action string) bool {
 		section = cfg.Keybindings.System
 	case "prefix_mode":
 		section = cfg.Keybindings.PrefixMode
+	case "terminal_mode":
+		section = cfg.Keybindings.TerminalMode
 	case "window_prefix":
 		section = cfg.Keybindings.WindowPrefix
 	case "minimize_prefix":

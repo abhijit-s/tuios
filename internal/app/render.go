@@ -425,6 +425,12 @@ func (m *OS) GetCanvas(render bool) *frameCanvas {
 			layers = append(layers, label)
 		}
 
+		// A row of the files section held over the panes names where it
+		// would land. Only drawn while that drag is under way.
+		if label := m.renderFileDragLabel(); label != nil {
+			layers = append(layers, label)
+		}
+
 		// The mark that this client shows only part of the session.
 		if mark := m.renderViewMark(); mark != nil {
 			layers = append(layers, mark)
@@ -1348,7 +1354,7 @@ func (m *OS) flushGraphicsForView() {
 		m.ShowWorkspaceSwitcher || m.gotoPicker.open || m.buffers.open || m.navigator.open || m.ShowLayoutPicker || m.ShowHostPicker || m.ShowQuitMenu || m.DaemonRestartOpen() || m.ShowScrollbackBrowser ||
 		m.ShowLogs || m.msgView.open || m.ShowCacheStats || m.ShowAggregateView ||
 		m.ShowSettings || m.ShowThemePicker || m.themeEditor.open || m.presetPicker.open || m.ShowKeybindManager || m.ShowAccentPicker || m.ShowTapeManager || m.ShowTapeReview ||
-		m.ShotPreview.Open || m.review.open
+		m.ShotPreview.Open || m.review.open || m.quickLook.open
 	if m.KittyPassthrough != nil {
 		// Self-placed remote video images are hidden/dropped here, not by
 		// HideAllPlacements (they are not in `placements`).

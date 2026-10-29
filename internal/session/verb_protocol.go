@@ -638,6 +638,7 @@ func buildVerbRegistry() map[string]verbEntry {
 				{Name: "window_id", Type: "string", Description: "Id of the first window."},
 				{Name: "pty_id", Type: "string", Description: "Id of the first window's PTY."},
 				{Name: "cloned", Type: "bool", Description: "True when the repository was cloned by this call. Absent otherwise."},
+				{Name: "hook_error", Type: "string", Description: "Why the after-new-worktree hook failed, with the last lines of its stderr. The worktree, the session and the first window are kept. Absent when the hook succeeded or none is set."},
 			},
 			examples: []string{
 				`{"id":1,"verb":"new-worktree","params":{"repo":"/src/api","branch":"feat/retry"}}`,
@@ -714,7 +715,7 @@ func buildVerbRegistry() map[string]verbEntry {
 				{Name: "agent", Type: "string", Description: "The harness id started in the first session, empty for a program no manifest recognises."},
 				{Name: "command", Type: "string", Description: "The command started in the first session."},
 				{Name: "prompt", Type: "string", Description: "The first session's prompt, as given."},
-				{Name: "sessions", Type: "[]object", Description: "One entry per session: session, branch, path, window_id, and the agent (harness id) and command started in it."},
+				{Name: "sessions", Type: "[]object", Description: "One entry per session: session, branch, path, window_id, and the agent (harness id) and command started in it. hook_error is there when that session's after-new-worktree hook failed."},
 				{Name: "total", Type: "int", Description: "How many sessions were started."},
 			},
 			examples: []string{
@@ -3047,15 +3048,15 @@ func (d *Daemon) admitVerb(cs *connState, verb string, params json.RawMessage) (
 	// that restricted itself is held to that too, before anything,
 	// forwarding included, sees the call. See pane_grants.go and
 	// conn_scope.go.
+	// Follow the pane's own stale session name before a rename alias can
+	// expand it to another session. See session_rename.go.
+	params = d.followOwnPane(cs, verb, params)
 	// A session named by a name it was renamed from is named by its current
 	// one from here on. See session_rename.go.
 	params = d.followRenamedSession(verb, params)
 	// A window moved out of the session named goes to the one it is in now.
 	// See window_move_session.go.
 	params = d.followMovedWindow(params)
-	// A pane's own call naming a session that is gone goes to the pane's
-	// session. See session_rename.go.
-	params = d.followOwnPane(cs, verb, params)
 	granted, verr := d.checkGrants(cs, verb, params)
 	if verr != nil {
 		return verbEntry{}, nil, verr

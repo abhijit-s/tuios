@@ -70,6 +70,11 @@ const (
 	sidebarActFileCopyPath = "file_copy_path"
 	// sidebarActFileSend sends the row's file or folder to another machine.
 	sidebarActFileSend = "file_send"
+	// sidebarActFileInsertPath pastes the row's path into the focused pane.
+	sidebarActFileInsertPath = "file_insert_path"
+	// sidebarActFileQuickLook opens and closes the preview of the row. It
+	// reads and changes nothing, so it is live while file actions are off.
+	sidebarActFileQuickLook = "file_quick_look"
 	// jump_1..jump_9 are matched by prefix; see HandleSidebarKey.
 	sidebarActJumpPrefix = "jump_"
 )
@@ -234,6 +239,8 @@ func (d *ActionDispatcher) registerHandlers() {
 	d.Register("prev_session_in_space", handlePrevSessionInSpace)
 	d.Register("next_space", handleNextSpace)
 	d.Register("prev_space", handlePrevSpace)
+	d.Register("next_host", handleNextHost)
+	d.Register("prev_host", handlePrevHost)
 	d.Register("next_agent", handleNextAgent)
 	d.Register("prev_agent", handlePrevAgent)
 
@@ -298,7 +305,7 @@ func (d *ActionDispatcher) registerHandlers() {
 		sidebarActFileCreate, sidebarActFileRename, sidebarActFileDelete,
 		sidebarActFileDeleteAll, sidebarActFileCopy, sidebarActFileCut,
 		sidebarActFilePaste, sidebarActFileOpen, sidebarActFileEdit,
-		sidebarActFileCopyPath, sidebarActFileSend,
+		sidebarActFileCopyPath, sidebarActFileSend, sidebarActFileInsertPath, sidebarActFileQuickLook,
 	} {
 		d.Register(action, makeSidebarFileHandler(action))
 	}
@@ -1244,6 +1251,18 @@ func handleNextSpace(_ tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
 
 func handlePrevSpace(_ tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
 	return o, o.CycleSpace(-1)
+}
+
+// handleNextHost and handlePrevHost step to the next or previous machine:
+// this one first, then the [hosts] table, as the rail lists them.
+func handleNextHost(_ tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
+	o.CycleHost(1)
+	return o, nil
+}
+
+func handlePrevHost(_ tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
+	o.CycleHost(-1)
+	return o, nil
 }
 
 // handleNextAgent and handlePrevAgent walk the agent panes in the order the

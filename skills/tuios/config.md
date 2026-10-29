@@ -180,7 +180,12 @@ question about the screen. Do not change them unless the person asks.
   `height`, `title`) and places `pane` in `appearance.sidebar.sections`.
   `tuios list-windows` leaves the pane out. `--rail` lists it.
 - In the rail's files section, `Y` or the folder menu's Copy path copies a
-  path to the person's clipboard.
+  path to the person's clipboard. `I`, or a drag of a row onto a pane,
+  pastes the path into that pane, quoted for its shell.
+- In the rail's files section, `space` shows a preview of the row: code,
+  Markdown, a picture, a PDF page or a folder. `j` and `k` move it to the
+  next row. `space` or `esc` closes it. A row of a listing on another machine
+  is read on that machine, and needs the `files` grant there.
 - When the last pane on the workspace on screen closes, the session shows
   the workspace the person came from: the one that ran `xpanes`, else the
   ones shown before, else the lowest with panes. `workspaces.return_when_empty
@@ -472,8 +477,13 @@ working recipes.
 
 A hook runs a shell command on an event, with `TUIOS_*` variables carrying the
 facts. The daemon runs `after-new-window`, `after-close-window`,
-`after-focus-change`, `after-workspace-switch`, `after-agent-state` and
-`after-command-finished`, so they fire with nobody attached. `after-attach`,
+`after-focus-change`, `after-workspace-switch`, `after-agent-state`,
+`after-command-finished` and `after-new-worktree`, so they fire with nobody
+attached. `after-new-worktree` runs in the new worktree before its first
+window starts, and tuios waits for it (60 seconds at most). It gets
+`TUIOS_WORKTREE_PATH`, `TUIOS_WORKTREE_BRANCH`, `TUIOS_WORKTREE_REPO_ROOT` and
+`TUIOS_WORKTREE_CREATED_BRANCH`. When it fails, the session is kept and the
+result of `new-worktree` or `fan` carries `hook_error`. `after-attach`,
 `after-detach`, `after-resize`, `after-layout-change` and `after-theme-change`
 run in the client. `after-theme-change` gets `TUIOS_THEME`, `TUIOS_THEME_BG`
 and `TUIOS_THEME_LIGHT`.

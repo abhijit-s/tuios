@@ -10582,6 +10582,26 @@ After review of #966, these three still drew with `theme.UI()` and so kept the c
 | The scrollback browser keeps the accent frame and the chrome's rows under `pane_overlays` | `m.overlayUI()`, `browserFrameInk` and the palette passed to `browserFooterHints` | `internal/app/render_scrollback_browser.go` put back to `4a9267a44` | `TestPaneOverlaysReachTheRemainingSurfaces/scrollback-browser` (`the scrollback browser does not read as a pane window`: frame `fg={R:139 G:117 B:255}`, `selected row to pane ground 1.02:1` at `bg={R:45 G:44 B:54}`, key pill `bg={R:77 G:76 B:87}`) | **caught** |
 | The copy-mode search bar keeps the chrome's surface under `pane_overlays` | `m.overlayUI()` at the `copy-mode-search` layer | `internal/app/render_overlays.go` put back to `4a9267a44` | `TestPaneOverlaysReachTheRemainingSurfaces/copy-mode-search` (`the copy-mode search bar is not on the pane's ground`: pad, prompt and count `bg={R:58 G:57 B:67}`, the pane cell beside them `bg={R:32 G:48 B:64}`) | **caught** |
 | The pane look reaches the three without the option | The `PaneOverlays` checks in `overlayGround` and `overlayFrameInk` | Both deleted | `TestStockRemainingSurfacesKeepTheirOwnLook`: `/stock/plugin-approval` (`the plugin approval dialog … does not keep upstream's look`, frame `fg={R:175 G:255 B:255} bg={R:0 G:0 B:0}`), `/stock/scrollback-browser` (`the scrollback browser moved under a config without pane_overlays`, frame `fg={R:170 G:255 B:170}`), `/stock/copy-mode-search` (`the copy-mode search bar moved`, pad `bg={R:0 G:0 B:0}`), the same three under `/pane-background` (grounds `{R:32 G:48 B:64}`), and `/stock-16/plugin-approval` (frame index 14, want 8) and `/stock-16/scrollback-browser` (frame index 10, want 14). `/stock-16/copy-mode-search` passes: at 16 colours the option changes no ground, and the bar has no frame | **caught** |
+## The review overlay's file keys follow their bindings (#585)
+
+`TestReviewFileKeysFollowTheirBindings` binds `review_next_file` to `n` and
+`review_prev_file` to `q` in `[keybindings.review]`. `keybinds doctor` must
+name `q` and nothing else, in its JSON and in its text. The test then opens
+a review of two changed files. `}` must leave the first file shown, `n` must
+show the second, `q` must bring the first back with the overlay still open,
+and `esc` must close it. Run on 2026-10-29 on Linux, based on origin/main at
+`feb2df438`.
+
+| Control | How | Tests that fail | Verdict |
+| --- | --- | --- | --- |
+| The released behaviour | build origin/main (`feb2df438`) | `TestReviewFileKeysFollowTheirBindings` ("the doctor reports [], want review_prev_file on q only") | **caught** |
+| The doctor never sees the clash | `ReviewProblems` returns nil | the same | **caught** |
+| `}` stays a fixed key | `handleReviewInput` runs `ReviewFile(1)` on `}` before the binding lookup | `TestReviewFileKeysFollowTheirBindings` ("} moved to the next file after review_next_file was bound to n") | **caught** |
+
+The positive half is the fixed build: the test passes. The reachability
+table in `internal/input` still presses every default review key in both
+modes.
+
 ## Review leaves out large untracked files
 
 `TestReviewDoesNotReadLargeUntrackedFiles` sets `max_untracked_mb = 1` and
@@ -12008,3 +12028,71 @@ time with `go test -overlay`, each cut read back first:
 | Control: what was cut | Test failure | Verdict |
 | --- | --- | --- |
 | The `layout.Wrap` fallback in `findWindowInDirection` (`internal/app/os_tape_executor.go`) | "pressed left on pane ... focus stayed, want one of ..." | **caught** |
+## next_host lands on the session this client last showed there
+
+`TestRailAttachesARemoteSessionInThisClient` ends with `next_host` and `prev_host` on `alt+.` and `alt+,`. The client goes from `home` to `far-shell` on `build` and back, and a second client attaches `far-other` on `build`. `next_host` then has to land on `far-shell`, and `prev_host` back on `home`. A session made on `build` after that attach must show in the rail first, so the host listing the client holds already names `far-other` as attached. The control was built into its own binary and the test run against it 2 times; the unmodified binary passed. Run on 2026-10-29 on Linux.
+
+| Control: what was cut | Where it fails | Verdict |
+| --- | --- | --- |
+| `rememberShownOn` returns at once, so a step falls back to the attached session | `the rail never marked "far-shell" as the attached session`: the client is on `far-other`, 2 of 2 runs | **caught** |
+## Startup warns only about copy-mode keys that never run
+
+`TestKeybindsDoctorNamesACopyModeKeyUsedTwice/startup` loads the config from #1291 (copy-mode `H` and `L`, `enter_window_mode = []`, `prefix_exit_mode` on `ctrl+e` and `esc`) plus a copy pipe on `p` that `copy_mode_line_end` also uses. It reads the startup warnings in the log viewer and the doctor's report. Run on 2026-10-29 on Linux against origin/main at `2c6958d23`, the build without the fix.
+
+| Control: what was cut | Where it fails | Verdict |
+| --- | --- | --- |
+| The `Override` skip in `validateCopyModeKeys` | `the startup log warns "copy_mode_line_start] H"` and `"copy_mode_line_end] L"` | **caught** |
+| The exit-mode alternatives for `enter_window_mode` | `the startup log warns "enter_window_mode"` | **caught** |
+
+The positive half is in the same run: the copy pipe key `p` is still warned about at startup, and the doctor still names `H`, `L` and `p`.
+## Resume rows resume in place, alone, marked or all (#1330)
+
+`TestRestartOffersToResumeTheConversation` restores five agents, each with a Resume row, and the footer must name `* y resume all`. `x` marks two rows, the footer must offer only the keys that act on Resume rows, and `y` has to resume both. Their hooks then report them working, and their rows must show it in the same open view. `y` alone resumes the row under the cursor, and `*` then `y` resumes the last two. The view stays open through all three. Each control was built into its own binary. Run on 2026-10-29 on Linux.
+
+| Control: what was cut | Where it fails | Verdict |
+| --- | --- | --- |
+| `y` with marks routed to `InboxResume` instead of `InboxAgentsBulkResume` (`internal/input/inbox_input.go`) | "y with two marks: resumed [e2e-resume-d], want 2 in all" | **caught** |
+| `InboxResume` closes the view and jumps to the pane, as before this change (`internal/app/inbox.go`) | "after y on one row: the view did not stay open on "2 needs you"" | **caught** |
+| `bulkHints` lists every bulk key when only Resume rows are marked (`internal/app/inbox_bulk.go`) | "x did not mark two Resume rows, or the footer offers keys that do nothing for them" | **caught** |
+## A dragged file is quoted for the shell in the pane
+
+`TestRailFileDragIntoPane` drags `it's a file.txt`, `$(touch pwned)`, `back\slash.txt` and the folder `a b/` from the rail's files section onto a pane. It runs the round in sh, then bash, zsh, fish and nu when they are installed. Each drop must put the exact quoted text for that shell on the command line, the shell must print each name back as it is on disk, and no file `pwned` may appear. In each shell the path picker must then type `back\slash.txt` in that shell's form, since it uses the same quoting function. The control was built into its own binary. Run twice on 2026-10-29 on Linux with all five shells installed, the second time after the path picker moved to the same quoting; the unmodified binary passed both times.
+
+| Control: what was cut | Where it fails | Verdict |
+| --- | --- | --- |
+| `quoteDropPath` answers `pastePathText` (POSIX single quotes) for every shell | `fish`: "after dropping \"it's a file.txt\" the command line is not ...". The subtests after it fail too, because fish is still running in the pane | **caught** |
+
+The sh round later failed in CI, where sh is dash, and passed on the machine above, where sh is bash. Both clears in the round waited for `CLEARED`, and the first clear left it on screen. The second wait ended at once, so the printf keys reached sh while `clear` still ran. dash has no line editor: the terminal echoed the first key, `clear` erased it, and the screen showed `rintf` where the test waited for `printf`. bash reads typed-ahead keys through readline and shows them again, so it hid the race. Each clear now waits for a marker of its own, `CLEARED1`, `CLEARED2` and so on.
+
+| Control: what was cut | Where it fails | Verdict |
+| --- | --- | --- |
+| Each clear waits for the same `CLEARED`, run with sh as dash and a `clear` on `PATH` that sleeps 0.3 s first | `sh`: "the path picker did not type printf '[%s]\n' 'back\slash.txt' in sh", with `$ 'back\slash.txt'` on screen. 3 of 3 runs with a Go 1.27.3 binary and 3 of 3 with Go 1.26.10. The test with a marker per clear passed 3 of 3 with each | **caught** |
+
+## Reports after a session alias is reused
+
+`TestHookFromPaneWhoseSessionNameIsGone/reused_alias` renames the new alpha
+to replacement instead of killing it. The hook must still reach omega, leave
+replacement's pane unchanged, and refuse the same report from outside the
+pane or from a second pane. The `gone` case retains the missing-name guard.
+
+Run on 2026-10-28 on Linux against a clean, unmodified main at 2c6958d23
+and the fixed branch.
+
+| Control | Result | Verdict |
+| --- | --- | --- |
+| Main: alias expansion precedes own-pane recovery, which accepts only missing names | `gone` passes; `reused_alias` fails: `the hook did not reach the pane after its session name became stale` | **caught** |
+| Fixed routing | Both cases pass, including the refusal and unchanged replacement-pane checks | **guard** |
+
+The combined artifact is `TestHookFromPaneWhoseSessionNameIsGone.json`
+under `TUIOS_E2E_FRAMES`.
+## Quick look on a rail row
+
+`TestRailQuickLook` opens the preview with `space` on a row of the files section and walks it with `j` and `k`: highlighted Go code, Markdown laid out, a PNG as half blocks at truecolor (kitty graphics turned off), a binary file and a text longer than the preview keeps. `space` and `esc` close it, and keys reach the pane once the rail lets go. The test waits out the note the click on the row leaves, so a note after `space` would fail it, and no frame shows it. `TestRailQuickLookKittyPicture` checks the kitty tier: the picture is placed at no more cells than its pixels fill, and taken down on close. `TestQuickLookOnAFarFile` previews a file of a listing on `build`. The two daemons share a disk, so the test tells a far read from a local one by a file with two names, which `build` refuses to read for a linked machine. Each control was built into its own binary. Run on 2026-10-29 on Linux.
+
+| Control: what was cut | Where it fails | Verdict |
+| --- | --- | --- |
+| `quickLookFetch` returns nil for a file | `TestRailQuickLook`: "space did not show main.go", the panel stays on Reading | **caught** |
+| `quickLookCursorTarget` leaves `host` empty for a far listing | `TestQuickLookOnAFarFile`: "space did not show the far file", no "on build" | **caught** |
+| The same cut, with the "on build" wait passed by a comment in the file that held those words (an earlier draft of the test) | `TestQuickLookOnAFarFile`: "the far machine did not judge the file with two names", linked.txt read locally | **caught** |
+| `quickLookCellsKey` keeps the panes' glyph set (quadrants) | `TestRailQuickLook`: "the picture has 7 quadrant glyphs; the preview draws half blocks" | **caught** |
+| `quickLookPlacement` answers false | `TestRailQuickLookKittyPicture`: "no kitty placement of the picture at its own size was sent" | **caught** |

@@ -55,7 +55,7 @@ type sectionMaps struct {
 	debugPrefix, tapePrefix, layoutPrefix, tuiosPrefix    map[string]string
 	terminalMode, global, script, sidebar, sidebarFiles   map[string]string
 	sidebarAgents, inbox, inboxPeek, mail, copyMode       map[string]string
-	transfers, lists                                      map[string]string
+	transfers, lists, review                              map[string]string
 	// menus holds each declared menu (see MenuConfig), by name.
 	menus map[string]map[string]string
 }
@@ -126,6 +126,7 @@ func (r *KeybindRegistry) buildMappings() {
 		mail:            r.sectionKeyMap(kb.Mail),
 		transfers:       r.sectionKeyMap(kb.Transfers),
 		copyMode:        r.sectionKeyMap(kb.CopyMode),
+		review:          r.sectionKeyMap(kb.Review),
 		menus:           make(map[string]map[string]string, len(kb.Menus)),
 	}
 	for _, name := range kb.MenuNames() {
@@ -389,6 +390,18 @@ func (r *KeybindRegistry) GetTransfersAction(key string) string {
 	return r.lookupKey(key, r.sections.transfers)
 }
 
+// GetReviewAction returns the action a key runs in the review overlay, or ""
+// for a key the section does not bind. The overlay reads its other keys itself.
+func (r *KeybindRegistry) GetReviewAction(key string) string {
+	return r.lookupKey(key, r.sections.review)
+}
+
+// GetReviewKeys is GetKeys for the review overlay, for its key hints and the
+// help overlay.
+func (r *KeybindRegistry) GetReviewKeys(action string) []string {
+	return r.config.Keybindings.Review[action]
+}
+
 // GetTransfersKeys is GetKeys for the Copies panel, for its key hints and the
 // help overlay.
 func (r *KeybindRegistry) GetTransfersKeys(action string) []string {
@@ -555,7 +568,7 @@ func buildPressesByAction(r *KeybindRegistry) map[string][]string {
 // no chord that would say so.
 func contextOnlyScope(scope string) bool {
 	switch scope {
-	case ScopeSidebar, ScopeSidebarFiles, ScopeSidebarAgents, ScopeScript, ScopeLists, ScopeInbox, ScopeInboxPeek, ScopeMail, ScopeTransfers, ScopeCopyMode:
+	case ScopeSidebar, ScopeSidebarFiles, ScopeSidebarAgents, ScopeScript, ScopeLists, ScopeInbox, ScopeInboxPeek, ScopeMail, ScopeTransfers, ScopeCopyMode, ScopeReview:
 		return true
 	case ScopeGUI:
 		// Only the GUI reads these keys. A terminal's help that listed
@@ -597,7 +610,9 @@ var ActionDescriptions = map[string]string{
 	"file_open":           "Files: open this folder, or copy this file's path",
 	"file_edit":           "Files: edit this text file in a new pane",
 	"file_copy_path":      "Files: copy the path of this file or folder",
+	"file_quick_look":     "Files: show a preview of this file or folder",
 	"file_send":           "Files: send this file or folder to a host",
+	"file_insert_path":    "Files: paste the path into the focused pane",
 	// The Copies panel: the copies between machines.
 	"transfers_down":   "Copies: next copy",
 	"transfers_up":     "Copies: previous copy",
@@ -629,7 +644,7 @@ var ActionDescriptions = map[string]string{
 	"inbox_peek":         "Agents view: read the prompt here and answer it",
 	"inbox_dismiss":      "Agents view: dismiss what needs you on the row",
 	"inbox_reply":        "Agents view: reply to the agent or the mail, or reject the held approval",
-	"inbox_resume":       "Agents view: resume the conversation in its pane",
+	"inbox_resume":       "Agents view: resume the conversation in its pane, or every marked one",
 	"inbox_pass_on":      "Agents view: pass held mail on to the agent it was for",
 	"inbox_filter":       "Agents view: show only what needs you, then each kind, then every agent",
 	"inbox_select":       "Agents view: search the agents, with selector terms such as harness:codex",
@@ -651,7 +666,7 @@ var ActionDescriptions = map[string]string{
 	"inbox_open":         "Agents view: open the focus on a narrow screen, or show every row of a long group",
 	"inbox_back":         "Agents view: go back from the focus on a narrow screen",
 	"inbox_help":         "Agents view: show every key",
-	"inbox_mark":         "Agents view: mark the agent for a bulk answer",
+	"inbox_mark":         "Agents view: mark the agent or Resume row for a bulk answer",
 	"inbox_mark_all":     "Agents view: mark every agent shown, or clear the marks",
 	"inbox_tab_prev":     "Agents view: the focus's tab to the left",
 	"inbox_tab_next":     "Agents view: the focus's tab to the right",
@@ -863,6 +878,8 @@ var ActionDescriptions = map[string]string{
 	"switch_space_7":        "Switch to space 7",
 	"switch_space_8":        "Switch to space 8",
 	"switch_space_9":        "Switch to space 9",
+	"next_host":             "Go to the next machine",
+	"prev_host":             "Go to the previous machine",
 
 	// Clipboard
 	"copy_selection":  "Copy selection to clipboard",
@@ -889,6 +906,10 @@ var ActionDescriptions = map[string]string{
 	ActionCopyModeLineStart:      "Copy mode: go to the start of the line",
 	ActionCopyModeFirstNonBlank:  "Copy mode: go to the first nonblank character of the line",
 	ActionCopyModeLineEnd:        "Copy mode: go to the last nonblank character of the line",
+	ActionReviewNextHunk:         "Review: next hunk, going on into the next file",
+	ActionReviewPrevHunk:         "Review: previous hunk, going back into the previous file",
+	ActionReviewNextFile:         "Review: next file",
+	ActionReviewPrevFile:         "Review: previous file",
 
 	// Session lifecycle (context menu rows; no default keybinding)
 	"settings_sidebar":     "Sidebar settings",

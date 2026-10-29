@@ -471,6 +471,19 @@ display = "follow"
 
 `[path_picker]` sets `show_hidden`. With `true`, the path picker (`Alt+;`) shows the names that start with a dot when it opens. The default is `false`. `Alt+H` in the picker shows or hides them. See [KEYBINDINGS.md](KEYBINDINGS.md#pick-a-path).
 
+## Drag a file into a pane
+
+`appearance.sidebar.file_drag` lets you drag a row of the files section onto a
+pane. The pane gets the path, quoted for the shell in the pane. It is on by
+default. `I` on a row does the same for the focused pane, with this option on
+or off. See
+[KEYBINDINGS.md](KEYBINDINGS.md#drag-a-file-into-a-pane).
+
+```toml
+[appearance.sidebar]
+file_drag = false
+```
+
 `[scratch]` sets the size of the box in which `Ctrl+B g` shows the scratch terminal. The old `session` key is no longer used. See [SESSIONS.md](SESSIONS.md#the-scratch-terminal).
 
 `[pip]` sets the size (`width`, `height`, border included, default 40x12) and the first `corner` (default `bottom-right`) of the picture-in-picture view that `p` pins. See [SESSIONS.md](SESSIONS.md#picture-in-picture).
@@ -909,6 +922,17 @@ command that joins its arguments into a shell line, such as `swaymsg exec --`
 or `hyprctl dispatch exec`. With such a command, the text of a desktop entry
 becomes shell code. Any installed package can write a desktop entry.
 
+A program from the launcher closes its pane when it exits. Set
+`launcher.keep_open` to keep the pane. A line under the output shows the exit
+status, as with `tuios new-window --keep-open`. Close the pane when you are
+done with it. The option needs a daemon session. With `--standalone` the pane
+closes as before.
+
+```toml
+[launcher]
+keep_open = true
+```
+
 ## Workspace numbers
 
 A workspace's number is its position. Moving a workspace with
@@ -1117,6 +1141,34 @@ them, and ignore these options. `startup.session` uses the daemon even when
 `startup.daemon` is `false`. `--standalone` and `TUIOS_NO_DAEMON=1` still run a
 local session. Both options are on the settings page, in the Startup section.
 See [SESSIONS.md](SESSIONS.md#start-session-and-start-pane).
+
+## Scrolling layout
+
+These options shape the scrolling layout. See
+[LAYOUT_MODES.md](LAYOUT_MODES.md#scrolling-layout).
+
+| Option | What it does | Values | Default |
+|---|---|---|---|
+| `appearance.scroll_column_width` | The width of a new column, as a percent of the screen | 20 to `scroll_column_max` | 55 |
+| `appearance.scroll_column_max` | The largest width a column can have, as a percent of the screen | 20-100 | 90 |
+| `appearance.scroll_column_presets` | The widths that `scroll_cycle_width` steps through, as percents of the screen | a list of 1-100 | empty (33, 50, 55, 67, 90 and 100) |
+
+`scroll_cycle_width` sets the focused column to the next width in the list
+that is larger than the current width. After the largest width, it goes back
+to the smallest. tuios sorts the list. It skips a width that is larger than
+`scroll_column_max`. It ignores a value that is not from 1 to 100 and shows a
+config warning. This example cycles a column through a half, two thirds and the
+full screen:
+
+```toml
+[appearance]
+scroll_column_width = 50
+scroll_column_max = 100
+scroll_column_presets = [50, 67, 100]
+```
+
+A change to the list applies when tuios reloads the config. The settings page
+does not show this option. Edit it in `config.toml`.
 
 ## Drop preview
 
@@ -2707,6 +2759,19 @@ it uses to its log when it starts.
 
 Like `[hosts]`, the section is not in `list-options`, and `tuios set-config`
 cannot change it.
+
+## Move between machines
+
+The `next_host` and `prev_host` keybind actions go to a session on the next or
+the previous machine: this machine first, then the `[hosts]` table. They have
+no default key. See
+[KEYBINDINGS.md](KEYBINDINGS.md#cycle-through-machines).
+
+```toml
+[keybindings.window_management]
+next_host = ["alt+."]
+prev_host = ["alt+,"]
+```
 
 ## What another machine may do here
 

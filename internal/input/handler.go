@@ -248,6 +248,9 @@ func HandleInput(msg tea.Msg, o *app.OS) (tea.Model, tea.Cmd) {
 	// Focus landing on a pane that finished turns while the person was
 	// away has the dock say what it did. A nil check when it did not.
 	cmd = tea.Batch(cmd, o.AgentRecapFetch())
+	// Quick look follows the rail's cursor, and closes when the rail lets go
+	// of the keyboard. A bool check while it is closed.
+	cmd = tea.Batch(cmd, o.QuickLookSync())
 	// A click or a key may have allowed a pane's clipboard write.
 	cmd = tea.Batch(cmd, o.ClipboardApprovalCmd())
 
@@ -409,6 +412,12 @@ func HandleKeyPress(msg tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
 		return o, nil
 	}
 	msg = o.StripHoldModifier(msg)
+
+	// esc puts down a files row held by the pointer. Nothing is dropped.
+	if o.FileDragActive() && msg.String() == "esc" {
+		o.CancelFileDrag()
+		return o, nil
+	}
 
 	// A modifier pressed on its own arrives as a key while tuios asks for every
 	// key as an escape code. Holding Shift for the key after the leader must

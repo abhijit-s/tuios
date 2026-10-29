@@ -154,6 +154,7 @@ func terminalSafeAction(action string) bool {
 		action == "next_session" || action == "prev_session" ||
 		action == "next_session_in_space" || action == "prev_session_in_space" ||
 		action == "next_space" || action == "prev_space" ||
+		action == "next_host" || action == "prev_host" ||
 		action == "next_agent" || action == "prev_agent"
 }
 

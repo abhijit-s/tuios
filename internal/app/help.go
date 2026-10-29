@@ -41,6 +41,7 @@ func GetHelpCategories(registry *config.KeybindRegistry, s *config.Settings) []H
 				"next_session", "prev_session",
 				"next_session_in_space", "prev_session_in_space",
 				"next_space", "prev_space",
+				"next_host", "prev_host",
 				"next_agent", "prev_agent",
 				"toggle_multifocus_active", "toggle_multifocus_all", "close_workspace",
 			}),
@@ -258,9 +259,15 @@ func generateAgentBindings(registry *config.KeybindRegistry, s *config.Settings)
 	inbox(config.ActionMailReply, "Mailbox: reply in the open thread")
 	inbox(config.ActionMailFocusPane, "Mailbox: go to the pane that last wrote")
 	inbox(config.ActionMailNew, "Mailbox: write a new message to an agent")
-	// The review overlay's own keys, which are not bindings, like the
+	// The review overlay's hunk and file motions, read from
+	// [keybindings.review], so a rebound key shows as it is bound.
+	review := func(action, desc string) { add(registry.GetReviewKeys(action), desc) }
+	review(config.ActionReviewNextHunk, "Review: next hunk")
+	review(config.ActionReviewPrevHunk, "Review: previous hunk")
+	review(config.ActionReviewNextFile, "Review: next file")
+	review(config.ActionReviewPrevFile, "Review: previous file")
+	// The overlay's other keys are its own and not bindings, like the
 	// scrollback browser's. See review_input.go.
-	add([]string{"] [", "} {"}, "Review: next or previous hunk, next or previous file")
 	add([]string{"c", "C"}, "Review: a note on the line, or on the whole hunk")
 	add([]string{"e", "x"}, "Review: edit or resolve the note under the cursor")
 	add([]string{"S"}, "Review: send the unsent notes to the agent, typed when it is at rest")
@@ -532,6 +539,8 @@ func generateSidebarBindings(registry *config.KeybindRegistry, s *config.Setting
 		fileRow("file_edit", "Files: edit a text file in the configured editor"),
 		fileRow("file_copy_path", "Files: copy the path of the file or folder"),
 		fileRow("file_send", "Files: send the file or folder to a host"),
+		fileRow("file_insert_path", "Files: paste the path into the focused pane"),
+		fileRow("file_quick_look", "Files: show a preview of the file or folder"),
 	)
 
 	// The Copies panel's keys, live while it is open. They are read from

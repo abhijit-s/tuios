@@ -201,6 +201,44 @@ not text. The binding is `file_edit` in `[keybindings.sidebar_files]`.
 of a folder has a Copy path row that does the same. The binding is
 `file_copy_path` in `[keybindings.sidebar_files]`.
 
+`I` pastes the path of the selected file or folder into the focused pane. The
+context menu of a row has a Paste path in pane row that does the same. The
+binding is `file_insert_path` in `[keybindings.sidebar_files]`.
+
+### Drag a file into a pane
+
+You can also drag a row with the mouse. Press a row, move the pointer out of
+the sidebar, and release the button over a pane. The pane gets the path.
+
+- While you drag, the row in the sidebar looks picked up.
+- A heavy frame in the accent colour shows the pane under the pointer. A pane
+  that does not take the path gets the frame in the warning colour.
+- A label at the pointer shows the name, the pane and the program in the pane.
+- `Esc` cancels the drag.
+- A release over the sidebar, the dock or an empty area does nothing.
+- A click that stays in the sidebar does what a click on the row did before.
+
+After the drop, the pane has the focus and the mode does not change.
+
+tuios quotes the path for the program in the pane. It knows sh, bash, zsh,
+dash, ksh, fish, nu, csh, PowerShell, elvish and cmd. Other programs get POSIX
+single quotes. A folder path ends in `/`. A space follows the path, so you can
+type the next word. Hold `Alt` when you release a folder to type a cd to it.
+The path goes in as a paste. A program that turned on bracketed paste gets it
+as one paste.
+
+tuios does not paste the path in these cases. The label and a dock note say
+why.
+
+- The pane is on another machine.
+- The pane runs ssh or mosh, or its shell reports a folder on another machine.
+- The file is in a listing from another machine.
+- The name holds a line break or a control character.
+- The pane is in copy mode.
+
+A drag never copies or moves the file. To turn the drag off, set
+`appearance.sidebar.file_drag = false`.
+
 When the session runs on another machine, tuios does not check the file on your
 machine. If the editor is not on that machine, no pane opens. tuios shows a
 dock note that names the editor and the machine, so you know what to check.
@@ -221,6 +259,31 @@ tuios makes the folder when it is not there. A file that is there stays, and
 the copy gets the name `name (from HOST).ext`. The context menu of a row has a
 Send to host row that does the same. The binding is `file_send` in
 `[keybindings.sidebar_files]`.
+
+`Space` shows a quick look preview of the selected row. The preview opens over
+the panes and shows:
+
+- code with syntax colours and line numbers,
+- Markdown as formatted text,
+- a picture, a PDF page or a film frame,
+- the names in a folder.
+
+A file that is not text shows its type and size. A long text shows its first
+5000 lines, and the preview says so. Turn the mouse wheel over the preview to
+scroll it.
+
+`Up` and `Down` (or `j` and `k`) move the cursor to the next row, and the preview
+shows that row. `Space` or `Esc` closes the preview. A click outside it closes
+it too. The preview takes no other key: every other key goes to the sidebar.
+When the sidebar loses keyboard focus, the preview closes.
+
+For a listing on another machine, that machine reads the file and sends the
+preview. Its host policy must allow `files`. The binding is `file_quick_look`
+in `[keybindings.sidebar_files]`.
+
+A picture uses Kitty graphics when the terminal supports them. Other terminals
+get block characters. At 16 colours the preview names the picture and does not
+draw it.
 
 `Ctrl+B f` searches file names below the directory of the focused pane. It also
 works while you type in a pane. `Ctrl+F` searches below the folder that the
@@ -689,6 +752,8 @@ The key was `b` in earlier versions.
 pane. `Ctrl+B .` opens it too. The picker lists the folder that the shell in
 the pane is in. Folders come first, then files. Type to filter the names.
 Press `Enter` to type the path of the selected name at the cursor.
+tuios quotes the path for the shell in the pane, by the same rules as a drag
+from the sidebar. See [Drag a file into a pane](#drag-a-file-into-a-pane).
 
 | Key | What it does |
 | --- | --- |
@@ -1162,6 +1227,30 @@ nothing. The actions have no default key. The command palette has the entries
 next_workspace = ["alt+y"]
 prev_workspace = ["alt+u"]
 ```
+
+## Cycle through machines
+
+The `next_host` and `prev_host` actions go to a session on the next or the
+previous machine. The order is the order of the machine groups in the rail.
+This machine is first, then the machines of the `[hosts]` table. The actions
+wrap at the end. They skip a machine whose link is not up and a machine with
+no session.
+
+On each machine, they go to the session you last showed on that machine. If
+you have not been on that machine, or that session is gone, they go to the
+session that is attached there. If no session is attached, they go to the first
+session in the rail. With no other machine, they show "No other machines".
+
+The actions have no default key. The command palette has the entries "Next
+machine" and "Previous machine". To bind them:
+
+```toml
+[keybindings.window_management]
+next_host = ["alt+."]
+prev_host = ["alt+,"]
+```
+
+Like `next_session`, a chord with Alt or Ctrl also works in terminal mode.
 
 ## Actions for a tmux-style keymap
 
@@ -1796,9 +1885,10 @@ Inside it:
 | `s` | Step the order inside each group |
 | `/` | Search. A `key:value` term is a selector, such as `harness:codex` |
 | `d` `z` `u` `S` | Dismiss, snooze, undo, show the snoozed items |
-| `y` `p` `m` | Resume, pass held mail on, open the mailbox |
-| `x` `*` | Mark an agent, or every agent shown, for a bulk answer. A marked row shows a mark, and the header counts the marks |
+| `y` `p` `m` | Resume in place (the view stays open), pass held mail on, open the mailbox |
+| `x` `*` | Mark an agent or a Resume row, or every row shown, for a bulk answer. A marked row shows a mark, and the header counts the marks |
 | `1` `3` with marks | Allow every marked approval once, after a sheet that lists them, or reject them |
+| `y` with marks | Resume every marked Resume row. `*` then `y` resumes them all |
 | `[` `]` | Switch the focus tabs: Card on the board, Thread, Changes, Artifacts, Checkpoints and Pane |
 | `J` `K` | Scroll the thread, or a long plan waiting for a yes. On the Artifacts tab, move between the artifacts |
 | `e` | Show every line of every card in the thread |
@@ -2052,15 +2142,16 @@ the lines they are on. The code is coloured by its file type in the
 active theme's colours, added and removed lines sit on green and red grounds,
 and the words that changed in a changed line are marked. It owns every key
 while it is open, in either mode.
-The keys are the overlay's own, not bindings, like the scrollback browser's:
+The keys are the overlay's own, not bindings, like the scrollback browser's,
+except the hunk and file motions, which are in `[keybindings.review]`:
 
 | Keys | What it does |
 | --- | --- |
 | `j` / `k`, arrows | Move by line; with the file list focused, move through the files |
 | `space`, `pgdown`, `ctrl+d` / `pgup`, `ctrl+u` | Move by a page |
 | `g` / `G` | First or last line |
-| `]` / `[` | Next or previous hunk, going on into the next or previous file |
-| `}` / `{` | Next or previous file |
+| `]` / `[` | Next or previous hunk, going on into the next or previous file (`review_next_hunk`, `review_prev_hunk`) |
+| `}` / `{` | Next or previous file (`review_next_file`, `review_prev_file`) |
 | `s` | One column, or the old and new sides next to each other where the diff column is wide enough (about 120 columns of screen) |
 | `h` / `l`, `left` / `right` | Scroll the code sideways |
 | `tab` | Focus the file list or the diff |
@@ -2078,6 +2169,23 @@ The keys are the overlay's own, not bindings, like the scrollback browser's:
 
 In the note line and the other one-line prompts every printable key is text,
 a paste is typed as one line, `enter` saves and `esc` drops.
+
+`]`, `[`, `}` and `{` need Option on some layouts, AZERTY among them, where
+Option is often the Alt key that tuios reads. To move them, bind other keys in
+the `review` section. A key bound there wins over the overlay's own key, so
+pick one the table above does not use:
+
+```toml
+[keybindings.review]
+review_next_hunk = ["n"]
+review_prev_hunk = ["p"]
+review_next_file = ["N"]
+review_prev_file = ["P"]
+```
+
+The footer and the help overlay show the keys as they are bound. tuios warns
+when a `review` key is one of the overlay's own keys, and
+`tuios keybinds doctor` lists it under REVIEW KEYS.
 
 The compare view lists the attempts of the fan, with what each changed
 against the fan's base and its last check:
