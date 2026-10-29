@@ -1732,7 +1732,7 @@ func (m *OS) sidebarPanelLinesForTree(tree sessiontree.Tree) ([]string, int) {
 	agentRowH := 1
 	// Row heights per section, which is what turns a section's line budget into
 	// the rows it can show and a st.lit() line back into the row under it.
-	rowH := [sidebarSectionCount]int{1, 1, agentRowH, 1, 1, 1, 1}
+	rowH := [sidebarSectionCount]int{1, 1, agentRowH, 1, 1, 1, 1, 1}
 
 	// The chrome each drawn section costs before a row of it appears: its own
 	// header, plus the floating blank in front of the pinned block.
