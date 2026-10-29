@@ -195,6 +195,16 @@ type StartupConfig struct {
 	// bare "tuios" whose daemon will not start runs standalone for that one run
 	// and says so, so this never leaves the user without a terminal.
 	Daemon bool `toml:"daemon"`
+	// Session is the session a bare "tuios" attaches to, made when it is gone,
+	// as "tuios attach NAME -c" does. Empty keeps the old choice: the most
+	// recent session. A name needs the daemon, so a set Session takes the
+	// daemon route even with Daemon off; --standalone and TUIOS_NO_DAEMON=1
+	// still win. Any subcommand names its own session and ignores this.
+	Session string `toml:"session"`
+	// Window is the pane a bare "tuios" focuses in Session before it attaches,
+	// by id or name as "tuios focus-window" resolves it. It needs Session. A
+	// name no pane has leaves the focus where it was and creates nothing.
+	Window string `toml:"window"`
 }
 
 // TapeConfig holds settings for per-directory project tapes (.tuios.tape).
@@ -364,6 +374,7 @@ type AppearanceConfig struct {
 	ScrollLines              int                     `toml:"scroll_lines"`                 // Lines scrolled per mouse wheel notch (default: 3, min: 1, max: 50)
 	CopyOnSelect             *bool                   `toml:"copy_on_select"`               // Copy a mouse selection to the clipboard on release (default: true)
 	NvimNavigation           *bool                   `toml:"nvim_navigation"`              // Let the Neovim navigator plugin hand terminal focus keys back to TUIOS (default: false)
+	FocusWrap                *bool                   `toml:"focus_wrap"`                   // A focus key at the edge of a tiled layout moves to the pane on the far side (default: false)
 	FocusFollowsMouse        *bool                   `toml:"focus_follows_mouse"`          // Focus the pane under the cursor as the mouse moves (default: false)
 	FocusFollowsMousePause   string                  `toml:"focus_follows_mouse_pause"`    // The key that pauses focus_follows_mouse while held: ctrl, alt, off (default: off)
 	AltDrag                  *bool                   `toml:"alt_drag"`                     // Alt + left-drag moves a pane (default: true)
@@ -928,6 +939,10 @@ type SidebarConfig struct {
 	// output the custom section draws, its heading, and when it runs. Read
 	// from the file only; see SidebarCustomConfig for why.
 	Custom SidebarCustomConfig `toml:"custom"`
+	// Pane is the [appearance.sidebar.pane] table: the program the pane
+	// section runs, its heading and its height. Read from the file only, for
+	// the reason Custom is. See sidebar_pane.go.
+	Pane SidebarPaneConfig `toml:"pane"`
 	// Left and Right independently configure rails on the two screen edges.
 	// When absent, the existing rail still lives at Position with its existing
 	// settings. A new edge must be explicitly enabled; see sidebar_edges.go.
@@ -1145,6 +1160,7 @@ func DefaultConfig() *UserConfig {
 				OSC52Write: OSC52WriteFocused,
 			},
 			NvimNavigation: new(false),
+			FocusWrap:      new(false),
 			Sidebar: SidebarConfig{
 				// A fresh pointer per call, so a caller that flips it in place
 				// cannot change the next DefaultConfig.
@@ -1216,6 +1232,9 @@ func DefaultConfig() *UserConfig {
 				// p pins the focused pane as the picture-in-picture view and
 				// unpins it again. p for pin. It was free in window mode.
 				"toggle_pip": {"p"},
+				// P gives the keyboard to the rail's pane section, next to
+				// the p that pins a pane in the corner.
+				"focus_rail_pane": {"P"},
 				// Finishing a mouse selection has always told the user to press
 				// 'c' to copy it. Until this binding existed, nothing was
 				// listening.
@@ -3047,6 +3066,9 @@ func ApplyAppearanceConfig(cfg *UserConfig, s *Settings) {
 	if cfg.Appearance.NvimNavigation != nil {
 		s.NvimNavigation = *cfg.Appearance.NvimNavigation
 	}
+	if cfg.Appearance.FocusWrap != nil {
+		s.FocusWrap = *cfg.Appearance.FocusWrap
+	}
 
 	// FocusFollowsMouse defaults to false; a pointer so turning it off in the
 	// settings page survives a reload just as turning it on does.
@@ -3786,6 +3808,8 @@ var yieldingDefaults = map[string]bool{
 	"set_note": true,
 	// p in window mode, new in the release after v0.8.2.
 	"toggle_pip": true,
+	// P in window mode, new with the rail's pane section.
+	"focus_rail_pane": true,
 	// V after the prefix, new in the release after v0.8.2.
 	"paste_image": true,
 	// ] and # after the prefix, new in the release after v0.8.5.

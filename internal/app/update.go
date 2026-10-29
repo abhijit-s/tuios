@@ -1018,6 +1018,12 @@ func (m *OS) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// rail's size are what its command is told, and the layout is what says
 	// whether it runs at all.
 	railSync := m.RailCustomSyncCmd()
+	// The rail pane on the same beat: the layout, the rail's size and the
+	// session's windows are what decide whether it is asked for, sized,
+	// streamed or left alone. See rail_pane.go.
+	if pane := m.RailPaneSyncCmd(); pane != nil {
+		railSync = tea.Batch(railSync, pane)
+	}
 	// Same shape as the files sync: the rail opening is one of the fifty
 	// handlers, and the poll it re-plans is armed here rather than in each of
 	// the five places that can open it.
@@ -2056,12 +2062,19 @@ func (m *OS) handleMsg(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 			shakeCmd = m.noteShakeMotion(mm, time.Now())
 		}
 
+		// A key typed while a paste reads its buffer waits for the paste.
+		// See pasteHold.
+		input := m.fixHostKeyMods(msg)
+		if m.holdKeyForPaste(input) {
+			return m, shakeCmd
+		}
+
 		// Delegate to the registered input handler
 		handler := getInputHandler()
 		if handler == nil {
 			return m, tea.Batch(shakeCmd, m.armScreensaver())
 		}
-		newModel, cmd := handler(m.fixHostKeyMods(msg), m)
+		newModel, cmd := handler(input, m)
 		if shakeCmd != nil {
 			cmd = tea.Batch(cmd, shakeCmd)
 		}
@@ -2395,6 +2408,10 @@ func (m *OS) handleMsg(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 		m.handleScratchOpened(msg)
 		return m, nil
 
+	case RailPaneOpenedMsg:
+		m.handleRailPaneOpened(msg)
+		return m, nil
+
 	case CommandRanMsg:
 		m.handleCommandRan(msg)
 		return m, nil
@@ -2407,7 +2424,12 @@ func (m *OS) handleMsg(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 		return m, nil
 
 	case PasteBufferFetchedMsg:
-		return m, m.handlePasteBufferFetched(msg)
+		cmd := m.handlePasteBufferFetched(msg)
+		if msg.held {
+			// The paste is in, or failed, so the keys typed after it go now.
+			cmd = tea.Batch(cmd, m.releasePasteHold())
+		}
+		return m, cmd
 
 	case PasteBuffersLoadedMsg:
 		m.handlePasteBuffersLoaded(msg)

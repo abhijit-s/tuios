@@ -257,6 +257,11 @@ var optionSpecs = []Option{
 		Default:     "false",
 	},
 	{
+		Path: "appearance.focus_wrap", Type: OptionBool, Section: "appearance",
+		Description: "A focus key at the edge of a tiled layout moves to the pane on the far side",
+		Default:     "false",
+	},
+	{
 		Path: "appearance.focus_follows_mouse", Type: OptionBool, Section: "appearance",
 		Description: "Focus the pane under the cursor as the mouse moves",
 		Default:     "false",
@@ -1085,6 +1090,16 @@ var optionSpecs = []Option{
 		Path: "startup.daemon", Type: OptionBool, Section: "startup",
 		Description: "Make a bare \"tuios\" attach to a daemon-backed session instead of running standalone. TUIOS_NO_DAEMON=1 or --standalone overrides it. False when the config file has no [startup] table.",
 		Default:     "true",
+	},
+	{
+		Path: "startup.session", Type: OptionString, Section: "startup",
+		Description: "Session a bare \"tuios\" attaches to. tuios makes it when it is gone. Empty attaches to the most recent session.",
+		Default:     "",
+	},
+	{
+		Path: "startup.window", Type: OptionString, Section: "startup",
+		Description: "Pane, by name or id, that a bare \"tuios\" focuses in startup.session. When no pane has that name, the focus does not change.",
+		Default:     "",
 	},
 
 	// [agents]. Only enabled is a scalar; the rest of the table is lists and

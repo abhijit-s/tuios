@@ -1437,6 +1437,9 @@ type OS struct {
 	// buffersDaemonOld is set when the daemon answered unknown_verb to a
 	// buffer verb: it is too old, and pasteBufs keeps the buffers instead.
 	buffersDaemonOld bool
+	// pasteHold holds the keys typed while a paste reads its buffer from
+	// the daemon. See holdKeyForPaste.
+	pasteHold pasteHold
 	// Aggregate view overlay (all windows across workspaces)
 	ShowAggregateView     bool
 	AggregateViewQuery    string
@@ -1613,13 +1616,14 @@ type OS struct {
 	sidebarSessionStateEvents [2]chan sidebarSessionEvent // latest snapshot for each rail
 	sidebarSessionStateMu     [2]sync.Mutex               // serialize replacements from old/new clients
 	sidebarSessionDone        chan struct{}
-	sidebarSessionFocus       int // 0 none, 1 left, 2 right
+	sidebarSessionFocus       int // 0 none, 1 left, 2 right, 3 the rail pane (railPaneFocus)
 	SidebarScrollS            int
 	SidebarScrollT            int
 	SidebarScrollA            int
 	SidebarScrollF            int
 	SidebarScrollG            int
 	SidebarScrollC            int
+	SidebarScrollP            int
 	// SidebarScrollSp is the spaces section's, drawn by the split space layout.
 	SidebarScrollSp int
 
@@ -2056,6 +2060,9 @@ type OS struct {
 	pendingStartTerminalMode bool
 	// pip is this client's picture-in-picture view. See pip.go.
 	pip pipState
+	// railPane is this client's view of the rail's pane section. See
+	// rail_pane.go.
+	railPaneView railPaneState
 	// PiPPressed says the button that is down was pressed on the
 	// picture-in-picture view, so its release is the view's as well.
 	PiPPressed bool

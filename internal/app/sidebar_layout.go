@@ -79,6 +79,7 @@ var sidebarSectionByName = map[string]sidebarSection{
 	"files":                     sidebarSectionFiles,
 	"git":                       sidebarSectionGit,
 	config.SidebarSectionCustom: sidebarSectionCustom,
+	config.SidebarSectionPane:   sidebarSectionPane,
 }
 
 // sidebarSectionFloors is the least each section is shrunk to, in rows, before
@@ -98,6 +99,9 @@ var sidebarSectionFloors = [sidebarSectionCount]int{
 	sidebarSectionCustom: 2,
 	// Two, so the current space and one other stay on screen.
 	sidebarSectionSpaces: 2,
+	// Three, so a program is never squeezed below a line of output with a
+	// line above and below it while another section grows.
+	sidebarSectionPane: 3,
 }
 
 // The parsed layout, cached against the string it came from and whether the
@@ -446,5 +450,8 @@ func (m *OS) sidebarScrollOffsets() [sidebarSectionCount]*int {
 		sidebarSectionGit:       &m.SidebarScrollG,
 		sidebarSectionCustom:    &m.SidebarScrollC,
 		sidebarSectionSpaces:    &m.SidebarScrollSp,
+		// The pane never scrolls the rail's way: it is sized to its lines.
+		// The offset is here so every section has one.
+		sidebarSectionPane: &m.SidebarScrollP,
 	}
 }

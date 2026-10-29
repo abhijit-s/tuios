@@ -706,6 +706,7 @@ var ActionDescriptions = map[string]string{
 	"restore_all":        "Restore all minimized",
 	"toggle_zoom":        "Toggle zoom (fullscreen)",
 	"toggle_pip":         "Pin or unpin the picture-in-picture view",
+	"focus_rail_pane":    "Type into the pane in the rail",
 	"start_screensaver":  "Start the screen saver now",
 	"screenshot":         "Pick what to screenshot",
 	"screenshot_window":  "Screenshot this window",
@@ -886,7 +887,8 @@ var ActionDescriptions = map[string]string{
 	ActionCopyModeSearchForward:  "Enter copy mode and search forward",
 	ActionCopyModeSearchBackward: "Enter copy mode and search backward",
 	ActionCopyModeLineStart:      "Copy mode: go to the start of the line",
-	ActionCopyModeLineEnd:        "Copy mode: go to the end of the line",
+	ActionCopyModeFirstNonBlank:  "Copy mode: go to the first nonblank character of the line",
+	ActionCopyModeLineEnd:        "Copy mode: go to the last nonblank character of the line",
 
 	// Session lifecycle (context menu rows; no default keybinding)
 	"settings_sidebar":     "Sidebar settings",

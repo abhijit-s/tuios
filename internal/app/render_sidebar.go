@@ -1,6 +1,7 @@
 package app
 
 import (
+	"image"
 	"image/color"
 	"slices"
 	"sort"
@@ -145,6 +146,10 @@ const (
 	// Activating it opens or shuts the rows. It carries the pane's session
 	// and window. See SidebarToggleSubagents.
 	sidebarRowSubagentToggle
+	// sidebarRowRailPaneStart is the line the pane section draws when its
+	// program stopped or did not start. Activating it starts it again. See
+	// rail_pane.go.
+	sidebarRowRailPaneStart
 )
 
 // sidebarAddGlyph is the mark both add controls wear. One cell, so it costs a
@@ -292,6 +297,10 @@ const (
 	// puts it directly above the sessions section, wherever that is, and only
 	// while appearance.sidebar.spaces is split. See sidebarLayoutFor.
 	sidebarSectionSpaces
+	// sidebarSectionPane draws a live terminal pane, configured in
+	// [appearance.sidebar.pane]. Its rows are the pane's own rows, and the
+	// pane is sized to the lines the section is given. See rail_pane.go.
+	sidebarSectionPane
 	sidebarSectionCount
 )
 
@@ -1476,7 +1485,7 @@ func (m *OS) sidebarPanelLinesForTree(tree sessiontree.Tree) ([]string, int) {
 	// While the rail owns the keyboard its edge rule burns accent instead of the
 	// dock's muted hairline, so the focus is legible at the frame, not only on a
 	// single highlighted row.
-	if m.sidebarRailFocused() {
+	if m.sidebarRailFocused() || !m.sidebarDrawing && m.RailPaneFocused() {
 		edge = lipgloss.NewStyle().Foreground(pal.Accent).Render(m.Settings.GetWindowBorderLeft())
 	}
 
@@ -1677,6 +1686,21 @@ func (m *OS) sidebarPanelLinesForTree(tree sessiontree.Tree) ([]string, int) {
 	if nC == 0 && m.railCustomEnabled() {
 		nC = 1
 	}
+	// The pane section asks for the rows its height names, or for the whole
+	// rail when it names none, so its share in the layout is what sizes it.
+	// With no pane yet it keeps one row, for the line that says why.
+	paneWin := m.railPaneWindow()
+	nP := 0
+	if m.railPaneEnabled() && cw >= config.SidebarPaneMinCols {
+		switch {
+		case paneWin == nil || paneWin.Rail != m.railPaneConfig().CommandLine():
+			nP = 1
+		case m.railPaneConfig().Height > 0:
+			nP = m.railPaneConfig().Height
+		default:
+			nP = height
+		}
+	}
 	rowsIn := [sidebarSectionCount]int{
 		sidebarSectionSessions:  nS,
 		sidebarSectionTerminals: nT,
@@ -1685,6 +1709,7 @@ func (m *OS) sidebarPanelLinesForTree(tree sessiontree.Tree) ([]string, int) {
 		sidebarSectionGit:       len(gitRows),
 		sidebarSectionCustom:    nC,
 		sidebarSectionSpaces:    len(spaceRows),
+		sidebarSectionPane:      nP,
 	}
 	// The last section in the configured layout is the one pinned to the rail's
 	// bottom: the slack rides above it, and it wears a blank line of its own so
@@ -1926,6 +1951,23 @@ func (m *OS) sidebarPanelLinesForTree(tree sessiontree.Tree) ([]string, int) {
 				}
 			}
 		}
+	}
+	// The pane is sized to the lines it was given, so it has no rows below
+	// a fold: no "+N" line and no scroll thumb.
+	rowsIn[sidebarSectionPane] = min(rowsIn[sidebarSectionPane], capRows[sidebarSectionPane])
+	if !m.sidebarDrawing && m.railPaneEnabled() {
+		// Where the pane's cells land, for the pointer and for the size the
+		// pane is given. No lines, or no pane yet, is a pane off the screen.
+		m.railPaneView.cols, m.railPaneView.rows, m.railPaneView.rect = 0, 0, image.Rectangle{}
+		if p := place[sidebarSectionPane]; p.header >= 0 && p.lines > 0 && paneWin != nil && paneWin.Rail == m.railPaneConfig().CommandLine() {
+			lines := min(p.lines, height-p.top)
+			if lines > 0 {
+				y0 := topMargin + p.top
+				m.railPaneView.cols, m.railPaneView.rows = cw, lines
+				m.railPaneView.rect = image.Rect(contentX0, y0, contentX0+cw, y0+lines)
+			}
+		}
+		m.railPaneApply()
 	}
 	var start, count, hidden [sidebarSectionCount]int
 	for s := range rowsIn {
@@ -2397,6 +2439,30 @@ func (m *OS) sidebarPanelLinesForTree(tree sessiontree.Tree) ([]string, int) {
 			lines = append(lines, overflowRow(h, 0))
 		}
 	}
+	drawPane := func() {
+		title := m.railPaneConfig().ResolvedTitle()
+		lines = append(lines, compose(sidebarHeaderRowRuled(title, "", cw, pal, &m.Settings)))
+		n := count[sidebarSectionPane]
+		if n <= 0 {
+			return
+		}
+		if w := m.railPaneWindow(); m.railPaneView.rows > 0 && w != nil {
+			for _, line := range m.railPaneLines(w, cw, n) {
+				lines = append(lines, compose(line))
+			}
+			return
+		}
+		note, restart := m.railPaneNote()
+		st := m.railRowState(hoverRow[sidebarSectionPane] == 0, false)
+		if restart {
+			recordHit(sidebarRowRailPaneStart, "", "", -1, 1)
+		}
+		row := sidebarStyle(nil, pal.FgMute).Render(" " + ansi.Truncate(note, max(cw-1, 1), "…"))
+		lines = append(lines, compose(st.mark(pal, sidebarFit(row, cw, nil))))
+		for range n - 1 {
+			lines = append(lines, blank)
+		}
+	}
 
 	draw := [sidebarSectionCount]func(){
 		sidebarSectionSessions:  drawSessions,
@@ -2406,6 +2472,7 @@ func (m *OS) sidebarPanelLinesForTree(tree sessiontree.Tree) ([]string, int) {
 		sidebarSectionGit:       drawGit,
 		sidebarSectionCustom:    drawCustom,
 		sidebarSectionSpaces:    drawSpaces,
+		sidebarSectionPane:      drawPane,
 	}
 	drawnAt := 0
 	for i, p := range plans {

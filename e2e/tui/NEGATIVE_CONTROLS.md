@@ -2689,6 +2689,24 @@ positive half runs the defaults and wants no copy mode problem.
 | The report never carries the problems | `Report`: `CopyModeProblems` set to nil | `TestKeybindsDoctorNamesACopyModeKeyUsedTwice/clashes` | **caught** |
 | The bound rows at the end of the section | `generateCopyModeBindings` appends them, as before | `TestHelpListsHomeAndEndWithTheLineKeys` | **caught** |
 
+### $ and ^ stop on the line's text (#980)
+
+`TestCopyModeHomeAndEnd` also prints an indented line above its line. `$`
+must stop on the last `l` of `END-tail`, not on the blank padding out to the
+pane edge. `^`, pressed from the last word of the indented line, must stop on
+the `I` of `INDENT`, not on column zero as `0` does. Both expected columns
+come from where the text sits in the screen line. Run on 2026-10-29 on Linux,
+based on origin/main at `feb2df438`.
+
+| Control | How | Tests that fail | Verdict |
+| --- | --- | --- | --- |
+| The released behaviour | build origin/main (`feb2df438`) | `TestCopyModeHomeAndEnd` ("$ put the copy cursor on column 88, want column 56, the last l of END-tail") | **caught** |
+| `^` goes to column zero | `handleNormalInput`: `^` sets `cm.CursorX = 0`, as before | `TestCopyModeHomeAndEnd` ("^ put the copy cursor on column 31, want column 35, the I of INDENT") | **caught** |
+
+The positive half is the fixed build: `TestCopyModeHomeAndEnd` and
+`TestCopyModeEndRebinds` pass. `End` and `$` still reach the same column, so
+the `Home` and `End` checks above keep their meaning.
+
 ## A copy trims the whitespace it covers (#516)
 
 `copy_whitespace_test.go` prints indented lines and reads each copy off the
@@ -10327,6 +10345,49 @@ TUIOS_E2E=1 TUIOS_E2E_BIN=/path/to/tuios \
 go test -count=1 -run '^TestWireCarriesAnOpenCluster$' ./internal/session/
 ```
 
+### PR 4: a different binary, the preflight, the fallback
+
+- `TestDaemonUpgradeKeepsPaneProcesses` (section 1.4 of the spec): the daemon is upgraded to a second copy of the binary with four panes running: a counter printing `tick-N` every 10 ms, a fake agent that answers `got-<line>` and reports `working` through `tuios set-agent-state`, a program on the alternate screen with bracketed paste and SGR mouse on behind `cat -v`, and `yes` writing as fast as it can. The daemon keeps its pid and runs the copy (`ps -o comm=`, or `/proc/<pid>/exe` on Linux), every pane keeps its pid, the counter has no gap or repeat across the upgrade, the agent answers and reports, a paste reaches the alternate-screen program bracketed, and the agent's `exit 7` afterwards reads 7. Its artifact has the pids, the counter's range, the end-to-end time, and the handoff's own measurements, among them the most bytes one pane's kernel buffer held when the panes stopped (1024 on macOS, from `yes`).
+- `TestDaemonUpgradeRefusesAndChangesNothing`: upgrades to `false`, and to an older tuios when `TUIOS_E2E_BASELINE_BIN` names one, are refused by the preflight; the daemon's image, every pane's pid and an open pane stream are unchanged. Run on 2026-10-17 with a build of upstream main at 72c1c367 as the baseline: refused with "does not run as a tuios that can take this daemon's state", since that build has no `daemon handoff-accepts` and refuses to start a second daemon.
+- `TestDaemonUpgradeFallsBackToPreviousBinary`: with `TUIOS_TEST_HANDOFF_FAIL=error`, and with `TUIOS_TEST_HANDOFF_FAIL=hang` and a 1.5 s watchdog, the new image cannot adopt the panes. The daemon comes back on `handoff/tuios.prev`, the binary it kept at start, with the same pid and every pane's pid, says it is the fallback, and the counter has no gap.
+- `TestDaemonUpgradeQueuesCLICallsDuringSwap`: `tuios call hello` in a loop through an upgrade held for a second between the manifest write and the exec. None of 70-odd calls fails; calls are answered by each image, and some that started while the daemon was stopped waited in the backlog and were answered by the new one.
+- `TestDaemonUpgradeRefusesWhileVerifyFanRuns`: an upgrade asked for while `fan verify` runs a 4 s check is refused with "a fan check is running", the image is unchanged, and the check's result still arrives as `2 of 2 passed`.
+- `TestDaemonUpgradeRefusesWhileHookOrPluginRuns`: an upgrade asked for while an `after-new-window` hook runs `sleep 4` is refused with "the after-new-window hook is running", and while a plugin action runs `sleep 4` with "a command of plugin e2e.slow is running"; the image is unchanged, and once the command has finished the same upgrade goes through.
+- `TestDaemonUpgradeEndsWhenFallbackExecFails`: the new image hangs in adoption (`TUIOS_TEST_HANDOFF_FAIL=hang`, a 1.5 s watchdog), and `handoff/tuios.prev` is removed during a 1.5 s hold before the exec, so the fallback exec fails. The daemon must exit, and the pane's process with it, within 20 s.
+- `TestDaemonUpgradePreflightRefusals`: a copy of tuios with mode 0775 is refused with "can be written by its group or by others (mode 0775) ... chmod go-w"; a script that prints `hello` with "so it is not a tuios this daemon can upgrade to. Check the path names a tuios binary"; a script that answers for `plan9` with "is built for plan9, and this daemon runs on darwin. Upgrade to a tuios built for darwin". The image is unchanged each time. The `owned by another user` subtest runs only as root: it gives a copy of tuios to uid 65534 and expects "is owned by user 65534, not by you or root, so this daemon will not run it".
+- `TestDaemonUpgradeFallsBackAfterInstallerReplacesBinary` (Linux only): the daemon runs a copy of tuios, a new file is renamed over that path as `install.sh` does, and the upgrade to that path fails to adopt on purpose (`TUIOS_TEST_HANDOFF_FAIL=error`). The fallback must exec the old, now nameless, inode through the descriptor of `/proc/self/exe` kept at start: same daemon pid and pane pids, `fallback` set, `/proc/<pid>/exe` reading `<path> (deleted)`, and no gap in the pane's counter. On Linux `TestDaemonUpgradeFallsBackToPreviousBinary` also goes through the descriptor, and checks the image runs the binary it ran before; `TestDaemonUpgradeEndsWhenFallbackExecFails` skips there, since a held descriptor cannot be taken away from outside.
+
+Run on 2026-10-17 on macOS arm64, one build per control; the rows dated 2026-10-28 were run on macOS arm64 (Darwin 27, Go 1.26.10), each control built once and run twice, with every source file restored and checked byte for byte with sha256. The Linux rows were run on 2026-10-28 in Docker (`golang:1.26.10`, Linux arm64, as root, `--cpus 4 --memory 8g`) with binaries built in the container; there the targeted run `^(TestDaemonUpgrade|TestSelfExec|TestHandoff|TestQuiesce|TestExitDuringQuiesce)` plus the installer test ran 17 tests (15 passed, 2 skipped) and 9 subtests (all passed).
+
+| Control | How | Test that fails | Verdict |
+| --- | --- | --- | --- |
+| Close-on-exec left on the masters | drop `r.fds = append(r.fds, fds[i])` in `writeManifest` | `TestDaemonUpgradeKeepsPaneProcesses`: "the daemon never answered from a new image within 30s: ... a stale socket is left over" | **caught** |
+| Skip the reader quiesce | `Quiesce(ctx)` replaced by `ctx.Err()` in `prepare` | `TestDaemonUpgradeKeepsPaneProcesses`: "the counter jumps from 177 to 179" | **caught** |
+| The adopted pane does not wait on its pid | drop `pty.proc, _ = os.FindProcess(rec.PID)` in `adoptPTY` | `TestDaemonUpgradeKeepsPaneProcesses`: the agent pane's `wait-for window-exit` times out, "timed out waiting for window ... to exit" | **caught** |
+| Drop `Modes` | `st.Modes = nil` before `ApplyTerminalState` in `applyHandoffPanes` | `TestDaemonUpgradeKeepsPaneProcesses`: "the alternate-screen pane lost its screen or its paste mode: paste \"PASTED\"" | **caught** |
+| Skip the preflight | `preflightBinary` replaced by a stat of the file | `TestDaemonUpgradeRefusesAndChangesNothing`: "an upgrade to /usr/bin/false (not tuios) was not refused by the preflight: <nil>" (the daemon then execs `false` and every pane ends) | **caught** |
+| No fallback exec | `execHandoff` in `adoptFallback.reexec` replaced by an error | `TestDaemonUpgradeFallsBackToPreviousBinary/error`: "the daemon never answered from a new image within 40s: ... a stale socket is left over"; `/hang` likewise | **caught** |
+| No watchdog | `fb.watch(...)` replaced by a no-op | `TestDaemonUpgradeFallsBackToPreviousBinary/hang`: "the daemon never answered from a new image within 40s: call hello: signal: killed" | **caught** |
+| Close and rebind the listener | the main socket is left out of the manifest, closed and unlinked before the exec, and bound again by the new image | `TestDaemonUpgradeQueuesCLICallsDuringSwap`: "1 of 72 calls made during the upgrade failed" | **caught** |
+| No refusal for a pipe the daemon reads | the `d.pipes.first()` check in `handoffRefusal` cut | `TestDaemonUpgradeRefusesWhileVerifyFanRuns`: "the upgrade was not refused while a fan check ran: <nil>", "the fan check's result did not arrive as passed" | **caught** |
+| No hold for a hook (2026-10-28) | drop `m.SetHold(d.pipes.hold)` in `loadHooks` | `TestDaemonUpgradeRefusesWhileHookOrPluginRuns/hook`, 2 runs of 2: "the upgrade was not refused while the hook ran (want \"the after-new-window hook is running\"): <nil>" | **caught** |
+| No hold for a plugin command (2026-10-28) | drop the `runner.Hold` assignment in `newPluginHost` | `TestDaemonUpgradeRefusesWhileHookOrPluginRuns/plugin`, 2 runs of 2: "the upgrade was not refused while the plugin ran (want \"a command of plugin e2e.slow is running\"): <nil>" | **caught** |
+| The watchdog does not exit after a failed fallback (2026-10-28) | drop `os.Exit(1)` from the watchdog in `adoptFallback.watch` | `TestDaemonUpgradeEndsWhenFallbackExecFails`, 2 runs of 2: "the daemon (pid N) still runs 20s after its fallback exec failed, holding the panes and serving nothing", and the same for the pane's process | **caught** |
+| No owner and mode check (2026-10-28) | drop the `checkBinaryOwner` call from `preflightBinary` | `TestDaemonUpgradePreflightRefusals/group-writable`, 2 runs of 2: "was not refused with \"can be written by its group or by others (mode 0775) ...\": <nil>", and the daemon moved to the new image | **caught** |
+| The old refusal wording (2026-10-28) | the "not its answer" and "is a tuios for" messages put back in `preflightBinary` | `TestDaemonUpgradePreflightRefusals/no_answer` and `/another_system`, 2 runs of 2: refused, but "was not refused with \"... Check the path names a tuios binary\"" and "... Upgrade to a tuios built for darwin" | **caught** |
+| The kept descriptor is not handed across the exec (Linux, 2026-10-28) | `FallbackFD: -1` in `writeManifest`, so the descriptor stays close-on-exec and the manifest still names `/proc/self/fd/N` | `TestDaemonUpgradeFallsBackAfterInstallerReplacesBinary`, 2 runs of 2: "the daemon never answered from a new image within 40s: call hello: exit status 3: The TUIOS daemon is not running, but a stale socket is left over" (the fallback exec failed and the image ended) | **caught** |
+| No owner half in the owner and mode check (Linux, as root, 2026-10-28) | the `uid != 0 && uid != os.Getuid()` condition in `checkBinaryOwner` made false | `TestDaemonUpgradePreflightRefusals/owned_by_another_user`, 2 runs of 2: "was not refused with \"is owned by user 65534, not by you or root, ...\": <nil>", and the daemon moved to the new image | **caught** |
+
+The rebind control was run four times and failed every time, with one or two failed calls in 49 to 72; three of the runs also had no call wait through the swap, since with the socket gone a caller fails fast instead of waiting.
+
+```sh
+TUIOS_E2E=1 TUIOS_E2E_BIN=/path/to/tuios TUIOS_E2E_BASELINE_BIN=/path/to/older/tuios \
+  go test -count=1 -run '^TestDaemonUpgrade' .
+# The 60-pane measurement, slow:
+TUIOS_E2E=1 TUIOS_E2E_BIN=/path/to/tuios TUIOS_E2E_HANDOFF_MEASURE=1 \
+  go test -count=1 -run '^TestDaemonUpgradeMeasuresABusyDaemon$' .
+```
+
 ## Deleting a worktree from the close-confirmation dialog
 
 `TestSidebarCloseDeletesWorktree` takes the third row of the close dialog on
@@ -11872,3 +11933,78 @@ fixture of wrapped prose with a draft (rule 6, needs_input instead of idle).
 Reading the whole tail when the titled line has no rule above it fails the
 answered-form fixture (rule 3, needs_input instead of none). Dropping the
 corner check fails the case of a box's bottom with a title.
+## The zoom follows a direction key off a box zoom
+
+`TestZoomFollowsDirectionalFocus` zooms the leftmost of three tiled panes in a daemon session, presses the prefix right arrow, then the window-mode `h`, and reads the focused and zoomed pane from `list-windows`. The runs are the two box zooms: `zoom_size = 100`, and `zoom_borderless` at the default size. Run on 2026-10-29 on Linux against origin/main at `2c6958d23`, the build without the fix.
+
+| Control: what was cut | Where it fails | Verdict |
+| --- | --- | --- |
+| The pre-zoom origin in `findWindowInDirection`, so the box is the origin, as before the fix | `the prefix arrow left the zoom behind: focused 0, zoomed 0`, both runs | **caught** |
+## The nested-attach and risk tests on macOS
+
+`TestNestedAttachThroughScriptIsRefused` and `TestForcedNestedAttachSettles` found the nested client by reading `/proc`, which macOS does not have, and the first ran `script` with util-linux flags, which BSD `script` refuses ("illegal option -- f"). `tuiosProcessesUnder` now asks `ps -axwwE` where there is no `/proc`, and the script test uses BSD `script`'s form off Linux. `TestRiskInWorktree` and `TestRiskInWorktreeRedacted` took the worktree's root from `t.TempDir()`, which on macOS is under `/var`, a link to `/private/var`: the daemon gives a worktree recorded through a link no risk root, so every cut path read as outside. The root is now resolved first. `TestRiskRootIsTheStartFolder` and `TestRiskLineClipOnlyAtEnd` need folders short enough for a line to show whole, and the macOS temp folder alone is about 50 runes, so their short folders are made under `/tmp`. Each test is unchanged on Linux. Run on 2026-10-29 on macOS arm64.
+
+| Control: what was cut | Where it fails | Verdict |
+| --- | --- | --- |
+| `Clipped: false` in `riskOfLine` (the control above, run again on macOS) | `TestRiskInWorktree`: "repo-feat-kinder-greeting marks an Edit inside its worktree outside the worktree" | **caught** |
+
+`TestForcedNestedAttachSettles` passing shows the `ps` lookup finds a running nested client, so the refusal tests' check that none is left does not pass by finding nothing.
+## The navigator opens a session on a frozen link without freezing
+
+`TestASilentLinkIsFoundAndTheRailStillOpensItsSessions` freezes the link to the host `build`, then opens one of its sessions from the navigator (#742). Within 5 s of Enter the dock has to say "Connecting to build", and the session has to open within 18 s. `TestNavigatorListsAHostPane` checks that a pane row on another machine is still focused after the switch, which now lands on a message. Run on 2026-10-29 on Linux, based on origin/main at feb2df438.
+
+| Control: what was cut | Where it fails | Verdict |
+| --- | --- | --- |
+| origin/main, where the navigator dials on the Update goroutine | "the navigator froze on a session of a frozen host" | **caught** |
+| The `TakeSidebarCmd` returns in `handleNavigatorInput`, so the retry that pings the link is never sent | "the session the navigator asked for on a frozen host never opened" | **caught** |
+| `SyncStateToDaemon` after the focus in `finishHostOpen` | "enter went to far-shell but did not focus farlog" | **caught** |
+## A key typed after the chooser's Enter comes after the paste
+
+`TestPasteBuffersKeepYanksAndPasteThem` stops the daemon with SIGSTOP, presses Enter in the paste buffer chooser, presses Enter again, and resumes the daemon 0.5 s later (#1016). The read of the buffer is then slow on every run, and the shell has to print `CHOSEN-pbalpha42`. Run on 2026-10-29 on Linux, based on origin/main at feb2df438. The fixed binary passed 3 of 3 runs.
+
+| Control: what was cut | Where it fails | Verdict |
+| --- | --- | --- |
+| origin/main, where keys go to the pane while the buffer is read | the shell runs `echo CHOSEN-` alone and `pbalpha42` lands on the next prompt, 3 of 3 runs | **caught** |
+## A sixel image waits for the frame that holds its blanks
+
+`TestSixelAtTheBottomKeepsItsLastRow` caught #1304 twice in CI and never in 290 runs on one machine, so it is not a control on its own. The race is covered by `TestSixelWaitsForItsFrame` in `internal/app`, a deterministic race regression: the passthrough holds the rectangles of a newer frame while the renderer writes an older one with text in those cells, and the next write scrolls the screen and writes the blanks. Run on 2026-10-29 on Linux, based on origin/main at feb2df438.
+
+| Control: what was cut | Where it fails | Verdict |
+| --- | --- | --- |
+| The `grounded` check in `nativeBytesLocked` | "the image was sent onto a frame that holds text in its cells" | **caught** by the unit test |
+| origin/main, e2e | `TestSixelAtTheBottomKeepsItsLastRow` passed 290 of 290 runs on one machine (#1304) | **not caught here**, CI only |
+
+With the fix, every sixel test in this package passed, among them `TestSixelRealPrograms` (chafa, timg, lsix, yazi), and `TestSixelAtTheBottomKeepsItsLastRow` with `TestSixelScrollsWithThePane` passed 10 of 10.
+
+## The leader menu on a tiny client
+
+`TestWhichKeyOnATinyClient` attaches at 120x40, shrinks the client to 20x4,
+35x6 and 40x10, and presses the leader at each. The menu has no room for a
+binding at the first two, so clipWhichKey keeps no column and counts every
+binding as more. The test watches the screen for the crash overlay, which
+20 columns cut to "tuios hit a b…", then wants the menu's title and its count,
+and at the end no crash log.
+
+Run on 2026-10-28 on macOS with Go 1.26.8, on `ba756a0ed` (main) and the
+branch.
+
+| Control: what was cut | Where it fails | Verdict |
+| --- | --- | --- |
+| The empty-column guard in `renderWhichKey` (main at `ba756a0ed`) | 20x4: "the leader menu crashed the frame" (index out of range [-1]) | **caught** |
+
+The unit tests in `internal/app/overlay_narrow_test.go` were cut one fix at a
+time with `go test -overlay`, each cut read back first:
+
+| Control: what was cut | Where it fails | Verdict |
+| --- | --- | --- |
+| The empty-column guard | `TestWhichKeyOnTinyScreens`: index out of range [-1] at 20x4 | **caught** |
+| The cut of the count line to the panel | `TestWhichKeyOnTinyScreens`: a line wider than the panel at 10x6 and 5x1 | **caught** |
+| One row of room under a dock that takes every row | `TestWhichKeyUnderADockThatTakesEveryRow`: a 30-row menu at 80x1 | **caught** |
+| Keeping a layout with no columns | `TestWhichKeyKeepsALayoutWithNoColumns` | **caught** |
+## Focus wraps at the edge of a tiled layout
+
+`TestDirectionalFocusWrapBSP` turns on `appearance.focus_wrap`, tiles four panes, and presses each prefix arrow that has no neighbour from each pane. Focus has to land on a pane on the far edge that shares at least two cells with the old pane, or stay where nothing is on the far side. It then checks `tuios focus-window --direction left` from the left edge. The control was built into its own binary. Run on 2026-10-29 on Linux.
+
+| Control: what was cut | Test failure | Verdict |
+| --- | --- | --- |
+| The `layout.Wrap` fallback in `findWindowInDirection` (`internal/app/os_tape_executor.go`) | "pressed left on pane ... focus stayed, want one of ..." | **caught** |

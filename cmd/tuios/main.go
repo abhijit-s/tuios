@@ -1458,7 +1458,10 @@ direction, and print the pane that ended up with it.
 
 Pass exactly one of the window argument, --relative or --direction. Naming a
 window switches to its workspace. --direction needs an attached client. The
-other two forms work on a detached session.`,
+other two forms work on a detached session.
+
+With appearance.focus_wrap on, --direction wraps at the edge of a tiled
+layout to the pane on the far side.`,
 		Example: `  # Focus a pane by name
   tuios focus-window build
 
@@ -2421,7 +2424,7 @@ titles and paths.`,
 	// Inspection commands for scripting and hackability
 	var listWindowsSession string
 	var listWindowsJSON bool
-	var listWindowsAll, listWindowsAllHosts bool
+	var listWindowsAll, listWindowsAllHosts, listWindowsRail bool
 	var listWindowsText int
 	listWindowsCmd := &cobra.Command{
 		Use:   "list-windows",
@@ -2443,18 +2446,22 @@ Use --json for machine-readable output that can be used for scripting.`,
   tuios list-windows --all --text 20 --json
 
   # Every pane on this machine and on each host
-  tuios list-windows --all --all-hosts`,
+  tuios list-windows --all --all-hosts
+
+  # Include the pane the rail draws in its pane section
+  tuios list-windows --rail`,
 		RunE: func(_ *cobra.Command, _ []string) error {
 			if listWindowsAll || listWindowsAllHosts || listWindowsText > 0 {
 				return runListAllWindows(listWindowsSession, listWindowsAll, listWindowsAllHosts, listWindowsText, listWindowsJSON)
 			}
-			return queryWindows(listWindowsSession, listWindowsJSON)
+			return queryWindows(listWindowsSession, listWindowsJSON, listWindowsRail)
 		},
 	}
 	listWindowsCmd.Flags().StringVarP(&listWindowsSession, "session", "s", "", "Target session (default: this pane's session, else the most recently active)")
 	listWindowsCmd.Flags().BoolVar(&listWindowsJSON, "json", false, "Output as JSON")
 	listWindowsCmd.Flags().BoolVar(&listWindowsAll, "all", false, "List the panes of every session on this machine, one row each")
 	listWindowsCmd.Flags().BoolVar(&listWindowsAllHosts, "all-hosts", false, "Also list the panes of every session on each host in [hosts]")
+	listWindowsCmd.Flags().BoolVar(&listWindowsRail, "rail", false, "Also list the pane the rail draws in its pane section")
 	listWindowsCmd.Flags().IntVar(&listWindowsText, "text", 0, fmt.Sprintf("Add the last N lines of each pane's screen, up to %d. capture-pane's grants apply", maxListText))
 	_ = listWindowsCmd.RegisterFlagCompletionFunc("session", completeSessionNames)
 

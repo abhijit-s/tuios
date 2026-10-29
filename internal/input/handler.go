@@ -626,6 +626,11 @@ func routeKey(msg tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
 		typeIntoRailPane(msg, o)
 		return o, nil
 	}
+	// The rail pane gives the keyboard back on a leader chord, which then
+	// runs as it would have: the focus keys are how a person leaves it.
+	if o.RailPaneFocused() && !o.AnyOverlayOpen() && !o.PrefixActive && isLeaderKey(msg, &o.Settings, o.HostBaseCode(msg)) {
+		o.BlurSidebarSession()
+	}
 	if o.SidebarSessionFocused() && !o.AnyOverlayOpen() {
 		if msg.String() == "alt+esc" {
 			o.BlurSidebarSession()
@@ -786,6 +791,11 @@ func handleRenameMode(msg tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
 		return o, nil
 	case "backspace":
 		o.RenameBackspace()
+		return o, nil
+	case "alt+backspace", "ctrl+w", "ctrl+backspace":
+		// The word chords of a shell and of the composer. Option+Backspace
+		// reaches here as alt+backspace when the terminal sends Option as Alt.
+		o.RenameDeleteWord()
 		return o, nil
 	case "ctrl+u":
 		o.RenameClear()

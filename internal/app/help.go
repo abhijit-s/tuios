@@ -32,7 +32,7 @@ func GetHelpCategories(registry *config.KeybindRegistry, s *config.Settings) []H
 			Name: "Window Management",
 			Bindings: generateCategoryBindings(registry, "Window Management", []string{
 				"new_window", "new_window_ssh", "close_window", "rename_window",
-				"minimize_window", "restore_all", "toggle_zoom", "toggle_pip", "toggle_spotlight",
+				"minimize_window", "restore_all", "toggle_zoom", "toggle_pip", "focus_rail_pane", "toggle_spotlight",
 				"next_window", "prev_window",
 				"terminal_next_window", "terminal_prev_window",
 				"terminal_focus_left", "terminal_focus_right",
@@ -590,6 +590,7 @@ func generateListBindings() []HelpBinding {
 	const cat = "Modes"
 	return []HelpBinding{
 		{Keys: []string{"ctrl+u"}, Description: "Lists: clear a typed filter", Category: cat},
+		{Keys: []string{"alt+backspace", "ctrl+w"}, Description: "Lists and the rename dialog: delete the last word", Category: cat},
 		{Keys: []string{"wheel"}, Description: "Lists: scroll the list under the pointer", Category: cat},
 		{Keys: []string{"/"}, Description: "Settings: search every tab", Category: cat},
 		{Keys: []string{"1-9"}, Description: "Settings: go to that tab", Category: cat},
@@ -609,6 +610,7 @@ func generateCopyModeBindings(registry *config.KeybindRegistry, s *config.Settin
 	var bound []HelpBinding
 	for _, row := range []struct{ action, desc string }{
 		{config.ActionCopyModeLineStart, "Line start"},
+		{config.ActionCopyModeFirstNonBlank, "First nonblank"},
 		{config.ActionCopyModeLineEnd, "Line end"},
 	} {
 		if keys := registry.GetCopyModeKeys(row.action); len(keys) > 0 {

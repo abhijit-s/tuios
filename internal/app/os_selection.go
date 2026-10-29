@@ -173,7 +173,7 @@ func (m *OS) openScrollbackEditor(msg scrollbackFileMsg) tea.Cmd {
 		return nil
 	}
 	args := append(msg.argv[1:len(msg.argv):len(msg.argv)], editorLineArgs(msg.argv[0], msg.path, msg.line)...)
-	c := exec.Command(msg.argv[0], args...) //nolint:gosec // the person's own editor
+	c := m.editorCommand(exec.Command(msg.argv[0], args...)) //nolint:gosec // the person's own editor
 	dir := msg.dir
 	// SGR-pixel reports go off first: the editor does not expect them, and
 	// the terminal comes back in SGR cells.

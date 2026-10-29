@@ -122,6 +122,10 @@ tuios
 tuios --standalone
 ```
 
+With `startup.session` set, a plain `tuios` attaches to that session and makes
+it if it is gone. `startup.window` also focuses one pane in it. See
+[SESSIONS.md](SESSIONS.md#start-session-and-start-pane).
+
 **Flags:**
 
 `tuios --help` is the authoritative list. These are the flags it shows today:
@@ -4239,7 +4243,7 @@ Some commands also answer to a short name: `attach` to `a`, `new` to `n`,
 
 | Command | What it does |
 |---------|--------------|
-| `tuios focus-window [window]` | Move the focus to a pane, by name, id, `--relative next` or `--direction left` |
+| `tuios focus-window [window]` | Move the focus to a pane, by name, id, `--relative next` or `--direction left`. With `appearance.focus_wrap` on, `--direction` wraps at the edge of a tiled layout |
 | `tuios move-window [workspace]` | Move a window to another workspace (`--follow` goes with it). `--to-session NAME` moves it to another session, and its program keeps running. `Ctrl+B t m` and the pane menu's `Move to...` row do both from the UI, see [KEYBINDINGS.md](KEYBINDINGS.md#move-a-pane-to-another-workspace-or-session) |
 | `tuios select-workspace <workspace>` | Show a workspace |
 | `tuios list-workspaces` | List the workspaces in a session and how many windows each holds |

@@ -1472,6 +1472,10 @@ func (m *OS) parseKeyToMessage(key string) tea.KeyPressMsg {
 // toward side, or -1. It looks at the visible windows of the current workspace.
 // Floating windows need not line up, so with tiling off a window that lies that
 // way without facing from is still reachable.
+//
+// With appearance.focus_wrap on, a tiled layout with nothing that way wraps to
+// the pane on the far side (layout.Wrap). Left and right in the scrolling
+// layout step along its strip, which does not wrap, so they are left alone.
 func (m *OS) findWindowInDirection(from *terminal.Window, side layout.Side) int {
 	var cands []layout.Rect
 	var index []int
@@ -1483,8 +1487,22 @@ func (m *OS) findWindowInDirection(from *terminal.Window, side layout.Side) int 
 		index = append(index, i)
 	}
 	origin := layout.Rect{X: from.X, Y: from.Y, W: from.Width, H: from.Height}
+	// A pane zoomed to a box of its own covers the region, so no pane lies
+	// beside it and every direction found nothing: the focus never left it and
+	// the zoom never followed. Its slot in the layout is where it sits among
+	// the others. Under a camera the layout places it, so its rectangle is
+	// already that.
+	if from.Zoomed && !m.zoomUsesLayout(from) && from.PreZoomWidth > 0 && from.PreZoomHeight > 0 {
+		origin = layout.Rect{X: from.PreZoomX, Y: from.PreZoomY, W: from.PreZoomWidth, H: from.PreZoomHeight}
+	}
 	if n := layout.Neighbour(origin, cands, side, !m.AutoTiling); n >= 0 {
 		return index[n]
+	}
+	if m.AutoTiling && m.Settings.FocusWrap &&
+		(!m.UseScrollingLayout || side == layout.SideUp || side == layout.SideDown) {
+		if n := layout.Wrap(origin, cands, side); n >= 0 {
+			return index[n]
+		}
 	}
 	return -1
 }
