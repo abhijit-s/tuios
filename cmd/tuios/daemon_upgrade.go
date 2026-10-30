@@ -356,7 +356,7 @@ func upgradeLive(say func(string, ...any), binary string) (upgradeOutcome, error
 				err: &diagnosticError{
 					What:  fmt.Sprintf("The daemon (%s, pid %d) predates live upgrades.", before.Version, before.PID),
 					Cause: "it is from a build that cannot hand its panes over.",
-					Fix:   "run '" + killServerCommand() + "' and start it again, which ends running programs. The next upgrade can be live.",
+					Fix:   "run '" + serverCommand("restart-server") + "', which stops every program in every pane, and lists them before it asks. The next upgrade can be live.",
 				},
 			}
 		}
