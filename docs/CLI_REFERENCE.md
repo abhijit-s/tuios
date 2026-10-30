@@ -3556,7 +3556,8 @@ click on the view goes to the pane.
 
 Name the pane by ID or name. Omit it to pin the focused pane. Name the pinned
 pane again to unpin it. The view belongs to the attached client, so the command
-needs one. Set the size and the corner in `[pip]`.
+needs one. Set the size and the corner in `[pip]`. With `[pip] enabled = false`
+the command refuses to pin, and `--off` still works.
 
 **Flags:**
 - `-s, --session <name>`: Target session (default: this pane's session, else the most recently active)

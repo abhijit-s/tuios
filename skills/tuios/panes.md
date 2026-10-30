@@ -485,6 +485,8 @@ tuios pip -s work --off    # unpin whatever is pinned
 
 It needs a client attached. A pane needs the `admin` grant for it, like the
 other window-manager verbs. Do not pin a pane the person did not ask about.
+With `[pip] enabled = false` the person has turned the view off, and `pip`
+refuses; leave it off.
 
 ### The escape hatch
 

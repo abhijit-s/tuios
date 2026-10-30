@@ -10991,3 +10991,15 @@ A follow-up commit adds `TestNotificationLevelErrorStillLogsAWarning`. This cont
 | Control: what was cut | Where it fails | Verdict |
 | --- | --- | --- |
 | The rule that a warning always goes to the log: `showNotification` skips it when `log_hidden` is false | `TestNotificationLevelErrorStillLogsAWarning`: "ASSERTION: the log viewer does not list the warning" | **caught** |
+
+## pip.enabled turns the picture-in-picture view off (#1381)
+
+`TestPiPOffInTheConfig` pins a pane and shows its view, then runs `tuios set-config pip.enabled false`. The view has to go, `p` has to say the view is off and pin nothing, the palette has to leave the command out, and `tuios pip` has to refuse naming `[pip] enabled`. Turning it back on pins again. Each control was built into its own binary. Run on 2026-10-31 on macOS arm64.
+
+| Control: what was cut | Where it fails | Verdict |
+| --- | --- | --- |
+| Every app-side change (`applyPiPSwitch`, the pin guards and the palette filter), keeping the option | "after pip.enabled was turned off: the picture-in-picture view is still on the screen" | **caught** |
+| Only the palette filter in `rebuildPaletteItems` | "the palette lists the picture-in-picture command with the view off" | **caught** |
+| Only the guard in `PinPiP` | "tuios pip agent with the view off: want a refusal naming [pip] enabled, got err <nil>" | **caught** |
+
+The fixed build passes, along with the other PiP tests.

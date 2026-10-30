@@ -19,6 +19,9 @@ const paletteCategoryAgents = "Agents"
 // paletteReviewName is the palette row of the review of the focused pane.
 const paletteReviewName = "Agents: Review changes of the focused pane"
 
+// palettePiPName is the picture-in-picture row, left out with [pip] enabled off.
+const palettePiPName = "Picture in picture: pin or unpin the focused pane"
+
 // ConfigReloadedMsg carries a config parsed by the file watcher goroutine so it
 // can be applied on the Bubble Tea goroutine. The watcher must not touch the
 // appearance globals directly (the render loop reads them concurrently); it
@@ -100,6 +103,7 @@ func (m *OS) ApplyReloadedConfig(cfg *config.UserConfig) tea.Cmd {
 	// screen and the config disagree about whether it is on, and the next
 	// toggle writes the disagreement back to the file.
 	m.SetSpotlight(cfg.Spotlight.IsEnabled())
+	m.applyPiPSwitch()
 	// The agent switch, which the file can flip as well as the settings page.
 	cmd = tea.Batch(cmd, m.applyAgentsSwitch())
 	m.MarkAllDirty()
@@ -1309,7 +1313,7 @@ func GetCommandPaletteItems(s *config.Settings) []CommandPaletteItem {
 			},
 		},
 		{
-			Name:     "Picture in picture: pin or unpin the focused pane",
+			Name:     palettePiPName,
 			Shortcut: "p",
 			Bind:     "toggle_pip",
 			Category: "Session",

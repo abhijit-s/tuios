@@ -991,6 +991,9 @@ func (m *OS) setConfigFromRegistry(path, value string) error {
 	if path == "appearance.motion" {
 		m.Settings.NoAnimationsFlag = false
 	}
+	if path == "pip.enabled" {
+		m.applyPiPSwitch()
+	}
 
 	// ApplyAppearanceConfig is the one funnel from the config struct to the
 	// settings the render path reads, so going through it means a registry

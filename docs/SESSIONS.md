@@ -497,10 +497,16 @@ unpin it.
 
 ```toml
 [pip]
+enabled = true           # false: p, the palette command and tuios pip pin nothing
 width = 40               # cells, border included
 height = 12
 corner = "bottom-right"  # bottom-right, bottom-left, top-right or top-left
 ```
+
+To turn the view off, set `enabled = false`, or turn off Picture-in-picture on
+the settings page. `p` then shows a note in the dock and pins nothing, the
+palette leaves the command out, `tuios pip` refuses to pin, and a view that is
+up goes.
 
 The action is `toggle_pip`. If your config puts `p` on a different window
 mode action, `toggle_pip` has no key. `tuios keybinds doctor` shows this.

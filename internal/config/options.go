@@ -1504,6 +1504,11 @@ var optionSpecs = []Option{
 	// [pip]. Read each time the picture-in-picture view is drawn, and
 	// client-local like the spotlight.
 	{
+		Path: "pip.enabled", Type: OptionBool, Section: "pip",
+		Description: "Let a pane be pinned as the picture-in-picture view. Off, the key, the palette command and tuios pip do nothing, and a view that is up goes",
+		Default:     "true",
+	},
+	{
 		Path: "pip.width", Type: OptionInt, Section: "pip",
 		Description: "Width of the picture-in-picture view, border included, in cells",
 		Default:     "40", Min: PiPMinWidth, Max: PiPMaxWidth,

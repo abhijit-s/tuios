@@ -10,6 +10,11 @@ import "slices"
 // like the spotlight, so a second client attached to the same session keeps
 // its own view (or none).
 type PiPConfig struct {
+	// Enabled is whether the view can be pinned at all (default: true). Off,
+	// toggle_pip and tuios pip do nothing but say so, the palette leaves the
+	// command out, and a view that is up goes. A pointer, so that turning it
+	// off in the settings page survives a reload rather than reading as unset.
+	Enabled *bool `toml:"enabled"`
 	// Width and Height are the size of the whole box, border included, in
 	// cells (default: 40x12). The box shrinks to fit a smaller screen.
 	Width  int `toml:"width"`
@@ -62,6 +67,9 @@ func fillMissingPiP(cfg, defaultCfg *UserConfig) {
 		p.Corner = d.Corner
 	}
 }
+
+// IsEnabled reports whether a pane can be pinned. Unset is on.
+func (p PiPConfig) IsEnabled() bool { return p.Enabled == nil || *p.Enabled }
 
 // CornerName is the corner the box goes to first, defaulting to bottom-right
 // for an empty or unknown value.

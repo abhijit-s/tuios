@@ -1,6 +1,7 @@
 package app
 
 import (
+	"errors"
 	"fmt"
 	"image"
 	"strings"
@@ -250,9 +251,26 @@ func (m *OS) pipCoversCursor(c *tea.Cursor) bool {
 	return m.pip.rect.Overlaps(m.pipKeepClearAt(c))
 }
 
+// pipOffNote is what a pin says with [pip] enabled off.
+const pipOffNote = "Picture-in-picture is off. Set [pip] enabled = true to pin a pane."
+
+// pipEnabled reports whether [pip] lets a pane be pinned.
+func (m *OS) pipEnabled() bool { return m.pipConfig().IsEnabled() }
+
+// applyPiPSwitch takes the view down when [pip] enabled has been turned off,
+// from the settings page, set-config or the file.
+func (m *OS) applyPiPSwitch() {
+	if !m.pipEnabled() && m.pip.windowID != "" {
+		m.UnpinPiP()
+	}
+}
+
 // PinPiP pins the pane with this id as the picture-in-picture view, in place
 // of any pane pinned before.
 func (m *OS) PinPiP(windowID string) error {
+	if !m.pipEnabled() {
+		return errors.New(pipOffNote)
+	}
 	i := m.windowIndexByID(windowID)
 	if i < 0 {
 		return fmt.Errorf("no pane has the id %s", windowID)
@@ -301,6 +319,10 @@ func (m *OS) TogglePiP() {
 		name := pipPaneName(src)
 		m.UnpinPiP()
 		m.ShowNotification(fmt.Sprintf("Unpinned %s.", name), "info", m.Settings.NotificationDuration)
+		return
+	}
+	if !m.pipEnabled() {
+		m.ShowNotification(pipOffNote, "warning", m.Settings.NotificationDuration)
 		return
 	}
 	if m.FocusedWindow < 0 || m.FocusedWindow >= len(m.Windows) {
