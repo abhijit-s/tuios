@@ -17,6 +17,7 @@ import (
 	"github.com/Gaurav-Gosain/tuios/internal/config"
 	"github.com/Gaurav-Gosain/tuios/internal/overlay"
 	"github.com/Gaurav-Gosain/tuios/internal/session"
+	"github.com/Gaurav-Gosain/tuios/internal/sortx"
 	"github.com/Gaurav-Gosain/tuios/pkg/fuzzy"
 )
 
@@ -207,17 +208,20 @@ func (m *OS) buildBoardRows(list []sidebarAgentEntry) []ckRow {
 		if len(items) == 0 {
 			continue
 		}
-		slices.SortStableFunc(items, func(a, b ckRow) int {
+		sortx.ShortStableFunc(items, func(a, b ckRow) int {
 			return cmp.Or(cmp.Compare(rank(a), rank(b)), cmp.Compare(ck.cards[a.card].StageAt, ck.cards[b.card].StageAt))
 		})
 		stage := session.TaskStages[g]
 		if len(rows) > 0 {
 			rows = append(rows, ckRow{kind: ckRowGap, group: g, lines: 1, key: "bg:" + stage})
 		}
-		rows = append(rows, ckRow{kind: ckRowHead, group: g, count: len(items), lines: 1, key: "bh:" + stage})
+		head := ckRow{kind: ckRowHead, group: g, agent: -1, count: len(items), lines: 1, key: "bh:" + stage}
 		if ck.stageFolded(g) {
+			head.folded, head.hidden = true, items
+			rows = append(rows, head)
 			continue
 		}
+		rows = append(rows, head)
 		shown := 0
 		for _, r := range items {
 			if ck.oneLine && !ck.boardOpened[stage] && shown >= ckFoldAt {

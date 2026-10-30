@@ -39,6 +39,8 @@ func custom(covers string, item settingItem) settingsRow {
 // paths where the derived one reads worse than the name the row has always had.
 var settingLabels = map[string]string{
 	"agents.enabled":                      "Agent features",
+	"agents.fold_working":                 "Fold Working",
+	"tasks.auto_stage":                    "Move task cards",
 	"appearance.sidebar.editor":           "File editor",
 	"appearance.dock_workspace_label_max": "Workspace label cap",
 	"appearance.dock_mode_icon_window":    "Window mode icon",
@@ -127,6 +129,7 @@ var settingLabels = map[string]string{
 	"launcher.keep_open":                  "Keep launched panes open",
 	"workspaces.return_when_empty":        "Go back from an empty workspace",
 	"workspaces.new_window_when_empty":    "Open a pane on an empty workspace",
+	"worktree.path":                       "Worktree folder",
 	"paste_buffers.limit":                 "Paste buffers to keep",
 	"paste_buffers.max_kb":                "Paste buffer size limit",
 
@@ -174,6 +177,7 @@ var settingLabels = map[string]string{
 	"notifications.bell":                         "Pane bell",
 	"notifications.style":                        "Message style",
 	"notifications.level":                        "Messages shown",
+	"notifications.log_hidden":                   "Log hidden messages",
 	"notifications.agent.enabled":                "Agent alerts",
 	"notifications.agent.notify":                 "Agent alert on the desktop",
 	"notifications.agent.dock":                   "Agent alert in the dock",

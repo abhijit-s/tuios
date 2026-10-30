@@ -222,8 +222,12 @@ func (m *OS) BuildSessionState() *session.SessionState {
 	// The pane geometry inputs travel with the session because they are inputs
 	// to every client's layout arithmetic. Always sent, never nil: nil on the
 	// wire means a client too old to say, and this one can.
+	sharedBorders := m.SharedBorders
+	if m.OwnPaneBorders {
+		sharedBorders = m.SessionSharedBorders
+	}
 	state.PaneGeometry = &session.PaneGeometryState{
-		SharedBorders:     m.SharedBorders,
+		SharedBorders:     sharedBorders,
 		PaneGap:           m.PaneGap,
 		ScrollColumnWidth: m.ScrollColumnWidth,
 	}
@@ -1299,6 +1303,7 @@ func (m *OS) updateWindowFromState(w *terminal.Window, ws *session.WindowState) 
 	w.SetTitle(ws.Title)
 	adoptWindowHost(w, ws.Host)
 	m.takeDaemonCwd(w, ws)
+	m.takeDaemonDnD(w, ws)
 	w.HostLink = ws.HostLink
 	w.CustomName = ws.CustomName
 	if adoptGeometry {
@@ -1348,18 +1353,24 @@ func (m *OS) updateWindowFromState(w *terminal.Window, ws *session.WindowState) 
 		w.SetAltScreen(ws.IsAltScreen)
 	}
 	w.AgentMessage = ws.AgentMessage
+	w.AgentReason = ws.AgentReason
 	w.AgentKind = ws.AgentKind
 	w.AgentHarness = ws.AgentHarness
 	w.StartedBySession, w.StartedByWindow = startedByFromWire(ws.StartedBy)
 	w.AgentMeta = agentMetaFromWire(w.AgentMeta, ws.AgentMeta)
 	w.AgentQueued = ws.AgentQueued
+	w.AgentDraftHeld = ws.AgentDraftHeld
+	w.AgentSettled = ws.AgentSettled
 	w.AgentSubagents = ws.AgentSubagents
 	w.AgentSubagentList = subagentsFromWire(w.AgentSubagentList, ws.AgentSubagentList)
 	w.ProgramStatus = programStatusFromWire(w.ProgramStatus, ws.ProgramStatus)
 	w.AgentStateAt = ws.AgentStateAt
 	prevSeq := w.AgentCompletionSeq
 	w.AgentCompletionSeq = ws.CompletionSeq
-	if string(ws.AgentState) == w.AgentState && ws.CompletionSeq > prevSeq {
+	// A silent pane is drawn as unknown, the state it is shown as. See
+	// session.WindowState.ShownAgentState.
+	shown := string(ws.ShownAgentState())
+	if shown == w.AgentState && ws.CompletionSeq > prevSeq {
 		// A whole turn fell between two snapshots. See noteAgentTurnWithin.
 		// Inside a sync it waits for the sync's focus. See turnsWithinSync.
 		if m.applyingPeerSync {
@@ -1371,7 +1382,7 @@ func (m *OS) updateWindowFromState(w *terminal.Window, ws *session.WindowState) 
 	// Last, and it adopts AgentState itself: an alert raised from here reads the
 	// message and harness above, which have to be the ones that arrived with the
 	// state rather than the ones it replaced.
-	m.noteAgentState(w, string(ws.AgentState))
+	m.noteAgentState(w, shown)
 	m.markHostProgramStatus()
 	w.ForegroundCmd = ws.ForegroundCmd
 	// The shell's pid, as the daemon that spawned it knows it, and the only
@@ -1479,13 +1490,16 @@ func adoptWindowState(window *terminal.Window, ws session.WindowState) {
 	window.PreMinimizeWidth = ws.PreMinimizeW
 	window.PreMinimizeHeight = ws.PreMinimizeH
 	window.SetAltScreen(ws.IsAltScreen) // also drives mouse event forwarding
-	window.AgentState = string(ws.AgentState)
+	window.AgentState = string(ws.ShownAgentState())
 	window.AgentMessage = ws.AgentMessage
+	window.AgentReason = ws.AgentReason
 	window.AgentKind = ws.AgentKind
 	window.AgentHarness = ws.AgentHarness
 	window.StartedBySession, window.StartedByWindow = startedByFromWire(ws.StartedBy)
 	window.AgentMeta = agentMetaFromWire(nil, ws.AgentMeta)
 	window.AgentQueued = ws.AgentQueued
+	window.AgentDraftHeld = ws.AgentDraftHeld
+	window.AgentSettled = ws.AgentSettled
 	window.AgentSubagents = ws.AgentSubagents
 	window.AgentSubagentList = subagentsFromWire(nil, ws.AgentSubagentList)
 	window.ProgramStatus = programStatusFromWire(nil, ws.ProgramStatus)
@@ -1524,6 +1538,7 @@ func (m *OS) newWindowFromState(ws *session.WindowState) *terminal.Window {
 	}
 	adoptWindowHost(window, ws.Host)
 	m.takeDaemonCwd(window, ws)
+	m.takeDaemonDnD(window, ws)
 	window.HostLink = ws.HostLink
 
 	caps := m.hostCaps()
@@ -1569,6 +1584,7 @@ func (m *OS) createWindowFromSync(ws *session.WindowState) *terminal.Window {
 // owns.
 func (m *OS) closeWindowFromSync(w *terminal.Window) {
 	m.clearNvimNavigation(w.ID)
+	m.dndWindowClosed(w.ID)
 	m.pipSourceClosed(w)
 	if m.DaemonClient != nil && w.PTYID != "" {
 		m.unsubscribeFromPTY(w)

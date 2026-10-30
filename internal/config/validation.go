@@ -148,6 +148,7 @@ func ValidateConfig(cfg *UserConfig) *ValidationResult {
 	validatePanePermissions(cfg, result)
 	validateAgentWork(cfg, result)
 	validatePasteBuffers(cfg, result)
+	validateWorktree(cfg, result)
 	validateTasks(cfg, result)
 
 	// Validate the notifications section (warn on a duration tuios cannot use)
@@ -340,6 +341,7 @@ func validateNotificationsConfig(cfg *UserConfig, result *ValidationResult) {
 	check("error_duration", cfg.Notifications.ErrorDuration)
 	warnEnum(result, "notifications", "bell", cfg.Notifications.Bell, BellModes, BellToast)
 	warnEnum(result, "notifications", "style", cfg.Notifications.Style, NotificationStyles, NotificationStyleFull)
+	warnEnum(result, "notifications", "level", cfg.Notifications.Level, NotificationLevels, NotificationLevelInfo)
 
 	agent := &cfg.Notifications.Agent
 	if _, _, err := ParseQuietHours(agent.QuietHours); err != nil {

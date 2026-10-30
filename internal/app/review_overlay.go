@@ -12,6 +12,7 @@ import (
 	"github.com/Gaurav-Gosain/tuios/internal/review"
 	"github.com/Gaurav-Gosain/tuios/internal/session"
 	"github.com/Gaurav-Gosain/tuios/internal/terminal"
+	"github.com/Gaurav-Gosain/tuios/internal/textedit"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -33,7 +34,8 @@ import (
 // attach nonce, so the daemon records them as the person's and the message
 // says "from the person". A key that did not come from the keyboard (send-keys,
 // a tape) never does any of that: it may move around the diff, but a note it
-// typed is not saved, and S, x, V, K and the keep confirmation refuse it,
+// typed is not saved, and S, x, V, K, the stage keys and the keep
+// confirmation refuse it,
 // because each of them acts as the person or with this client's authority.
 // The rest is the daemon's: review-note holds a note's author to its reach,
 // send-review goes through the delivery queue, verify-fan opens its windows
@@ -236,6 +238,15 @@ type reviewState struct {
 	// drawn. Both are made while drawing, so a closed review costs nothing.
 	look  *reviewLook
 	hunks map[*review.File][]*reviewHunkLook
+	// index is the worktree's two index diffs, for the hunk marks, and
+	// stageMarks what they say of each hunk shown. Both are read only while
+	// the overlay is open. See review_stage.go.
+	index      *reviewIndex
+	stageMarks map[*review.File][]reviewHunkStage
+	// staging is set while a stage, an unstage or an undo runs.
+	staging bool
+	// undo is what z takes back, newest last.
+	undo []reviewUndoStep
 	// statusID is the dock message the review itself raised last. The
 	// overlay covers the dock, so it shows that one on its status line. It
 	// shows no other: a pane closing or a client resizing is the dock's news,
@@ -259,6 +270,7 @@ func (m *OS) reviewNotify(message, kind string, duration time.Duration) {
 func (r *reviewState) clearDiff() {
 	r.diff, r.notes, r.files, r.editor, r.loadErr = nil, nil, nil, nil, ""
 	r.hunks, r.xOff = nil, 0
+	r.index, r.stageMarks = nil, nil
 	r.file, r.cursor, r.scroll, r.listScroll, r.listFocus = 0, 0, 0, 0, false
 }
 
@@ -495,17 +507,12 @@ func (m *OS) reviewLoadCmd(q reviewQuery, probeFan bool) tea.Cmd {
 	}
 	return func() tea.Msg {
 		msg := ReviewDiffMsg{Gen: gen, Query: q, ProbeFan: probeFan}
-		raw, err := call("review-diff", params, reviewDiffTimeout)
+		res, err := reviewDiffCall(call, params)
 		if err != nil {
 			msg.Err = err
 			return msg
 		}
-		var res reviewDiffResult
-		if err := json.Unmarshal(raw, &res); err != nil {
-			msg.Err = err
-			return msg
-		}
-		msg.Diff = &res
+		msg.Diff = res
 		if probeFan && q.Against == "" {
 			// A pane outside every fan answers with a refusal, which says
 			// only that there is nothing to compare.
@@ -518,6 +525,20 @@ func (m *OS) reviewLoadCmd(q reviewQuery, probeFan bool) tea.Cmd {
 		}
 		return msg
 	}
+}
+
+// reviewDiffCall makes one review-diff call: the diff the overlay shows, or
+// an index diff for the stage marks.
+func reviewDiffCall(call inboxVerbCall, params map[string]any) (*reviewDiffResult, error) {
+	raw, err := call("review-diff", params, reviewDiffTimeout)
+	if err != nil {
+		return nil, err
+	}
+	var res reviewDiffResult
+	if err := json.Unmarshal(raw, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
 }
 
 // reload reads the current diff again.
@@ -562,7 +583,7 @@ func (m *OS) applyReviewDiff(msg ReviewDiffMsg) {
 	samePlace := prevPath != ""
 	r.pending, r.open, r.loadErr = false, true, ""
 	r.diff = msg.Diff
-	r.hunks = nil
+	r.hunks, r.stageMarks = nil, nil
 	r.notes = msg.Diff.Notes
 	r.query = msg.Query
 	if r.query.Window == "" {
@@ -1125,6 +1146,19 @@ func (m *OS) ReviewEditorBackspace() {
 	}
 	rs := []rune(ed.draft)
 	ed.draft = string(rs[:len(rs)-1])
+}
+
+// ReviewEditorDeleteWord removes the last word of the editor's text, by the
+// rule of DropLastWord.
+func (m *OS) ReviewEditorDeleteWord() {
+	ed := m.review.editor
+	if ed == nil || ed.draft == "" {
+		return
+	}
+	if m.ProcessingRemoteKeys {
+		ed.automated = true
+	}
+	ed.draft = textedit.DropLastWord(ed.draft)
 }
 
 // ReviewEditorCancel drops what the editor holds.

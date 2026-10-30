@@ -7,6 +7,8 @@ import (
 	"image/color"
 	"io"
 
+	"github.com/Gaurav-Gosain/tuios/internal/dnd"
+
 	"log"
 	"maps"
 	"os"
@@ -44,6 +46,19 @@ func debugLog(format string, args ...any) {
 	if debugEnabled() {
 		log.Printf(format, args...)
 	}
+}
+
+// KeptFlags are the flags of an agent's command line that its manifest keeps
+// across a resume (harness.Resume.KeepFlags and KeepOptions), such as
+// --model opus, and the harness they were read from: a resume of any other
+// harness ignores them. The detector reads them on the poll that already
+// reads the agent's process, and replaces them each time it sees the harness
+// again, so an agent started with no kept flags clears them. A value is
+// replaced whole and never changed in place, since copies of a window share
+// it.
+type KeptFlags struct {
+	Harness string   `json:"harness"`
+	Flags   []string `json:"flags,omitempty"`
 }
 
 // WindowState represents the serializable state of a window.
@@ -134,6 +149,14 @@ type WindowState struct {
 	// stored. A client lists no files for such a pane, because Cwd is not a
 	// folder on any disk it can reach.
 	CwdHost string `json:"cwd_host,omitempty"`
+	// DnDAccepts and DnDOffers say the pane's program registered for drag
+	// and drop (OSC 72): it takes drops, or offers drags. DnDID is the
+	// multiplexer id it used. A live fact like CwdHost: a client that
+	// attached after the program started never saw the registration. See
+	// dnd_registration.go.
+	DnDAccepts bool `json:"dnd_accepts,omitempty"`
+	DnDOffers  bool `json:"dnd_offers,omitempty"`
+	DnDID      int  `json:"dnd_id,omitempty"`
 	// Unplaced marks a window the daemon created whose X/Y/Width/Height are a
 	// nominal box rather than a position anyone chose. The daemon has no viewport
 	// and cannot place a window; a client that receives an unplaced window puts it
@@ -161,6 +184,13 @@ type WindowState struct {
 	// meaningless in any other state. Daemon-owned like AgentState, and empty in
 	// older state, which reads as "not said".
 	AgentKind string `json:"agent_kind,omitempty"`
+	// AgentReason is why the state a reader is shown differs from AgentState,
+	// empty when it does not. The one value is AgentReasonSilent: a pane whose
+	// hooks reported working and then stopped reporting, shown as unknown
+	// while AgentState stays working underneath (see agent_silent.go). The
+	// next state the daemon sets clears it. Daemon-owned like AgentState.
+	// Additive: an older peer drops it and keeps drawing working.
+	AgentReason string `json:"agent_reason,omitempty"`
 	// AgentStateAt is the unix-nano time AgentState was last set. It is stamped
 	// daemon-side and drives the output-stall heuristic (see applyStallHeuristic).
 	// A title or screen look that reads back its own claim unchanged does not
@@ -195,6 +225,11 @@ type WindowState struct {
 	// AgentSessionID. Empty in state written before it existed, and a resume
 	// then falls back to AgentHarness.
 	AgentSessionHarness string `json:"agent_session_harness,omitempty"`
+	// AgentFlags are the flags the pane's agent was started with that its
+	// manifest keeps across a resume. Kept when the agent exits, like
+	// AgentSessionID. Daemon-owned. A pointer, because WindowState is copied
+	// by value all over the daemon and this is rarely set.
+	AgentFlags *KeptFlags `json:"agent_flags,omitempty"`
 	// AgentMeta is what the pane reported about its agent through
 	// set-agent-meta (model, context, cost, a summary), in the order the keys
 	// first arrived. Daemon-owned like AgentState, display only, and cleared
@@ -206,6 +241,19 @@ type WindowState struct {
 	// AgentMeta and never set by a client. Additive: zero, which is what an
 	// older daemon sends, means nothing is queued. See verb_queue.go.
 	AgentQueued int `json:"agent_queued,omitempty"`
+	// AgentDraftHeld is true while the person's draft in the agent's input
+	// box holds the next queued message (agent_queue_draft.go). Daemon-owned
+	// like AgentQueued. Additive: false, which is what an older daemon sends,
+	// means nothing is held.
+	AgentDraftHeld bool `json:"agent_draft_held,omitempty"`
+	// AgentSettled marks an agent the person put away: the agents view draws
+	// it on the Settled shelf until it needs the person again. Only
+	// mark-attention settle and unsettle set it, and the daemon clears it when
+	// the agent asks, errors, finishes a turn, sends the person mail or leaves
+	// the pane (see agent_settle.go). Daemon-owned like AgentQueued and never
+	// set by a client. Additive: false, which is what an older daemon sends,
+	// means not settled.
+	AgentSettled bool `json:"agent_settled,omitempty"`
 	// AgentSubagents is how many subagents the pane's agent is running, as its
 	// hooks reported them (see agent_subagents.go). Daemon-owned like
 	// AgentQueued and never set by a client. Additive: zero, which is what an
@@ -1135,6 +1183,15 @@ type PTY struct {
 	// heuristic, so it is an atomic rather than guarded by a lock.
 	lastOutput atomic.Int64
 
+	// humanKeyAt is the unix-nano time a person last typed into this pane
+	// through a client, focus and mouse reports left out. The delivery queue
+	// waits for it to be queueTypingQuiet old. draftWatch, when set, runs on
+	// every output chunk and every such key: the queue sets it while a draft
+	// holds its next entry, so a change in the box re-arms the look. See
+	// agent_queue_draft.go.
+	humanKeyAt atomic.Int64
+	draftWatch atomic.Pointer[func()]
+
 	// lastAgentProbe is the unix-nano time of the last output-driven agent-exit
 	// probe. It throttles the /proc read the probe does so a busy pane does not
 	// re-check its foreground on every output chunk.
@@ -1200,6 +1257,9 @@ type PTY struct {
 	// place is where the shell is: its directory from OSC 7 (seeded from the
 	// spawn directory) and the git branch there. See session_place.go.
 	place placeRecord
+	// dnd is what the program said about drag and drop. See
+	// dnd_registration.go.
+	dnd dndRegistration
 	// marks is the emulator's OSC 133 marker list, kept for its origin: a
 	// command's prompt row is stored against it. See shell_commands.go.
 	marks *vt.SemanticMarkerList
@@ -1673,6 +1733,9 @@ type Session struct {
 	// hostShown reports whether the session is on a screen. See
 	// SetHostShownProbe.
 	hostShown atomic.Pointer[func() bool]
+	// taskAuto reports whether cards move on their own. See
+	// SetTaskAutoProbe.
+	taskAuto atomic.Pointer[func() bool]
 }
 
 // SetGraphicsCapabilities records the graphics protocols tuios can forward to
@@ -1696,6 +1759,11 @@ func (s *Session) SetGraphicsCapabilities(kitty, sixel bool) {
 // daemon had answered DA1, which is where a probing guest stops reading. A
 // nested tuios then took the refusal for keys and typed it into its pane.
 func (s *Session) SetKittyAnimation(ok bool) { s.kittyAnimation.Store(ok) }
+
+// dragAndDrop reports whether [panes] drag_and_drop is on for this session.
+func (s *Session) dragAndDrop() bool {
+	return s.config != nil && s.config.DragAndDrop != nil && s.config.DragAndDrop()
+}
 
 // SetSixelAdvertised records whether a sixel image a pane draws will be shown:
 // true while any attached client's terminal draws sixel or kitty graphics,
@@ -1757,6 +1825,10 @@ type SessionConfig struct {
 	// stamps it with its own getter, so a config reload reaches every
 	// session. Nil means on.
 	ReturnWhenEmpty func() bool
+	// DragAndDrop reports whether [panes] drag_and_drop is on, read each
+	// time so a reload applies. Off, the daemon neither records what a
+	// pane's program says about drag and drop nor answers its query.
+	DragAndDrop func() bool
 	// HerdrEnv returns the herdr protocol variables a pane with the given
 	// window id that runs the given command is started with, nil for none.
 	// See Manager.HerdrEnv.
@@ -2653,6 +2725,19 @@ func (s *Session) installPTY(ctx context.Context, cancel context.CancelFunc, id 
 		// An OSC 7501 report, or a full reset: stored at once, in order with
 		// the prompt marks, and handed on by the vtWriter after the write.
 		ProgramStatus: pty.noteProgramStatus,
+		// A drag and drop registration is kept for the clients that attach
+		// later, and a query is answered here, once. Not for a pane on
+		// another machine: the daemon that runs its program answers there,
+		// and an answer from here would be a second one. See
+		// dnd_registration.go.
+		PrivateOSC: func(cmd int, data []byte) {
+			if cmd != dnd.Code || sp.host != "" || !s.dragAndDrop() {
+				return
+			}
+			if reply := pty.dnd.note(data); reply != nil {
+				terminal.WriteResponse(reply)
+			}
+		},
 	})
 
 	// DA1 and XTSMGRAPHICS answer from what the attached clients can show.
@@ -2914,6 +2999,9 @@ func (s *Session) fillLiveFacts(state *SessionState) {
 		w := &state.Windows[i]
 		place := live[w.PTYID].place
 		w.CwdHost = place.elsewhere
+		// The drag and drop registration is live too, and the daemon's alone.
+		dnd := live[w.PTYID].dnd
+		w.DnDAccepts, w.DnDOffers, w.DnDID = dnd.accepts, dnd.offers, dnd.id
 		switch {
 		case place.cwd != "":
 			w.Cwd = place.cwd
@@ -2986,6 +3074,7 @@ type placeFact struct {
 type paneFact struct {
 	title string
 	place placeFact
+	dnd   dndRegistrationFact
 }
 
 // livePaneFacts is each pane's live facts by PTY id, in one pass over the
@@ -3001,13 +3090,14 @@ func (s *Session) livePaneFacts() map[string]paneFact {
 	for id, pty := range s.ptys {
 		var fact paneFact
 		fact.title = pty.Title()
+		fact.dnd = pty.dnd.fact()
 		if _, remote := pty.pty.(*remotePane); !remote {
 			fact.place = placeFact{cwd: pty.place.announcedCwd(), elsewhere: pty.place.Elsewhere()}
 			if fact.place.cwd == "" {
 				fact.place.seed = pty.place.Cwd()
 			}
 		}
-		if fact != (paneFact{}) {
+		if fact.title != "" || fact.place != (placeFact{}) || fact.dnd.accepts || fact.dnd.offers {
 			out[id] = fact
 		}
 	}
@@ -3629,7 +3719,9 @@ func (s *Session) mutateStateLocked(fn func(state *SessionState) error) (*Sessio
 		return nil, err
 	}
 	s.noteAgentTurnsLocked(before, time.Now().UnixNano())
+	clearStaleSilenceLocked(before, s.state)
 	clearNowAtRestLocked(before, s.state)
+	wakeSettledLocked(before, s.state)
 	s.forgetSubagentsLocked(s.state)
 	pruneDeadLeaves(s.state)
 	// A daemon-side mutation is exactly what a client sync must not undo, so it
@@ -3899,7 +3991,8 @@ func (s *Session) windowSummaries() []WindowSummary {
 		out = append(out, WindowSummary{
 			ID:            w.ID,
 			Title:         title,
-			AgentState:    string(w.AgentState),
+			AgentState:    string(w.ShownAgentState()),
+			AgentReason:   w.AgentReason,
 			AgentStateAt:  w.AgentStateAt,
 			AgentHarness:  w.AgentHarness,
 			AgentMessage:  w.AgentMessage,
@@ -3907,6 +4000,8 @@ func (s *Session) windowSummaries() []WindowSummary {
 			CompletionSeq: w.CompletionSeq,
 			AgentMeta:     w.AgentMeta,
 			AgentQueued:   w.AgentQueued,
+			DraftHeld:     w.AgentDraftHeld,
+			AgentSettled:  w.AgentSettled,
 			Subagents:     w.AgentSubagents,
 			SubagentList:  w.AgentSubagentList,
 			ProgramStatus: w.ProgramStatus,
@@ -5191,6 +5286,9 @@ func (p *PTY) readOutput() {
 			// anything that can block, so a demotion decision is made against when
 			// output actually arrived.
 			p.lastOutput.Store(time.Now().UnixNano())
+			if f := p.draftWatch.Load(); f != nil {
+				(*f)()
+			}
 
 			// Raise a control-plane output-activity event. This is a lightweight
 			// signal (byte count only, no content) that drives wait-for-output and

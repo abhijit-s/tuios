@@ -13,6 +13,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/Gaurav-Gosain/tuios/internal/dnd"
+
 	uv "github.com/charmbracelet/ultraviolet"
 
 	"charm.land/lipgloss/v2"
@@ -358,6 +360,7 @@ type Window struct {
 	NvimNavFunc       func(direction string)   // Callback for nvim navigation requests (OSC 7777)
 	NvimNavStateFunc  func(active bool)        // Callback for nvim navigation state (OSC 7777)
 	NvimNavResetFunc  func()                   // Callback when the alternate screen exits
+	DnDFunc           func(dnd.Command)        // Callback for a drag and drop message (OSC 72)
 	outputQ           *outputQueue             // Queue for serializing daemon PTY output writes
 	outputDone        chan struct{}            // Signal to stop the output writer and render coalescer goroutines
 	suppressCallbacks atomic.Bool              // Suppress VT emulator callbacks during state restoration (prevents race conditions)
@@ -443,6 +446,10 @@ type Window struct {
 	AgentState string
 	// AgentMessage is the optional short note reported with AgentState.
 	AgentMessage string
+	// AgentReason is why AgentState is not the state the agent gave:
+	// "silent" for a hooked pane that stopped reporting, whose AgentState is
+	// then unknown. Empty otherwise.
+	AgentReason string
 	// AgentKind is what sort of block a needs_input state is ("approval",
 	// "question"), as the daemon recorded it, empty when the source did not
 	// say. The rail draws it as the row's need word.
@@ -461,6 +468,12 @@ type Window struct {
 	// AgentQueued is how many messages wait in the pane's delivery queue, as the
 	// daemon synced it. Zero for none, and from a daemon that has no queue.
 	AgentQueued int
+	// AgentDraftHeld is true while the person's draft in the agent's input
+	// box holds the next queued message, as the daemon synced it.
+	AgentDraftHeld bool
+	// AgentSettled marks an agent the person put away on the Settled shelf,
+	// as the daemon synced it.
+	AgentSettled bool
 	// AgentSubagents is how many subagents the pane's agent is running, as the
 	// daemon synced it. Zero for none, and from a daemon that counts none.
 	AgentSubagents int
@@ -768,6 +781,16 @@ func newWindowBase(id, title string, x, y, width, height, z int, ptyDataChan cha
 			}
 		},
 		PrivateOSC: func(cmd int, data []byte) {
+			if cmd == dnd.Code {
+				// The drag and drop protocol. Parsed here, where the body is
+				// still valid; the chunks are joined by the app.
+				if window.DnDFunc != nil {
+					if dnd, ok := dnd.Parse(data); ok {
+						window.DnDFunc(dnd)
+					}
+				}
+				return
+			}
 			if cmd != nvimNavigatorOSC {
 				return
 			}

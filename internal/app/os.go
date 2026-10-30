@@ -122,6 +122,25 @@ type OS struct {
 	// bridge) sets it, so a zoom there resizes the zoomed pane alone.
 	FullZoom bool
 
+	// NoRail keeps this model from taking any columns for a rail, and from
+	// reading or writing whether the session shows one. A renderer that draws
+	// its own sidebar (the GUI bridge) sets it. A rail its terminal clients
+	// show would take columns from panes the renderer draws whole, and a rail
+	// this model hid would stay hidden for them.
+	NoRail bool
+
+	// OwnPaneBorders lays the panes out with shared borders on this client
+	// only. Pane geometry is session state, and a terminal client with
+	// shared_borders off gives each guest two columns and two rows less than
+	// its rectangle. A renderer that draws its own frames (the GUI bridge)
+	// sets it to give the guest the whole rectangle, and sends
+	// SessionSharedBorders in its state, so the session keeps the setting it had.
+	OwnPaneBorders bool
+
+	// SessionSharedBorders is the session's shared borders setting while
+	// OwnPaneBorders is on. It starts as this client's config says.
+	SessionSharedBorders bool
+
 	// frameRate drives the program's frame ticker from NormalFPS and finds the
 	// display's rate for max_fps = "auto". See frame_rate.go.
 	frameRate frameRate
@@ -1046,6 +1065,10 @@ type OS struct {
 	// windowIntentErr is why the last window request did not go out, read
 	// once by addWindowInChecked.
 	windowIntentErr error
+	// heldNotice is a daemon notice about a window on its way, such as why a
+	// split did not follow ssh. The sync that brings the window shows it
+	// again after its own count note, which would hide it.
+	heldNotice string
 	// paneRequests is, by workspace, when this client asked the daemon for
 	// the pane a switch to that empty workspace opens. A switch back to the
 	// workspace before the pane arrives asks for nothing more. A sync that
@@ -1054,6 +1077,11 @@ type OS struct {
 	paneRequests map[int]paneRequest
 	// Keyboard enhancement support (Kitty protocol)
 	KeyboardEnhancementsEnabled bool // True when terminal supports keyboard enhancements
+	// quitting is set when the client has decided to end. See QuitCmd.
+	quitting bool
+	// lastKeyboardEnhancements is what the last frame asked the terminal for,
+	// which a quitting client keeps asking for. See QuitCmd.
+	lastKeyboardEnhancements tea.KeyboardEnhancements
 	// KeyboardFlags is the flag set the host answered the enhancement query
 	// with, so tuios knows what it actually got rather than what it asked for.
 	// Zero means the terminal never answered, which is not the same as a refusal.
@@ -1109,6 +1137,10 @@ type OS struct {
 	// OnNotification, when set, hears every message shown in the dock, with
 	// its level. The browser build reports it to the page. Nil everywhere else.
 	OnNotification func(message, level string)
+	// LearnNotes, when set, replaces Learn mode's notes by their default
+	// text. The notes talk about a browser tab; tuios tutor runs in a
+	// terminal. An empty replacement shows no note.
+	LearnNotes map[string]string
 	// learn is what Learn mode reads in place of the disk and git: the fake
 	// shell's files and repository. Nil everywhere else. See
 	// SetLearnBackend.
@@ -1242,6 +1274,11 @@ type OS struct {
 	PendingNvimNavigation chan NvimNavigationMsg
 	nvimNavigators        map[string]bool
 	pendingNvimNavigation *pendingNvimNavigation
+	// Drag and drop between panes over OSC 72. See dnd.go.
+	dndIn    *dndInbox
+	dndPanes map[string]*dndPane
+	dndPress *dndPress
+	dndDrag  *dndDrag
 	// tapeDetect holds the project-tape detection state (trust store, session
 	// memory of handled directories, debounce bookkeeping, and the current
 	// passive indicator). See tape_detect.go.
@@ -1734,6 +1771,9 @@ type OS struct {
 	// sidebarPendingCmd is the command the last rail gesture produced, parked
 	// because SidebarClick answers a bool. Drained by the click handler.
 	sidebarPendingCmd tea.Cmd
+	// integrationAsk is the question an integration notice opens before it
+	// writes a file. See integration_confirm.go.
+	integrationAsk integrationAsk
 	// SidebarPeek is the session the terminals section is previewing while the
 	// pointer or the rail cursor rests on its row. Gesture-scoped runtime state
 	// like the marquee: never persisted, cleared by the same motion stream that
@@ -2173,6 +2213,10 @@ type NotifTarget struct {
 	// DaemonRestart marks the version notice: activating it opens the
 	// restart dialog. See warnOnBuildMismatch.
 	DaemonRestart bool
+	// AgentInstall names the harness of an integration notice: activating
+	// the message asks to install or update that integration, then does it
+	// the way the Agents tab's action row does. See installFromNotice.
+	AgentInstall string
 	// ClipboardVersion counts the changes to that ask's text. It is part of
 	// the target, so a message drawn with one text is not the same message as
 	// one holding another. See clickVisibleNotification.

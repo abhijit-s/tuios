@@ -171,7 +171,7 @@ func (m *OS) handleDaemonReconnectResult(msg daemonReconnectResultMsg) tea.Cmd {
 		m.daemonReconnect = nil
 		m.daemonWaiting.Store(false)
 		m.ExitReason = ExitDaemonLost
-		return tea.Quit
+		return m.QuitCmd()
 	}
 	return m.daemonReconnectWait()
 }
@@ -195,6 +195,9 @@ func (m *OS) resumeOnNewDaemon(client *session.TUIClient, state *session.Session
 	m.rebuildForSessionOn(state, m.Width, m.Height)
 	m.SyncDockContext()
 	m.MarkAllDirty()
+	// The version notice named the daemon that stopped. When this window
+	// still differs from the new one, the line below says so.
+	m.clearRestartNotice()
 	text := "The daemon restarted. tuios reattached."
 	if c, d := client.BuildMismatch(); c != "" {
 		text = fmt.Sprintf("The daemon restarted on %s. tuios reattached. This window still runs %s: start tuios again to use %s.", d, c, d)

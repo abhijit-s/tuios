@@ -11,6 +11,7 @@ import (
 	"github.com/Gaurav-Gosain/tuios/internal/app"
 	"github.com/Gaurav-Gosain/tuios/internal/config"
 	"github.com/Gaurav-Gosain/tuios/internal/listnav"
+	"github.com/Gaurav-Gosain/tuios/internal/textedit"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -355,7 +356,7 @@ func shouldShowQuitDialog(o *app.OS) bool {
 // intent Update reports the user's own quit as an unexpected termination.
 func quitSession(o *app.OS) (*app.OS, tea.Cmd) {
 	o.QuitSession()
-	return o, tea.Quit
+	return o, o.QuitCmd()
 }
 
 // requestQuit is what a quit keybinding does. In a daemon session it always
@@ -591,6 +592,12 @@ func routeKey(msg tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
 	if o.PluginApprovalOpen() {
 		return o, o.PluginApprovalKey(msg.String(), msg.Text)
 	}
+	// The integration question owns every key the same way, so the key
+	// that opened it, pressed again from habit, cannot answer it. See
+	// app/integration_confirm.go.
+	if o.IntegrationAskOpen() {
+		return o, o.IntegrationAskKey(msg.String())
+	}
 
 	// A copy's question and the Copies panel, the same way: the rail and
 	// the dock open them, and their keys must reach them. The question is
@@ -788,6 +795,12 @@ func routeKey(msg tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
 // every kind of target it can point at. The editor is deliberately the same one
 // in all three cases.
 func handleRenameMode(msg tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
+	// The word chords of a shell and of the composer. Option+Backspace reaches
+	// here as alt+backspace when the terminal sends Option as Alt.
+	if textedit.IsWordDeleteKey(msg.String()) {
+		o.RenameDeleteWord()
+		return o, nil
+	}
 	switch msg.String() {
 	case "enter":
 		// CommitRename is the one rename. A window name is applied here; a
@@ -800,11 +813,6 @@ func handleRenameMode(msg tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
 		return o, nil
 	case "backspace":
 		o.RenameBackspace()
-		return o, nil
-	case "alt+backspace", "ctrl+w", "ctrl+backspace":
-		// The word chords of a shell and of the composer. Option+Backspace
-		// reaches here as alt+backspace when the terminal sends Option as Alt.
-		o.RenameDeleteWord()
 		return o, nil
 	case "ctrl+u":
 		o.RenameClear()

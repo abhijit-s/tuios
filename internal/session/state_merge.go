@@ -220,6 +220,7 @@ func retainDaemonExclusive(incoming, canonical *SessionState) {
 		message string
 		harness string
 		at      int64
+		reason  string
 	}
 	agents := make(map[string]agent, len(canonical.Windows))
 	// The kind of a block and the harness's session id are daemon-owned too,
@@ -228,6 +229,7 @@ func retainDaemonExclusive(incoming, canonical *SessionState) {
 		kind           string
 		sessionID      string
 		sessionHarness string
+		flags          *KeptFlags
 	}
 	agentIDs := make(map[string]agentIdentity, len(canonical.Windows))
 	// Agent metadata is daemon-owned for the same reason, and carried on its
@@ -238,7 +240,11 @@ func retainDaemonExclusive(incoming, canonical *SessionState) {
 	// a pane, and no client sets it, so canonical wins like the meta. So does
 	// the subagent count, which only the pane's hooks move.
 	queued := make(map[string]int)
-	var subagents map[string]int // most sessions have none
+	var draftHeld map[string]bool // set only while a draft holds a queue
+	var subagents map[string]int  // most sessions have none
+	// Only mark-attention and the daemon's own wake move the settle, so
+	// canonical wins like the queue.
+	var settled map[string]bool
 	var subagentLists map[string][]SubagentInfo
 	// The popup mark, requested size and dim override are stamped once, when
 	// the daemon creates the window, and nothing ever changes them. So canonical
@@ -354,16 +360,28 @@ func retainDaemonExclusive(incoming, canonical *SessionState) {
 			shellPIDs[w.ID] = pid
 		}
 		if w.AgentState != AgentStateNone || w.AgentMessage != "" || w.AgentHarness != "" || w.AgentStateAt != 0 {
-			agents[w.ID] = agent{w.AgentState, w.AgentMessage, w.AgentHarness, w.AgentStateAt}
+			agents[w.ID] = agent{w.AgentState, w.AgentMessage, w.AgentHarness, w.AgentStateAt, w.AgentReason}
 		}
-		if w.AgentKind != "" || w.AgentSessionID != "" || w.AgentSessionHarness != "" {
-			agentIDs[w.ID] = agentIdentity{w.AgentKind, w.AgentSessionID, w.AgentSessionHarness}
+		if w.AgentKind != "" || w.AgentSessionID != "" || w.AgentSessionHarness != "" || w.AgentFlags != nil {
+			agentIDs[w.ID] = agentIdentity{w.AgentKind, w.AgentSessionID, w.AgentSessionHarness, w.AgentFlags}
 		}
 		if len(w.AgentMeta) > 0 {
 			metas[w.ID] = w.AgentMeta
 		}
 		if w.AgentQueued != 0 {
 			queued[w.ID] = w.AgentQueued
+		}
+		if w.AgentDraftHeld {
+			if draftHeld == nil {
+				draftHeld = make(map[string]bool)
+			}
+			draftHeld[w.ID] = true
+		}
+		if w.AgentSettled {
+			if settled == nil {
+				settled = make(map[string]bool)
+			}
+			settled[w.ID] = true
 		}
 		if w.AgentSubagents != 0 {
 			if subagents == nil {
@@ -436,15 +454,19 @@ func retainDaemonExclusive(incoming, canonical *SessionState) {
 		w.AgentKind = ids.kind
 		w.AgentSessionID = ids.sessionID
 		w.AgentSessionHarness = ids.sessionHarness
+		w.AgentFlags = ids.flags
 		a := agents[w.ID]
 		w.AgentState = a.state
 		w.AgentMessage = a.message
 		w.AgentHarness = a.harness
 		w.AgentStateAt = a.at
+		w.AgentReason = a.reason
 		// Taken from canonical whatever the client sent: no client sets it, so
 		// a value in a client push is an echo of an older state at best.
 		w.AgentMeta = metas[w.ID]
 		w.AgentQueued = queued[w.ID]
+		w.AgentDraftHeld = draftHeld[w.ID]
+		w.AgentSettled = settled[w.ID]
 		w.AgentSubagents = subagents[w.ID]
 		w.AgentSubagentList = subagentLists[w.ID]
 		w.ProgramStatus = programStatus[w.ID]

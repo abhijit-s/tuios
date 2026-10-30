@@ -21,7 +21,7 @@ The configuration reference lives on the docs site: https://tuios.dev/docs/confi
 
 It covers the whole `config.toml`: the `[appearance]` table and its `sidebar`, `scrollbar`, dock, and window-button options, `[notifications.agent]`, `[notifications.mail]` (see [AGENT_STATE.md](AGENT_STATE.md#the-inbox)), all 23 `[keybindings]` sections, `[daemon]`, `[startup]`, `[tape]`, `[screenshot]`, `[hooks]`, and `[debug]`, along with what hot-reloads and what needs a restart.
 
-`[notifications]` sets how many seconds a message stays up. `duration` is for info and success messages, and its default is 2. `warning_duration` (default 8) and `error_duration` (default 15) are for warnings and errors. Any value from 1 to 3600 is valid, and 0 uses the default. tuios warns about a negative value and uses the default. tuios warns about a value above 3600 and uses 3600. `style` sets how a message looks. `full` (the default) shows a coloured bar on the left of the message and a line above it that counts down. `plain` shows the icon and the text only. The icon keeps its colour, so an error still looks different from an info message. `level` sets the least severe message the dock shows: `info` (the default) shows every message, `warning` only warnings and errors, and `error` only errors. A message the dock does not show still goes to the log viewer (`Ctrl+B D l`), so the notice for a key that did nothing can be read there.
+`[notifications]` sets how many seconds a message stays up. `duration` is for info and success messages, and its default is 2. `warning_duration` (default 8) and `error_duration` (default 15) are for warnings and errors. Any value from 1 to 3600 is valid, and 0 uses the default. tuios warns about a negative value and uses the default. tuios warns about a value above 3600 and uses 3600. `style` sets how a message looks. `full` (the default) shows a coloured bar on the left of the message and a line above it that counts down. `plain` shows the icon and the text only. The icon keeps its colour, so an error still looks different from an info message. `level` sets the least severe message the dock shows: `info` (the default) shows every message, `warning` only warnings and errors, and `error` only errors. A message the dock does not show still goes to the log viewer (`Ctrl+B D l`), so the notice for a key that did nothing can be read there. Set `log_hidden = false` to keep those messages out of the log as well. Warnings and errors always go to the log. A message from a pane, an agent or mail does not use `level`. `[notifications.agent]` and `[notifications.mail]` control those messages.
 
 `[notifications.mail]` has `enabled`, `notify`, `dock`, `sound` and `between_agents`. Each key except `between_agents` follows the same key in `[notifications.agent]` while it is unset, so a config without the table alerts as before. `between_agents` (default `false`) also alerts on a message from one agent to another. Sound mode, cooldown, cue files and quiet hours always come from `[notifications.agent]`. `tuios set-config notifications.mail.KEY ""` clears a key, and `tuios get-config` then prints `(follows notifications.agent.KEY)`.
 
@@ -468,6 +468,8 @@ display = "follow"
 `[panes]` sets `label_keys`, the keys that the pane labels (`Ctrl+B Q`) use. The default is `1234567890`. Letters `a` to `z` and digits are allowed. See [KEYBINDINGS.md](KEYBINDINGS.md#pane-labels).
 
 `[panes]` also sets `navigator_layout`, the layout the pane navigator (`Ctrl+B /`) opens in: `tree`, `flat` or `cards`. The default is `tree`. Press `v` in the navigator to change the layout. See [KEYBINDINGS.md](KEYBINDINGS.md#the-pane-navigator).
+
+`[panes] drag_and_drop = true` turns on drag and drop between panes over the kitty drag and drop protocol (OSC 72). A program that speaks it, such as yazi 26.9 or later, can drag files from its pane: hold the left button on a file in terminal mode and carry it to another pane. A pane whose program speaks the protocol takes the drop itself. Any other pane gets the paths as a paste, by the rules of [dragging a file into a pane](#drag-a-file-into-a-pane) below: quoted for the shell in the pane, and refused, with the reason in the label, when that pane could not use a path on this machine. The same rules hold the pane the drag starts from. Dropped text, as against paths, goes only into a pane whose program turned bracketed paste on. tuios reads no file for either side and refuses a drop back into the pane the drag came from. The default is `false`. The protocol is kitty's and still settling, so the switch is off until it is asked for.
 
 `[path_picker]` sets `show_hidden`. With `true`, the path picker (`Alt+;`) shows the names that start with a dot when it opens. The default is `false`. `Alt+H` in the picker shows or hides them. See [KEYBINDINGS.md](KEYBINDINGS.md#pick-a-path).
 
@@ -1490,8 +1492,10 @@ new_window_follow_ssh = true
 ```
 
 tuios finds ssh in the foreground of the pane. ssh can run from a shell, or
-from `sshpass`, `autossh` or `mosh`. tuios reads only the processes that you
-own in the pane. It runs the `ssh` or `mosh` that it finds on its own `PATH`,
+from `sshpass`, `autossh` or `mosh`. ssh can also run from another program,
+such as your own helper script (`tt ssh box`). tuios then follows only an
+interactive login: an ssh line with no remote command, and with none of `-s`,
+`-N`, `-T` or `-W`. tuios reads only the processes that you own in the pane. It runs the `ssh` or `mosh` that it finds on its own `PATH`,
 with no shell on this machine. It never runs the program that the pane runs.
 
 The new ssh gets the same environment as an ordinary new pane. If the ssh
@@ -1541,7 +1545,11 @@ These ssh lines get an ordinary pane:
   form, made of letters, digits and `._:@[]-`, or a hop that starts with `-`.
 - A mosh destination that starts with `-`.
 - mosh with `--ssh`, `--client` or `--server`.
-- ssh that another program starts, such as `scp`, `rsync`, `git` or `sftp`.
+- ssh that a file transfer starts: `scp`, `rsync`, `git`, `sftp` or `sshfs`.
+- ssh that another program starts, when the line has a remote command, or
+  `-s`, `-N`, `-T` or `-W`.
+
+When a split asks to follow ssh and gets an ordinary pane, the dock says why.
 
 Put a `ProxyCommand` or a `ProxyJump` in `~/.ssh/config` to use it with a
 split. A split with `-J` on the command line is followed.
@@ -1880,6 +1888,52 @@ as the files section: the folder that the shell in the pane is in. Press
 `Alt+;` in terminal mode, or `Ctrl+B .`. Type to filter, `Tab` to open a
 folder, and `Enter` to type the path. See
 [KEYBINDINGS.md](KEYBINDINGS.md#pick-a-path).
+
+## Where worktrees go
+
+`tuios worktree new`, `New worktree...` on the rail and `tuios fan` make a
+git worktree for each new session. By default it goes in
+`$XDG_DATA_HOME/tuios/worktrees/<repo>/<branch>`, outside the repository.
+`[worktree] path` puts it somewhere else, given as a path template:
+
+```toml
+[worktree]
+path = "{{ repo_path }}/.worktrees/{{ branch | slug }}"
+```
+
+| Variable | What it holds |
+|---|---|
+| `repo_path` | The main checkout's directory |
+| `repo` | Its base name |
+| `branch` | The branch, as given |
+
+`| slug` turns a value into one folder name: `feat/retry` becomes
+`feat-retry`. Use it on `branch`. Without it, `{{ branch }}` keeps the slash
+and makes a folder per part, so the worktree of `feat/x` lands inside the
+worktree of `feat`, and `tuios worktree rm --force` on `feat` deletes both.
+A relative path starts at `repo_path`, so `.worktrees/{{ branch | slug }}` is
+the same as the example above. A leading `~/` is your home folder. The
+template has to use `branch`, or every branch would get the same folder.
+
+The variables are the ones worktrunk's `worktree-path` uses, and `| sanitize`
+is another name for `| slug`, so a template copied from a worktrunk config
+works as it is. worktrunk's `sanitize` turns only `/` and `\` into `-`, while
+`slug` turns every run of characters other than letters, digits, `.` and `_`
+into one `-`. A branch with other characters, such as `fix--retry` or
+`feat+x`, can get a different folder name from each tool.
+
+When the worktree is inside the repository and git does not ignore it, the
+main checkout lists it as untracked, and `git add -A` there would take it in.
+tuios then warns after it makes the worktree and names the folder that holds
+the worktrees, such as `/.claude/worktrees/` for
+`.claude/worktrees/{{ branch | slug }}`, to add to `.gitignore` or
+`.git/info/exclude`. It never edits those files itself.
+
+The daemon makes every worktree, so it reads the setting, when it starts and
+when the file changes. The path is then the same whichever client asked.
+Empty is the default. While it is empty, `TUIOS_WORKTREE_DIR` in the daemon's
+environment still moves the default folder (see
+[CLI_REFERENCE.md](CLI_REFERENCE.md#tuios_worktree_dir)).
 
 ## The main checkout in the sessions tree
 
@@ -2443,6 +2497,37 @@ when it starts and again when the file changes. A change applies to the next
 pane. [AGENT_STATE.md](AGENT_STATE.md#herdrs-pane-state-protocol) says what is
 accepted.
 
+## Show a hooked agent that stops reporting
+
+A hooked agent reports at each prompt and each tool call. When it sends no
+report for `silent_after`, tuios shows it as `unknown` with the reason
+`silent`, and its row reads "No report for N min":
+
+```toml
+[agents]
+silent_after = "10m"   # default; "0" or "off" turns it off
+```
+
+The value is a Go duration, such as `90s` or `20m`. A value that does not
+parse reads as `10m`, with a warning. The daemon reads the value when it
+starts and again when the file changes. See
+[Silent agents](AGENT_STATE.md#silent-agents).
+
+## Fold the Working group
+
+The agents view (`ctrl+b i`) can open with the Working group folded. A folded
+group shows its heading, its count and the state mark of each agent in it.
+
+```toml
+[agents]
+fold_working = true   # default false
+```
+
+`F` folds or opens any group in the view. tuios keeps that choice in
+`sidebar.json` in its state folder (`$XDG_STATE_HOME/tuios` on Linux). The
+choice wins over `fold_working`. The settings page has this option on the
+Behavior tab, as "Fold Working".
+
 ## Report pane states to your terminal
 
 When tuios runs in a terminal that reads OSC 7501, the Program Status
@@ -2698,6 +2783,21 @@ unknown name is reported as a config warning and ignored.
 ```toml
 [tasks]
 stages = ["todo", "doing", "verify"]
+```
+
+tuios moves a card on its own when it records a fact about the card's work: a
+plan held for approval and then approved, a fan check, a pull request
+opening, merging or closing ([CLI_REFERENCE.md](CLI_REFERENCE.md#tuios-task)
+has the table). A move fires only from the stages that fact moves a card
+from, never on a blocked or done card, and the card's history names the
+reason. The plan stage is reached only when `[agents.approvals]` holds plans
+for the harness and the pane is not in front of you. `auto_stage = false`
+leaves every stage to you. A fan's stamp on a card (`tuios fan --task`) is
+still written, though the card then stays where it is.
+
+```toml
+[tasks]
+auto_stage = false
 ```
 
 ## What a pane may do

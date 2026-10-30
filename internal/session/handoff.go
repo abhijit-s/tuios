@@ -37,6 +37,10 @@ import (
 // MinHandoffVersion the oldest it reads. A change to what a record means, or
 // to a field a record carries, moves HandoffVersion.
 //
+// Version 1 is two formats: v0.11.1 wrote the daemon record as gob, and later
+// builds wrote it as JSON under the same number. Version 2 is the JSON one,
+// and no build reads version 1 any more.
+//
 // Version 3 added the window and session records version 2 dropped: a pane's
 // close_on_exit; a session's creation and last activity, workspace return,
 // report colours, old names and stash index; and the daemon's plugin panes,

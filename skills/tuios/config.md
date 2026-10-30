@@ -1,5 +1,9 @@
 # Configuration, appearance, the dock, hooks and keybindings
 
+When the person asks you to move their tmux, screen or zellij settings over,
+read "Keys of tmux, screen or zellij" below. Run `tuios keybinds preset
+tmux`, then `tuios keybinds cheatsheet tmux` to show what moved.
+
 ## Options
 
 Everything scalar is settable at runtime. Find the option rather than guessing
@@ -95,7 +99,8 @@ errors. Any value from 1 to 3600 is valid, and 0 uses the default.
 coloured bar on its left and a line above it that counts down, and `plain`
 shows the icon and the text only. `notifications.level` is the least severe
 message the dock shows: `info` (the default), `warning` or `error`. The rest go
-to the log viewer only. Change these only when the person asks.
+to the log viewer only, or nowhere with `notifications.log_hidden = false`.
+Messages from panes, agents and mail are not held to the level. Change these only when the person asks.
 
 `daemon.window_size` sets the size of a session with more than one client:
 `latest` (the default), the client that last had input, `smallest`, or
@@ -483,8 +488,9 @@ working recipes.
 A hook runs a shell command on an event, with `TUIOS_*` variables carrying the
 facts. The daemon runs `after-new-window`, `after-close-window`,
 `after-focus-change`, `after-workspace-switch`, `after-agent-state`,
-`after-command-finished` and `after-new-worktree`, so they fire with nobody
-attached. `after-new-worktree` runs in the new worktree before its first
+`after-command-finished`, `after-new-worktree` and `after-settle`, so they
+fire with nobody attached. `after-settle` fires when the person settles an
+agent, with `TUIOS_SETTLE_REASON`. `after-new-worktree` runs in the new worktree before its first
 window starts, and tuios waits for it (60 seconds at most). It gets
 `TUIOS_WORKTREE_PATH`, `TUIOS_WORKTREE_BRANCH`, `TUIOS_WORKTREE_REPO_ROOT` and
 `TUIOS_WORKTREE_CREATED_BRANCH`. When it fails, the session is kept and the
@@ -661,9 +667,11 @@ cancel = true
 description = "flatten"
 ```
 
-When the command writes nothing, fails or runs past 10 seconds, the clipboard
-gets the plain selection, and a failure shows the exit code and the first
-line of stderr on the dock. The command runs on the machine of the tuios
+When the command exits 0 and writes nothing, tuios leaves the clipboard and
+the paste buffers alone, so a command that sets the clipboard itself (such as
+`tmux-copy-it`) wins, as in tmux. When it fails or runs past 10 seconds, the
+clipboard gets the plain selection, and the dock shows the exit code and the
+first line of stderr. The command runs on the machine of the tuios
 client, with the command-key variables (`TUIOS_SESSION`,
 `TUIOS_ACTIVE_PANE_ID`, `TUIOS_ACTIVE_PANE_CWD`). In multi copy mode it runs
 once, on the text `y` copies in the current format.

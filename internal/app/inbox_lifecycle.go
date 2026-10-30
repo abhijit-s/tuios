@@ -192,11 +192,14 @@ func (m *OS) settleInboxUnreadAsk(windowID, id string) {
 	m.noteInboxAsked(id)
 }
 
-// inboxUndoEntry is one close u can restore.
+// inboxUndoEntry is one close u can restore, or one settle u takes back.
 type inboxUndoEntry struct {
 	id  string
 	who string
 	at  time.Time
+	// session and window name the pane of a settle, and item the finished
+	// turn it closed. Empty for a dismiss or a snooze.
+	session, window, item string
 }
 
 // inboxFinishedWalk is where a run of ctrl+b O presses has got to.
@@ -211,8 +214,9 @@ type InboxMarkedMsg struct {
 	Action string
 	ID     string
 	Who    string
-	// Window is the pane an unread was for.
-	Window string
+	// Window is the pane an unread or a settle was for, and Session its
+	// session.
+	Window, Session string
 	// Words say what was done, for the dock: "for an hour".
 	Words string
 	Err   error
@@ -277,7 +281,7 @@ func (m *OS) inboxCanMark(what string) bool {
 		return true
 	}
 	if m.DaemonClient == nil || m.AttachedHost != "" {
-		m.ShowNotification(what+" needs a client attached to this machine's daemon", "info", m.Settings.NotificationDuration)
+		m.ShowNotification(what+" needs a client attached to this machine's daemon", "warning", m.Settings.NotificationDuration)
 		return false
 	}
 	return true
@@ -301,12 +305,17 @@ func (m *OS) inboxMarkCmd(params map[string]any, who, words string) tea.Cmd {
 		if w, _ := params["window"].(string); w != "" {
 			m.noteInboxAsked(inboxUnreadKey(w))
 		}
+	case "unsettle":
+		if id, _ := params["id"].(string); id != "" {
+			m.noteInboxAsked(id)
+		}
 	}
 	window, _ := params["window"].(string)
+	sessionName, _ := params["session"].(string)
 	call := m.inboxCaller()
 	return func() tea.Msg {
 		raw, err := call("mark-attention", params, 5*time.Second)
-		msg := InboxMarkedMsg{Action: action, Who: who, Words: words, Window: window, Err: err}
+		msg := InboxMarkedMsg{Action: action, Who: who, Words: words, Window: window, Session: sessionName, Err: err}
 		if err == nil {
 			msg.ID = markedID(raw)
 		}
@@ -340,6 +349,10 @@ func (m *OS) applyInboxMarked(msg InboxMarkedMsg) {
 	case "unread":
 		m.settleInboxUnreadAsk(msg.Window, msg.ID)
 		m.ShowNotification("Marked "+msg.Who+" unread", "info", m.Settings.NotificationDuration)
+	case "settle":
+		m.noteSettled(msg)
+	case "unsettle":
+		m.ShowNotification(capitalize(msg.Who)+" is off the Settled shelf", "info", m.Settings.NotificationDuration)
 	}
 }
 
@@ -354,6 +367,10 @@ func inboxMarkFailWords(action string) string {
 		return "Nothing was restored"
 	case "unread":
 		return "The pane was not marked unread"
+	case "settle":
+		return "The agent was not settled"
+	case "unsettle":
+		return "The agent is still settled"
 	}
 	return "Nothing changed"
 }
@@ -464,7 +481,7 @@ func (m *OS) InboxSnoozeKey(key string) tea.Cmd {
 		}
 		it, ok := m.inboxItem(id)
 		if !ok {
-			m.ShowNotification("That item is gone", "info", m.Settings.NotificationDuration)
+			m.ShowNotification("That item is gone", "warning", m.Settings.NotificationDuration)
 			return nil
 		}
 		if closeAfter {
@@ -499,7 +516,7 @@ func (m *OS) InboxUndo() (tea.Cmd, bool) {
 	now := time.Now()
 	life.undo = slices.DeleteFunc(life.undo, func(u inboxUndoEntry) bool { return now.Sub(u.at) >= inboxUndoWindow })
 	if len(life.undo) == 0 {
-		m.ShowNotification("Nothing to undo: a dismiss or a snooze can be undone for 10 seconds", "info", m.Settings.NotificationDuration)
+		m.ShowNotification("Nothing to undo: a dismiss, a snooze or a settle can be undone for 10 seconds", "warning", m.Settings.NotificationDuration)
 		return nil, true
 	}
 	if !m.inboxCanMark("Undoing") {
@@ -507,6 +524,9 @@ func (m *OS) InboxUndo() (tea.Cmd, bool) {
 	}
 	u := life.undo[len(life.undo)-1]
 	life.undo = life.undo[:len(life.undo)-1]
+	if u.window != "" {
+		return m.settleCmd(sidebarAgentEntry{SessionID: u.session, WindowID: u.window, Title: u.who}, "unsettle", u.item), true
+	}
 	return m.inboxMarkCmd(map[string]any{"id": u.id, "action": "restore"}, u.who, ""), true
 }
 
@@ -517,7 +537,7 @@ func (m *OS) InboxToggleSnoozed() (tea.Cmd, bool) {
 	}
 	life := &m.Inbox.life
 	if !life.ShowSnoozed && len(life.Snoozed) == 0 {
-		m.ShowNotification("Nothing is snoozed", "info", m.Settings.NotificationDuration)
+		m.ShowNotification("Nothing is snoozed", "warning", m.Settings.NotificationDuration)
 		return nil, true
 	}
 	life.ShowSnoozed = !life.ShowSnoozed
@@ -662,11 +682,11 @@ func (m *OS) railPane(sessionID, windowID string) (state string, seq uint64, lab
 func (m *OS) SidebarAgentUnread(sessionID, windowID string) (tea.Cmd, bool) {
 	state, seq, label, ok := m.railPane(sessionID, windowID)
 	if !ok {
-		m.ShowNotification("That pane is on another machine; attach there to mark it unread", "info", m.Settings.NotificationDuration)
+		m.ShowNotification("That pane is on another machine; attach there to mark it unread", "warning", m.Settings.NotificationDuration)
 		return nil, true
 	}
 	if seq == 0 && state != "done" {
-		m.ShowNotification(printableTitle(label)+" has not finished a turn yet", "info", m.Settings.NotificationDuration)
+		m.ShowNotification(printableTitle(label)+" has not finished a turn yet", "warning", m.Settings.NotificationDuration)
 		return nil, true
 	}
 	if state != "done" && state != "idle" && state != "unknown" {
@@ -674,7 +694,7 @@ func (m *OS) SidebarAgentUnread(sessionID, windowID string) (tea.Cmd, bool) {
 		return nil, true
 	}
 	if w := m.GetFocusedWindow(); w != nil && w.ID == windowID && (sessionID == "" || sessionID == m.sidebarCurrentSessionID()) {
-		m.ShowNotification("This pane is in front of you, so it reads as seen. Mark it from another pane.", "info", m.Settings.NotificationDuration)
+		m.ShowNotification("This pane is in front of you, so it reads as seen. Mark it from another pane.", "warning", m.Settings.NotificationDuration)
 		return nil, true
 	}
 	changed := false
@@ -720,7 +740,7 @@ func (m *OS) SidebarAgentSnooze(sessionID, windowID string) (tea.Cmd, bool) {
 		}
 	}
 	if found == nil {
-		m.ShowNotification("Nothing needs you in this pane, so there is nothing to snooze", "info", m.Settings.NotificationDuration)
+		m.ShowNotification("Nothing needs you in this pane, so there is nothing to snooze", "warning", m.Settings.NotificationDuration)
 		return nil, true
 	}
 	if why := inboxSnoozeRefusal(*found); why != "" {

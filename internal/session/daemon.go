@@ -137,6 +137,9 @@ type Daemon struct {
 	// singleClient is [daemon] single_client: every attach takes the other
 	// clients off its session. See detach_client.go.
 	singleClient atomic.Bool
+	// worktreePath is [worktree] path, read on every create so a config
+	// reload applies to the next one. See SetWorktreePath.
+	worktreePath atomic.Pointer[string]
 	// sshAgent keeps each session's ssh agent link. See ssh_agent_follow.go.
 	sshAgent agentFollow
 	// display keeps each session's Wayland link and the display of its
@@ -394,6 +397,11 @@ type Daemon struct {
 	// TUIOS_AGENT_STALL_SECONDS environment override.
 	agentStallTimeout time.Duration
 
+	// silent is [agents] silent_after: how long a pane whose hooks reported
+	// working may go without a report before it shows as silent. See
+	// agent_silent.go.
+	silent silentAfter
+
 	// agentDetectInterval is how often the foreground-process auto-detector polls
 	// each pane to mark or clear a running agent. Zero disables auto-detection. It
 	// is resolved once in NewDaemon from config or the TUIOS_AGENT_DETECT_SECONDS
@@ -408,6 +416,11 @@ type Daemon struct {
 	// agents_switch.go. It is read on every tick, verb and output event, and
 	// written by a config reload, so it is atomic.
 	agentsOff atomic.Bool
+
+	// taskAutoOff is [tasks] auto_stage = false: no card moves on its own.
+	// See task_auto.go. It is read under session state locks and written by
+	// a config reload, so it is atomic.
+	taskAutoOff atomic.Bool
 
 	// wakes are the latches the background loops sleep on at idle. See
 	// idle_wakes.go.
@@ -873,11 +886,22 @@ type DaemonConfig struct {
 	PasteBufferLimit    int
 	PasteBufferMaxBytes int
 	PasteBuffersOff     bool
+	// DragAndDrop is [panes] drag_and_drop: the daemon records what a pane's
+	// program says about drag and drop and answers its query only when on.
+	// See dnd_registration.go.
+	DragAndDrop bool
+	// WorktreePath is [worktree] path: the template the worktrees new-worktree
+	// and fan make are placed by. Empty is the default layout. See
+	// worktree.PathFor.
+	WorktreePath string
 	// AgentStallTimeout overrides how long a pane may report working with no
 	// output before the stall heuristic demotes it to idle. Zero falls back to
 	// the TUIOS_AGENT_STALL_SECONDS environment override, then to the default; a
 	// negative value disables the heuristic.
 	AgentStallTimeout time.Duration
+	// AgentSilentAfter is [agents] silent_after. Zero means
+	// config.DefaultSilentAfter and a negative value turns it off.
+	AgentSilentAfter time.Duration
 	// AgentAutoDetect toggles the foreground-process agent auto-detector. Nil
 	// falls back to the TUIOS_AGENT_AUTODETECT environment override, then to
 	// enabled. A non-nil false disables it.
@@ -962,6 +986,9 @@ type DaemonConfig struct {
 	// MailWakeOff is [agents.mail] wake = false: an agent at rest is not
 	// told about its mail by a typed prompt. See mail_wake.go.
 	MailWakeOff bool
+	// TaskAutoStageOff is [tasks] auto_stage = false: the daemon moves no
+	// card on its own. See task_auto.go.
+	TaskAutoStageOff bool
 	// Checkpoints is [agents.checkpoints]: whether a pane's work tree is
 	// saved when its agent finishes a turn, and how many are kept. The zero
 	// value is on with the default keep. See checkpoints.go.
@@ -1016,7 +1043,10 @@ func NewDaemon(cfg *DaemonConfig) *Daemon {
 	d.SetLinkPolicies(cfg.LinkPolicies)
 	d.manager.SetPanePermissions(cfg.Permissions)
 	d.SetQueueMax(cfg.QueueMax)
+	// Stored, not set: the wake latches are made below.
+	d.silent.ns.Store(int64(resolveSilentAfter(cfg.AgentSilentAfter)))
 	d.SetMailWake(!cfg.MailWakeOff)
+	d.taskAutoOff.Store(cfg.TaskAutoStageOff)
 	d.SetCheckpoints(cfg.Checkpoints)
 	d.outbox = newHostOutbox(d)
 	// The socket path is read through a closure rather than copied, because the
@@ -1031,6 +1061,8 @@ func NewDaemon(cfg *DaemonConfig) *Daemon {
 	d.manager.SetPreferredShell(cfg.PreferredShell)
 	d.manager.SetHerdrProtocol(cfg.HerdrProtocol)
 	d.manager.SetReturnWhenEmpty(!cfg.StayOnEmptyWorkspace)
+	d.manager.SetDragAndDrop(cfg.DragAndDrop)
+	d.SetWorktreePath(cfg.WorktreePath)
 	d.agentDetectInterval = resolveAgentDetectInterval(cfg.AgentAutoDetect, cfg.AgentDetectInterval)
 	d.agentsOff.Store(cfg.AgentsOff)
 	d.wakes.init()
@@ -1138,6 +1170,7 @@ func (d *Daemon) onSessionCreated(s *Session) {
 		d.broadcastStateSync(sessionID, state, "update", "")
 	})
 	s.SetHostShownProbe(func() bool { return d.sessionShown(sessionID) })
+	s.SetTaskAutoProbe(func() bool { return !d.taskAutoOff.Load() })
 	// A pane's first output or bell since its subscriptions changed. See
 	// pane_marks.go.
 	s.SetPaneMarkSink(func(ptyID, windowID string, mark uint32) {
@@ -1161,7 +1194,7 @@ func (d *Daemon) onSessionCreated(s *Session) {
 				// comes from a fresh look: the foreground detector, then the
 				// screen tier.
 				if d.agentDetectInterval > 0 {
-					s.scanAgentDetection(d.foregroundResolver(s), d.agentMatcher.identifyDetail, nil)
+					s.scanAgentDetection(d.foregroundResolver(s), d.agentMatcher.identifyKept, nil)
 				}
 				if reg := d.agentMatcher.registry; reg != nil {
 					s.scanPaneForAgent(ev.PTYID, reg)
@@ -1328,6 +1361,7 @@ func (d *Daemon) onSessionCreated(s *Session) {
 			Mode:       ev.Mode,
 			Enabled:    ev.Enabled,
 			State:      ev.State,
+			Reason:     ev.Reason,
 			Workspace:  ev.Workspace,
 			Cmdline:    ev.Cmdline,
 			ExitCode:   ev.ExitCode,
@@ -1595,6 +1629,7 @@ func (d *Daemon) serve() {
 	d.startAccepting()
 	go d.cleanupLoop()
 	go d.stallMonitor()
+	go d.silentMonitor()
 	go d.agentMonitor()
 	go d.listingNotifier()
 }
@@ -2545,7 +2580,7 @@ func (d *Daemon) agentDetectScan() bool {
 			pty := sess.GetPTY(ptyID)
 			return pty == nil || pty.detectScanDue(now, quietTicks)
 		}
-		sess.scanAgentDetection(d.foregroundResolver(sess), d.agentMatcher.identifyDetail, due)
+		sess.scanAgentDetection(d.foregroundResolver(sess), d.agentMatcher.identifyKept, due)
 		// The transcript joins ride this tick rather than one of their
 		// own. It runs only for a pane already known to be running a
 		// harness that has a transcript and that has no join yet, so a

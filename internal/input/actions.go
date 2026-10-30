@@ -347,6 +347,8 @@ func (d *ActionDispatcher) registerHandlers() {
 }
 
 // Register adds an action handler
+//
+//go:noinline
 func (d *ActionDispatcher) Register(action string, handler ActionHandler) {
 	d.handlers[action] = handler
 }

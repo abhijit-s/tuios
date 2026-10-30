@@ -144,12 +144,25 @@ func StateFingerprint(s *SessionState) uint64 {
 		str(w.AgentKind)
 		str(w.AgentSessionID)
 		str(w.AgentSessionHarness)
+		if k := w.AgentFlags; k != nil {
+			str(k.Harness)
+			num(len(k.Flags))
+			for _, f := range k.Flags {
+				str(f)
+			}
+		}
 		num(len(w.AgentMeta))
 		for _, t := range w.AgentMeta {
 			str(t.Key)
 			str(t.Value)
 		}
 		num(w.AgentQueued)
+		if w.AgentDraftHeld {
+			num(1)
+		} else {
+			num(0)
+		}
+		flag(w.AgentSettled)
 		num(w.AgentSubagents)
 		num(len(w.AgentSubagentList))
 		for _, sa := range w.AgentSubagentList {

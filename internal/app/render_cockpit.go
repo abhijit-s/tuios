@@ -207,6 +207,9 @@ func (l ckLook) ckItemMark(it session.AttentionItem) (string, color.Color) {
 	case session.AttentionFinished:
 		return l.ckStateMark("done", ckGlyphReview), l.pal.Success
 	case session.AttentionResume:
+		if len(it.RiskyFlags) > 0 {
+			return l.g(ckGlyphResume), l.pal.Warn
+		}
 		return l.g(ckGlyphResume), l.pal.AccentBright
 	case session.AttentionOutbox:
 		return inboxKindGlyph(it.Kind), l.pal.AccentBright
@@ -345,11 +348,12 @@ func (m *OS) drawCockpit(c *ckCanvas, l ckLook, top int, now time.Time) {
 		return
 	}
 	rows := m.cockpitRows()
-	agents := 0
+	agents, folded := 0, false
 	for _, r := range rows {
 		if r.selectable() {
 			agents++
 		}
+		folded = folded || r.folded
 	}
 	m.drawCockpitHeader(c, l, hdrY, top)
 
@@ -369,7 +373,9 @@ func (m *OS) drawCockpit(c *ckCanvas, l ckLook, top int, now time.Time) {
 	case c.w < ckWide:
 		fleetW = 48
 	}
-	strip := c.w >= ckOneColumn && agents <= 2 && !ck.board && !ck.needsOnly && st.Filter == "" && st.Select == "" && st.agents.query == ""
+	// The strip draws no headings, so a folded group keeps the fleet
+	// column: it shows the fold, and the cursor can open it there.
+	strip := c.w >= ckOneColumn && agents <= 2 && !folded && !ck.board && !ck.needsOnly && st.Filter == "" && st.Select == "" && st.agents.query == ""
 	focusX, focusW := fleetW+3, c.w-fleetW-5
 	switch {
 	case strip:
@@ -437,7 +443,7 @@ func (m *OS) drawCockpitHeader(c *ckCanvas, l ckLook, y, top int) {
 		{l.ckStateMark("needs_input", ckGlyphNeeds), pal.Attention, counts[ckNeeds], "needs you"},
 		{l.ckStateMark("working", ckGlyphWorking), pal.Busy, counts[ckWorking], "working"},
 		{l.ckStateMark("done", ckGlyphReview), pal.Success, counts[ckReview], "to review"},
-		{l.ckStateMark("idle", ckGlyphIdle), pal.FgMute, counts[ckIdle] + counts[ckEarlier], "idle"},
+		{l.ckStateMark("idle", ckGlyphIdle), pal.FgMute, counts[ckIdle] + counts[ckSettled], "idle"},
 	}
 	// The counts say their words when the row has room for them beside the
 	// search and the button, and only their marks otherwise.
@@ -598,7 +604,7 @@ func (m *OS) drawFleet(c *ckCanvas, l ckLook, w, y0, y1, top int) {
 			break
 		}
 		line += r.lines
-		m.drawFleetRow(c, l, r, r.key == sel.key && r.selectable(), r.key == ck.hover, 0, y, w, top)
+		m.drawFleetRow(c, l, r, r.key == sel.key && r.cursorable(), r.key == ck.hover, 0, y, w, top)
 	}
 	// At 16 colours the columns have no grounds, so a hairline parts them.
 	if pal.Depth == overlay.Depth16 && w < c.w {
@@ -783,6 +789,42 @@ func (m *OS) cockpitNextScope() {
 	m.CockpitScope(next)
 }
 
+// ckRowMark is the mark and colour of an agent's or an item's row.
+func (m *OS) ckRowMark(l ckLook, r ckRow, e sidebarAgentEntry) (string, color.Color) {
+	if m.ckArtFormRow(r, e) != "" {
+		return l.g(ckGlyphNeeds), l.pal.Attention
+	}
+	if r.hasItem && (r.agent < 0 || r.group == ckNeeds || r.group == ckSnoozed) {
+		return l.ckItemMark(r.item)
+	}
+	return l.ckMark(e.State, e.DoneSeen)
+}
+
+// drawFoldMarks draws the marks of the rows a folded heading hides from x,
+// as many as fit before right, and returns where they end. A card has no
+// mark: the board's heading shows its count alone.
+func (m *OS) drawFoldMarks(c *ckCanvas, l ckLook, r ckRow, x, y, right int) int {
+	end := x - 2
+	for i, h := range r.hidden {
+		if h.kind == ckRowCard {
+			break
+		}
+		var e sidebarAgentEntry
+		if h.agent >= 0 {
+			e = m.Inbox.ck.agents[h.agent]
+		}
+		g, ink := m.ckRowMark(l, h, e)
+		left := len(r.hidden) - i
+		if x+ckWidth(ckSeg{t: g})+ckWidth(ckSeg{t: " +" + strconv.Itoa(left)})+2 > right {
+			end = c.text(x, y, right, ckSeg{t: "+" + strconv.Itoa(left), fg: l.pal.FgMute})
+			break
+		}
+		end = c.text(x, y, right, ckSeg{t: g, fg: ink})
+		x = end + 1
+	}
+	return end
+}
+
 // drawFleetRow draws one row of the fleet at x, y, w cells wide.
 func (m *OS) drawFleetRow(c *ckCanvas, l ckLook, r ckRow, cursor, hover bool, x, y, w, top int) {
 	ck := &m.Inbox.ck
@@ -796,8 +838,14 @@ func (m *OS) drawFleetRow(c *ckCanvas, l ckLook, r ckRow, cursor, hover bool, x,
 		return
 	case ckRowHead:
 		mark := ""
-		if (!ck.board && ck.folded[r.group]) || (ck.board && ck.stageFolded(r.group)) {
+		if r.folded {
 			mark = l.g(ckGlyphFold) + " "
+			// The cursor rests on a folded heading, so F opens it again.
+			if cursor {
+				c.fill(x, y, w, 1, l.cursor)
+				c.text(x, y, 0, ckSeg{t: "▌", fg: pal.Accent})
+				defer c.mark(pal, x+1, y, w-1, 1, overlay.RowState{Cursor: true, Focused: true})
+			}
 		}
 		var title string
 		if ck.board {
@@ -811,6 +859,11 @@ func (m *OS) drawFleetRow(c *ckCanvas, l ckLook, r ckRow, cursor, hover bool, x,
 			title = inboxGroupTitle(f)
 		}
 		end := c.text(x+2, y, right, ckSeg{t: mark + title, fg: pal.FgDim, attrs: ckBold}, ckSeg{t: "  " + strconv.Itoa(r.count), fg: pal.FgMute})
+		if r.folded {
+			// A folded group shows the state of each row it hides, so a
+			// row in trouble is seen without opening the group.
+			end = m.drawFoldMarks(c, l, r, end+2, y, right)
+		}
 		c.hline(end+2, y, right-end-2, hzGlyph(), l.edgePanel)
 		ck.hits = append(ck.hits, ckHit{x0: x, y0: top + y, x1: x + w, y1: top + y + 1, kind: ckHitHead, group: r.group})
 		return
@@ -886,16 +939,10 @@ func (m *OS) drawFleetRow(c *ckCanvas, l ckLook, r ckRow, cursor, hover bool, x,
 	}
 	ck.hits = append(ck.hits, ckHit{x0: x, y0: top + y, x1: x + w, y1: top + y + r.lines, kind: ckHitRow, key: r.key})
 	name, harness, place, wait := m.ckRowFacts(r, e)
-	g, gInk := l.ckMark(e.State, e.DoneSeen)
-	if r.hasItem && (r.agent < 0 || r.group == ckNeeds || r.group == ckSnoozed) {
-		g, gInk = l.ckItemMark(r.item)
-	}
-	if m.ckArtFormRow(r, e) != "" {
-		g, gInk = l.g(ckGlyphNeeds), pal.Attention
-	}
+	g, gInk := m.ckRowMark(l, r, e)
 	nameInk := pal.Fg
 	down := e.Host != "" && m.ckLinkDown(e.Host)
-	if r.group == ckIdle || r.group == ckEarlier || r.group == ckSnoozed || r.item.Stale || down {
+	if r.group == ckIdle || r.group == ckSettled || r.group == ckSnoozed || r.item.Stale || down {
 		nameInk = pal.FgDim
 	}
 	if down {
@@ -1187,6 +1234,10 @@ func (m *OS) ckRowLine2(l ckLook, r ckRow, e sidebarAgentEntry) (verb, rest stri
 		if r.item.Kind == session.AttentionMail || r.item.Kind == session.AttentionResume {
 			ink = pal.AccentBright
 		}
+		if r.item.Kind == session.AttentionResume && len(r.item.RiskyFlags) > 0 {
+			// The resume turns approvals off: the row says so first.
+			ink = pal.Warn
+		}
 		if r.item.Kind == session.AttentionResume && m.Inbox.agents.resuming[r.item.ID] {
 			// Sent to the daemon: the row stays until the offer closes.
 			verb, ink = "Resuming", pal.FgDim
@@ -1201,6 +1252,8 @@ func (m *OS) ckRowLine2(l ckLook, r ckRow, e sidebarAgentEntry) (verb, rest stri
 		right = []ckSeg{{t: "ctx " + ctx, fg: pal.FgMute}}
 	}
 	switch {
+	case e.Reason == session.AgentReasonSilent:
+		return "", silentNote(e.StateAt, time.Now()), pal.Warn, right
 	case e.State == "working":
 		if now := ckMeta(e, "now"); now != "" {
 			if tool, target, ok := strings.Cut(now, ": "); ok {
@@ -1221,6 +1274,11 @@ func (m *OS) ckRowLine2(l ckLook, r ckRow, e sidebarAgentEntry) (verb, rest stri
 		return "", "working", ink, right
 	case sidebarAttention(e.State):
 		return capitalize(agentRowStateWords(e)), printableTitle(e.Message), pal.Attention, right
+	}
+	if e.DraftHeld {
+		// A queued message waits for the person's draft. See
+		// agent_queue_draft.go in internal/session.
+		return ckDraftVerb, session.DraftHeldSummary, pal.Attention, right
 	}
 	wt := m.ckWorktreeOf(e)
 	br := wt.branch
@@ -1283,6 +1341,9 @@ func ckItemVerb(it session.AttentionItem) (verb, rest string) {
 	case session.AttentionPlan:
 		return "Plan", inboxPlanRowText(it)
 	case session.AttentionQuestion, session.AttentionAsk:
+		if it.Summary == session.DraftHeldSummary {
+			return ckDraftVerb, sum
+		}
 		return "Asks", sum
 	case session.AttentionMail:
 		if it.HeldID != 0 {
@@ -1292,12 +1353,19 @@ func ckItemVerb(it session.AttentionItem) (verb, rest string) {
 	case session.AttentionErrored:
 		return "Error", sum
 	case session.AttentionResume:
+		if warn := session.ResumeWarning(it.RiskyFlags); warn != "" {
+			return printableTitle(warn), sum
+		}
 		return "Resume", sum
 	case session.AttentionOutbox:
 		return "To send", sum
 	}
 	return capitalize(inboxKindWords(it)), sum
 }
+
+// ckDraftVerb fronts the row of an agent whose queue the person's draft holds:
+// "Waits: your draft is in the prompt box".
+const ckDraftVerb = "Waits:"
 
 // ckWorktree is what the cockpit shows of an agent's worktree session.
 type ckWorktree struct {
@@ -1368,6 +1436,8 @@ func (m *OS) ckBranch(e sidebarAgentEntry) string {
 }
 
 // ckWorktreeOf is the agent's worktree session, zero when it is not in one.
+//
+//go:noinline
 func (m *OS) ckWorktreeOf(e sidebarAgentEntry) ckWorktree {
 	if m.LearnMode && e.Host == "" {
 		// The tour's attempts are panes of its one session.
@@ -1422,7 +1492,7 @@ func (m *OS) ckHasLine2(r ckRow, e sidebarAgentEntry) bool {
 		return true
 	case e.State == "working":
 		return ckMeta(e, "now") != "" || e.Message != "" || e.Subagents > 0
-	case sidebarAttention(e.State):
+	case sidebarAttention(e.State), e.DraftHeld:
 		return true
 	}
 	return m.ckBranch(e) != "" || e.PR != "" || e.Message != "" || (r.hasItem && r.item.Summary != "")
@@ -1631,7 +1701,9 @@ func (m *OS) cockpitHints(now time.Time) []overlay.Hint {
 	// after a restart it is the one thing to do.
 	hints := m.resumeAllHint()
 	r, ok := m.cockpitSelected()
-	if ok && r.kind == ckRowCard {
+	if ok && r.kind == ckRowHead {
+		hints = append(hints, m.keyHints(config.ActionInboxFold, "open group")...)
+	} else if ok && r.kind == ckRowCard {
 		hints = m.ckCardHints(st.ck.cards[r.card])
 	} else if ok {
 		if it, held := m.cockpitHeldItem(); held && !m.inboxCut(it) {
@@ -1665,6 +1737,9 @@ func (m *OS) cockpitHints(now time.Time) []overlay.Hint {
 			goLabel = "open"
 		}
 		hints = append(hints, m.keyHints(config.ActionInboxGo, goLabel)...)
+		if label := m.settleLabel(r); label != "" {
+			hints = append(hints, m.keyHints(config.ActionInboxSettle, label)...)
+		}
 		if r.hasItem && inboxPeekable(r.item) && r.item.RequestID == "" {
 			hints = append(hints, m.keyHints(config.ActionInboxPeek, "peek")...)
 		}
@@ -1700,6 +1775,10 @@ func (m *OS) cockpitHints(now time.Time) []overlay.Hint {
 	}
 	hints = append(hints, m.keyHints(config.ActionInboxNewAgent, "new agent", config.ActionInboxBoard, board, config.ActionInboxReview, "review",
 		config.ActionInboxFilter, "filter", config.ActionInboxSelect, "search")...)
+	if ok && r.kind != ckRowHead {
+		// Optional, so a narrow footer gives it up first: ? lists it too.
+		hints = append(hints, overlay.Optional(m.keyHints(config.ActionInboxFold, "fold group"))...)
+	}
 	hints = append(hints, overlay.Hint{Key: "?", Label: "all keys"})
 	return append(hints, m.keyHints(config.ActionInboxClose, "close")...)
 }
@@ -1721,6 +1800,53 @@ func (m *OS) cockpitNote(r ckRow, e sidebarAgentEntry) string {
 	return m.paneNote(sessionName, windowID)
 }
 
+// drawFoldFocus draws a folded group in the focus: its title, how many rows
+// it hides, each row's mark and name, and the key that opens it.
+func (m *OS) drawFoldFocus(c *ckCanvas, l ckLook, r ckRow, x, y, w, y1 int) {
+	ck := &m.Inbox.ck
+	pal := l.pal
+	right := x + w
+	title := ckGroupTitles[r.group]
+	if ck.board {
+		title = ckStageTitle(r.group)
+	}
+	c.text(x, y, right, ckSeg{t: title, fg: pal.Fg, attrs: ckBold}, ckSeg{t: "  " + strconv.Itoa(r.count), fg: pal.FgMute})
+	words := "The group is folded."
+	if key := m.inboxKey(config.ActionInboxFold); key != "" {
+		words += " Press " + key + " to open it."
+	}
+	c.text(x, y+1, right, ckSeg{t: words, fg: pal.FgDim})
+	line := y + 3
+	for i, h := range r.hidden {
+		if line >= y1 {
+			break
+		}
+		if line == y1-1 && i < len(r.hidden)-1 {
+			c.text(x, line, right, ckSeg{t: "+" + strconv.Itoa(len(r.hidden)-i) + " more", fg: pal.FgMute})
+			break
+		}
+		var e sidebarAgentEntry
+		if h.agent >= 0 {
+			e = ck.agents[h.agent]
+		}
+		var segs []ckSeg
+		place := ""
+		if h.kind == ckRowCard {
+			segs = []ckSeg{{t: printableTitle(ck.cards[h.card].Title), fg: pal.Fg}}
+		} else {
+			var name string
+			name, _, place, _ = m.ckRowFacts(h, e)
+			g, ink := m.ckRowMark(l, h, e)
+			segs = []ckSeg{{t: g + " ", fg: ink}, {t: name, fg: pal.Fg}}
+		}
+		if place != "" {
+			segs = append(segs, ckSeg{t: "  " + place, fg: pal.FgDim})
+		}
+		c.text(x, line, right, segs...)
+		line++
+	}
+}
+
 // drawFocus draws the selected row's work: its header, the thread, the card
 // of what it asks, and the reply line.
 func (m *OS) drawFocus(c *ckCanvas, l ckLook, x, y, w, y1, top int, now time.Time) {
@@ -1728,6 +1854,10 @@ func (m *OS) drawFocus(c *ckCanvas, l ckLook, x, y, w, y1, top int, now time.Tim
 	pal := l.pal
 	r, ok := m.cockpitSelected()
 	if !ok {
+		return
+	}
+	if r.kind == ckRowHead {
+		m.drawFoldFocus(c, l, r, x, y, w, y1)
 		return
 	}
 	if r.kind == ckRowCard && (r.agent < 0 || m.cockpitTab() == "Card") {
@@ -1745,9 +1875,10 @@ func (m *OS) drawFocus(c *ckCanvas, l ckLook, x, y, w, y1, top int, now time.Tim
 		hx = c.text(hx, y, right, ckSeg{t: "   " + harness, fg: pal.FgDim})
 	}
 	if model := ckMeta(e, "model"); model != "" {
-		c.text(hx, y, right, ckSeg{t: " · " + model, fg: pal.FgMute})
+		hx = c.text(hx, y, right, ckSeg{t: " · " + model, fg: pal.FgMute})
 	}
-	m.drawStatePill(c, l, r, e, right, y)
+	pill := m.drawStatePill(c, l, r, e, right, y)
+	m.drawSettleButton(c, l, r, hx, pill, y, top)
 	// The second line: branch, machine, folder, diff, context and cost. A
 	// line too long for the focus cuts the folder from the left first, then
 	// drops whole fields from the right: a field is never cut in half.
@@ -2020,7 +2151,7 @@ func (m *OS) ckApprovalLines(it session.AttentionItem, where string, width int, 
 }
 
 // drawStatePill draws the focus header's state, its word beside its colour.
-func (m *OS) drawStatePill(c *ckCanvas, l ckLook, r ckRow, e sidebarAgentEntry, right, y int) {
+func (m *OS) drawStatePill(c *ckCanvas, l ckLook, r ckRow, e sidebarAgentEntry, right, y int) int {
 	pal := l.pal
 	g, ink := l.ckMark(e.State, e.DoneSeen)
 	words, bg := sidebarStateWords(e.State), l.panel
@@ -2045,10 +2176,14 @@ func (m *OS) drawStatePill(c *ckCanvas, l ckLook, r ckRow, e sidebarAgentEntry, 
 		words, bg = "error", l.warnTint
 	}
 	if r.agent < 0 && !r.hasItem {
-		return
+		return right
+	}
+	if e.Settled && r.group == ckSettled {
+		words = "settled"
 	}
 	x := c.textR(right, y, ckSeg{t: " " + g + " " + words + " ", fg: overlay.Readable(ink, bg), bg: bg, attrs: ckBold})
 	c.mark(pal, x, y, right-x, 1, ckOn)
+	return x
 }
 
 // drawItemCard draws the card of what the row's item asks, at the bottom of
@@ -2105,6 +2240,12 @@ func (m *OS) drawItemCard(c *ckCanvas, l ckLook, r ckRow, x, w, y0, y1, top int,
 	} else {
 		for _, l := range wrapPlain(printableTitle(it.Summary), inner) {
 			detail = append(detail, "  "+l)
+		}
+		// The card has room for the whole warning the row may cut.
+		if warn := session.ResumeWarning(it.RiskyFlags); warn != "" {
+			for _, l := range wrapPlain(printableTitle(warn), inner) {
+				detail = append(detail, "  "+l)
+			}
 		}
 	}
 	type btn struct{ key, label, action string }
@@ -2198,6 +2339,10 @@ func (m *OS) drawItemCard(c *ckCanvas, l ckLook, r ckRow, x, w, y0, y1, top int,
 		c.text(x, i, 0, ckSeg{t: "▌", fg: barInk})
 	}
 	verb, _ := ckItemVerb(it)
+	if it.Kind == session.AttentionResume {
+		// The warning is in the detail and on the risky badge.
+		verb = "Resume"
+	}
 	if it.Kind == session.AttentionResume && m.Inbox.agents.resuming[it.ID] {
 		verb = "Resuming"
 	}
@@ -2227,7 +2372,7 @@ func (m *OS) drawItemCard(c *ckCanvas, l ckLook, r ckRow, x, w, y0, y1, top int,
 		when = ", snoozed " + inboxSnoozedWhen(it.SnoozedUntil, now)
 	}
 	c.text(tx, ty, x+w-14, ckSeg{t: "   " + inboxWho(it) + when, fg: pal.FgMute})
-	if inboxRisky(it) {
+	if inboxRisky(it) || len(it.RiskyFlags) > 0 {
 		c.textR(x+w-2, ty, ckSeg{t: " risky ", fg: overlay.Readable(pal.Warn, l.warnTint), bg: l.warnTint, attrs: ckBold})
 	}
 	yy := by

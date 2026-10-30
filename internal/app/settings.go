@@ -586,6 +586,7 @@ func (m *OS) settingsCategories() []settingsCategory {
 			opt("panes.label_keys"),
 			opt("panes.navigator_layout"),
 			opt("panes.navigator_search"),
+			opt("panes.drag_and_drop"),
 			opt("path_picker.show_hidden"),
 		}),
 	}
@@ -645,6 +646,7 @@ func (m *OS) settingsCategories() []settingsCategory {
 			opt("appearance.prefix_repeat_time"),
 			custom("appearance.max_fps", m.maxFPSItem()),
 			opt("appearance.preferred_shell"),
+			opt("agents.fold_working"),
 			opt("pip.width"),
 			opt("pip.height"),
 			opt("pip.corner"),
@@ -666,6 +668,7 @@ func (m *OS) settingsCategories() []settingsCategory {
 		opt("notifications.bell"),
 		opt("notifications.style"),
 		opt("notifications.level"),
+		opt("notifications.log_hidden"),
 	}
 	// The agent alerts, under their heading row. With the agent features
 	// off both go, heading and all.
@@ -739,6 +742,7 @@ func (m *OS) settingsCategories() []settingsCategory {
 			opt("launcher.keep_open"),
 			opt("workspaces.return_when_empty"),
 			opt("workspaces.new_window_when_empty"),
+			opt("worktree.path"),
 		}),
 	}
 
@@ -749,6 +753,7 @@ func (m *OS) settingsCategories() []settingsCategory {
 			opt("daemon.agent_autodetect"),
 			opt("daemon.agent_detect_seconds"),
 			opt("daemon.resume_agents"),
+			opt("tasks.auto_stage"),
 		}), daemon.Items[2:]...)...)
 	}
 	// The restart row leads the tab, where a person who came to the daemon's

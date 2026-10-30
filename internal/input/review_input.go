@@ -4,6 +4,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/Gaurav-Gosain/tuios/internal/app"
 	"github.com/Gaurav-Gosain/tuios/internal/config"
+	"github.com/Gaurav-Gosain/tuios/internal/textedit"
 )
 
 // handleReviewInput handles a key while the review overlay is open. It owns
@@ -11,11 +12,15 @@ import (
 // diff must not reach a pane, the Inbox or the rail underneath.
 //
 // The keys are the overlay's own, not bindings, like the scrollback browser's,
-// except the hunk and file motions, which [keybindings.review] binds:
+// except the hunk and file motions and the stage keys, which
+// [keybindings.review] binds:
 //
 //	j k, arrows      move by line (through the files with the list focused)
 //	] [              next and previous hunk (review_next_hunk, review_prev_hunk)
 //	} {              next and previous file (review_next_file, review_prev_file)
+//	a d              stage or unstage the hunk (review_stage_hunk, review_unstage_hunk)
+//	A D              stage or unstage the file (review_stage_file, review_unstage_file)
+//	z                undo the last stage or unstage (review_undo_stage)
 //	tab              the file list or the diff
 //	enter            in the file list: open that file
 //	c, C             a note on the line, or on the whole hunk
@@ -36,6 +41,10 @@ import (
 func handleReviewInput(msg tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
 	key := msg.String()
 	if o.ReviewEditing() {
+		if textedit.IsWordDeleteKey(key) {
+			o.ReviewEditorDeleteWord()
+			return o, nil
+		}
 		switch key {
 		case "enter":
 			return o, o.ReviewEditorSubmit()
@@ -79,6 +88,7 @@ func handleReviewInput(msg tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
 		return o, nil
 	}
 	if action := lookupAction(o, msg, overlayKeys(o).GetReviewAction); action != "" {
+		var cmd tea.Cmd
 		switch action {
 		case config.ActionReviewNextHunk:
 			o.ReviewHunk(1)
@@ -88,11 +98,21 @@ func handleReviewInput(msg tea.KeyPressMsg, o *app.OS) (*app.OS, tea.Cmd) {
 			o.ReviewFile(1)
 		case config.ActionReviewPrevFile:
 			o.ReviewFile(-1)
+		case config.ActionReviewStageHunk:
+			cmd = o.ReviewStage(false, false)
+		case config.ActionReviewUnstageHunk:
+			cmd = o.ReviewStage(true, false)
+		case config.ActionReviewStageFile:
+			cmd = o.ReviewStage(false, true)
+		case config.ActionReviewUnstageFile:
+			cmd = o.ReviewStage(true, true)
+		case config.ActionReviewUndoStage:
+			cmd = o.ReviewUndoStage()
 		default:
 			return o, nil
 		}
 		o.NoteAction(action)
-		return o, nil
+		return o, cmd
 	}
 	switch key {
 	case "j", "down":

@@ -240,7 +240,8 @@ func (d *Daemon) agentRows(sess *Session, all bool, unread map[string]int, now i
 			"session":        sess.Name(),
 			"window_id":      w.ID,
 			"name":           windowLabelOf(w),
-			"state":          w.AgentState.Name(),
+			"state":          w.ShownAgentState().Name(),
+			"reason":         w.AgentReason,
 			"message":        w.AgentMessage,
 			"agent_state_at": w.AgentStateAt,
 			"source":         source,
@@ -277,6 +278,10 @@ func (d *Daemon) agentRows(sess *Session, all bool, unread map[string]int, now i
 			"protocol": d.paneProtocol(w.ID),
 			// How many messages wait in the pane's delivery queue.
 			"queued": w.AgentQueued,
+			// Whether the person's draft in the input box holds the queue.
+			"draft_held": w.AgentDraftHeld,
+			// The person put the agent away on the Settled shelf.
+			"settled": w.AgentSettled,
 			// How many subagents the pane's agent is running.
 			"subagents": w.AgentSubagents,
 			// The subagents themselves, running and finished a moment ago.
@@ -676,6 +681,10 @@ func (d *Daemon) sendAgentMessage(cs *connState, p sendAgentMessageParams, fromA
 	})
 	// Mail to the person waits in the Inbox until it is read.
 	d.attention.noteMail(stored)
+	// An agent that writes to the person needs them: it leaves the shelf.
+	if stored.Kind == agentMsgDirect && stored.To == AgentInboxHuman {
+		d.wakeSettled(sess, stored.From)
+	}
 	// Mail to an agent at rest wakes it if nobody tells it sooner.
 	if stored.Kind == agentMsgDirect {
 		if origin, ok := d.mailOriginOf(cs, stored.VerifiedHuman); ok {

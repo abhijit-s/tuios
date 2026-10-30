@@ -77,6 +77,10 @@ func DaemonConfigFromUser(uc *config.UserConfig) *DaemonConfig {
 	// The daemon holds the paste buffers every client shares.
 	cfg.PasteBufferLimit, cfg.PasteBufferMaxBytes = uc.PasteBuffers.Resolved()
 	cfg.PasteBuffersOff = cfg.PasteBufferLimit == 0
+	cfg.DragAndDrop = uc.Panes.DragAndDrop
+	// The daemon makes every worktree, whichever client asked for it, so the
+	// path is the same for all of them.
+	cfg.WorktreePath = uc.Worktree.Path
 	// The daemon runs the hooks for the facts it owns, so a session with
 	// nobody attached still runs them. The client keeps the hooks that need a
 	// terminal.
@@ -92,8 +96,12 @@ func DaemonConfigFromUser(uc *config.UserConfig) *DaemonConfig {
 	cfg.RecapTestPatterns = uc.Agents.Recap.Resolved().TestPatterns
 	// The daemon holds every pane's delivery queue, so it bounds them.
 	cfg.QueueMax = uc.Agents.Queue.MaxEntries()
+	// The daemon marks a hooked pane silent, so it reads after how long.
+	cfg.AgentSilentAfter = silentAfterFromConfig(uc.Agents)
 	// The daemon types the wake prompt for mail, so it reads whether to.
 	cfg.MailWakeOff = !uc.Agents.Mail.WakeOn()
+	// The daemon moves the task cards, so it reads whether to.
+	cfg.TaskAutoStageOff = !uc.Tasks.AutoStageOn()
 	// The daemon takes every checkpoint, so it reads whether to.
 	cfg.Checkpoints = uc.Agents.Checkpoints
 	// The daemon runs the herdr plugins, so it reads which ones.

@@ -127,8 +127,9 @@ contract are in [cmd/tuios-wasm/README.md](cmd/tuios-wasm/README.md).
 The lessons are data in `internal/learn/lessons`: `tracks.json` and one
 `tracks/<id>.json` per track, with a rule per step that says when it is done.
 The lesson engine there is the only one, and the page draws its `lesson.*`
-events. Edit a track there, never in tuios-docs. The `tuioslint` gate checks
-every action, overlay, event and key a lesson names, so a rename that breaks
+events. Edit a track there, never in tuios-docs, then run `go generate
+./internal/learn/lessons`, which packs the files into the archive the binary
+embeds. The `tuioslint` gate checks every action, overlay, event and key a lesson names, so a rename that breaks
 a lesson fails the change that renames it.
 
 ```bash
@@ -238,6 +239,7 @@ tuios/
 │   ├── release/            # Finds published releases and verifies a downloaded binary (tuios update)
 │   ├── netutil/            # Small network helpers the servers share
 │   ├── memtrim/            # Gives the heap a burst left behind back to the OS once the process settles
+│   ├── dnd/                # The kitty drag and drop protocol (OSC 72) on the wire: parse, join chunks, write
 │   ├── harness/            # Agent harness manifests and detection
 │   ├── herdrplugin/        # herdr plugins: manifest, discovery, the command runner (the host is internal/session/plugin_host.go)
 │   ├── integration/        # Wires harness hooks, plugins and MCP entries (tuios integration)
@@ -246,6 +248,7 @@ tuios/
 │   ├── agentproto/         # Headless agents over ACP and the Codex app-server: the pane program of start-agent --protocol
 │   ├── learn/              # Learn tuios: tour model, event contract, page commands, lessons/ (the tracks as data and the engine)
 │   ├── webshell/           # In-memory pty and fake shell for the browser build
+│   ├── tutor/              # tuios tutor: Learn mode in this terminal, in a sandbox, with the coach card
 │   ├── hooks/              # Shell hooks on window/session/agent events
 │   ├── tmuxcompat/         # The opt-in tmux shim (tuios tmux-shim) and its pane holder; see docs/TMUX_SHIM.md
 │   ├── shimlink/           # The tmux and herdr links that run tuios as another program

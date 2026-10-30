@@ -216,7 +216,7 @@ func (m *OS) remoteAgentEntries() []sidebarAgentEntry {
 					SessionID: s.Name, SessionLabel: firstNonEmptyStr(s.DisplayName, s.Name),
 					WindowID: a.ID, Title: a.Title, State: a.State, StateAt: a.StateAt,
 					Harness: a.Harness, Message: a.Message, AgentKind: a.Kind, Meta: a.Meta,
-					Subagents: a.Subagents, WindowIndex: -1, Foreign: true, Host: h.Name,
+					Subagents: a.Subagents, Settled: a.Settled, WindowIndex: -1, Foreign: true, Host: h.Name,
 				})
 			}
 		}
@@ -328,7 +328,7 @@ func (m *OS) InboxAgentsReply() tea.Cmd {
 	}
 	if e.Host != "" {
 		if e.State == "needs_input" {
-			m.ShowNotification(who+" is waiting on a prompt. Answer it first.", "info", m.Settings.NotificationDuration)
+			m.ShowNotification(who+" is waiting on a prompt. Answer it first.", "warning", m.Settings.NotificationDuration)
 			return nil
 		}
 		m.openHostReply(e.Host, e.SessionID, e.WindowID, who, ctx)

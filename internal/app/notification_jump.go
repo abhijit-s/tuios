@@ -81,6 +81,11 @@ func (m *OS) jumpToNotifTarget(t NotifTarget) {
 		m.OpenDaemonRestart()
 		return
 	}
+	// An integration notice is answered with the question that installs.
+	if t.AgentInstall != "" {
+		m.installFromNotice(t.AgentInstall)
+		return
+	}
 	// A message about mail lands on the thread, where the reply is, rather than
 	// on the pane that wrote. The marking read it may need is queued, since
 	// this runs inside handlers that return no command.
@@ -188,7 +193,7 @@ func (m *OS) clickVisibleNotification() {
 		return
 	}
 	m.Notifications = m.Notifications[:n-1]
-	if m.notifHit.Cut && !isClipboardAsk(visible.Target) && !isRestartNotice(visible.Target) {
+	if m.notifHit.Cut && !isClipboardAsk(visible.Target) && !isRestartNotice(visible.Target) && !isInstallNotice(visible.Target) {
 		m.notifHoverEnd()
 		m.openMessageView(m.notificationEntry(visible))
 		return
@@ -205,6 +210,11 @@ func isClipboardAsk(t *NotifTarget) bool { return t != nil && t.ClipboardAsk != 
 // it opens the restart dialog even when the dock cut its text: the dialog
 // says it all again.
 func isRestartNotice(t *NotifTarget) bool { return t != nil && t.DaemonRestart }
+
+// isInstallNotice reports whether a target is an integration notice. A click
+// on it opens its question even when the dock cut its text: the question
+// names the file again.
+func isInstallNotice(t *NotifTarget) bool { return t != nil && t.AgentInstall != "" }
 
 // sameDrawnNotification reports whether a is the message b was drawn from,
 // with the same text and the same target.

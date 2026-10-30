@@ -407,6 +407,7 @@ func (m *OS) Init() tea.Cmd {
 		listenCwdChangeUntil(m.stopSignal(), m.ensureCwdChangeChan()),
 		listenForFileChange(m.stopSignal(), m.fileWatchChan(), time.Time{}),
 		listenNvimNavigationUntil(m.stopSignal(), m.ensureNvimNavigationChan()),
+		listenDnDUntil(m.stopSignal(), m.ensureDnDInbox()),
 	}
 
 	// Ask an SSH client's terminal whether it draws sixel. See sixel_probe.go.
@@ -1677,6 +1678,11 @@ func (m *OS) handleMsg(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 	case NvimNavigationMsg:
 		m.onNvimNavigation(msg)
 		return m, listenNvimNavigationUntil(m.stopSignal(), m.PendingNvimNavigation)
+	case dndWakeMsg:
+		// A pane's program sent drag and drop messages. See dnd.go.
+		m.handleDnDWake()
+		m.renderSkipped = false
+		return m, listenDnDUntil(m.stopSignal(), m.ensureDnDInbox())
 
 	case fileListMsg:
 		// A directory read that finished on its own goroutine. The handler drops
@@ -1749,7 +1755,7 @@ func (m *OS) handleMsg(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 		// client is in now.
 		if m.SessionName == msg.Name {
 			m.QuitSession()
-			return m, tea.Quit
+			return m, m.QuitCmd()
 		}
 		m.KillOtherSession(msg.Name)
 		return m, nil
@@ -2396,6 +2402,10 @@ func (m *OS) handleMsg(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 				}
 				// After the count note, so the dock draws this one.
 				m.flushPiPNote()
+				if note := m.heldNotice; note != "" {
+					m.heldNotice = ""
+					m.ShowNotification(note, "info", m.Settings.NotificationDuration)
+				}
 
 				// A rename by this client or any other arrives on this push, so
 				// an open switcher follows it without being reopened.
@@ -2597,7 +2607,17 @@ func (m *OS) handleMsg(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 
 	case ReviewDiffMsg:
 		m.applyReviewDiff(msg)
+		if msg.Err == nil && msg.Gen == m.review.gen && m.review.open {
+			return m, m.reviewIndexCmd()
+		}
 		return m, nil
+
+	case ReviewIndexMsg:
+		m.applyReviewIndex(msg)
+		return m, nil
+
+	case ReviewStagedMsg:
+		return m, m.applyReviewStaged(msg)
 
 	case ReviewNotesMsg:
 		m.applyReviewNotes(msg)
@@ -2707,6 +2727,16 @@ func (m *OS) handleMsg(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 			if sizeChanged {
 				m.ShowNotification(fmt.Sprintf("Session size: %dx%d (%d clients)", msg.Width, msg.Height, msg.ClientCount), "info", 2*time.Second)
 			}
+		} else if m.DaemonClient.SessionSizedBySelf() {
+			// The box stayed and this client sets the size now. No retile
+			// runs, and the client before it can have left PTYs at sizes of its
+			// own: a renderer takes its insets off each pane. The daemon
+			// ignores a size a PTY already has.
+			for _, w := range m.Windows {
+				if w.DaemonMode && w.DaemonResizeFunc != nil {
+					_ = w.DaemonResizeFunc(w.ContentWidth(), w.ContentHeight())
+				}
+			}
 		}
 		// The layout just worked out from this answer is pushed, whoever
 		// caused it, unless this client already pushed one for it. Nothing
@@ -2770,7 +2800,7 @@ func (m *OS) handleMsg(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 				return m, listen
 			}
 			m.ExitReason = ExitHostLost
-			return m, tea.Quit
+			return m, m.QuitCmd()
 		}
 		// The daemon on this machine may be restarting: wait a moment for
 		// the new one, and attach to the session it restored.
@@ -2788,7 +2818,7 @@ func (m *OS) handleMsg(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 				}
 			}
 		}
-		return m, tea.Quit
+		return m, m.QuitCmd()
 
 	case daemonReconnectTickMsg:
 		return m, m.handleDaemonReconnectTick(msg)
@@ -2831,7 +2861,7 @@ func (m *OS) handleMsg(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 		if m.DaemonClient != nil && m.DaemonClient.DetachedReason() != "" {
 			m.ExitReason = ExitDetached
 		}
-		return m, tea.Quit
+		return m, m.QuitCmd()
 
 	case omarchyFollowMsg:
 		m.applyOmarchyPalette(msg.palette)
@@ -3244,6 +3274,14 @@ func (m *OS) handleMsg(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 				_ = m.DaemonClient.SendCommandResult(msg.RequestID, true, "command executed")
 			}
 			return m, tea.Batch(func() tea.Msg { return remoteSwitchSessionMsg{name: name} }, relisten)
+		case "notice":
+			// A line from the daemon for the dock, such as why a split did
+			// not follow ssh. Nothing changed, so nothing is pushed.
+			if len(msg.TapeArgs) > 0 {
+				m.heldNotice = msg.TapeArgs[0]
+				m.ShowNotification(m.heldNotice, "info", m.Settings.NotificationDuration)
+			}
+			return m, relisten
 		case "refresh_dock":
 			// Re-run one component now, or every one when unnamed.
 			name := ""

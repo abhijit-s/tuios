@@ -15,6 +15,7 @@ import (
 	"github.com/Gaurav-Gosain/tuios/internal/overlay"
 	"github.com/Gaurav-Gosain/tuios/internal/session"
 	"github.com/Gaurav-Gosain/tuios/internal/sessiontree"
+	"github.com/Gaurav-Gosain/tuios/internal/sortx"
 	"github.com/Gaurav-Gosain/tuios/internal/terminal"
 	"github.com/Gaurav-Gosain/tuios/internal/theme"
 	"github.com/charmbracelet/x/ansi"
@@ -555,11 +556,20 @@ type sidebarAgentEntry struct {
 	// AgentKind is what sort of block a needs_input pane is on ("approval",
 	// "question"), empty when the source did not say. The need token draws it.
 	AgentKind string
+	// Reason is why State is not the state the agent gave: "silent" for a
+	// hooked pane that stopped reporting. The need token says so.
+	Reason string
 	// Meta is what the pane reported about its agent through set-agent-meta,
 	// in the order the pane holds it. The meta and $key row tokens draw it.
 	Meta []sessiontree.MetaToken
 	// Queued is how many messages wait in the pane's delivery queue.
 	Queued int
+	// DraftHeld is true while the person's draft in the input box holds that
+	// queue. The agents view says so on the row.
+	DraftHeld bool
+	// Settled marks an agent the person put away: the agents view draws it
+	// on the Settled shelf until it needs the person again.
+	Settled bool
 	// Subagents is how many subagents the pane's agent is running, which the
 	// subagents row token draws.
 	Subagents int
@@ -2801,9 +2811,12 @@ func (m *OS) agentEntries(sessions []sessiontree.Node) []sidebarAgentEntry {
 				StateAt:      win.StateAt,
 				Harness:      win.Harness,
 				Message:      win.Message,
+				Reason:       win.Reason,
 				AgentKind:    win.AgentKind,
 				Meta:         win.Meta,
 				Queued:       win.Queued,
+				DraftHeld:    win.DraftHeld,
+				Settled:      win.Settled,
 				Subagents:    win.Subagents,
 				Children:     win.SubagentList,
 				Program:      win.Program,
@@ -3002,7 +3015,7 @@ func (m *OS) sidebarFooter(variant, cw int, pal overlay.Palette,
 	// corners, so which of them is built first depends on which side the rail is
 	// on, and recording them in construction order put the outer one's rectangle
 	// before the inner one's on a left-hand rail.
-	slices.SortFunc(items, func(a, b placed) int { return a.zone.X0 - b.zone.X0 })
+	sortx.ShortStableFunc(items, func(a, b placed) int { return a.zone.X0 - b.zone.X0 })
 
 	zones := make([]sidebarFooterZone, 0, len(items))
 	for _, it := range items {

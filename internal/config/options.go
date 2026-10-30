@@ -12,6 +12,7 @@ import (
 	"github.com/Gaurav-Gosain/tuios/internal/overlay"
 	"github.com/Gaurav-Gosain/tuios/internal/sortx"
 	"github.com/Gaurav-Gosain/tuios/internal/theme"
+	"github.com/Gaurav-Gosain/tuios/internal/worktree"
 )
 
 // Option describes one settable configuration path.
@@ -1114,6 +1115,18 @@ var optionSpecs = []Option{
 		Description: "Agents, the Inbox, mail and approvals. Turn off to keep only the multiplexer.",
 		Default:     "true",
 	},
+	{
+		Path: "agents.fold_working", Type: OptionBool, Section: "agents",
+		Description: "Fold the Working group of the agents view. F folds or opens a group, and the view keeps that choice.",
+		Default:     "false",
+	},
+
+	// [tasks]. The daemon reads it when it starts and when the file changes.
+	{
+		Path: "tasks.auto_stage", Type: OptionBool, Section: "agents",
+		Description: "Move task cards on their own when tuios sees their work move: a plan held and then approved, a fan check, a pull request. Off leaves every stage to you.",
+		Default:     "true",
+	},
 
 	// [daemon]. agent_binaries is absent: it is a list, and a value that arrives
 	// as one string has no unambiguous spelling for a list. respond_from_shell
@@ -1193,8 +1206,13 @@ var optionSpecs = []Option{
 	},
 	{
 		Path: "notifications.level", Type: OptionString, Section: "notifications",
-		Description: "The least severe message the dock shows: info shows every message, warning only warnings and errors, error only errors. The rest go to the log viewer",
+		Description: "The least severe tuios message the dock shows: info shows every message, warning only warnings and errors, error only errors. Agent and pane alerts do not use this level",
 		Accepted:    NotificationLevels, Default: NotificationLevelInfo,
+	},
+	{
+		Path: "notifications.log_hidden", Type: OptionBool, Section: "notifications",
+		Description: "Put messages below notifications.level in the log viewer. When off, they go nowhere. Warnings and errors always go to the log",
+		Default:     "true",
 	},
 
 	// [notifications.agent]. The sounds table is absent: its two keys are paths
@@ -1571,6 +1589,11 @@ var optionSpecs = []Option{
 		Description: "Open the pane navigator ready to type a search",
 		Default:     "false",
 	},
+	{
+		Path: "panes.drag_and_drop", Type: OptionBool, Section: "panes",
+		Description: "Drag and drop between panes over the kitty drag and drop protocol (OSC 72)",
+		Default:     "false",
+	},
 
 	// [scratch]. Read each time toggle_scratch creates or shows the scratch
 	// terminal. A show resizes the popup to the size in force.
@@ -1614,6 +1637,13 @@ var optionSpecs = []Option{
 		Description: "Most KiB all paste buffers hold together, at most 262144 (256 MiB). When it is full, the oldest go. 0 uses 16384.",
 		Default:     "16384", Min: 0, Max: 262144,
 	},
+	// [worktree]. The daemon reads it when it starts and when the file
+	// changes.
+	{
+		Path: "worktree.path", Type: OptionString, Section: "worktree",
+		Description: "Where new worktrees go, as a template of {{ repo_path }}, {{ repo }} and {{ branch }}, with | slug to make one folder name. A relative path starts at repo_path. Empty puts them under $XDG_DATA_HOME/tuios/worktrees",
+		Default:     "", Check: worktree.ValidatePathTemplate,
+	},
 	// Read by the client on each switch, so a change applies at once.
 	{
 		Path: "workspaces.new_window_when_empty", Type: OptionBool, Section: "workspaces",
@@ -1640,6 +1670,8 @@ func Options() []Option {
 }
 
 // LookupOption returns the option a dotted path names.
+//
+//go:noinline
 func LookupOption(path string) (Option, bool) {
 	opt, ok := optionsByPath[path]
 	return opt, ok

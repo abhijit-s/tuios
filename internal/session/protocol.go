@@ -553,6 +553,11 @@ type WindowSummary struct {
 	ID         string `json:"id"`
 	Title      string `json:"title"`
 	AgentState string `json:"agent_state,omitempty"`
+	// AgentReason is why AgentState is what it is when it is not the state
+	// the agent last gave: "silent" for a hooked pane that stopped
+	// reporting, whose AgentState here is unknown. Additive and omitted when
+	// empty. See WindowState.AgentReason.
+	AgentReason string `json:"agent_reason,omitempty"`
 	// AgentStateAt is when the pane entered AgentState (Unix nanoseconds).
 	// Additive and omitted when zero, so an older peer just reads no elapsed time.
 	AgentStateAt int64 `json:"agent_state_at,omitempty"`
@@ -586,6 +591,13 @@ type WindowSummary struct {
 	// rail watching another session can say so. Additive and omitted when zero,
 	// which is what an older peer sends.
 	AgentQueued int `json:"agent_queued,omitempty"`
+	// DraftHeld is WindowState.AgentDraftHeld. Additive and omitted when
+	// false, which is what an older peer sends.
+	DraftHeld bool `json:"agent_draft_held,omitempty"`
+	// AgentSettled is WindowState.AgentSettled, so the agents view of a
+	// client watching another session draws the agent on the Settled shelf
+	// too. Additive and omitted when false, which is what an older peer sends.
+	AgentSettled bool `json:"agent_settled,omitempty"`
 	// Subagents is how many subagents the pane's agent is running, so a rail
 	// watching another session can say so. Additive and omitted when zero,
 	// which is what an older peer sends.

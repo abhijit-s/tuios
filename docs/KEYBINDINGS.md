@@ -523,6 +523,12 @@ the tape manager.
 | `alt+backspace`, `ctrl+w`, `ctrl+backspace` | Delete the last word of a typed filter (fixed). `alt+backspace` is `Option+Backspace` on a Mac whose terminal sends Option as Alt |
 | wheel | Scroll the list under the pointer, stopping at the ends (fixed) |
 
+The word keys take a word the way the shell's `Option+Backspace` does: they skip
+the characters at the end that are not part of a word, then take the word. A word
+is letters, digits and `_`, and a blank, `/`, `.` or `-` ends one. So
+`src/dir1/dir2` becomes `src/dir1/`, then `src/`, then nothing. Every short text
+field in tuios takes them, the rename, file and new worktree dialogs among them.
+
 The movement keys are the `[keybindings.lists]` section. Each action takes the
 keys that do it:
 
@@ -596,6 +602,7 @@ One dialog renames a window, a session and a workspace. It opens holding the cur
 
 A click on the `clear` hint in the dialog's border clears the field too. In the help's search, `ctrl+u` clears the query.
 
+
 ### Mode keys in the dock
 
 Copy mode, multi copy mode and hints mode show their keys at the right end of
@@ -627,7 +634,7 @@ no space in it, such as a long path, is cut where the room ends.
 | Keys | Where | What it does |
 |---|---|---|
 | `ctrl+b N` | anywhere | Show the last message from a pane, or the last message that was too long for the dock, also after it went from the dock |
-| `ctrl+b j` | anywhere | Go to the pane of the newest message |
+| `ctrl+b j` | anywhere | Go to the pane of the newest message. On an agent integration notice, ask to install the integration |
 | `j`, `k`, `up`, `down`, wheel | message view | Scroll one line |
 | `ctrl+d`, `ctrl+u`, `space`, `pgdown`, `pgup` | message view | Scroll half a page |
 | `g`, `G`, `home`, `end` | message view | Go to the first or last line |
@@ -1495,6 +1502,8 @@ in the middle row, set `appearance.selection.copy_entry` to `center`.
 | `n` | Go to the next match in the direction of the last search |
 | `N` | Go to the next match in the opposite direction |
 | `Esc` in the search prompt | Cancel the search and move the cursor back |
+| `q` or `Esc` | Leave copy mode. In a selection, `Esc` and `q` only end the selection |
+| `Ctrl+C` | Leave copy mode from normal mode, a selection, the search prompt or `f`/`t`. Nothing is copied |
 
 The prompt shows `/` or `?` to show the direction. The search starts at the
 copy cursor. When no match is found in that direction, the search continues
@@ -1527,6 +1536,27 @@ copy mode uses `Ctrl+B` for page up. In copy mode, `/` and `?` open the same
 prompts.
 
 When a search finds more than 1000 matches, the prompt shows `1000+`.
+
+### Focus keys in copy mode
+
+The `terminal_focus_left`, `terminal_focus_right`, `terminal_focus_up` and
+`terminal_focus_down` keys also work in copy mode. In window mode, the
+window-mode focus keys work. Focus moves to the next pane. The old pane stays
+in copy mode, as in tmux. When you go back to it, the copy cursor is where you
+left it.
+
+A focus key that copy mode also uses keeps its copy mode action. For example,
+`h` moves the copy cursor, and `alt+left` moves focus. This example binds
+`alt+h` and `alt+l` as in tmux:
+
+```toml
+[keybindings.terminal_mode]
+terminal_focus_left = ["alt+h"]
+terminal_focus_right = ["alt+l"]
+```
+
+A key under the leader does not work in copy mode, because copy mode uses
+`Ctrl+B` for page up. `Ctrl+B` and then an arrow key does not move focus there.
 
 ### Line start and line end
 
@@ -1687,10 +1717,14 @@ The command runs with `sh -c`. It gets the selection on stdin. The clipboard
 gets what the command writes to stdout. When the selection does not end with
 a new line, tuios removes one new line from the end of the output.
 
+When the command stops with exit code 0 and writes nothing, tuios does not
+change the clipboard or the paste buffers. The dock shows a message. Use this
+for a command that sets the clipboard itself, such as `tmux-copy-it`, or that
+sends the text to a socket or a file. tmux does the same: the write of the
+command stays.
+
 The clipboard gets the selection itself in these cases:
 
-- The command writes nothing. Use this for a command that sends the text to a
-  socket or a file.
 - The command stops with an exit code that is not 0. The dock shows the exit
   code and the first line of stderr.
 - The command runs for more than 10 seconds. tuios stops the command and the
@@ -1699,7 +1733,8 @@ The clipboard gets the selection itself in these cases:
 tuios waits until the command closes its stdout. `xclip` starts a process that
 stays open after `xclip` stops, and keeps stdout open. tuios then waits 1
 second more. To prevent the wait, send the stdout of `xclip` to `/dev/null`.
-This example also puts each yank in the X primary selection:
+This example puts each yank in the X primary selection. The command writes
+nothing, so the clipboard does not change:
 
 ```toml
 [appearance.selection]
@@ -1717,7 +1752,7 @@ The fields of a `[[keybindings.copy_pipe]]` entry:
 - `description` names the entry in the dock messages. It is optional.
 
 The entry takes its key from copy mode. An entry on `y` replaces the plain
-yank. Copy mode does not use `p` or `P`. When an entry takes `q`, `Esc`, `v`, `V`, `/`,
+yank. Copy mode does not use `p` or `P`. When an entry takes `q`, `Esc`, `Ctrl+C`, `v`, `V`, `/`,
 `?` or a digit, tuios shows a warning when it loads the config. When no text is selected, the key
 shows a message and runs nothing. While you type a search, the key goes into
 the search.
@@ -1856,8 +1891,9 @@ runs the same search from a shell.
 
 Everything waiting for you, and every agent tuios knows of, is one full-screen
 view on `ctrl+b i`. It was the Inbox panel. The agents are grouped by what
-each needs from you: Needs you, Ready for review, Working, Idle, Earlier. What
-the Inbox held is the Needs you group. See
+each needs from you: Needs you, Ready for review, Working, Idle, Settled. What
+the Inbox held is the Needs you group. Settled holds the agents you put away
+with `D` and the agents at rest for more than an hour. See
 [AGENT_STATE.md](AGENT_STATE.md#the-agents-view) for what goes in it.
 
 | Keys | What it does |
@@ -1885,6 +1921,7 @@ Inside it:
 | `s` | Step the order inside each group |
 | `/` | Search. A `key:value` term is a selector, such as `harness:codex` |
 | `d` `z` `u` `S` | Dismiss, snooze, undo, show the snoozed items |
+| `D` | Settle the agent: put it away until it needs you. It goes to Settled, and its finished turn closes. `D` on a settled agent takes it off the shelf, and `u` undoes a settle within 10 seconds. With marks, settle every marked agent. The Settle button in the focus header does the same |
 | `y` `p` `m` | Resume in place (the view stays open), pass held mail on, open the mailbox |
 | `x` `*` | Mark an agent or a Resume row, or every row shown, for a bulk answer. A marked row shows a mark, and the header counts the marks |
 | `1` `3` with marks | Allow every marked approval once, after a sheet that lists them, or reject them |
@@ -1892,6 +1929,7 @@ Inside it:
 | `[` `]` | Switch the focus tabs: Card on the board, Thread, Changes, Artifacts, Checkpoints and Pane |
 | `J` `K` | Scroll the thread, or a long plan waiting for a yes. On the Artifacts tab, move between the artifacts |
 | `e` | Show every line of every card in the thread |
+| `F` | Fold or open the group of the row under the cursor. On a folded heading, `enter` also opens it |
 | `v` | Review the agent's changes |
 | `ctrl+]` | Go to the agent's pane and zoom it. `ctrl+b i` comes back to the same agent |
 | `l` `h`, `right` `left` | On a narrow screen, open the focus and go back to the list |
@@ -1966,7 +2004,7 @@ path, `s` saves a copy, `left` and `right` step through the images, `+` and
 `-` zoom, and `esc` or a click outside the picture closes it.
 
 The mouse works too. A click on a row selects it, and a double-click goes to
-its pane. A click on a group heading folds the group. The buttons on an
+its pane. A click on a group heading folds the group, as `F` does. The buttons on an
 approval card answer it. `+ New agent` opens the New agent sheet, and the search box opens
 the search. The wheel scrolls the list, and over the focus it scrolls the
 card. A search narrows the items with the agents. A selector the search line
@@ -2006,7 +2044,7 @@ These keys are in three sections of their own, rebindable like any other:
 `inbox_write`, `inbox_sort`, `inbox_view_pane`, `inbox_new_agent`,
 `inbox_allow`, `inbox_allow_always`, `inbox_open`, `inbox_back`,
 `inbox_help`, `inbox_mark`, `inbox_mark_all`, `inbox_tab_prev`,
-`inbox_tab_next`, `inbox_expand`, `inbox_compare`, `inbox_artifact`,
+`inbox_tab_next`, `inbox_expand`, `inbox_fold`, `inbox_compare`, `inbox_artifact`,
 `inbox_board`, `inbox_take`),
 `[keybindings.inbox_peek]` (the prompt: `peek_approve`, `peek_approve_always`,
 `peek_deny`, `peek_type`, `peek_read_again`, `peek_go`, `peek_back`) and
@@ -2083,7 +2121,8 @@ not offered and do what an unbound key does: after `ctrl+b` in terminal mode,
 | `ctrl+b A` | anywhere | Open the Agents tab of the settings page, where you install, update and uninstall each harness's integration |
 | `v` | agents view | Review the changes in the item's pane |
 | `z`, then `1` to `4` | agents view | Snooze the item: 15 minutes, 1 hour, until 9:00 tomorrow, or until it changes; any other key cancels. On a snoozed item, wake it |
-| `u` | agents view | Undo the last dismiss or snooze, within 10 seconds |
+| `u` | agents view | Undo the last dismiss, snooze or settle, within 10 seconds |
+| `D` | agents view | Settle the agent, or every marked one. Put away until it needs you |
 | `S` | agents view | Show or hide snoozed items |
 | `R` | agents view | Reject a held approval, or keep a plan planning, with a reason you type (`r` and `3` stay the plain reject) |
 | `n` | agents view | Start a new agent |
@@ -2091,7 +2130,7 @@ not offered and do what an unbound key does: after `ctrl+b` in terminal mode,
 | `J`, `K`, `ctrl+d`, `ctrl+u` | agents view | Scroll the card, such as a long plan |
 | `u` | rail agent row | Mark the pane's finished turn unread, for every client (not the pane in front of you) |
 | `z` | rail agent row | Snooze what needs you in the pane: the agents view opens on it with the four lengths |
-| `enter` | rail `+N at rest` line | Show the agent rows folded as at rest, until the rail lets go of the keyboard (after a click with the rail not focused, until a click outside the rail or a pane is focused) |
+| `enter` | rail `+N at rest` line | Show the agent rows folded as at rest, settled agents included, until the rail lets go of the keyboard (after a click with the rail not focused, until a click outside the rail or a pane is focused) |
 | `r` | agents view, on a finished or errored item | Reply to the agent: the editor under the thread, queued with `enter` and typed when the agent is at rest |
 | `r` | rail agent row | Reply to the agent, the same line in the agents view; refused while the pane waits on a prompt |
 | `v` | rail agent row | Review the pane's changes |
@@ -2143,7 +2182,8 @@ active theme's colours, added and removed lines sit on green and red grounds,
 and the words that changed in a changed line are marked. It owns every key
 while it is open, in either mode.
 The keys are the overlay's own, not bindings, like the scrollback browser's,
-except the hunk and file motions, which are in `[keybindings.review]`:
+except the hunk and file motions and the stage keys, which are in
+`[keybindings.review]`:
 
 | Keys | What it does |
 | --- | --- |
@@ -2152,6 +2192,10 @@ except the hunk and file motions, which are in `[keybindings.review]`:
 | `g` / `G` | First or last line |
 | `]` / `[` | Next or previous hunk, going on into the next or previous file (`review_next_hunk`, `review_prev_hunk`) |
 | `}` / `{` | Next or previous file (`review_next_file`, `review_prev_file`) |
+| `a` | Stage the hunk under the cursor (`review_stage_hunk`) |
+| `d` | Unstage the hunk under the cursor (`review_unstage_hunk`) |
+| `A` / `D` | Stage or unstage the whole file (`review_stage_file`, `review_unstage_file`) |
+| `z` | Undo the last stage or unstage (`review_undo_stage`) |
 | `s` | One column, or the old and new sides next to each other where the diff column is wide enough (about 120 columns of screen) |
 | `h` / `l`, `left` / `right` | Scroll the code sideways |
 | `tab` | Focus the file list or the diff |
@@ -2166,6 +2210,13 @@ except the hunk and file motions, which are in `[keybindings.review]`:
 | `w` | The compare view, for a pane in a fan |
 | `r` | Read the diff again |
 | `esc`, `q` | Close (from a review opened in the compare view, go back to it) |
+
+A stage key changes only the index of the pane's worktree. The working files
+do not change. A hunk header shows `staged` when the index holds all of the
+hunk, and `partly staged` when it holds some of it. `a` stages only the lines of
+the hunk you see. When git splits those lines into two hunks of the index, the
+first `a` stages one part and the hunk shows `partly staged`. Press `a` again
+to stage the rest. The keys do nothing in a comparison of two attempts.
 
 In the note line and the other one-line prompts every printable key is text,
 a paste is typed as one line, `enter` saves and `esc` drops.
@@ -2201,8 +2252,8 @@ against the fan's base and its last check:
 | `esc`, `q`, `w` | Back to the review |
 
 A key from `send-keys` or a tape may move around the review but never acts as
-you: a note it typed is not saved, and `S`, `x`, `V` and the keep
-confirmation refuse it. See
+you: a note it typed is not saved, and `S`, `x`, `V`, the stage keys and the
+keep confirmation refuse it. See
 [Reviewing an agent's changes](AGENT_STATE.md#reviewing-an-agents-changes).
 
 ## Other keyboard layouts

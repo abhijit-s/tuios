@@ -187,23 +187,30 @@ func isReviewHelpBinding(b HelpBinding) bool {
 // means different things, and the Inbox's own keys were in no section.
 const HelpCategoryAgents = "Agents"
 
+// appendHelpBinding adds a row for keys, without the blank ones, when any are
+// left. It is out of line because the generators below call it at dozens of
+// places.
+//
+//go:noinline
+func appendHelpBinding(bindings *[]HelpBinding, keys []string, desc, cat string) {
+	var live []string
+	for _, k := range keys {
+		if k = strings.TrimSpace(k); k != "" {
+			live = append(live, k)
+		}
+	}
+	if len(live) > 0 {
+		*bindings = append(*bindings, HelpBinding{Keys: live, Description: desc, Category: cat})
+	}
+}
+
 // generateAgentBindings lists the Agents section. Every key is read from the
 // config, chord included, so a rebound key shows as it is bound.
 func generateAgentBindings(registry *config.KeybindRegistry, s *config.Settings) []HelpBinding {
 	const cat = HelpCategoryAgents
 	presses := config.PressesByAction(registry)
 	var bindings []HelpBinding
-	add := func(keys []string, desc string) {
-		var live []string
-		for _, k := range keys {
-			if k = strings.TrimSpace(k); k != "" {
-				live = append(live, k)
-			}
-		}
-		if len(live) > 0 {
-			bindings = append(bindings, HelpBinding{Keys: live, Description: desc, Category: cat})
-		}
-	}
+	add := func(keys []string, desc string) { appendHelpBinding(&bindings, keys, desc, cat) }
 	for _, action := range []string{"prefix_inbox", "prefix_next_attention", "prefix_next_finished", "prefix_review", "prefix_mail", "prefix_jump_notif", "prefix_agents_settings"} {
 		desc := config.ActionDescriptions[action]
 		add(presses[action], desc)
@@ -245,9 +252,9 @@ func generateAgentBindings(registry *config.KeybindRegistry, s *config.Settings)
 		config.ActionInboxBoard, config.ActionInboxTake,
 		config.ActionInboxDismiss, config.ActionInboxResume, config.ActionInboxPassOn, config.ActionInboxFilter,
 		config.ActionInboxSelect, config.ActionInboxMailbox, config.ActionInboxReview, config.ActionInboxSnooze,
-		config.ActionInboxUndo, config.ActionInboxShowSnoozed, config.ActionInboxMark, config.ActionInboxMarkAll,
+		config.ActionInboxSettle, config.ActionInboxUndo, config.ActionInboxShowSnoozed, config.ActionInboxMark, config.ActionInboxMarkAll,
 		config.ActionInboxViewPane, config.ActionInboxOpen, config.ActionInboxBack,
-		config.ActionInboxTabPrev, config.ActionInboxTabNext, config.ActionInboxExpand,
+		config.ActionInboxTabPrev, config.ActionInboxTabNext, config.ActionInboxExpand, config.ActionInboxFold,
 		config.ActionInboxDetailDown, config.ActionInboxDetailUp,
 	} {
 		inbox(action, config.ActionDescriptions[action])
@@ -266,6 +273,10 @@ func generateAgentBindings(registry *config.KeybindRegistry, s *config.Settings)
 	review(config.ActionReviewPrevHunk, "Review: previous hunk")
 	review(config.ActionReviewNextFile, "Review: next file")
 	review(config.ActionReviewPrevFile, "Review: previous file")
+	for _, action := range []string{config.ActionReviewStageHunk, config.ActionReviewUnstageHunk,
+		config.ActionReviewStageFile, config.ActionReviewUnstageFile, config.ActionReviewUndoStage} {
+		review(action, config.ActionDescriptions[action])
+	}
 	// The overlay's other keys are its own and not bindings, like the
 	// scrollback browser's. See review_input.go.
 	add([]string{"c", "C"}, "Review: a note on the line, or on the whole hunk")
@@ -599,7 +610,7 @@ func generateListBindings() []HelpBinding {
 	const cat = "Modes"
 	return []HelpBinding{
 		{Keys: []string{"ctrl+u"}, Description: "Lists: clear a typed filter", Category: cat},
-		{Keys: []string{"alt+backspace", "ctrl+w"}, Description: "Lists and the rename dialog: delete the last word", Category: cat},
+		{Keys: []string{"alt+backspace", "ctrl+w"}, Description: "Text fields: delete the last word", Category: cat},
 		{Keys: []string{"wheel"}, Description: "Lists: scroll the list under the pointer", Category: cat},
 		{Keys: []string{"/"}, Description: "Settings: search every tab", Category: cat},
 		{Keys: []string{"1-9"}, Description: "Settings: go to that tab", Category: cat},
@@ -662,6 +673,7 @@ func copyModeKeys(leader string) []HelpBinding {
 		{Keys: []string{"o"}, Description: "Other end of selection", Category: "Copy Mode"},
 		{Keys: []string{"y, c"}, Description: "Yank to clipboard", Category: "Copy Mode"},
 		{Keys: []string{"i, q, Esc"}, Description: "Exit copy mode", Category: "Copy Mode"},
+		{Keys: []string{"ctrl+c"}, Description: "Exit copy mode from any state. Nothing is copied", Category: "Copy Mode"},
 	}
 }
 

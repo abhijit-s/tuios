@@ -72,6 +72,73 @@ For an agent that runs now and is busy, `tuios queue` types the text as its
 next prompt when it comes to rest. Do not use `send-text` for either case: it
 types at once, into whatever runs in the pane.
 
+## Keep the machine awake while agents work
+
+A hook only fires for the states that `[notifications.agent.states]` alerts on,
+so a hook cannot see every change without raising alerts. Use the event stream
+instead. `tuios subscribe` sends one line for each agent state change and
+raises no alert. This script holds `systemd-inhibit` (Linux) or `caffeinate`
+(macOS) while any agent works, and lets go when none works:
+
+```sh
+#!/bin/sh
+# ~/.config/tuios/awake.sh
+holder=
+
+watch() {
+  trap '[ -n "$holder" ] && kill "$holder"' EXIT
+  while read -r _; do
+    n=$(tuios list-agents --all-sessions --json | jq '[.agents[] | select(.state == "working")] | length')
+    if [ "$n" -gt 0 ] && [ -z "$holder" ]; then
+      case "$(uname)" in
+        Darwin) caffeinate -i & ;;
+        *) systemd-inhibit --what=idle:sleep --who=tuios --why='An agent works' sleep infinity & ;;
+      esac
+      holder=$!
+    elif [ "$n" = 0 ] && [ -n "$holder" ]; then
+      kill "$holder"
+      holder=
+    fi
+  done
+}
+
+while true; do
+  tuios subscribe --types agent-state | watch
+  sleep 5
+done
+```
+
+Run it from your login, for example `sh ~/.config/tuios/awake.sh &` or a
+systemd user service. The outer loop connects again after a daemon restart.
+`systemd-inhibit --list` shows a `tuios` row while an agent works.
+
+## Run an agent on a schedule
+
+`start-agent` returns once the agent is at its prompt. `--prompt` gives it the
+job. A cron line can start one each morning, and the agent's question or
+result lands in the Inbox (`tuios --skill inbox`). A session that does not
+exist is created:
+
+```sh
+# crontab -e
+0 7 * * 1-5  tuios start-agent -s nightly claude --name triage --prompt 'List the open issues labeled bug and rank them.'
+```
+
+The daemon must run. Cron has a short `PATH`: write the full path of `tuios`
+and of the agent. For a machine named in `tuios hosts`, use `-s HOST:SESSION`.
+
+To give a running agent its next job, queue the prompt. It is typed when the
+agent next comes to rest:
+
+```sh
+30 7 * * 1-5  tuios queue -s nightly -w triage 'Then draft a reply for the top issue.'
+```
+
+With systemd, put the same command in a `.service` file and start it from a
+`.timer` file with `OnCalendar=Mon..Fri 07:00`. Write the full path of
+`tuios` in `ExecStart=`. The prompt is typed as the person, so keep it short
+and keep secrets out of it.
+
 ## A sessionizer
 
 Open a project as a session: pick a folder, and switch to its session, made in

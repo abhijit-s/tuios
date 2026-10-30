@@ -13,6 +13,7 @@ import (
 
 	"github.com/Gaurav-Gosain/tuios/internal/integration"
 	"github.com/Gaurav-Gosain/tuios/internal/overlay"
+	"github.com/Gaurav-Gosain/tuios/internal/sortx"
 )
 
 // The Agents section of the settings page.
@@ -216,8 +217,8 @@ func (m *OS) noticeAgentIntegrations(names map[string]bool) {
 		if m.agentNoticesDismissed[key] {
 			continue
 		}
-		if text := agentIntegrationNotice(st); text != "" {
-			m.ShowNotification(text, "warning", m.Settings.NotificationWarningDuration)
+		if text := m.agentIntegrationNotice(st); text != "" {
+			m.ShowNotificationFrom(text, "warning", m.Settings.NotificationWarningDuration, NotifTarget{AgentInstall: st.Harness})
 			if n := len(m.Notifications); n > 0 && m.Notifications[n-1].Message == text {
 				if p.noticeKeys == nil {
 					p.noticeKeys = map[string]string{}
@@ -268,15 +269,63 @@ func (m *OS) noteNoticesDismissed(gone []Notification) {
 	}
 }
 
-// agentIntegrationNotice is the toast for a harness, "" when none is due.
-func agentIntegrationNotice(st integration.Status) string {
+// agentIntegrationNotice is the toast for a harness, "" when none is due. It
+// names the file the install writes, as the Agents tab's action row does,
+// and the key that installs it: activating the notice is the confirmation.
+func (m *OS) agentIntegrationNotice(st integration.Status) string {
+	verb := "install"
 	switch st.State() {
 	case integration.StateOutOfDate:
-		return st.Name + " integration is out of date. Open Settings, Agents to update it."
+		verb = "update"
 	case integration.StateNotInstalled:
-		return st.Name + " integration is not installed. Open Settings, Agents to install it."
+	default:
+		return ""
 	}
-	return ""
+	where := shortenHome(st.Path)
+	if t, ok := integration.LookupTarget(st.Harness); ok {
+		where = joinPaths(t.Paths(agentsEnv()))
+	}
+	// The key comes right after the state, as in the version notice, so the
+	// dock shows it even when it cuts the file.
+	how := "Click it to " + verb + " it in " + where + "."
+	if key := contextMenuHint(m.KeybindRegistry, "prefix_jump_notif", &m.Settings); key != "" {
+		how = key + " " + verb + "s it in " + where + "."
+	}
+	if verb == "update" {
+		return st.Name + " integration is out of date. " + how
+	}
+	return st.Name + " integration is not installed. " + how
+}
+
+// installFromNotice opens the question that installs or updates a harness's
+// integration from its notice. A yes runs the Agents tab's action, so both
+// say the same result.
+func (m *OS) installFromNotice(id string) {
+	if m.refuseAgentsOff() {
+		return
+	}
+	p := &m.agentsPage
+	if !m.agentsPageAvailable() || p.overview == nil {
+		m.ShowNotification("This client cannot change the agent integrations.", "info", m.Settings.NotificationDuration)
+		return
+	}
+	st, ok := p.overview.Lookup(id)
+	if !ok {
+		return
+	}
+	if !st.NeedsAction() {
+		m.ShowNotification(st.Name+" integration is already installed and current.", "info", m.Settings.NotificationDuration)
+		return
+	}
+	if p.busy {
+		m.ShowNotification("Another change is running. Wait for it to end.", "info", m.Settings.NotificationDuration)
+		return
+	}
+	verb := agentInstall
+	if st.State() == integration.StateOutOfDate {
+		verb = agentUpdate
+	}
+	m.openIntegrationAsk(st, verb)
 }
 
 // OpenAgentsSettings opens the settings page on the Agents tab. The prefix
@@ -404,7 +453,7 @@ func agentsInOrder(all []integration.Status) []integration.Status {
 		}
 		return 1
 	}
-	slices.SortStableFunc(out, func(a, b integration.Status) int { return cmp.Compare(here(a), here(b)) })
+	sortx.SortStableFunc(out, func(a, b integration.Status) int { return cmp.Compare(here(a), here(b)) })
 	return out
 }
 
@@ -731,11 +780,17 @@ func agentActionOutcome(name string, msg agentsActionMsg) (string, string) {
 	if !msg.result.Changed {
 		return name + " integration is already installed and current.", "info"
 	}
-	done := "installed in "
+	// The file comes first, so the dock shows it before it cuts the rest.
+	done := "Installed in "
 	if msg.verb == agentUpdate {
-		done = "updated in "
+		done = "Updated in "
 	}
-	text := name + " integration is " + done + shortenHome(msg.result.Path) + "."
+	text := done + shortenHome(msg.result.Path) + "."
+	// A harness reads its hooks when it starts, so a pane that runs it now
+	// reports its state only after a restart.
+	if t, ok := integration.LookupTarget(msg.harness); ok && t.Reports != integration.ReportsSession {
+		text += " Restart " + name + " to make it report its state."
+	}
 	if msg.result.Backup != "" {
 		text += " The previous copy is in " + shortenHome(msg.result.Backup) + "."
 	}

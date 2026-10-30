@@ -25,7 +25,7 @@ Built on the Charm stack (Bubble Tea v2, Lipgloss v2), TUIOS features event-driv
 
 ## Documentation
 
-Full documentation is available at **[tuios.dev](https://tuios.dev)** (hosted) or in the [`docs/`](./docs/) folder. To try tuios without installing it, take the guided tour at **[tuios.dev/learn](https://tuios.dev/learn)**: the real app, compiled to WebAssembly, with a practice shell in every pane.
+Full documentation is available at **[tuios.dev](https://tuios.dev)** (hosted) or in the [`docs/`](./docs/) folder. To try tuios without installing it, take the guided tour at **[tuios.dev/learn](https://tuios.dev/learn)**: the real app, compiled to WebAssembly, with a practice shell in every pane. Already installed it? Run `tuios tutor` for the same tour in your own terminal. It changes nothing on your machine.
 
 What changed in v0.10.1 is in the [release notes](docs/release-notes/v0.10.1.md).
 
@@ -184,7 +184,7 @@ The guide is [docs/AGENT_STATE.md](docs/AGENT_STATE.md).
 - **MCP Server**: `tuios mcp` serves the same surface as MCP tools, read-only and held to the agent's own session unless you say otherwise
 - **tmux Shim**: `tuios tmux-shim` runs tools that drive tmux, such as Claude Code agent teams, with their panes opened as tuios panes
 - **Session Stash**: `tuios stash put` keeps a file for the session, so another agent can still open it
-- **Agent Skill**: `tuios --skill` prints the short guide an agent in a pane reads to drive tuios, and `tuios --skill TOPIC` the rest, recipes included
+- **Agent Skill**: `tuios --skill` prints the short guide an agent in a pane reads to drive tuios, and `tuios --skill TOPIC` the rest, recipes included. To move your tmux, zellij or herdr settings over, tell your agent: "Run `tuios --skill config` and move my tmux settings over."
 
 ### Machines
 - **Hosts**: `tuios hosts add` names another machine, reached over ssh. `tuios hosts tailnet` lists the machines on a Tailscale tailnet

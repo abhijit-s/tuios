@@ -7,6 +7,30 @@ below. Two of them are **not** caught here; that is written down rather than
 papered over, because a suite whose real coverage is unknown is worse than no
 suite.
 
+## tuios tutor keeps out of the person's home
+
+`TestTutorBasics` plants an Omarchy theme, Catppuccin Latte, under the
+test's HOME. A plain tuios in the same root follows it to a light ground,
+which is the positive half. The tutor's card must stay on the dark default
+surface, because the tutor points HOME into its own temp dir before tuios
+starts.
+
+Run on 2026-10-29 on Linux. A build with only the `{"HOME", "home"}` entry
+removed from `sandboxDirs` in `internal/tutor/sandbox.go` failed:
+`the card's ground is {R:220 G:224 B:232}: the tutor took the theme from the
+person's HOME (Catppuccin Latte)`. Nothing writes under HOME in either
+build, so the file check alone could not catch this. The read is what
+shows.
+
+A second control removed only the `XDG_CONFIG_HOME` entry. The file check
+failed: tuios wrote `XDG_CONFIG_HOME/tuios/config.toml` and a `themes`
+folder into the test's config home. With the entry in place those writes
+land in the temp dir and go with it.
+
+The fixed build passes. Repeat from `e2e/tui` with `TUIOS_E2E=1
+TUIOS_E2E_BIN=/path/to/tuios go test -count=1 -run '^TestTutorBasics$' -v .`.
+`TUIOS_E2E_FRAMES` keeps the frames.
+
 ## Synchronized output holds the native cursor with content
 
 `TestSynchronizedOutputHoldsHostCursor` uses a real daemon, attached client,
@@ -1944,6 +1968,11 @@ test: the actions open a pane when no ssh runs.
 | The agent socket folder is not checked | `ownedSocket`: the folder mode check cut | No e2e test. `TestOwnedSocket` (a socket in a folder others can write to was passed). With `Stat` for `Lstat` too, it fails at the link first | **caught by a unit test only** |
 | The allowlist is a refusal list again | `sshValueVerdict`: an unknown keyword refused only when it is `proxycommand` | No e2e test: `TestSSHSplitRefusesALineBreakInAnOption` still fails at the control character check, and `TestSSHSplitRefusesAProxyCommand` at `proxycommand`. `TestParseRemoteLogin` fails 9 cases, `xauth location` and `unknown keyword` among them | **caught by the unit table only** |
 | Only the group leader is read | `findRemoteLogin`: the group walk set to nil | `TestSSHSplitFindsSSHUnderANestedShell` (the fake ssh never ran a run 1) | **caught** |
+| A helper's ssh is not followed (discussion #468) | build origin/main (`50433181`) | `TestSSHSplitFindsSSHUnderANestedShell/helper` (the fake ssh never ran a run 1), `.../helper_with_a_remote_command` (no notice on the dock). `.../shell` passes, which is correct | **caught** |
+| The daemon does not say why | `handleExecuteCommand`: the `notice` send made `if false &&` | `TestSSHSplitFindsSSHUnderANestedShell/helper_with_a_remote_command` (no notice on the dock). `.../helper` passes, which is correct | **caught** |
+| The count note hides the notice | the sync's `heldNotice` flush made `false &&` | `TestSSHSplitFindsSSHUnderANestedShell/helper_with_a_remote_command` (no notice on the dock, 3 runs of 3) | **caught** |
+| A transfer under a helper is followed | `clientStart`: the `sshTransfers` check made `false &&` | No e2e row. `TestCheckRemoteClientThroughAWrapper` (`rsync`, `git`, `scp under a wrapper`) | **caught by a unit test only** |
+| A helper's remote command is followed | `checkRemoteClient`: the `wrapped && login.command` check made `false &&` | No e2e row. `TestCheckRemoteClientThroughAWrapper` (4 remote command cases) | **caught by a unit test only** |
 
 ## The pane navigator (choose_tree) and list-windows --all
 
@@ -8105,6 +8134,26 @@ The fixed build passes them, every `TestInbox*`, `TestAskHuman*`,
 `TestChromeLooksAndFooters`, `TestEveryOverlayOwnsItsGround` and the other
 tests that open the Inbox (137 tests).
 
+### Settle (`D`, `u`, the Settled shelf)
+
+`TestCockpitGroupsTheFleet` also settles the idle agent `scratch` with `D`,
+undoes it with `u` and settles it again, checks that `after-settle` ran twice
+with `person`, opens a second client attached to the agent's session and finds
+`scratch` under Settled there too, has that client close the view and move
+the session's focus with `tab` (a state push that carries no settle), checks
+`list-agents` and both clients still show `scratch` settled, makes the agent ask (`needs_input`) and
+finds it under Needs you, then puts it at rest and finds it under Idle in both
+clients. Frames: `cockpit-settled`, `cockpit-settle-undone`,
+`cockpit-settled-second-client`, `cockpit-settled-asks`. Each control was built
+into its own binary. Run on 2026-10-30 on Linux. The first draft of the test
+did not make the second client push, and the carry control passed it; the
+push step was added for that reason.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| A settled agent that asked goes back on the shelf once it rests, because the daemon never cleared the settle | `wakeSettledLocked` | The call in `mutateStateLocked` cut | `TestCockpitGroupsTheFleet` ("the agent went back on the shelf after it asked: scratch is in \"Settled\", not \"Idle\"") | **caught** |
+| A client push wipes the settle, the bug class of #162 | the `AgentSettled` carry in `state_merge.go` | `w.AgentSettled = settled[w.ID]` cut | `TestCockpitGroupsTheFleet` ("a push from the second client cleared the settle: list-agents says scratch is not settled") | **caught** |
+
 ### Marks and cut approvals
 
 `TestCockpitBulkActsOnlyOnSeenMarks` marks the agent that holds the approval,
@@ -8604,7 +8653,10 @@ restart must say the new version and the session that came back.
 `restart-server`, whose plan must name the agent that can resume.
 `TestRestartServerFromAPaneLeavesADaemon` runs `restart-server --yes` in a
 pane of the daemon it restarts: the pane's terminal closes under it, and a
-daemon must hold the session again, restored.
+daemon must hold the session again, restored. Since 2026-10-30 a client of
+the second build is attached through the restart. It shows the version notice
+for the old daemon, reattaches by itself, and the notice must be gone once the
+reattach line has timed out.
 
 The controls were run on 2026-10-18 on branch `feat/restart-server`.
 
@@ -8615,6 +8667,7 @@ The controls were run on 2026-10-18 on branch `feat/restart-server`.
 | The version after the restart is the old daemon's | `runRestart`: `rep.After` from the plan's daemon, not the new daemon's hello | `TestRestartServerMovesTheDaemonToTheNewBuild` ("the restart does not say \"The daemon restarted on e2e-sync-next.\"") | **caught** |
 | The sessions after the restart are not read | `runRestart`: `rep.Back = nil` | `TestRestartServerMovesTheDaemonToTheNewBuild` ("the restart does not say \"This session came back: e2e-restart.\"") | **caught** |
 | list-windows marks no agent | `verbListWindows`: the `addResumable` call cut | `TestRestartOffersToResumeTheConversation` ("restart-server --dry-run does not list the agent that can resume") | **caught** |
+| The version notice outlives the restart (Linux, 2026-10-30) | `resumeOnNewDaemon`: the `clearRestartNotice` call cut | `TestRestartServerMovesTheDaemonToTheNewBuild` ("the version notice for the old daemon is still on the dock after restart-server", with "The daemon runs dev. ctrl+b j restarts it." on the dock) | **caught** |
 
 ## The restart from the app
 
@@ -10358,7 +10411,7 @@ go test -count=1 -run '^TestWireCarriesAnOpenCluster$' ./internal/session/
 - `TestDaemonUpgradeRefusesWhileVerifyFanRuns`: an upgrade asked for while `fan verify` runs a 4 s check is refused with "a fan check is running", the image is unchanged, and the check's result still arrives as `2 of 2 passed`.
 - `TestDaemonUpgradeRefusesWhileHookOrPluginRuns`: an upgrade asked for while an `after-new-window` hook runs `sleep 4` is refused with "the after-new-window hook is running", and while a plugin action runs `sleep 4` with "a command of plugin e2e.slow is running"; the image is unchanged, and once the command has finished the same upgrade goes through.
 - `TestDaemonUpgradeEndsWhenFallbackExecFails`: the new image hangs in adoption (`TUIOS_TEST_HANDOFF_FAIL=hang`, a 1.5 s watchdog), and `handoff/tuios.prev` is removed during a 1.5 s hold before the exec, so the fallback exec fails. The daemon must exit, and the pane's process with it, within 20 s.
-- `TestDaemonUpgradePreflightRefusals`: a copy of tuios with mode 0775 is refused with "can be written by its group or by others (mode 0775) ... chmod go-w"; a script that prints `hello` with "so it is not a tuios this daemon can upgrade to. Check the path names a tuios binary"; a script that answers for `plan9` with "is built for plan9, and this daemon runs on darwin. Upgrade to a tuios built for darwin". The image is unchanged each time. The `owned by another user` subtest runs only as root: it gives a copy of tuios to uid 65534 and expects "is owned by user 65534, not by you or root, so this daemon will not run it".
+- `TestDaemonUpgradePreflightRefusals`: a copy of tuios with mode 0775 is refused with "can be written by its group or by others (mode 0775) ... chmod go-w"; a script that prints `hello` with "so it is not a tuios this daemon can upgrade to. Check the path names a tuios binary"; a script that answers for `plan9` with "is built for plan9, and this daemon runs on darwin. Upgrade to a tuios built for darwin". The image is unchanged each time. The `owned by another user` subtest runs only as root: it gives a copy of tuios to uid 65534 and expects "is owned by user 65534, not by you or root, so this daemon will not run it". Since 2026-10-30 two fake tuios builds that read only handoff v1, and only the version after this one, are refused with "cannot read this daemon's state" and a pointer to `restart-server`, and the anchor pane keeps its pid.
 - `TestDaemonUpgradeFallsBackAfterInstallerReplacesBinary` (Linux only): the daemon runs a copy of tuios, a new file is renamed over that path as `install.sh` does, and the upgrade to that path fails to adopt on purpose (`TUIOS_TEST_HANDOFF_FAIL=error`). The fallback must exec the old, now nameless, inode through the descriptor of `/proc/self/exe` kept at start: same daemon pid and pane pids, `fallback` set, `/proc/<pid>/exe` reading `<path> (deleted)`, and no gap in the pane's counter. On Linux `TestDaemonUpgradeFallsBackToPreviousBinary` also goes through the descriptor, and checks the image runs the binary it ran before; `TestDaemonUpgradeEndsWhenFallbackExecFails` skips there, since a held descriptor cannot be taken away from outside.
 
 Run on 2026-10-17 on macOS arm64, one build per control; the rows dated 2026-10-28 were run on macOS arm64 (Darwin 27, Go 1.26.10), each control built once and run twice, with every source file restored and checked byte for byte with sha256. The Linux rows were run on 2026-10-28 in Docker (`golang:1.26.10`, Linux arm64, as root, `--cpus 4 --memory 8g`) with binaries built in the container; there the targeted run `^(TestDaemonUpgrade|TestSelfExec|TestHandoff|TestQuiesce|TestExitDuringQuiesce)` plus the installer test ran 17 tests (15 passed, 2 skipped) and 9 subtests (all passed).
@@ -10381,6 +10434,7 @@ Run on 2026-10-17 on macOS arm64, one build per control; the rows dated 2026-10-
 | The old refusal wording (2026-10-28) | the "not its answer" and "is a tuios for" messages put back in `preflightBinary` | `TestDaemonUpgradePreflightRefusals/no_answer` and `/another_system`, 2 runs of 2: refused, but "was not refused with \"... Check the path names a tuios binary\"" and "... Upgrade to a tuios built for darwin" | **caught** |
 | The kept descriptor is not handed across the exec (Linux, 2026-10-28) | `FallbackFD: -1` in `writeManifest`, so the descriptor stays close-on-exec and the manifest still names `/proc/self/fd/N` | `TestDaemonUpgradeFallsBackAfterInstallerReplacesBinary`, 2 runs of 2: "the daemon never answered from a new image within 40s: call hello: exit status 3: The TUIOS daemon is not running, but a stale socket is left over" (the fallback exec failed and the image ended) | **caught** |
 | No owner half in the owner and mode check (Linux, as root, 2026-10-28) | the `uid != 0 && uid != os.Getuid()` condition in `checkBinaryOwner` made false | `TestDaemonUpgradePreflightRefusals/owned_by_another_user`, 2 runs of 2: "was not refused with \"is owned by user 65534, not by you or root, ...\": <nil>", and the daemon moved to the new image | **caught** |
+| Handoff version not moved (Linux, 2026-10-30) | `HandoffVersion` and `MinHandoffVersion` put back to 1 in `handoff.go` | `TestDaemonUpgradePreflightRefusals/reads_only_handoff_v1`: the preflight lets the fake v1 tuios through, the daemon execs it, and the test fails with "call hello: ... The TUIOS daemon is not running, but a stale socket is left over"; `TestDaemonUpgradeRefusesAndChangesNothing` with a build of main before the fix as `TUIOS_E2E_BASELINE_BIN`: "an upgrade to ... (an older tuios) was not refused by the preflight: <nil>" and "the pane stream stopped"; `TestHandoffManifestV1Refused`: "handoff record 'D': invalid character '\x1a' looking for beginning of value", the error a v0.11.1 manifest gave | **caught** |
 
 The rebind control was run four times and failed every time, with one or two failed calls in 49 to 72; three of the runs also had no call wait through the swap, since with the socket gone a caller fails fast instead of waiting.
 
@@ -11299,6 +11353,44 @@ replacement, built and put back before the next.
 The frames are `task-board-200x55`, `task-board-spawn-200x55`,
 `task-board-70x16` and `task-board-stages-200x55`, as text and PNG.
 
+## Cards that move on their own (#1093)
+
+`tasks_auto_test.go` drives the four sources of automatic moves through the
+binary. `TestTaskFollowsAPlanHoldAndItsAnswer` holds a real Claude Code plan
+hook on a pane holding three cards: the card in doing must reach plan, the
+one put in review by hand and the blocked one must stay, the plan kept
+planning from the Inbox must leave it there, and a second plan approved from
+the Inbox must bring it back to doing. `TestTaskFollowsItsFan` runs
+`tuios fan --task t1` from another session: `claim --next` must take t2, a
+check failing in both attempts must move t1 to verify and back to doing, and
+a check passing in one must leave it in verify.
+`TestTaskFollowsItsPullRequest` moves a held card parked in plan to review
+on a pull request found open, to shipped when the poll reads it merged, and
+from review to doing when it reads closed, while a blocked card and one put in
+todo by hand held in the same session stay put, and a second card parked in
+plan goes to shipped with the merge.
+`TestTaskAutoStageCanBeTurnedOff` keeps a card in doing, with no entry by
+tuios, under `[tasks] auto_stage = false` while its holder's plan is held and
+approved, and checks `start-agent --task` claims for the new pane. Run on
+2026-10-29 on macOS on upstream main at `da0fc7b1d`, the plan row on
+2026-10-30 at `cac3ce8fd`. Each control is a text replacement, built and put
+back.
+
+| Control: what was changed | Where it fails | Verdict |
+| --- | --- | --- |
+| The plan hold moves no card (the `autoStage` call in `verbRequestApproval`, `approvals.go`, cut) | "t1 never read [stage plan, plan held for approval]" | **caught** |
+| The approved plan moves no card (`notePlanAnswered` returns at once) | "t1 never read [stage doing, plan approved]" | **caught** |
+| `applies` ignores a block | plan test: "t3 left doing, though it is blocked"; PR test: "t2 left doing, though it is blocked" | **caught** |
+| `nextFreeTask` does not skip a card a live fan works on | "claim --next took t1 add a retry, want t2" | **caught** |
+| `noteFanVerifyEnded` does nothing | "t1 never read [stage doing, fan check started, fan check failed in every attempt]" | **caught** |
+| `notePR` moves no card | "t1 never read [stage review, pull request #7 opened]" | **caught** |
+| `movePROpened` and `movePRMerged` do not start from `plan` (the code before the second review) | "t1 never read [stage review, pull request #7 opened]", with t1 read in plan | **caught** |
+| `DaemonConfigFromUser` does not read `[tasks] auto_stage` | "t1 moved on its own, though auto_stage is off" | **caught** |
+
+The New agent sheet passing `task` to start-agent and fan
+(`cockpit_spawn.go`) has no e2e of its own: `TestTaskBoardGroupsCardsByStage`
+opens the sheet and does not start the agent.
+
 ## Border prominence by mode and on light grounds (discussion #850)
 
 `TestFocusedBorderStandsOutOnTheHostGround` runs on Nord, Catppuccin Mocha
@@ -11762,6 +11854,7 @@ origin/main at ecdeec289.
 | The branch before this review (c7fe27eed) | "the client kept its own order after the daemon answered" | **caught** |
 | The reply comparing against the drawn order (`sidebarSessionOrderFor`) | the same | **caught** |
 | The pending move and the daemon's order out of the rail cache key | none: another change (the cursor) redraws the rail in time in every run | **not caught** |
+
 ## Nest mode gives the pane every key, the leader too
 
 `TestNestModeGivesEveryKeyToThePane` in `nest_mode_test.go` attaches a real client in terminal mode with the default keys, with `cat -v` in the pane. ctrl+b enter must make the dock pill say `NEST F12`. ctrl+b, alt+2, ctrl+p and x must then reach `cat -v` as `^B^[2^Px`, with the session on workspace 1, one pane and no palette. F12 must take `NEST F12` off the pill without reaching the pane, and ctrl+b c must then open a second pane. `TestNestModeHandsTheLeaderToANestedTmux` runs a tmux of its own (`-L`, `-f /dev/null`) in the pane: in nest mode ctrl+b c must open the tmux's window `W1` with no tuios pane added, ctrl+b d must print tmux's `[detached`, and after F12 ctrl+b c must open a tuios pane. `TestNestModeIsTheLeaderThenEnterInEveryPreset` runs the tmux, screen and zellij presets: each preset's leader then enter must turn nest mode on, and F12 off. Each control is a build to a separate binary, the source put back before the next. Run on 2026-10-26 on macOS, based on origin/main at 6d122034a.
@@ -12165,3 +12258,289 @@ The positive half is in the same runs: `pill` and `flat` pass on every build. Th
 | The level check in `showNotification` (`internal/app/os_notify.go`) | "ASSERTION: the dock shows an info message under level warning" | **caught** |
 
 The positive half is in the same run: the warning reaches the dock on both builds.
+## A hooked agent that stops reporting shows as silent (#898)
+
+`TestHookIntegrationsReportTheTurn` runs with `silent_after = "4s"`. After Qwen's `UserPromptSubmit` the pane sends no report. `get-agent-state` must then say `unknown` with the reason `silent`, and the rail row must read "No report for". A `PostToolUse` that its `if_state` refuses must then show the pane as `working` again. Each control was built into its own binary. Run on 2026-10-29 on Linux.
+
+| Control: what was cut | Where it fails | Verdict |
+| --- | --- | --- |
+| `markSilent` marks no pane (`internal/session/agent_silent.go`) | "qwen silent: the pane is {State:working ...}, want unknown with reason silent" | **caught** |
+| `noteHeardLocked` does not clear the reason (`internal/session/agent_silent.go`) | "qwen PostToolUse after the silence: the pane is {State:unknown ... Reason:silent}, want state working" | **caught** |
+
+## Stage a hunk from the review overlay
+
+`TestReviewOverlayStagesAHunk` reviews a plain repository with three hunks of
+change. The first hunk adds a line, so the middle hunk sits one line lower in
+the working file than in the index. `]` and `a` stage the middle hunk, `d`
+unstages it, `z` twice undoes both, and `A` and `D` stage and unstage the whole
+file. Then `]` `a` stage the last hunk, the test changes one more of its lines,
+and after `r` the header says `partly staged`, which `d` clears. After each key the test waits for `git diff --cached -U0` to hold exactly
+the expected lines, and for the hunk headers that say `staged` to be exactly
+the expected ones.
+
+Run on 2026-10-29 on Linux against the branch `feat/review-stage-hunk`.
+
+| Control: what was cut | Where it fails | Verdict |
+| --- | --- | --- |
+| `reviewIndexToWork` returns the index line as it is, so the staged diff is not carried into the working file | `a on the middle hunk: the staged hunks are not ["-12,"]`. The cached diff held the hunk, and no header said `staged` | **caught** |
+| The branch as it is | Every step passes in about 3 s | **guard** |
+
+The frames `review-stage-hunk`, `review-stage-file` and `review-partly-staged`
+(text and PNG), and the cached diff
+after each step in `cached.txt`, are under `TUIOS_E2E_FRAMES`.
+
+## Install an integration from its notice
+
+`TestAgentsIntegrationNoticeOncePerRun` ends in a home where Claude Code runs with no integration. The toast must show `ctrl+b j` right after the state. The key opens a question that names the file. A first client sends `ctrl+b j` and enter in one write: the enter was on its way before the question was drawn, so the file must stay without hooks. Esc must close the question and write nothing. A second client clicks the toast, then Install. The result must say "Installed in ~/.claude/settings.json.", the file must hold the current hooks, `tuios integration status` must read them as current, and a second Claude Code pane must get no toast. Each control was built into its own binary. Run on 2026-10-30 on Linux.
+
+| Control: what was cut | Where it fails | Verdict |
+| --- | --- | --- |
+| `integrationAskSettled` returns true, so the question takes the enter that was in flight | "an enter sent before the question was drawn installed the integration" | **caught** |
+| `jumpToNotifTarget`: the `installFromNotice` call cut, so the notice goes nowhere | "ctrl+b j on the toast opened no question" | **caught** |
+| `IntegrationAskActivate`: Install returns no command | "Install on the question installed nothing" | **caught** |
+
+## Fold a group of the agents view by key
+
+`TestCockpitNarrowFoldsRows/fold` puts the cursor on a Working row with `j`,
+presses `F` to fold Working, `F` on the folded heading to open it, and `F`
+again to fold it. It then closes the client and starts a new one, which must
+open the view with Working folded. `TestCockpitNarrowFoldsRows/fold_working`
+starts with `fold_working = true`, opens Working with `F` on its heading, and
+checks that it stays open when the view opens again.
+
+Run on 2026-10-29 on Linux, each control in its own binary.
+
+| Control: what was cut | Where it fails | Verdict |
+| --- | --- | --- |
+| `CockpitToggleGroup` does not call `saveSidebarState` | `fold`: "Working was not folded in a new client" | **caught** |
+| `cursorable` is `selectable` alone, so a folded heading takes no cursor | `fold`: "F did not open Working"; `fold_working`: the cursor never reaches the heading | **caught** |
+| None (the branch) | Both subtests pass | **guard** |
+## The risk root of a worktree reached through a link (#1316)
+
+`riskWorktree` reaches its isolation root through a symlink on every OS, as the temp folder is on macOS (`/var` is a link to `/private/var`), so tuios records the worktree through it. `TestRiskInWorktree` holds the clipped Inbox line of an Edit inside the worktree to "not outside", and `TestRiskLinkedRoot` does the same from a window of the worktree's session that starts outside the worktree, which only the managed worktree root can hold. Each control was built into its own binary. Run on 2026-10-30 on macOS arm64.
+
+| Control: what was cut | Where it fails | Verdict |
+| --- | --- | --- |
+| The build before this change (upstream main at `92258aafe`) | `TestRiskInWorktree`: "ASSERTION: repo-feat-kinder-greeting marks an Edit inside its worktree outside the worktree: [outside the worktree cut short]", the same for `demo`; `TestRiskLinkedRoot`: the same assertion | **caught** |
+| `resolveAbove` in `approvalRoot` (`internal/session/approval_risk.go`): the managed worktree is taken as recorded, through the link | `TestRiskLinkedRoot`: "ASSERTION: repo-feat-kinder-greeting marks an Edit inside its worktree outside the worktree". `TestRiskInWorktree` passes, since its panes start in the worktree and the start folder is resolved when recorded | **caught** |
+| The `resolve` of the shown directories in `shownOutside` (`internal/risk/risk.go`) | `TestRiskInWorktree`: both panes' Edits marked "outside the worktree" | **caught** |
+## A queued message waits for the person's draft
+
+`TestQueuedMessageIsTypedWhenTheAgentRests` runs a stand-in for Claude Code's input box in the pane, under the `claude-code` harness. The agent rests, the person types `half a thought` into the box, and a message is queued. The daemon must report `draft_held`, the agents view must say "Waits:" and "your draft is in the prompt box", and after the surface time the row must move to Needs you. At no point may the message reach the screen. The person then clears the box, and the message must be typed no sooner than 2.5 s after that key. The control was built into its own binary. Run on 2026-10-29 on Linux.
+
+| Control: what was cut | Where it fails | Verdict |
+| --- | --- | --- |
+| `holdLocked` in `deliverQueued` answers nothing held (`internal/session/agent_queue.go`) | "ASSERTION: the queued message was typed into the person's draft", with `sent: half a thoughtecho queued-after-draft-5c1e` on screen | **caught** |
+## Resume keeps the person's flags
+
+`TestRestartOffersToResumeTheConversation` now runs a fake Claude Code, a script named `claude` on PATH that prints its arguments, in one of the five panes. It is started with `--permission-mode plan --model sonnet -p --continue fix-the-bug`. Before the restart, `resume-agent --dry-run` must print `claude --resume <id> --permission-mode plan --model sonnet` exactly. After the restart, the Inbox offer must show that command, and the process `y` starts must print exactly `--resume <id> --permission-mode plan --model sonnet` as its arguments. Each control was built into its own binary. Run on 2026-10-30 on Linux.
+
+| Control: what was cut | Where it fails | Verdict |
+| --- | --- | --- |
+| `detectionPass` does not store the kept flags (agent_detect.go) | "the running Claude's resume does not keep its flags" | **caught** |
+| The restore does not put `AgentFlags` back after its state push (daemon_resurrect.go) | "the resumed Claude did not get exactly its kept flags": the Inbox offer still names them, and `y` types the command without them | **caught** |
+| No allow list: `KeptFlags` keeps every argument and `ResumeArgv` appends them all (resume.go) | "the running Claude's resume does not keep its flags": the command carries `-p --continue fix-the-bug` | **caught** |
+
+The fake Claude also starts with `--dangerously-skip-permissions`, a flag the manifest marks in `keep_risky`. The dry run, list-attention, the Inbox row and the row's card must say `Resumes with approvals off (--dangerously-skip-permissions)`, and the card carries the risky badge. `TestAutoResumeLeavesApprovalsOffToThePerson` runs two fake Claudes under `resume_agents = "auto"`, one with the flag. After the restart the other resumes by itself. The one with the flag must wait as a Resume row that names it, and nothing may be typed into its pane. Run on 2026-10-30 on Linux.
+
+| Control: what was cut | Where it fails | Verdict |
+| --- | --- | --- |
+| `applyResumeOffers` types a risky offer in auto mode (agent_resume.go) | `TestAutoResumeLeavesApprovalsOffToThePerson`: "no Resume row names approvals off for the risky agent", the agent was resumed | **caught** |
+| `keep_risky` removed from the Claude Code manifest | `TestRestartOffersToResumeTheConversation`: "the running Claude's resume does not keep its flags", the dry run has no warning; `TestAutoResumeLeavesApprovalsOffToThePerson`: no Resume row | **caught** |
+
+## The files menu previews the row it was opened on
+
+`TestRailQuickLook` leaves the rail cursor on `big.txt`, right-clicks `main.go`, and picks Preview. The preview must show `main.go` with its code, and must not show `big.txt`. Then `j` must move the preview with the cursor again. Each control was built into its own binary. Run on 2026-10-30 on Linux.
+
+| Control: what was cut | Where it fails | Verdict |
+| --- | --- | --- |
+| The Preview row in `fileRowMenu` (`internal/app/contextmenu_build.go`) | "ASSERTION: the files menu has no Preview row" | **caught** |
+| The menu branch in `SidebarQuickLook` (`internal/app/quicklook.go`), so Preview shows the cursor row | "ASSERTION: Preview did not show the row the menu was opened on" | **caught** |
+| None (the branch) | Passes | **guard** |
+## Drag and drop between panes
+
+`TestDnDBetweenPanes` drives a real tuios against two panes running the
+`dndpeer` protocol peer, which reads messages as yazi reads them: a drop over
+the protocol, a drop on a pane without it, text alone (`DNDPEER_OFFER=text`)
+dropped on a reader without bracketed paste and then on the same reader with
+it on, a drop on a fish pane of a path with a quote in it (skipped without
+fish), a gesture the program ignores, a board with `[panes] drag_and_drop`
+off, and a drop back into the source pane.
+`TestDnDRegistrationOutlivesTheClient` starts the peers, then either replaces
+the client with `attach -d` and drags in the new one, or attaches a second
+client before the peers start and drags in the first.
+`TestDnDRefusesPanesOnAnotherMachine` attaches with `--host` to a session on
+a second daemon, and `TestDnDRefusesAPaneHostedElsewhere` opens a pane on
+that daemon inside a local session (`new-window --host`), and drags both
+ways. Run on 2026-10-29 on Linux with Go 1.27.3, based on `7709625`.
+
+Each control cuts the line that wires the feature in, not the function it
+calls.
+
+| Control: what was cut | Test failure | Verdict |
+| --- | --- | --- |
+| `internal/input/mouse_motion.go`, the `o.DnDMotion(...)` call, so no motion reaches the drag | every subtest of `TestDnDBetweenPanes` but the one with the switch off ("the drag label is not on screen mid-drag", "the target never got the drop data", "the pane never got the paste", "the source never saw the first gesture", "the source never heard the drag end") and both of `TestDnDRegistrationOutlivesTheClient` | **caught** |
+| the same, for the subtest with the switch off | passes: with nothing reaching the drag, nothing happens, which is what it asserts | **guard**, by design |
+| `internal/app/dnd.go`, `[panes] drag_and_drop` dropped from `dndOn`, so the feature is always on | `.../with_drag_and_drop_off...`: "with drag and drop off the source was offered a drag, or had its query answered" and "the target heard of the protocol" | **caught** |
+| `internal/app/dnd.go`, `paneIsLocal` dropped from `dndPaneLocal`, so every pane takes part | `TestDnDRefusesPanesOnAnotherMachine`: "a pane on another machine was offered a drag" and "was made a drop target"; `TestDnDRefusesAPaneHostedElsewhere`: "a drop onto a pane hosted elsewhere was not cancelled" and "a pane hosted elsewhere took part in a drag" | **caught** |
+| `internal/app/session.go`, both `m.takeDaemonDnD(...)` calls, so a late client takes no registration from the daemon | `.../a_client_attached_after_the_programs_started`: "the target never got the drop data" | **caught** |
+| `internal/app/dnd.go`, the `dndShared` gates in `dndRefuse` and on the `t=q` answer, so every client answers for itself | `.../two_clients_attached`: "the source got 3 answers to its query, want 1" (the daemon's and both clients'), and "a client that did not make the drag answered for it" | **caught** |
+| `internal/session/session.go`, the `pty.dnd.note(data)` call in the daemon's `PrivateOSC`, so the daemon neither records nor answers | both registration subtests ("the target never got the drop data", "the source got 0 answers to its query, want 1") and `TestDnDRefusesPanesOnAnotherMachine` ("want 1 (the far daemon's)") | **caught** |
+| the MIME list sent with the first move only, not with every move | `source_to_target_over_the_protocol` and the ignored-gesture subtest: the peer refuses every move after the first, no drop comes; both registration subtests the same | **caught** |
+| a new press leaves a gesture the program ignored as the current drag | the ignored-gesture subtest: "the target never got the drop data of the second gesture" | **caught** |
+| the position keys left out at zero (`t=e:x=4` without `y=0`, a move without `o`), as before the encoder wrote them | the protocol subtest, the fallback subtest and both registration subtests: the peers drop such a message, as yazi does | **caught** |
+| `internal/app/dnd_drag.go`, the bracketed paste refusal in `dndJudge`, so the hover does not refuse text | `.../dropped_text_goes_only_into_a_pane_with_bracketed_paste_on`: "the label does not say why the pane refuses the text". The text still does not arrive: `dndPasteFallback` checks the mode again with the data in hand | **caught** |
+| the same, and the check in `dndPasteFallback` too | the same subtest: "a text drop on a pane without bracketed paste was not refused" and the pane without bracketed paste got `"line one\nline two"` | **caught** |
+| `internal/app/file_drop.go`, `judgeDropPaths` quoting every pane as POSIX instead of for its program | `.../a_drop_on_a_fish_pane_is_quoted_for_fish`: the fish pane shows `'…/it'\''s here.txt'` where `'…/it\'s here.txt'` is expected | **caught** |
+
+The subtests each control leaves passing are its positive half: under every
+control the other subtests of the same fixture pass, and on the build with
+the code in place every test above passes.
+
+Repeat with `TUIOS_E2E=1 TUIOS_E2E_BIN=/path/to/tuios go test -count=1 -run
+'TestDnD' -v .` from `e2e/tui`. `TUIOS_E2E_YAZI` and `TUIOS_E2E_KITTEN` add
+the runs with the real programs.
+
+## Copy mode keys from discussion #281
+
+`TestCopyPipeKeys` adds a copy pipe on `X` whose command writes its own value to a file, sets a paste buffer with `tuios set-buffer`, and prints nothing, as `tmux-copy-it` does. The clipboard must get no write, the newest buffer must stay the command's, and the key must add exactly one buffer. A copy pipe on `x` exits 3, and the plain selection must reach the clipboard and the newest buffer. `TestCopyModeCtrlCAndFocusKeys` binds `alt+h` and `alt+l` to the terminal-mode focus keys, and `ctrl+u` and `ctrl+c` to a focus key as well. It presses `alt+h` in copy mode, runs a command in the left pane, presses `alt+l` and finds the copy cursor where it was. `ctrl+u` and `ctrl+b` must move the copy cursor and leave focus alone. `ctrl+c` must leave copy mode from normal mode, a selection, the search prompt and a pending `f`, and from multi copy mode in normal mode, a selection, the search prompt, a search with no match and the save prompt, with no clipboard write. `TestCopyModeLegend` reads `ctrl+c` off the dock in normal mode, the search prompt and a selection. Each control was built into its own binary. Run on 2026-10-30 on Linux.
+
+| Control: what was cut | Where it fails | Verdict |
+| --- | --- | --- |
+| The build before this change (main at `7a23dc4fe`) | `TestCopyModeCtrlCAndFocusKeys`: "alt+h in copy mode left focus on ..., want the left pane ..." | **caught** |
+| `handleCopyPipeDone` copies the selection when the output is empty (`internal/app/copy_pipe.go`) | `TestCopyPipeKeys`: "the silent pipe wrote the clipboard over the command's value: ["pipe-three"]" | **caught** |
+| `PipeYank` saves the selection to a buffer before the command runs | `TestCopyPipeKeys`: "the silent pipe left 2 new buffers, want 1, the command's own" | **caught** |
+| The dock message of an empty output | `TestCopyPipeKeys`: "no dock message for the silent pipe" | **caught** |
+| The clipboard write of a failing command | `TestCopyPipeKeys`: "x: nothing reached the clipboard" | **caught** |
+| The paste buffer of a failing command | `TestCopyPipeKeys`: "after the failing pipe the newest buffer is "set-by-the-command", want the selection "pipe-three"" | **caught** |
+| `ctrl+c` in normal mode (`dispatchCopyModeKey`) | `TestCopyModeCtrlCAndFocusKeys`: "ctrl+c in normal mode did not leave copy mode" | **caught** |
+| `ctrl+c` in a `v` selection | `TestCopyModeCtrlCAndFocusKeys`: "ctrl+c in a selection did not leave copy mode" | **caught** |
+| `ctrl+c` at the search prompt | `TestCopyModeCtrlCAndFocusKeys`: "ctrl+c at the search prompt did not leave copy mode" | **caught** |
+| `ctrl+c` after `f` | `TestCopyModeCtrlCAndFocusKeys`: "ctrl+c after f did not leave copy mode" | **caught** |
+| `ctrl+c` in a selection yanks, then leaves | `TestCopyModeCtrlCAndFocusKeys`: "ctrl+c in a selection copied ["ght"]" | **caught** |
+| `ctrl+c` in `parkedCopyKeys` (`internal/input/copymode_multi.go`) | `TestCopyModeCtrlCAndFocusKeys`: "ctrl+c with every pane parked did not leave multi copy mode" | **caught** |
+| The `ctrl+c` case in `handleMultiCopySaveKey` | `TestCopyModeCtrlCAndFocusKeys`: "ctrl+c at the save prompt did not leave multi copy mode" | **caught** |
+| The save prompt check in `copyModeFocusKey` | `TestCopyModeCtrlCAndFocusKeys`: "a focus key at the save prompt moved focus to ..." | **caught** |
+| The `copyModeFocusKey` call in `HandleCopyModeKey` | `TestCopyModeCtrlCAndFocusKeys`: "alt+h in copy mode left focus on ..., want the left pane ..." | **caught** |
+| The focus key also leaves copy mode in the old pane | `TestCopyModeCtrlCAndFocusKeys`: "back on the right pane: no copy cursor on screen" | **caught** |
+| The fixed key check in `copyModeFocusKey` | `TestCopyModeCtrlCAndFocusKeys`: "ctrl+u did not move the copy cursor up from row 3" | **caught** |
+| `ctrl+c` in `copyModeFixedKeys` (`internal/config/copy_mode_actions.go`) | `TestCopyModeCtrlCAndFocusKeys`: "ctrl+c in normal mode did not leave copy mode" | **caught** |
+| `ctrl+b` as page up in normal mode | `TestCopyModeCtrlCAndFocusKeys`: "ctrl+b did not page the copy cursor up from row 22" | **caught** |
+| `ctrl+c quit` in the normal legend (`internal/app/mode_legend.go`) | `TestCopyModeLegend`: "the dock has room for every key and lost "ctrl+c" "quit"" | **caught** |
+| `ctrl+c quit` in the search legend | `TestCopyModeLegend`: same message, at the search prompt | **caught** |
+| `ctrl+c quit` in the visual legend | `TestCopyModeLegend`: same message, in a selection | **caught** |
+| None (the branch) | The three tests pass | **guard** |
+
+Not controlled: the window-mode branch of `copyModeFocusKey`, `ctrl+c` in a `V` selection in single copy mode, and the `ctrl+c` entry in the multi copy legend. The multi copy test presses `ctrl+c` in a `V` selection, and that path shares the case above.
+## A subagent's prompt clears when the subagent goes on
+
+`TestSubagentApprovalClearsWhenTheSubagentGoesOn` drives a subagent's `PermissionRequest` and the main agent's `permission_prompt` Notification through the real `tuios agent-hook claude-code`, in both orders, then the subagent's `PostToolUse`, another subagent's, a `PermissionDenied`, and a subagent's `PostToolUse` under the main agent's own prompt. Each control was built into its own binary. Run on 2026-10-30 on macOS arm64.
+
+| Control: what was cut | Where it fails | Verdict |
+| --- | --- | --- |
+| The build before this change (upstream main at `92258aafe`) | "subagent A ran the tool it asked for: the pane is needs_input ("Claude needs your permission to use Bash"), want working" | **caught** |
+| The `if_subagent_id` check in `applyAgentReport` (`internal/session/agent_state.go`) | "subagent B ran a tool: the pane is working (""), want needs_input" | **caught** |
+| The `if_state` on the `permission_prompt` Notification (`internal/integration/hook_claude.go`) | "subagent A ran the tool it asked for: the pane is needs_input ("Claude needs your permission to use Bash"), want working": the Notification took the subagent's prompt over | **caught** |
+## A configurable worktree path (issue #1278)
+
+`TestWorktreePathTemplate` sets `[worktree] path` to
+`{{ repo_path }}/.worktrees/{{ branch | slug }}` with `TUIOS_WORKTREE_DIR` set
+as well, and makes worktrees with `tuios worktree new`: not ignored, ignored
+through `.git/info/exclude`, under a relative template applied with
+`tuios config apply`, under `.claude/worktrees/{{ branch | sanitize }}`,
+with the branch `x}}y` under a raw `{{ branch }}`, and under templates with a
+stray `}}` or without `{{ branch }}`.
+`TestFanUsesWorktreePathTemplate` runs `tuios fan 2` with a folder already in
+the way of the first name.
+
+| Control: what was cut | Where it fails | Verdict |
+| --- | --- | --- |
+| `worktreePathFor` passes `""` to `worktree.PathFor` (`internal/session/verb_worktree.go`) | feat/a lands under `TUIOS_WORKTREE_DIR`; the fan's paths are not under `.worktrees` | **caught** |
+| `UnignoredInRepo` always returns false (`internal/worktree/path.go`) | "no warning for a worktree git does not ignore"; the fan output lacks `Warning: ` | **caught** |
+| `verbFan` passes `""` to `fanBranches` | the fan is refused: `.worktrees/try-retry already exists` | **caught** |
+| The brace check in `RenderPath` run on the rendered path, not the template (`internal/worktree/path.go`) | `worktree new x}}y` is refused | **caught** |
+| `unignoredWorktreeWarning` names the first folder under the repository, not `HoldingDir` (`internal/session/verb_worktree.go`) | "the hint does not name .claude/worktrees" (it names `/.claude/`) | **caught** |
+| `sanitize` dropped from the filters in `RenderPath` | `worktree new feat/e` is refused: `unknown filter "sanitize"` | **caught** |
+
+With `TUIOS_E2E_FRAMES` set, the first test writes `worktree-path.txt` (each
+step's output, `git status --porcelain` and `git worktree list`) and the
+second writes `fan.txt`.
+## A renderer that grows takes the session back
+
+`TestGUIBridgeResizeTakesTheSession` starts a bridge at 160x50 with two tiled panes. An 80x24 terminal client attaches, takes the session with its own input, and then leaves. The test checks that the session kept the 80x24 size, so the case is real. The bridge then gets a resize to 170x52, with no input through it. The session must take 170x52. The control was built into its own binary. Run on 2026-10-30 on Linux.
+
+| Control: what was cut | Where it fails | Verdict |
+| --- | --- | --- |
+| `reportResize` is not called on the resize command (`internal/guibridge/bridge.go`) | "bridge never showed the session at the bridge's new size after its window grew", with `session_size` 80x24 and `client_size` 170x52 | **caught** |
+
+## A renderer's panes fill their tiles in a terminal client's session
+
+`TestGUIBridgeFillsATerminalSession` writes a config that shows the rail and turns shared borders off. A 97x40 terminal client makes the session, opens a pane and leaves. A bridge with pixel insets then attaches at 170x52, and nobody types. The panes must be laid out over the whole session with no border, and each guest's `stty size` must be the tile less the renderer's insets. The test checks this at the attach, with two panes, and again after an 80x24 terminal client attaches, takes the session with input, and the bridge takes it back while that client stays attached. Each control was built into its own binary. Run on 2026-10-30 on Linux.
+
+| Control: what was cut | Where it fails | Verdict |
+| --- | --- | --- |
+| `o.NoRail = true` in `newModel` (`internal/guibridge/bridge.go`) | "bridge never showed the panes laid out over the whole 170x52 session at the attach, with no input": the tree is 24 columns short, the rail the terminal client showed | **caught** |
+| `o.OwnPaneBorders = true` in `newModel` | "pane ... has a border of 1 cells", and the guest says `SIZE-49-167` for a 170x52 pane | **caught** |
+| `m.refit(r)` on `ptyResizedMsg` | "with a terminal client still attached: pane ... is 85x52, its guest should get SIZE-51-84, and it says SIZE-52-85" | **caught sometimes** |
+
+The `refit` control depends on which client's resize reaches the daemon last. The test adds a pane to make the terminal client last, and the two paths can still cross. It failed 2 of 4 repeated runs. A pass of this test does not prove that `refit` works.
+
+## A renderer that attaches takes the session
+
+`TestGUIBridgeAttachTakesTheSession` starts a bridge and an 80x24 terminal client that takes the session with its own input. The first bridge leaves and the terminal client stays, idle. A second bridge attaches at 170x52, and nobody types. The session must take 170x52. The control was built into its own binary. Run on 2026-10-30 on Linux.
+
+| Control: what was cut | Where it fails | Verdict |
+| --- | --- | --- |
+| The `reportResize(client)` call at the attach in `Run` (`internal/guibridge/bridge.go`) | "bridge never showed the session at the size of the bridge that just attached" | **caught** |
+
+## Two renderers leave a pane alone
+
+`TestGUIBridgesLeaveAPaneAlone` runs two bridges on one session under `window_size = smallest`. One has the session's width and the other has its height, so no one client sets the size. They take different insets off the pane. The pane's PTY must have no resize in one settled second. The control was built into its own binary. Run on 2026-10-30 on Linux.
+
+| Control: what was cut | Where it fails | Verdict |
+| --- | --- | --- |
+| `refit` checks `SessionSizedByOther` in place of `SessionSizedBySelf` (`internal/guibridge/bridge.go`) | "the pane's PTY was resized 12839 times in one second with nothing changing" | **caught** |
+
+## The bridge counts what the renderer runs, and sends no null menu
+
+`TestGUIBridgeInputTakesTheSession` now also has the terminal client take the session a second time. The bridge then gets a `focus` command, with no key typed. The session must return to the bridge's size. `TestGUIBridgeKeybinds` checks that no which-key menu is null. Each control was built into its own binary. Run on 2026-10-30 on Linux.
+
+| Control: what was cut | Where it fails | Verdict |
+| --- | --- | --- |
+| The `reportInput` case for `action`, `focus` and `workspace` in `handle` (`internal/guibridge/bridge.go`) | "bridge never showed the session back at the bridge's size after a focus command" | **caught** |
+| The empty list in `exportKeybinds`, so a prefix with no keys sends null (`internal/guibridge/keybinds.go`) | "menu \"tuios\" is null, want a list" | **caught** |
+
+## A renderer leaves a session as it was
+
+`TestGUIBridgeLeavesATerminalSessionAsItWas` starts a terminal client with two panes, the rail on and shared borders off, and reads each pane's box and PTY size. The PTY size comes from `stty -F` outside the pane. A bridge with insets attaches and leaves, with the terminal client away. A second bridge attaches and leaves, with the terminal client attached, and the PTYs must have no resize in one settled second. After each one, the terminal client must have the same boxes and PTY sizes. It runs with a larger bridge and with a bridge of the same size. `TestGUIBridgeLeavesTheRailAlone` has a bridge make the session and leave, and a terminal client must then show its rail. Each control was built into its own binary. Run on 2026-10-30 on Linux.
+
+| Control: what was cut | Where it fails | Verdict |
+| --- | --- | --- |
+| The bridge's state carries shared borders on, in place of `SessionSharedBorders` (`internal/app/session.go`) | "the terminal client stayed attached while the bridge came and went", with PTY `38 48` where it wants `36 46` | **caught** |
+| The same box branch in the `SessionResizeMsg` case (`internal/app/update.go`) | The same failure in the same size case, with PTY `37 47` where it wants `36 46` | **caught** |
+| The `NoRail` check in `sidebarOpsOn` (`internal/app/sidebar_mouse.go`) | "the terminal client shows no rail after the bridge made the session" | **caught** |
+## notifications.level keeps info messages off the dock (#1361)
+
+`TestNotificationLevelKeepsInfoOffTheDock` sets `notifications.level = "warning"`, raises a warning (`clear_scrollback` with no pane open) and an info message (toggling tiling), and opens the log viewer. The control was built into its own binary. Run on 2026-10-30 on macOS arm64.
+
+| Control: what was cut | Where it fails | Verdict |
+| --- | --- | --- |
+| The level check in `showNotification` (`internal/app/os_notify.go`) | "ASSERTION: the dock shows an info message under level warning" | **caught** |
+
+The positive half is in the same run: the warning reaches the dock on both builds.
+
+`TestNotificationLevelLetsPanesAndAgentsThrough`, `TestNotificationLogHiddenOffKeepsTheLogClean` and `TestNotificationLevelShowsWhyAKeyDidNothing` cover the review follow-ups: a message from a pane or an agent is not held to the level, `notifications.log_hidden = false` keeps a hidden message out of the log, and the Inbox notices for a key that did nothing are warnings. Each control was built into its own binary. Run on 2026-10-30 on macOS arm64.
+
+| Control: what was cut | Where it fails | Verdict |
+| --- | --- | --- |
+| `target == nil` in the level check in `showNotification` | `TestNotificationLevelLetsPanesAndAgentsThrough`: "ASSERTION: a pane's message never reached the dock under level warning" | **caught** |
+| `m.Settings.NotificationLogHidden` in the level check in `showNotification` | `TestNotificationLogHiddenOffKeepsTheLogClean`: "ASSERTION: the log viewer lists an info message the level hid, with log_hidden off" | **caught** |
+| `InboxUndo`'s "Nothing to undo" notice raised as info (`internal/app/inbox_lifecycle.go`) | `TestNotificationLevelShowsWhyAKeyDidNothing`: "ASSERTION: under level warning the dock does not say why u did nothing" | **caught** |
+
+The first control fails at the pane's message, before the agent's alert; both reach the dock through the same check.
+
+A follow-up commit adds `TestNotificationLevelErrorStillLogsAWarning`. This control was run on 2026-10-30 on Linux against the final code, in its own binary. The cuts in the section above also failed again on Linux.
+
+| Control: what was cut | Where it fails | Verdict |
+| --- | --- | --- |
+| The rule that a warning always goes to the log: `showNotification` skips it when `log_hidden` is false | `TestNotificationLevelErrorStillLogsAWarning`: "ASSERTION: the log viewer does not list the warning" | **caught** |

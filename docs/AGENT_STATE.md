@@ -142,11 +142,11 @@ tuios gets an agent's state in one of these ways, best first:
 | Antigravity CLI, Devin CLI, Droid, Qoder CLI | session hook, screen | working, needs_input, idle | screen fixtures |
 | Grok CLI, Hermes Agent | session hook, screen, title | working, needs_input, idle | screen fixtures |
 | Cline, Goose, Maki | screen | working, needs_input, idle | screen fixtures |
+| Letta Code | screen, title | working, needs_input, idle | screen fixtures |
 | Aider | process | working, idle | unit |
 | Any program that writes OSC 7501 (a build, a deploy script, `tuios status`) | OSC 7501 | working, needs_input, idle, done, errored | E2E with a script |
 
-An agent that herdr supports through its own hook scripts, such as Letta Code
-or MastraCode, reports to tuios too when you install herdr's integration for it.
+An agent that herdr supports through its own hook scripts, such as MastraCode, reports to tuios too when you install herdr's integration for it.
 Those scripts send herdr's protocol to `HERDR_SOCKET_PATH`.
 
 ## Where to find what
@@ -227,6 +227,7 @@ may do there; answering prompts is off by default. See
 - [Title rules](#title-rules)
 - [Notification rules](#notification-rules)
 - [The stall heuristic](#the-stall-heuristic)
+- [Silent agents](#silent-agents)
 - [Finished turns](#finished-turns)
 - [Indicator](#indicator)
 - [The rail's agents section](#the-rails-agents-section)
@@ -287,6 +288,9 @@ timer writes it, not `idle`, when the screen tier looked at a quiet pane and
 found nothing: `idle` says nothing needs you, and a pane that went quiet on a
 prompt no rule knows would be lying. A client that predates the state draws no
 glyph for it.
+
+A hooked pane that stops reporting is shown as `unknown` too, with the
+reason `silent`. See [Silent agents](#silent-agents).
 
 `unknown` is a display state and not a ready one. `fan` and `start-agent` wait
 for `idle` or `done`, `ask-agent` also takes `errored` and `none`, and none of
@@ -1965,6 +1969,46 @@ The silence window defaults to 30 seconds. Override it with the
 `TUIOS_AGENT_STALL_SECONDS` environment variable when starting the daemon; set it
 to `0` (or a negative value) to disable the heuristic entirely.
 
+## Silent agents
+
+A harness with hooks reports `working` at each prompt and each tool call. When
+the harness hangs, the reports stop. The pane still shows `working`, and its
+spinner keeps the stall heuristic from seeing the hang.
+
+A pane that reported `working` through a hook, and then sends no report for
+`silent_after`, is shown as `unknown` with the reason `silent`:
+
+- `get-agent-state` and `list-agents` report `state: unknown` and
+  `reason: silent`. `agent_state_at` and `evidence_age_ms` still give the time
+  of the last report.
+- The `agent-state` event reports `unknown` with `reason: silent`.
+- The rail and the Inbox draw the `unknown` mark. The row reads "No report for
+  N min", where N is the time since the last report.
+
+The state that the agent reported stays `working` underneath. `ask-agent`,
+`fan`, the delivery queue and agent mail do not type into the pane, and a
+silence does not end a turn. The herdr socket API still reports the pane as
+working. The next report from the agent shows its state again. A report that
+its `if_state` refuses also counts, because the agent sent it.
+
+Only a pane whose state came from a report has a clock. A pane that the
+detector, a screen rule, an OSC sequence or a transcript holds has no reports
+to miss. The stall heuristic still moves such a pane when its screen stops
+changing. The daemon arms one timer, for the earliest working hooked pane,
+and none while no hooked pane works.
+
+Set the time in `config.toml`:
+
+```toml
+[agents]
+silent_after = "10m"   # a Go duration; "0" or "off" turns it off
+```
+
+The default is 10 minutes. By default, Claude Code stops a Bash command after
+10 minutes at most, so a healthy turn reports at least that often. Set a longer time if
+your agents run long tool calls that send no hooks. The daemon reads the value
+when it starts and again when the file changes.
+
 ## Finished turns
 
 `done` comes only from an explicit report or the Claude transcript, so an
@@ -2537,13 +2581,25 @@ Working  6 ───────────────────────
 
 The list has five groups, in this order: Needs you (approvals, questions,
 plans, mail for you, errors and resume rows), Ready for review (a finished
-turn you have not looked at), Working, Idle, and Earlier (at rest for more
-than an hour). Inside a group the oldest wait comes first. A snoozed item
+turn you have not looked at), Working, Idle, and Settled (agents you put away,
+and agents at rest for more than an hour; see
+[Settling an agent](#settling-an-agent)). Inside a group the oldest wait comes first. A snoozed item
 shows under Snoozed when `S` shows them. A row moves to a new group only once
 the agent has been in the new state for 0.4 seconds, so a hook that flips
 working, needs you, working in a moment does not move it twice. A finished
 turn the agent has already moved on from goes with the agent's state, not
 under Ready for review.
+
+`F` folds the group of the row under the cursor. A folded group shows only
+its heading: its title, its count and the state mark of each row in it, such
+as `Working  6  ◐ ◐ ◐ ◐ ◐ ◐`. The cursor stops on the heading, and `F` or
+`enter` there opens the group again. A click on a heading also folds or opens
+it. A row that changes group, such as an agent that finishes or needs you,
+leaves the folded group and shows in its new group. tuios keeps the folds in
+`sidebar.json` in its state folder (`$XDG_STATE_HOME/tuios` on Linux). They
+stay when you close the view and when you start a new client. To fold
+Working by default, set `fold_working = true` in `[agents]` (see
+[CONFIGURATION.md](CONFIGURATION.md#fold-the-working-group)).
 
 Each row is two lines on a wide screen. The first has the state mark, the
 name, the harness, the session (or the machine, for an agent on another one),
@@ -2612,7 +2668,12 @@ history; on a held card the holder's tabs follow it. `enter` goes to the
 holder's pane. `t` takes the card for the pane behind the agents view, when
 the card is in that pane's session. `n` opens the New agent sheet with the
 card's prompt as the task, or its title until the prompt has been read; a
-Start in this folder claims the card for the new pane. The search narrows
+Start in this folder claims the card for the new pane as it opens, and a
+Start in new worktrees stamps the card with the fan, so its checks and pull
+requests move it. Cards also move on their own: a plan held for you and
+approved, a fan check, a pull request
+([CLI_REFERENCE.md](CLI_REFERENCE.md#tuios-task) has the table), unless
+`[tasks] auto_stage` is false. The search narrows
 the cards with their holders, and with no selector it also matches a card's
 id and title. `[tasks] stages` in the config picks the stages the board
 shows ([CONFIGURATION.md](CONFIGURATION.md#the-task-board)). The board
@@ -3391,6 +3452,40 @@ items exists only while something is snoozed with a time, the fold reads
 the state stamps the rail already has, and a focus change between plain
 shells records nothing.
 
+### Settling an agent
+
+When you are done with an agent's work and want it out of view without
+ending it, settle it. `D` in the agents view puts the agent under the cursor
+on the Settled shelf, or every marked agent. The Settle button in the focus
+header does the same. Its finished turn closes, as a dismiss closes it. The
+agent keeps running in its pane.
+
+A settled agent comes back by itself when it needs you:
+
+- it asks a question or waits on an approval,
+- it reports an error,
+- it finishes a turn,
+- it sends you mail,
+- it leaves the pane.
+
+It then goes to the group its state gives it, and it stays off the shelf
+until you settle it again. `D` on a settled agent takes it off the shelf, and
+`u` undoes a settle for 10 seconds, finished turn included. An agent that
+needs you now is not settled: answer it or dismiss its item first.
+
+An agent at rest for more than an hour goes to Settled too, as Earlier did
+before. That needs no settle and no timer: the agents view compares the time
+of the state with the clock it already ticks while it is open.
+
+The settle is the daemon's, a field on the pane (`agent_settled` in the
+window state, `settled` in `list-agents` and `get-agent-state`). Every client
+draws the same shelf: a second terminal, `tuios-web`, and the agents view of
+another machine linked with `tuios hosts`. The rail folds a settled agent
+into its `+N at rest` line. Only the person can settle, with
+`mark-attention` `settle` and `unsettle` and the attach nonce, as for a
+snooze. The `after-settle` hook runs a command for each settle (see
+[HOOKS.md](HOOKS.md)), for example to clean the agent's build files.
+
 ### Risk rules
 
 An approval whose command matches a risk rule is marked risky: its row reads
@@ -3635,7 +3730,7 @@ command that reopens the conversation: `claude --resume <id>`, `codex resume
 | Value | What a restore does |
 | --- | --- |
 | `ask` (default) | A Resume row in the Inbox per pane, its summary the exact command. Your client says once, in the dock, that there are conversations to resume. `y` on the row types the command into its pane, and the agents view stays open; `d` dismisses it. `*` then `y` resumes every row, and `x` marks the rows to resume. |
-| `auto` | Waits for each new shell's prompt signal before typing. Per-pane waits are staggered by 100 ms. A pane whose shell is not at its prompt after 10 seconds gets the Resume row instead. |
+| `auto` | Waits for each new shell's prompt signal before typing. Per-pane waits are staggered by 100 ms. A pane whose shell is not at its prompt after 10 seconds gets the Resume row instead. An agent that resumes with approvals off also gets the Resume row (see [Kept flags](#kept-flags)). |
 | `off` | Nothing. The id stays on the pane. |
 
 Automatic resume uses the new shell's OSC 133 A or B mark, not saved scrollback.
@@ -3686,6 +3781,57 @@ nothing from the old command line, its prompt or its environment is replayed.
 
 A pane that ran on another machine comes back on this one without its id,
 since the conversation is on that machine.
+
+#### Kept flags
+
+A resumed agent keeps the flags you started it with, when its manifest lists
+them. Start Claude Code with `claude --permission-mode plan --model opus`, and
+the resume command is `claude --resume <id> --permission-mode plan --model
+opus`. A prompt, a one-shot flag such as `-p` and the harness's own resume
+flag are never kept.
+
+tuios reads the flags from the agent's command line on the detection poll
+that already reads that process. It does this on Linux and macOS. On another
+platform a resume has no kept flags. A value that is not one plain shell
+token, such as `opus[1m]`, is left out with its flag. Values have the same
+character set as the id.
+
+| Harness | Kept options (take a value) | Kept flags | Source |
+| --- | --- | --- | --- |
+| Claude Code | `--model`, `--permission-mode`, `--effort`, `--agent`, `--fallback-model` | `--dangerously-skip-permissions`, `--allow-dangerously-skip-permissions`, `--chrome`, `--no-chrome`, `--ide` | `claude --help`, 2.1.312 |
+| Codex | `--model`/`-m`, `--profile`/`-p`, `--sandbox`/`-s`, `--ask-for-approval`/`-a`, `--local-provider` | `--dangerously-bypass-approvals-and-sandbox`, `--yolo`, `--approve-for-me`, `--oss`, `--search` | openai/codex source: `codex resume` takes the options of `codex` |
+| Copilot | `--model`, `--reasoning-effort`, `--agent`, `--mode` | `--allow-all-tools`, `--allow-all-paths`, `--allow-all-urls`, `--allow-all`, `--yolo`, `--autopilot`, `--plan`, `--experimental` | `copilot --help`, 1.0.98 |
+| opencode | | `--auto` | `opencode --help`, 2.2.0 |
+| pi | `--provider`, `--model`, `--thinking` | | `pi --help`, 0.73.1 |
+
+Every other harness keeps no flags. In Codex `-p` is `--profile`, so it is
+kept there.
+
+Some kept flags turn off approvals or the sandbox. A resume that carries one
+says so wherever the command shows: the Resume row says `Resumes with
+approvals off (--dangerously-skip-permissions)` in the warning colour, and
+its card has the `risky` badge. `tuios resume-agent --dry-run` and `tuios
+list-attention` print the same words. With `daemon.resume_agents = "auto"`,
+tuios does not resume such an agent. It stays a Resume row until you press
+`y`.
+
+| Harness | Flags that turn approvals off |
+| --- | --- |
+| Claude Code | `--dangerously-skip-permissions`, `--allow-dangerously-skip-permissions`, `--permission-mode bypassPermissions` |
+| Codex | `--dangerously-bypass-approvals-and-sandbox`, `--yolo`, `--sandbox`/`-s danger-full-access`, `--ask-for-approval`/`-a never` |
+| Copilot | `--allow-all-tools`, `--allow-all-paths`, `--allow-all-urls`, `--allow-all`, `--yolo`, `--autopilot`, `--mode autopilot` | Add a list to your own manifest:
+
+```toml
+[resume]
+argv         = ["myagent", "--resume", "{session_id}"]
+keep_options = ["--model"]
+keep_flags   = ["--yolo"]
+keep_risky   = ["--yolo"]          # a flag, or option=value for one value
+keep_source  = "myagent --help"
+```
+
+A kept name is `-` or `--` and then letters, digits and `_ . / : + -`. A
+manifest that lists its own resume flag fails to load.
 
 ## Harness integrations
 
@@ -3832,11 +3978,16 @@ the files tuios already changed and the ones it did not. The result or the error
 
 When a pane runs a harness whose integration is out of date, or not installed
 where it could be, tuios shows one notice for that harness, such as "Claude
-Code integration is out of date. Open Settings, Agents to update it." The
-notice comes once per harness each time the client starts. Click the right
-end of the notice to dismiss it for good: it does not come back until the
-state or the version changes. Esc and a click on the text clear it for this
-run only. Panes on other machines get no notice, since their harness uses that
+Code integration is not installed. ctrl+b j installs it in
+~/.claude/settings.json." Press that key, or click the text of the notice. A
+dialog asks "Install the Claude Code integration? This adds hooks to
+~/.claude/settings.json." Choose Install to install or update the
+integration, or press esc for Not now. Install does what the Agents tab
+does, and the result names the file it wrote. Restart the harness in its pane to make it
+report its state. The notice comes once per harness each time the client
+starts. Click the right end of the notice to dismiss it for good: it does not
+come back until the state or the version changes. Esc clears it for this run
+only. Panes on other machines get no notice, since their harness uses that
 machine's integration. `tuios doctor agents` leaves those panes out too. When
 it cannot read which machine the panes of a session run on, it says that it
 did not check that session.
@@ -4468,6 +4619,37 @@ message is typed when:
   typing time is when the Enter went out, so a turn that ends while the daemon
   still watches for the agent to take the message counts.
 
+**Your draft comes first.** An agent at rest is also where you write your
+next prompt. A message is not typed while either is true:
+
+- you typed into the pane less than 3 seconds ago. Focus and mouse reports do
+  not count;
+- the harness's input box holds text. The `[prompt_box]` block of its
+  manifest says what the empty box looks like (see below), and the daemon
+  reads the box with faint text left out, so a placeholder or a suggested
+  prompt does not count as a draft.
+
+While your draft holds a message, the agents view shows "Waits: your draft is
+in the prompt box" on the agent's row, and `get-agent-state` reports
+`draft_held`. Send or clear the draft, and the message is typed 3 seconds
+after your last key. A draft that holds a message for 10 minutes opens a
+question in the Inbox, and the row moves to Needs you. Nothing is dropped for
+waiting. Claude Code and Codex have a `[prompt_box]` block. Every other
+harness gets the 3 second pause only. Nothing polls: while a message waits,
+output from the pane and your keys arm the next look.
+
+```toml
+[prompt_box]
+region = "prompt_box"                          # a screen region, as for a rule
+empty  = ['\A[\s\x{00A0}]*(?:❯[\s\x{00A0}]*)?\z']   # the region with no draft
+source = "measured on Claude Code 2.1.280"
+```
+
+`empty` matches the region's lines with the blank ones dropped, joined with
+newlines. Anchor each pattern with `\A` and `\z`. The fixtures under
+`internal/harness/testdata/screens` with a `# box:` line hold each block to
+an empty box and a draft.
+
 A harness whose rules cannot show working (Aider, Crush, or a pane with no
 harness) may sit on `unknown` before and after it takes a message, so no
 state change marks the next rest. For such a pane a rest after a typed message
@@ -4496,7 +4678,9 @@ Inbox reply sends when it holds a paste block, can carry up to 8 MiB of
 pasted text, and the queues hold at most 32 MiB a pane and 128 MiB in all.
 
 **The count.** Each pane's window state carries `agent_queued`, the length of
-its queue, and `get-agent-state` and `list-agents` report it as `queued`. It
+its queue, and `get-agent-state` and `list-agents` report it as `queued`.
+`agent_draft_held`, reported as `draft_held`, is true while your draft holds
+the queue. It
 is daemon-owned, like the agent state: a client never sets it.
 
 **Who may do what.** Who queued a message is decided by the daemon from the
@@ -4902,6 +5086,18 @@ from a note has its control characters left out. The keys are listed in
 [KEYBINDINGS.md](KEYBINDINGS.md#the-review-overlay). The overlay covers the
 dock, so the dock's newest message since it opened (a note refused, notes
 queued, an attempt kept) is shown above its keys as well.
+
+You can keep the good hunks of a change and leave the rest. `a` stages the hunk
+under the cursor and `d` unstages it. `A` and `D` do the same for the whole
+file, and `z` undoes the last of them. Each key is a `review-stage` call with
+your attach nonce, so only the index of the pane's worktree changes, and the
+working files stay as the agent left them. While the overlay is open it reads
+the staged and unstaged diffs (`review-diff` with `index`), and a hunk header
+shows `staged` or `partly staged`. It reads them again after each key, and
+not while the overlay is closed. The overlay shows the diff against the base,
+so a key stages only the lines of the hunk shown. When git splits them into two
+hunks of the index, one key stages one part and the next key the rest. The keys are in `[keybindings.review]`. See
+[KEYBINDINGS.md](KEYBINDINGS.md#the-review-overlay).
 
 For a pane in a fan, `w` shows the compare view: one row per attempt with its
 agent and state, the files and lines it changed against the fan's base

@@ -168,8 +168,8 @@ type AgentReport struct {
 	// their prompts as its own, and only the subagent's next event says the
 	// prompt was answered.
 	Subagent string
-	// IfSubagent, when not empty, applies the report only if the window waits
-	// on that subagent's prompt. It is how a subagent's hook clears the prompt
+	// IfSubagent, when not empty, applies the report only if the window is on
+	// needs_input and waits on that subagent's prompt. It is how a subagent's hook clears the prompt
 	// it raised without clearing one the main agent or another subagent
 	// raised meanwhile.
 	IfSubagent string
@@ -458,6 +458,9 @@ func (s *Session) applyAgentReport(target string, r AgentReport) (AgentState, bo
 	applied := false
 	var holdAt int64
 	var heldWindow, heldPTY string
+	// heardOnly is an if_state refusal that cleared a silence: the state
+	// changes, so the mutation publishes, and the report is still refused.
+	heardOnly := false
 	err := s.mutateState(func(st *SessionState) error {
 		idx, err := findWindowStateIndex(st.Windows, target)
 		if err != nil {
@@ -490,6 +493,19 @@ func (s *Session) applyAgentReport(target string, r AgentReport) (AgentState, bo
 		}
 		prev := w.AgentState
 		if len(r.IfState) > 0 && !slices.Contains(r.IfState, prev) {
+			effective = prev
+			// A conditional report that does not apply is still the agent
+			// speaking, and counts against a silence (agent_silent.go).
+			if s.noteHeardLocked(w, claim, held, r) {
+				heardOnly = true
+				return nil
+			}
+			return errAgentReportRefused(agentRefusedIfState)
+		}
+		// Checked against the state as well as the claim, so a report naming
+		// a subagent never applies to a pane that is not waiting on a prompt,
+		// whatever if_state the sender passed.
+		if r.IfSubagent != "" && (prev != AgentStateNeedsInput || !held || claim.subagent != r.IfSubagent) {
 			effective = prev
 			return errAgentReportRefused(agentRefusedIfState)
 		}
@@ -602,6 +618,9 @@ func (s *Session) applyAgentReport(target string, r AgentReport) (AgentState, bo
 	})
 	if holdAt != 0 {
 		s.notePromptHoldFg(heldWindow, heldPTY, holdAt)
+	}
+	if err == nil && heardOnly {
+		return effective, false, agentRefusedIfState, nil
 	}
 	if errors.Is(err, errAgentClaimHeld) {
 		return effective, false, agentRefusedOutranked, nil

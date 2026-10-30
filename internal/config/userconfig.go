@@ -74,6 +74,10 @@ type UserConfig struct {
 	// to paste again. See paste_buffers.go.
 	PasteBuffers PasteBuffersConfig `toml:"paste_buffers"`
 
+	// Worktree is the [worktree] table: where the worktrees tuios makes go.
+	// See worktree.go.
+	Worktree WorktreeConfig `toml:"worktree"`
+
 	// YieldedDefaults are the new default bindings left off because the key
 	// was already the user's for another action in the same table. It is
 	// worked out on load and never written. See yieldingDefaults.
@@ -108,8 +112,8 @@ type UserConfig struct {
 	// panes. Outside the option registry for the same reason as the tables
 	// above. See agents.go.
 	Agents AgentsConfig `toml:"agents,omitempty"`
-	// Tasks is the [tasks] table: which stages the task board shows. See
-	// tasks.go.
+	// Tasks is the [tasks] table: which stages the task board shows, and
+	// whether the daemon moves cards on its own. See tasks.go.
 	Tasks TasksConfig `toml:"tasks,omitempty"`
 	// Notify is the [notify] table: push notifications for the Inbox, sent
 	// by the daemon. Outside the option registry for the same reason as
@@ -151,6 +155,10 @@ type NotificationsConfig struct {
 	// Level is the least severe message the dock shows: info, warning or
 	// error. See NotificationLevels.
 	Level string `toml:"level"`
+
+	// LogHidden keeps a message below Level in the log viewer (default
+	// true). Off, it is dropped. Warnings and errors are logged either way.
+	LogHidden *bool `toml:"log_hidden"`
 
 	// Agent is the [notifications.agent] table: what happens when a pane's
 	// agent state changes. See agent_alerts.go.
@@ -1746,6 +1754,9 @@ const (
 	ActionInboxShowSnoozed = "inbox_show_snoozed"
 	ActionInboxDenyReason  = "inbox_deny_reason"
 	ActionInboxNewAgent    = "inbox_new_agent"
+	// ActionInboxSettle settles the selected agent, or every marked one: it
+	// goes to the Settled shelf until it needs the person again.
+	ActionInboxSettle = "inbox_settle"
 	// ActionInboxCompare opens the comparison of the attempts of the fan
 	// under the cursor.
 	ActionInboxCompare = "inbox_compare"
@@ -1768,10 +1779,11 @@ const (
 	ActionInboxHelp        = "inbox_help"
 	ActionInboxMark        = "inbox_mark"
 	ActionInboxMarkAll     = "inbox_mark_all"
-	// The focus\'s tabs, and every line of every thread card.
+	// The focus\'s tabs, every line of every thread card, and the group fold.
 	ActionInboxTabPrev      = "inbox_tab_prev"
 	ActionInboxTabNext      = "inbox_tab_next"
 	ActionInboxExpand       = "inbox_expand"
+	ActionInboxFold         = "inbox_fold"
 	ActionAgentUnread       = "agent_unread"
 	ActionAgentSnooze       = "agent_snooze"
 	ActionAgentReply        = "agent_reply"
@@ -1838,6 +1850,7 @@ func getDefaultInboxKeybinds() map[string][]string {
 		ActionInboxSnooze:      {"z"},
 		ActionInboxUndo:        {"u"},
 		ActionInboxShowSnoozed: {"S"},
+		ActionInboxSettle:      {"D"},
 		ActionInboxDenyReason:  {"R"},
 		ActionInboxNewAgent:    {"n"},
 		ActionInboxCompare:     {"c"},
@@ -1856,6 +1869,7 @@ func getDefaultInboxKeybinds() map[string][]string {
 		ActionInboxTabPrev:     {"["},
 		ActionInboxTabNext:     {"]"},
 		ActionInboxExpand:      {"e"},
+		ActionInboxFold:        {"F"},
 	}
 }
 
@@ -3348,6 +3362,10 @@ func ApplyNotificationConfig(cfg *UserConfig, s *Settings) {
 	if slices.Contains(NotificationLevels, cfg.Notifications.Level) {
 		s.NotificationLevel = cfg.Notifications.Level
 	}
+	s.NotificationLogHidden = true
+	if cfg.Notifications.LogHidden != nil {
+		s.NotificationLogHidden = *cfg.Notifications.LogHidden
+	}
 }
 
 // fillMissingTape fills in any missing tape settings with defaults. An unset or
@@ -3889,6 +3907,7 @@ var yieldingDefaults = map[string]bool{
 	"inbox_tab_prev":     true,
 	"inbox_tab_next":     true,
 	"inbox_expand":       true,
+	"inbox_fold":         true,
 	// ctrl+alt+N (ctrl+opt+N on macOS), the first default for
 	// send_to_workspace_N.
 	"send_to_workspace_1": true,

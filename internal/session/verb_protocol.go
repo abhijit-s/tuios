@@ -705,6 +705,9 @@ func buildVerbRegistry() map[string]verbEntry {
 				{Name: "join", Type: "string", Description: "A session of an existing fan to add the attempts to. The caller must reach that session. Omit to start a new fan."},
 				{Name: "ready_timeout", Type: "int", Description: "Milliseconds to wait for each agent to be ready before giving up on its prompt.", Default: "600000"},
 				{Name: "env", Type: "object", Description: "Environment variables for every agent, name to value, on top of the daemon's. PATH in it is where the programs are looked up, so an agent the caller can run is found. The tuios CLI sends its PATH. TUIOS_ names, TMUX and TMUX_PANE are refused, and a call from another machine may not pass env at all. Not saved: a restored pane starts with the daemon's environment."},
+				{Name: "task", Type: "string", Description: "A task card the fan works on, such as t3. The card gets the fan's group and fan_id, and moves from todo or plan to doing. It keeps no holder, since the fan's attempts work on it, and claim-task next skips it while the fan has a session. A fan check and the attempts' pull requests then move it (see [tasks] auto_stage). The caller needs what claim-task needs, and the card must be held by no pane but the caller's, not blocked and not done, checked before anything is made."},
+				{Name: "task_session", Type: "string", Description: "The session of task. Omit for the caller's own session, or outside every pane the most recently active one."},
+				{Name: "human_nonce", Type: "string", Description: "With task: the attached client's nonce, so the stamp is the person's (by human)."},
 				grantsParam,
 			}, repoSourceParams...),
 			returns: []verbParam{
@@ -717,6 +720,8 @@ func buildVerbRegistry() map[string]verbEntry {
 				{Name: "prompt", Type: "string", Description: "The first session's prompt, as given."},
 				{Name: "sessions", Type: "[]object", Description: "One entry per session: session, branch, path, window_id, and the agent (harness id) and command started in it. hook_error is there when that session's after-new-worktree hook failed."},
 				{Name: "total", Type: "int", Description: "How many sessions were started."},
+				{Name: "task", Type: "object", Description: "With task: the card as stamped, as list-tasks gives a row."},
+				{Name: "task_note", Type: "string", Description: "With task: why nothing was stamped, when the card was removed while the fan was made."},
 			},
 			examples: []string{
 				`{"id":1,"verb":"fan","params":{"count":3,"agent":"claude","prompt":"Add a retry to the client.","repo":"/src/api"}}`,
@@ -773,6 +778,8 @@ func buildVerbRegistry() map[string]verbEntry {
 				{Name: "ready_timeout", Type: "int", Description: "Milliseconds to wait for the agent to be ready.", Default: "120000"},
 				{Name: "env", Type: "object", Description: "Environment variables for the agent, name to value, on top of the daemon's; PATH in it is where the program is looked up. The rules are fan's."},
 				{Name: "protocol", Type: "string", Description: "Run the agent headless over a structured protocol instead of in its own TUI: acp (the Agent Client Protocol, for an agent command such as \"opencode acp\") or codex (the Codex app-server; app-server is added to the codex command). The pane runs tuios agent-proto, which shows the conversation as a transcript and reports the agent's state itself; the pane is ready on that report alone. Its permission requests are answered in the pane or, for a request one line shows whole, from the Inbox without [agents.approvals]. Omit for the agent's own TUI.", Accepted: agentproto.Protocols},
+				{Name: "task", Type: "string", Description: "A task card of the session, such as t3, for the new pane to work on: it is claimed for the pane as soon as the pane exists, before the wait. The caller needs what claim-task needs, and the card must be held by no pane, not blocked and not done, checked before anything is started. The session must exist already."},
+				{Name: "human_nonce", Type: "string", Description: "With task: the attached client's nonce, so the claim is the person's (by human)."},
 				grantsParam,
 			}, repoSourceParams...),
 			returns: []verbParam{
@@ -796,6 +803,8 @@ func buildVerbRegistry() map[string]verbEntry {
 				{Name: "reason", Type: "string", Description: "Why it is not ready, when it is not."},
 				{Name: "prompt_status", Type: "string", Description: "With prompt: sent, stalled or not_sent."},
 				{Name: "prompt_note", Type: "string", Description: "Why a prompt was not sent or looks stalled."},
+				{Name: "task", Type: "object", Description: "With task: the card as claimed for the pane, as list-tasks gives a row."},
+				{Name: "task_note", Type: "string", Description: "With task: why the card was not claimed after all, such as another pane taking it while the pane opened."},
 			},
 			examples: []string{
 				`{"id":1,"verb":"start-agent","params":{"session":"work","agent":"claude","name":"reviewer","cwd":"/src/api"}}`,
@@ -2229,6 +2238,7 @@ func buildVerbRegistry() map[string]verbEntry {
 			returns: []verbParam{
 				{Name: "window_id", Type: "string", Description: "The window the state is read from."},
 				{Name: "state", Type: "string", Description: "The agent state the pane shows.", Accepted: AgentStateNames},
+				{Name: "reason", Type: "string", Description: "Why state is not the state the agent gave: silent when its hooks reported working and then sent no report for agents.silent_after, which shows the pane as unknown until the next report. Empty otherwise."},
 				{Name: "message", Type: "string", Description: "The message the state was reported with, empty when none."},
 				{Name: "agent_state_at", Type: "int", Description: "When the state was last set, in Unix nanoseconds. 0 when nothing ever set one."},
 				{Name: "source", Type: "string", Description: "The source that owns the state: report, transcript, osc, screen, detect or stall."},
@@ -2243,6 +2253,7 @@ func buildVerbRegistry() map[string]verbEntry {
 				{Name: "agent_session_id", Type: "string", Description: "The harness's own conversation id, empty until a hook reports one."},
 				{Name: "meta", Type: "object", Description: "The set-agent-meta keys, key to value."},
 				{Name: "queued", Type: "int", Description: "How many messages wait in the pane's delivery queue."},
+				{Name: "settled", Type: "bool", Description: "Whether the person put the agent away with mark-attention settle. The daemon clears it when the agent needs the person again."},
 				{Name: "subagents", Type: "int", Description: "How many subagents the pane's agent is running, as its hooks reported them with report-agent-activity. meta's subagents key says it in words."},
 				subagentListReturn,
 			},
@@ -2378,7 +2389,7 @@ func buildVerbRegistry() map[string]verbEntry {
 				{Name: "select", Type: "string", Description: selectorSyntax + " Keeps only the panes it matches, in every session unless session is also given. The answer then carries the confirm token a write by the same selector takes."},
 			},
 			returns: []verbParam{
-				{Name: "agents", Type: "[]object", Description: "One entry per pane: session, window_id, name, state, message, agent_state_at, source, harness_id, foreground, cwd, workspace, focused, unread, seen, ready, blocked_by, needs_you, confidence, identity, evidence_age_ms, completion_seq, finished_unread, agent_session_id, meta, group, protocol, queued, subagents, subagent_list. queued is how many messages wait in the pane's delivery queue. subagents is how many subagents the pane's agent is running, as its hooks reported them. subagent_list is the subagents themselves, as get-agent-state reports them. ready is whether ask-agent would type at the pane now: true for idle, done, errored and none, false for working, needs_input and unknown. blocked_by is approval or question for a pane on needs_input, empty when the source did not say and for every other state. completion_seq counts the turns the pane finished; finished_unread is true while it is at rest after a turn no attached client has focused it since. agent_session_id is the harness's own conversation id, as a hook reported it. meta is the set-agent-meta keys, key to value. group is the fan-out group of the pane's session, empty outside one. protocol is acp or codex for an agent start-agent runs headless over that protocol, empty for every other pane. identity, confidence and evidence_age_ms are as get-agent-state reports them."},
+				{Name: "agents", Type: "[]object", Description: "One entry per pane: session, window_id, name, state, reason, message, agent_state_at, source, harness_id, foreground, cwd, workspace, focused, unread, seen, ready, blocked_by, needs_you, confidence, identity, evidence_age_ms, completion_seq, finished_unread, agent_session_id, meta, group, protocol, queued, settled, subagents, subagent_list. queued is how many messages wait in the pane's delivery queue. settled is true while the person has put the agent away with mark-attention settle. subagents is how many subagents the pane's agent is running, as its hooks reported them. subagent_list is the subagents themselves, as get-agent-state reports them. ready is whether ask-agent would type at the pane now: true for idle, done, errored and none, false for working, needs_input and unknown. reason is silent for a pane shown as unknown because its hooks reported working and then sent no report for agents.silent_after, empty otherwise. blocked_by is approval or question for a pane on needs_input, empty when the source did not say and for every other state. completion_seq counts the turns the pane finished; finished_unread is true while it is at rest after a turn no attached client has focused it since. agent_session_id is the harness's own conversation id, as a hook reported it. meta is the set-agent-meta keys, key to value. group is the fan-out group of the pane's session, empty outside one. protocol is acp or codex for an agent start-agent runs headless over that protocol, empty for every other pane. identity, confidence and evidence_age_ms are as get-agent-state reports them."},
 				{Name: "total", Type: "int", Description: "How many panes are listed."},
 				{Name: "select", Type: "string", Description: "The selector as parsed, when one was given."},
 				{Name: "confirm", Type: "string", Description: "With select, and without all or session: the token for exactly the listed panes, which send-agent-message and ask-agent take as confirm to write to them."},

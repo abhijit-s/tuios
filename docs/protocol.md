@@ -195,6 +195,45 @@ old behaviour. None of them bumps the protocol integer: every field keeps its
 name and type, and a caller that sends nothing new keeps working. What changes
 is an answer, and each entry says which.
 
+**A hooked agent that stops reporting shows as silent.** A pane whose claim
+is a report, and whose state is `working`, may go without a report for
+`[agents] silent_after` (default `10m`). After that, what changes for a
+caller:
+
+- `get-agent-state` and every `list-agents` entry report `state` as `unknown`
+  and gain `reason`: `silent`. `reason` is empty for every other pane.
+  `activity` is `unknown`. `source`, `agent_state_at` and `evidence_age_ms`
+  still describe the last report. `ready` stays false.
+- The `agent-state` event reports `state` `unknown` with `reason` `silent`
+  when the pane goes silent, and the reported state with no reason when the
+  next report comes.
+- A selector's `state:` term matches the shown state, `unknown`.
+- The synced window state keeps `agent_state` `working` and gains
+  `agent_reason`. A session's window summary reports `agent_state` `unknown`
+  and gains `agent_reason`. Both are omitted when empty.
+- `ask-agent`, `fan`, the queue and agent mail still read the pane as
+  `working`, so nothing is typed into it.
+
+The next report from the pane's agent clears it, a report that its
+`if_state` refuses included. The herdr socket API still reports the pane as
+working.
+
+**An agent can be settled.** `mark-attention` takes the actions `settle` and
+`unsettle`, which name a pane with `session` and `window` (see
+[mark-attention](#mark-attention)). What changes for an existing caller:
+
+- `get-agent-state` and every `list-agents` entry gain `settled`. The synced
+  window state and the session listing's window rows gain `agent_settled`,
+  omitted when false and taken from the daemon's own state on every client
+  push. A row of another machine's agents (`list-hosts` with agents) carries
+  that host's `settled`, display only.
+- The daemon clears the settle in the change that makes the agent need the
+  person: it goes to `needs_input`, `errored` or `none`, it finishes a turn
+  (`completion_seq` goes up), or it sends the person mail.
+- A `settle` closes the pane's open `finished` item with the reason
+  `dismissed`, as `dismiss-attention` does, and marks the turn seen.
+- The hook event `after-settle` exists (see [HOOKS.md](HOOKS.md)).
+
 **Asks of one agent take turns.** An `ask-agent` that comes while another
 ask of the same target runs no longer types over it, and no longer fails with
 `not_ready` once `ready_timeout` passes. It waits for its turn, first come
@@ -211,6 +250,17 @@ board reads it. A daemon from before this ignores the parameter and answers
 for one session, without `all_sessions`; a daemon with no task verbs answers
 `unknown_verb`. In both cases the board says the daemon is too old. A selector
 takes `stage:`.
+
+**Cards move on their own, and fan and start-agent take task.** The daemon
+moves a task card when it records a fact about the card's work, and sends the
+`task-changed` `staged` event with `reason` naming the fact (see
+[Task verbs](#task-verbs)). `fan` takes `task` and `task_session` and stamps
+the card with the fan it makes. `start-agent` takes `task` and claims the card
+for the pane it opens. Both answer with the card's row in `task`, and take
+`human_nonce` for the stamp or the claim. A daemon from before this refuses
+`task` by name with `invalid_params`, so a client can start the agent without
+it and claim after. `claim-task` with `next` skips a card a fan of another
+session works on.
 
 **list-host-sessions rows carry agents.** A remote session row gains
 `agents`, one entry per agent pane: `id`, `title`, `state`, `state_at`,
@@ -3993,9 +4043,12 @@ Response:
 ### new-worktree
 
 Create a git worktree of a repository and a session in it. The worktree goes
-under `$XDG_DATA_HOME/tuios/worktrees/<repo>/<branch>`, and the session is
+where the daemon's `[worktree] path` template puts it (see
+[Where worktrees go](CONFIGURATION.md#where-worktrees-go)), by default under
+`$XDG_DATA_HOME/tuios/worktrees/<repo>/<branch>`, and the session is
 named `<repo>-<branch>` with every slash in the branch turned into a hyphen. A
-branch that does not exist is created from `base`, or from HEAD.
+branch that does not exist is created from `base`, or from HEAD. A template
+that does not render is refused with `internal`, and nothing is created.
 
 Params: `repo` (a directory inside the repository, required unless
 `repo_url` is passed), `branch` (required), `base`, `name`, `command` (argv
@@ -4032,6 +4085,10 @@ Response:
  "branch": "feat/retry", "created_branch": true, "path": "/home/u/.local/share/tuios/worktrees/api/feat-retry",
  "window_id": "...", "pty_id": "..."}}
 ```
+
+When the worktree is inside the repository and git does not ignore it, the
+result carries `warning`, a sentence that names the folder to ignore. The
+worktree and session are made all the same.
 
 An `after-new-worktree` hook runs in the worktree before the first window
 starts, and the verb waits for it (60 seconds at most). When it fails, the
@@ -4193,7 +4250,8 @@ them, so they cannot be overridden.
 
 Each entry of `sessions` gains `agent` (the harness id, empty for a program no
 manifest knows) and `command` (the argv as one line). The top-level `agent`,
-`command` and `prompt` are the first session's.
+`command` and `prompt` are the first session's. `warning` is as for
+`new-worktree`, said once for the fan.
 
 Request:
 
@@ -4435,7 +4493,8 @@ count; omit for the whole hunk), `context` (the context of that diff, default
 ```
 
 It is the person's tool: refused on a restricted connection, `admin` for a
-pane, `write` over a link. A `human_nonce` that is given must be live.
+pane, `write` over a link. A `human_nonce` that is given must be live. The
+review overlay calls it with the keys `a`, `d`, `A`, `D` and `z`.
 
 ### review-note
 
@@ -5721,12 +5780,14 @@ Response:
 
 ### mark-attention
 
-Snooze an Inbox item, wake it, mark a finished pane unread, or restore an item
-dismissed or snoozed in the last 10 seconds, for the person.
+Snooze an Inbox item, wake it, mark a finished pane unread, restore an item
+dismissed or snoozed in the last 10 seconds, or settle an agent, for the
+person.
 
-Params: `action` (required: `snooze`, `wake`, `unread` or `restore`), `id`, or
-`session`, `window` and `kind` to name the item by what it is about (`unread`
-needs only `session` and `window`), `human_nonce` (required, as for
+Params: `action` (required: `snooze`, `wake`, `unread`, `restore`, `settle`
+or `unsettle`), `id`, or `session`, `window` and `kind` to name the item by
+what it is about (`unread`, `settle` and `unsettle` need only `session` and
+`window`), `human_nonce` (required, as for
 [dismiss-attention](#dismiss-attention)). With `snooze`, exactly one of
 `until` (unix milliseconds, within the next year), `for_ms` (at most a year)
 and `until_change` (true).
@@ -5753,6 +5814,17 @@ and `until_change` (true).
   back over a newer item about the same thing. The check and the reopen are
   one step: a transition that arrives during a restore lands after it and
   closes the restored item as it would any other.
+- `settle` puts the agent in the pane on the Settled shelf: the window
+  state's `agent_settled` is true until the agent needs the person again
+  (it goes to `needs_input`, `errored` or `none`, finishes a turn, or sends
+  the person mail) or until `unsettle`. It closes the pane's open `finished`
+  item as a dismiss does, and the answer names that item as `id`. A pane
+  with no agent, a pane on `needs_input`, and a pane with any other open
+  item are `invalid_params`. A settle that changes the pane runs the
+  `after-settle` hook with `TUIOS_SETTLE_REASON=person`.
+- `unsettle` takes the agent off the shelf. With `id`, the item `settle`
+  closed, it also restores that item as `restore` does, and the answer names
+  it as `id` when it came back.
 
 An item of a linked host is snoozed on this daemon only, like a dismiss:
 nothing on the host changes, and the item wakes when the host changes it or
@@ -5776,6 +5848,10 @@ Response:
 
 ```json
 {"result": {"type": "attention_marked", "id": "17", "action": "snooze", "snoozed_until": 1790146542055373000}}
+```
+
+```json
+{"result": {"type": "attention_marked", "id": "21", "action": "settle", "session": "work", "window": "w-3"}}
 ```
 
 ### peek-prompt
@@ -7062,7 +7138,7 @@ them:
 | `compare-fan` | One row per attempt of a fan: branch, agent, state, changes, last check | `read`, own fan group | `list` | no |
 | `verify-fan` | Run one check with `sh -c` in a window named `verify` in every attempt; the window holds no grants | `fan`, own fan group | `open` and `write` | no |
 | `keep-fan` | Keep one attempt and remove the others, refusing a dirty one without `stash` or `force` | refused | `write` | admin or the person |
-| `mark-attention` | Snooze, wake, mark unread or restore an Inbox item | refused | `respond` | yes: `human_nonce` from a live attach, never from inside a pane |
+| `mark-attention` | Snooze, wake, mark unread or restore an Inbox item, or settle an agent | refused | `respond` | yes: `human_nonce` from a live attach, never from inside a pane |
 | `agent-activity` | The pane's ring of hook events, and a recap of it, marked `untrusted` | `read`, own session and fan group | `list` | no |
 | `queue-prompt` | Queue a message, typed when the agent comes to rest and never over a prompt | `write`, and a typing verb as for `send-review`; checked again against the caller's grants when typed | `write` | "by the person" only with a live `human_nonce` |
 | `list-queued` | The messages waiting in a pane's queue | `read` | `list` | no |
@@ -7232,6 +7308,39 @@ event.
 `release-task` clears the holder and keeps the stage. `block-task` marks a card
 stuck with a reason, keeping its holder and stage, and `clear` lifts the mark.
 
+The daemon also moves a card on its own when it records a fact about the
+card's work, unless `[tasks] auto_stage` is false. Each move fires only when
+the card is in one of the move's stages, never on a blocked or done card, and
+writes a `staged` history entry with `by` `tuios` and `reason`:
+
+| Fact | Cards | From | To | `reason` |
+| --- | --- | --- | --- | --- |
+| A plan hold opens (`request-approval` with `kind` `plan`) | held by the pane | `todo`, `doing` | `plan` | `plan held for approval` |
+| The plan is approved (`reply-approval` with a decision other than `deny`) | held by the pane | `plan` | `doing` | `plan approved` |
+| `verify-fan` starts | stamped with the fan | `doing` | `verify` | `fan check started` |
+| Every attempt's check ended and none passed | stamped with the fan | `verify` | `doing` | `fan check failed in every attempt` |
+| The worktree's pull request is first seen open | held in the worktree's session, or stamped with its fan | `plan`, `doing`, `verify` | `review` | `pull request #N opened` |
+| It is seen merged | the same | `plan`, `doing`, `verify`, `review` | `shipped` | `pull request #N merged` |
+| It is seen closed without a merge | the same | `review` | `doing` | `pull request #N closed without a merge` |
+
+A plan kept planning, or a hold that ends with no answer through tuios (it
+timed out, or its caller went), leaves the card in `plan` until its pull
+request opens, which is proof enough that the plan went through. A pull request
+reaches every card held in the worktree's session, whatever pane holds it,
+and with a fan each attempt's pull request reaches the fan's cards in turn.
+
+A card is stamped with a fan when it is added in one of the fan's sessions, or
+when `fan` is called with `task`. `fan` with `task` writes the fan's `group`
+and `fan_id` onto the card and, with `[tasks] auto_stage` on, moves it from
+`todo` or `plan` to `doing` (reason `fanned out to GROUP`, by the caller). It
+leaves the card with no holder. A fan that stops partway stamps the card once
+one session exists, and says so in the refusal's `detail`.
+`claim-task` with `next` skips a card stamped with a fan of another session
+while that fan has a session. `start-agent` with `task` claims the card for
+the pane it opens, as `claim-task` would, as soon as the pane exists. Both
+check the card, and that the caller may do what `claim-task` needs, before
+they make anything: a refusal names `task` in its hint.
+
 | Verb | What it does | A pane without `admin` | Over a link | Result `type` |
 | --- | --- | --- | --- | --- |
 | `add-task` | Add a card: `title` (required, at most 200 bytes), `prompt` (at most 16 KiB), `stage` (default `todo`) | `task`, own session | `write` | `task_added` |
@@ -7336,7 +7445,7 @@ Event types:
 | `transfer-file` | One file of a copy ended. `action` and `file.state` are `done` (copied and checked), `same` (there already with the same bytes), `skipped` (there and different, left as it was), `conflict` (made there during the copy, left as it was) or `failed`. `file` has `id`, `pane`, `rel`, `state`, `sha256`, `code` and `error`. Opt-in: only a subscription whose `types` names it receives it. Not replayed on a resume. | `action`, `file` |
 | `task-claimed` | A pane took a task card. `task` is the card's row as `list-tasks` gives it, and `window` the pane that took it. See [Task verbs](#task-verbs). | `session`, `window`, `task` |
 | `task-finished` | A task card was marked done. `window` is the pane that held it, empty when none did. | `session`, `window`, `task` |
-| `task-changed` | A task card was `added`, `staged`, `blocked`, `unblocked`, `released` or `removed` (`action`). A release tuios made on its own carries `reason`: `pane closed`, `agent left` or `restart`; a block carries its reason too. `removed` carries the card's last row. | `session`, `action`, `reason`, `task` |
+| `task-changed` | A task card was `added`, `staged`, `blocked`, `unblocked`, `released` or `removed` (`action`). A release tuios made on its own carries `reason`: `pane closed`, `agent left` or `restart`; a stage move it made on its own carries the fact (see [Task verbs](#task-verbs)); a block carries its reason too. `removed` carries the card's last row. | `session`, `action`, `reason`, `task` |
 | `tml-event` | What a person did on a TML surface that its owner hears: an `emit` action in the document, or the close, which is the surface's last event. `tml` has `surface`, `name` (the emit's name, or `close`), `value` (absent when null), `reason` (on a close: `closed`, `program` or `dismissed`) and `version`. `window` is the TML window. Opt-in: only a subscription whose `types` names it receives it, and a `tml-open` with `events` gets the events of its own surface. | `tml` |
 
 ### What fires when

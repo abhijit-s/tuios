@@ -2235,9 +2235,12 @@ func (d *Daemon) verbGetAgentState(cs *connState, params json.RawMessage) (any, 
 	w := state.Windows[idx]
 	claim := sess.agentClaimFor(w.ID)
 	return map[string]any{
-		"type":           "agent_state",
-		"window_id":      w.ID,
-		"state":          w.AgentState.Name(),
+		"type":      "agent_state",
+		"window_id": w.ID,
+		"state":     w.ShownAgentState().Name(),
+		// reason says why state is not the state the agent gave: silent
+		// for a hooked pane that stopped reporting. Empty otherwise.
+		"reason":         w.AgentReason,
 		"message":        w.AgentMessage,
 		"agent_state_at": w.AgentStateAt,
 		// source and harness_id are what make a shown state explainable: which
@@ -2256,7 +2259,7 @@ func (d *Daemon) verbGetAgentState(cs *connState, params json.RawMessage) (any, 
 		// needs_you is the one question a person asks of a pane, answered as a
 		// bool so a consumer does not have to know which states mean it.
 		"needs_you": w.AgentState.NeedsYou(),
-		"activity":  w.AgentState.Activity(),
+		"activity":  w.ShownAgentState().Activity(),
 		// ready and blocked_by are the same answers list-agents gives: whether
 		// ask-agent would type at the pane now, and, for a pane on needs_input,
 		// whether it waits on an approval or a question. blocked_by is also
@@ -2269,6 +2272,11 @@ func (d *Daemon) verbGetAgentState(cs *connState, params json.RawMessage) (any, 
 		"meta": agentMetaMap(w.AgentMeta, time.Now().UnixNano()),
 		// queued is how many messages wait in the pane's delivery queue.
 		"queued": w.AgentQueued,
+		// draft_held is true while the person's draft in the input box
+		// holds the next queued message.
+		"draft_held": w.AgentDraftHeld,
+		// settled says the person put the agent away (agent_settle.go).
+		"settled": w.AgentSettled,
 		// subagents is how many subagents the pane's agent is running, as
 		// its hooks reported them; meta's subagents key says the same in
 		// words.

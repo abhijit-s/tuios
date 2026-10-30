@@ -8,6 +8,7 @@ This document provides a complete reference for TUIOS command-line interface.
 - [Installation](#installation)
 - [Usage](#usage)
 - [Commands](#commands)
+  - [tuios tutor](#tuios-tutor)
   - [Root Command](#root-command)
   - [Theming](#theming)
     - [Looks: tuios look](#looks-tuios-look)
@@ -110,6 +111,46 @@ tuios [command] [flags]
 ```
 
 ## Commands
+
+### `tuios tutor`
+
+Learn tuios in a few minutes, by doing it. `tuios learn` is the same
+command. The tutor runs a real tuios with a practice shell in this terminal.
+The shell, the files and the agents in it are pretend.
+
+```bash
+tuios tutor            # open the menu: start a track, or continue one
+tuios tutor basics     # open one track at once
+tuios tutor --list     # list the tracks
+tuios tutor --reset    # clear your progress
+```
+
+Nothing on your computer changes:
+
+- The tutor starts no program and does not connect to a running tuios.
+- It reads none of your config, and it uses the shipped keys and theme.
+- While it runs, the home, the XDG folders and TMPDIR point at a temp
+  folder. The tutor removes that folder when it ends, also on SIGTERM.
+- Clipboard writes stay inside the tutor.
+- It keeps your progress in `$XDG_STATE_HOME/tuios/tutor.json`. That is the
+  only file it writes.
+
+In a lesson, a card under the screen shows the step, its keys and a note.
+The keys light up as you press them. After 8 seconds the note turns into a
+hint.
+
+| Key | Does |
+|-----|------|
+| `F2` | Open the menu: continue, back one step, restart, choose a track, leave |
+| `F3` | Show me: the tutor presses the rest of the keys |
+| `F4` | Skip the step |
+| a quit key of tuios | Open the menu |
+
+A click works on every button. Below 80x24 the card is a 2-row strip.
+Below 60x16 the tutor asks for a bigger window and keeps your place.
+
+Run inside a tuios pane, the outer tuios takes `ctrl+b`. Press `ctrl+b`
+then `enter` to give every key to the tutor. `F12` gives the keys back.
 
 ### Root Command
 
@@ -885,10 +926,12 @@ The same verb is reachable from the rail. Right-click a repository's group
 header, or a worktree session's row, and take "New worktree...". The dialog
 asks for the branch and the session name. Leave the name empty and the dialog
 derives one from the repository and the branch. It does not ask for the
-folder: the daemon puts the worktree under its worktree directory
-(`TUIOS_WORKTREE_DIR` in the daemon's environment, else
-`$XDG_DATA_HOME/tuios/worktrees`), and the notification reports where it
-went.
+folder: the daemon places the worktree by `[worktree] path` (see
+[Where worktrees go](CONFIGURATION.md#where-worktrees-go)), else under
+`TUIOS_WORKTREE_DIR` in the daemon's environment, else under
+`$XDG_DATA_HOME/tuios/worktrees`, and the notification reports where it
+went. A worktree inside the repository that git does not ignore is reported
+with a warning.
 
 **Usage:**
 ```bash
@@ -908,7 +951,9 @@ tuios worktree rm api-feat-retry --stash               # Keep the changes in git
 ```
 
 The session is named `<repo>-<branch>`, with every slash turned into a hyphen.
-Worktrees go under `$XDG_DATA_HOME/tuios/worktrees/<repo>/<branch>`.
+Worktrees go under `$XDG_DATA_HOME/tuios/worktrees/<repo>/<branch>`, unless
+`[worktree] path` puts them elsewhere (see
+[Where worktrees go](CONFIGURATION.md#where-worktrees-go)).
 
 An `after-new-worktree` hook runs in the new worktree before its first window
 starts, for example to copy `.env` from the main checkout. See
@@ -988,6 +1033,8 @@ tuios fan verdict [<host>:]<session> --pick <session> --summary <text> [--reason
 - `--grants <grant>[,<grant>...]`: What every agent may do through tuios, as for `start-agent`
 - `--name <stem>`: The fan's name, which its branches start with. A name that is already a fan in the repository is refused. Omitted, the name comes from the prompt and moves on to a free one
 - `--join <session>`: Add the attempts to the fan of this session, on purpose, instead of starting a new fan. Your pane must reach that session
+- `--task <id>`: The task card the fan works on. It gets the fan's name and holds no pane, so `tuios task claim --next` skips it while the fan lasts. With `[tasks] auto_stage` on it moves to `doing`, and `fan verify` and the attempts' pull requests then move it (see [`tuios task`](#tuios-task)). Needs what `tuios task claim` needs, and the card must be held by no pane but yours, not blocked and not done. Not with `--host`: the card is on this machine
+- `--task-session <name>`: The session of `--task` (default: this pane's session, else the most recently active)
 - `--repo <dir>`, `--base <ref>`, `--wait`, `--json`
 
 **Examples:**
@@ -1098,8 +1145,13 @@ is ready for a prompt.
 
 **Usage:**
 ```bash
-tuios start-agent <agent> [-s [<host>:]<session>] [--name <name>] [--cwd <dir> | --repo <dir> | --clone] [--workspace <n>] [--focus] [--prompt <prompt>] [--ready-timeout <ms>] [--protocol acp|codex] [--env NAME[=VALUE]]... [--grants <grant>[,<grant>...]] [--json] [-- <args>...]
+tuios start-agent <agent> [-s [<host>:]<session>] [--name <name>] [--cwd <dir> | --repo <dir> | --clone] [--workspace <n>] [--focus] [--prompt <prompt>] [--ready-timeout <ms>] [--protocol acp|codex] [--env NAME[=VALUE]]... [--grants <grant>[,<grant>...]] [--task <id>] [--json] [-- <args>...]
 ```
+
+`--task` claims a task card of the session for the new pane as soon as the
+pane exists. The card must be held by no pane, not blocked and not done, and
+the call needs what `tuios task claim` needs. It is checked before anything
+starts, and the session must exist already.
 
 `--grants` says what the agent may do through tuios: `read`, `write`, `fan`,
 `respond`, `admin`, or `none` (see [`tuios pane-grants`](#tuios-pane-grants)).
@@ -2605,6 +2657,9 @@ the message, the way `fan` waits for its first prompt. A message the agent
 shows no sign of taking is marked `stalled`, is never typed again, and opens a
 question in the Inbox; it holds the messages behind it until the agent next
 works or you drop it, and the next message is then typed at the next rest.
+A message also waits while you type into the pane, and while the agent's
+input box holds your draft. See
+[Queued messages](AGENT_STATE.md#queued-messages).
 
 A pane holds at most `[agents.queue] max` messages (8 by default) of at most
 16 KiB each. A reply from the Inbox with a long paste can carry more, as a
@@ -2662,6 +2717,32 @@ The stages are `todo`, `plan`, `doing`, `verify`, `review`, `shipped` and
 `done`. `claim` moves a card in `todo` or `plan` to `doing`, and `done` moves
 it to `done` and lets it go.
 
+tuios also moves a card when it records a fact about the card's work, unless
+`[tasks] auto_stage = false` ([CONFIGURATION.md](CONFIGURATION.md#the-task-board)):
+
+| Fact | From | To |
+| --- | --- | --- |
+| A plan held for approval on the pane that holds the card | `todo`, `doing` | `plan` |
+| The plan approved from the Inbox | `plan` | `doing` |
+| `tuios fan verify` starting in the card's fan (`fan --task`) | `doing` | `verify` |
+| Every attempt's check ended and none passed | `verify` | `doing` |
+| A pull request on the branch opened (cards held in the worktree's session, or in its fan) | `plan`, `doing`, `verify` | `review` |
+| The pull request merged | `plan`, `doing`, `verify`, `review` | `shipped` |
+| The pull request closed without a merge | `review` | `doing` |
+
+A move fires only from its stages, so a card put in another stage by hand
+stays there. A blocked card and a done card never move on their own, and done
+is always set by hand. The history entry is by `tuios` and names the fact.
+
+A plan is held only when `[agents.approvals]` holds plans for the harness and
+the pane is not in front of you, so a plan you answer in the pane moves no
+card. A plan kept planning, or a hold that times out, leaves the card in
+`plan` until its pull request opens: the pull request is proof enough that the
+plan went through. A pull request moves every card held in the worktree's session, so a
+second pane there holding an unrelated card moves with the branch. With a fan,
+each attempt's pull request reaches the card: one closing without a merge
+moves it back to `doing` while another may still be open.
+
 **Usage:**
 ```bash
 tuios task add [-p PROMPT] [--stage STAGE] TITLE... [flags]
@@ -2681,7 +2762,7 @@ tuios task rm ID [flags]
 - `--stage <stage>` (`add`, `ls`): The stage it starts in; for `ls`, only the cards in it
 - `--open` (`ls`): Leave out the cards that are done
 - `--all-sessions` (`ls`): List the cards of every session on this machine, with a SESSION column first. Takes no `--session`
-- `--next` (`claim`): Take the oldest card no pane holds that is not blocked or done
+- `--next` (`claim`): Take the oldest card no pane holds that is not blocked or done, and that no fan of another session works on
 - `-w, --window <target>` (`claim`): The pane that takes the card (default: this pane; required outside a pane)
 - `--clear` (`block`): Lift the block
 - `--json`: Output the verb result as JSON
@@ -3139,8 +3220,12 @@ tuios set-agent-session --harness qwen -w "$TUIOS_PANE_ID" "$SESSION_ID"
 
 Resume the agent conversation a pane ran before a daemon restart: type the
 harness's resume command, from its manifest's `[resume]` block, with the id a
-hook recorded for the pane (`claude --resume <id>`, `codex resume <id>`). It
-brings back the conversation, not the process. See
+hook recorded for the pane (`claude --resume <id>`, `codex resume <id>`). The
+flags the agent was started with that its manifest keeps come after the id,
+such as `claude --resume <id> --permission-mode plan --model opus`. When a kept
+flag turns approvals off, a second line says so, such as `Resumes with
+approvals off (--dangerously-skip-permissions)`. It brings back the
+conversation, not the process. See
 [Agent state](AGENT_STATE.md#resuming-after-a-restart).
 
 **Usage:**
@@ -6533,7 +6618,8 @@ and [The stall heuristic](AGENT_STATE.md#the-stall-heuristic).
 
 Where the daemon puts the worktrees `tuios worktree new` and `tuios fan`
 create, instead of `$XDG_DATA_HOME/tuios/worktrees`. Set it in the daemon's
-environment, before it starts.
+environment, before it starts. A `[worktree] path` in the config wins over it
+(see [Where worktrees go](CONFIGURATION.md#where-worktrees-go)).
 
 ### `TUIOS_LOG_LEVEL`
 
