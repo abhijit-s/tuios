@@ -195,6 +195,12 @@ old behaviour. None of them bumps the protocol integer: every field keeps its
 name and type, and a caller that sends nothing new keeps working. What changes
 is an answer, and each entry says which.
 
+**The new verb [list-routes](#list-routes)** lists this machine's addresses.
+
+**queue-prompt takes `client_id`.** A second call from the same sender with the
+same `client_id` for the same pane queues nothing and answers `duplicate: true`. A call without it
+works as before.
+
 **A hooked agent that stops reporting shows as silent.** A pane whose claim
 is a report, and whose state is `working`, may go without a report for
 `[agents] silent_after` (default `10m`). After that, what changes for a
@@ -3505,6 +3511,23 @@ when the connection closes, or when the connection calls
 
 Link capability: `list`. The verbs that use the nonce need their own
 capability, for example `respond` for `reply-approval`.
+
+### list-routes
+
+List the addresses this machine has now. A phone asks after it connects and
+keeps them as more routes to the same machine, so it can reach the machine from
+another network. The phone still checks the ssh host key on every route.
+
+Takes no params. Over a link it needs `list`.
+
+```json
+{"id": 1, "result": {"type": "route_list", "routes": [{"host": "studio.example.ts.net", "kind": "tailnet"}, {"host": "192.168.1.20", "kind": "lan"}]}}
+```
+
+`kind` is `tailnet`, `lan` or `public`. The list has at most three LAN
+addresses and leaves out loopback and the interfaces of containers and VPNs.
+`host` has no port: the ssh port is the one the phone already uses. An older
+daemon answers `unknown_verb`.
 
 ### register-push
 
@@ -7177,6 +7200,17 @@ required without `parts`), `parts`, `human_nonce`, `from`.
 {"id":1,"verb":"queue-prompt","params":{"session":"work","window":"build","text":"make the backoff jitter configurable"}}
 {"id":1,"result":{"type":"prompt_queued","id":"q3","position":1,"queued":1,"delivering":false}}
 ```
+
+`client_id` is the client's own name for the message, at most 128 bytes. A
+phone that lost the answer sends the message again with the same `client_id`,
+and the daemon queues nothing and answers as the first time, with
+`duplicate: true`. Use a random id. An id counts for one sender and one pane:
+the sender is the kind of caller and, for a link, the machine, or for a pane,
+the pane. Two machines whose links give no name count as one sender. The daemon
+keeps the last 256 ids across all panes for 7 days, in memory. A daemon restart
+forgets them, so a message sent again after a restart is queued again. It does
+not go with `host`. A daemon older than `client_id` refuses the param
+with `invalid_params`, so ask `list-verbs` before sending it.
 
 `host` names a machine from `[hosts]`: the message is for a pane there. This
 daemon passes it, with its parts, to that machine's daemon over the link, on

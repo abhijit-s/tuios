@@ -64,6 +64,8 @@ type queuePromptParams struct {
 	// Host is the machine the pane is on, for a pane of a linked machine.
 	// See queue_host.go.
 	Host string `json:"host"`
+	// ClientID names the message on the client's side. See queue_client_id.go.
+	ClientID string `json:"client_id"`
 }
 
 // verbQueuePrompt answers queue-prompt.
@@ -72,7 +74,13 @@ func (d *Daemon) verbQueuePrompt(cs *connState, params json.RawMessage) (any, *v
 	if verr := decodeParams(params, &p); verr != nil {
 		return nil, verr
 	}
+	if len(p.ClientID) > queueClientIDMax {
+		return nil, invalidParam("client_id", "client_id is longer than "+strconv.Itoa(queueClientIDMax)+" bytes")
+	}
 	if p.Host != "" {
+		if p.ClientID != "" {
+			return nil, invalidParam("client_id", "client_id does not go with host: the far daemon may not know it")
+		}
 		return d.queuePromptToHost(cs, p)
 	}
 	text, size := p.Text, len(p.Text)
@@ -112,7 +120,19 @@ func (d *Daemon) verbQueuePrompt(cs *connState, params json.RawMessage) (any, *v
 		return nil, verr
 	}
 	e.parts, e.size = p.Parts, size
-	res, verr := d.queuePrompt(sess, target, e)
+	var (
+		res    queuedResult
+		repeat bool
+	)
+	if p.ClientID != "" {
+		// After the nonce check above, and per sender and pane, so a caller
+		// learns nothing about another's messages.
+		res, repeat, verr = d.queueDedup.once(newQueueDedupKey(e.origin, target.ID, p.ClientID), queueDedupNow(), func() (queuedResult, *verbError) {
+			return d.queuePrompt(sess, target, e)
+		})
+	} else {
+		res, verr = d.queuePrompt(sess, target, e)
+	}
 	if verr != nil {
 		return nil, verr
 	}
@@ -122,6 +142,9 @@ func (d *Daemon) verbQueuePrompt(cs *connState, params json.RawMessage) (any, *v
 		"position":   res.Position,
 		"queued":     res.Queued,
 		"delivering": res.Delivering,
+	}
+	if repeat {
+		out["duplicate"] = true
 	}
 	if p.Parts != nil {
 		// Tells the client the parts were read. A daemon older than parts

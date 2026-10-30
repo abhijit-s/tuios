@@ -12556,3 +12556,138 @@ A follow-up commit adds `TestNotificationLevelErrorStillLogsAWarning`. This cont
 | Only the guard in `PinPiP` | "tuios pip agent with the view off: want a refusal naming [pip] enabled, got err <nil>" | **caught** |
 
 The fixed build passes, along with the other PiP tests.
+## The bridge says the agent facts in its state
+
+`TestGUIBridgeAgentFacts` queues a message for a pane and settles it through the bridge's verb proxy, and waits for each change in the next state event.
+
+Run on 2026-10-30 on Linux.
+
+| Control: what was cut | Where it fails | Verdict |
+| --- | --- | --- |
+| The four fields in the window export (`internal/guibridge/bridge.go`) | "queued says 0 with nothing queued" | **caught** |
+## The side a review opens on (issue #1375)
+
+`TestReviewFileKeysFollowTheirBindings` also sets `[review] focus = "files"`,
+opens a review of two files, and requires the footer to name the list's keys
+and `j` and `k` to move between the files. After `tuios set-config
+review.focus sideways` is refused and `tuios set-config review.focus diff` is
+taken on the attached client, the next review must open on the diff, where
+`j` keeps the first file. With the changes then undone, the empty review
+must open on the diff, keep the keys on the list across `r` after `tab`
+moved them there under `focus = "diff"`, and open on the diff again under
+`focus = "files"`.
+
+Run on 2026-10-30 on Linux. The test passes on the fixed build, and each
+control below fails it at the step named:
+
+```bash
+go build -o /tmp/tuios ./cmd/tuios
+cd e2e/tui && TUIOS_E2E=1 TUIOS_E2E_BIN=/tmp/tuios go test -count=1 \
+  -run TestReviewFileKeysFollowTheirBindings .
+```
+
+| Control: what was cut | Where it fails | Verdict |
+| --- | --- | --- |
+| `reviewOpensOnFiles` always returns false (`internal/app/review_overlay.go`) | "the review did not open on the file list with focus = files" | **caught** |
+| `reviewOpensOnFiles` always returns true, so set-config is not read | "the second review did not open on the diff" | **caught** |
+| `applyReviewDiff` keeps the place only when there was a current file, as before | "r moved the keys off the empty list" | **caught** |
+| `applyReviewDiff` opens on the list without checking for files | "the empty review opened on the list with focus = files" | **caught** |
+
+The frames of the review opened on the file list and of the empty review are
+`review-opens-on-files` and `review-empty-opens-on-diff` under
+`TUIOS_E2E_FRAMES`.
+## queue-prompt client_id
+
+Run on 2026-10-30 on Linux against builds from this branch. Each control fails `TestQueuedMessageWithAClientIDIsQueuedOnce`.
+
+| Control: what was cut | Where it fails | Verdict |
+| --- | --- | --- |
+| The dedupe in `verbQueuePrompt`: every call runs `queuePrompt` | The second call makes entry q2, with no `duplicate` | The test catches it |
+| `queueDedupAge` at an hour | Two hours later the send queues again | The test catches it |
+| The origin's kind, peer and window in the key | The same id from a linked machine is called a duplicate | The test catches it |
+| The origin in the key replaced by the entry's `by` | The phone's send with a nonce queues again | The test catches it |
+| Removing the old slot of an expired id from `order` | The id sent again past its age queues again after 254 more ids | The test catches it |
+### The plugin approval dialog, the scrollback browser and the copy-mode search bar
+
+After review of #966, these three still drew with `theme.UI()` and so kept the chrome's shade under `pane_overlays`; they now take `OS.overlayUI()`. `TestPaneOverlaysReachTheRemainingSurfaces` attaches a truecolor client with `pane_overlays = true`, `border_focused_color = "#ff8800"` and `pane_background = "#203040"` and opens each end to end. `/plugin-approval` links a native plugin while the client is attached, tiles the pane, and holds the dialog as `/dialog` above holds the rename dialog (`wantFrameColours` and `wantFrameRowsOnPane`). `/scrollback-browser` prints two commands with OSC 133 marks and opens the browser: its corners and edges must be `#ff8800` on `#203040`, and its selected command row and first key pill navy steps of `#203040` (blue leading red, 1.05:1 to 1.6:1) that are not the stock `#2d2c36` and `#4d4c57`. Its interior ground is not evidence, since the compositor paints the browser's unstyled cells with `pane_background` whatever palette it draws with. `/copy-mode-search` types `/need` in copy mode and holds the bar's pad, prompt and match-count cells and the pane cell left of it to `#203040`; it runs untiled, because after `t` the harness's `Ctrl+B [` does not reach copy mode. `TestStockRemainingSurfacesKeepTheirOwnLook` holds all three, with no appearance keys, with only `pane_background`, and at 16 colours, to values read off `4a9267a44`, the build before the change, which passes it: the dialog's frame `#858392` on `#201f26` (bright black at 16 colours); the browser's frame `#8b75ff` (bright cyan, index 14, at 16 colours), selected row `#2d2c36` and key pill `#4d4c57`; and the search bar on `#3a3943` (the terminal's own ground at 16 colours). Each control was built into its own binary from `d3c913d7d` with one file put back to `4a9267a44`, or one check deleted, and both tests run against it; the positive run on `884610fd6` passes both. Run on 2026-10-24.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| The plugin approval dialog keeps the chrome's shade under `pane_overlays` | `m.overlayUI()` in `renderPluginApproval` | `internal/app/plugin_approval.go` put back to `4a9267a44` | `TestPaneOverlaysReachTheRemainingSurfaces/plugin-approval` (`the plugin approval dialog at {x0:27 x1:92 y0:10 y1:29} does not read as a pane window`: frame `fg={R:133 G:131 B:146} bg={R:32 G:31 B:38}`, padding and body text `bg={R:32 G:31 B:38}`) | **caught** |
+| The scrollback browser keeps the accent frame and the chrome's rows under `pane_overlays` | `m.overlayUI()`, `browserFrameInk` and the palette passed to `browserFooterHints` | `internal/app/render_scrollback_browser.go` put back to `4a9267a44` | `TestPaneOverlaysReachTheRemainingSurfaces/scrollback-browser` (`the scrollback browser does not read as a pane window`: frame `fg={R:139 G:117 B:255}`, `selected row to pane ground 1.02:1` at `bg={R:45 G:44 B:54}`, key pill `bg={R:77 G:76 B:87}`) | **caught** |
+| The copy-mode search bar keeps the chrome's surface under `pane_overlays` | `m.overlayUI()` at the `copy-mode-search` layer | `internal/app/render_overlays.go` put back to `4a9267a44` | `TestPaneOverlaysReachTheRemainingSurfaces/copy-mode-search` (`the copy-mode search bar is not on the pane's ground`: pad, prompt and count `bg={R:58 G:57 B:67}`, the pane cell beside them `bg={R:32 G:48 B:64}`) | **caught** |
+| The pane look reaches the three without the option | The `PaneOverlays` checks in `overlayGround` and `overlayFrameInk` | Both deleted | `TestStockRemainingSurfacesKeepTheirOwnLook`: `/stock/plugin-approval` (`the plugin approval dialog … does not keep upstream's look`, frame `fg={R:175 G:255 B:255} bg={R:0 G:0 B:0}`), `/stock/scrollback-browser` (`the scrollback browser moved under a config without pane_overlays`, frame `fg={R:170 G:255 B:170}`), `/stock/copy-mode-search` (`the copy-mode search bar moved`, pad `bg={R:0 G:0 B:0}`), the same three under `/pane-background` (grounds `{R:32 G:48 B:64}`), and `/stock-16/plugin-approval` (frame index 14, want 8) and `/stock-16/scrollback-browser` (frame index 10, want 14). `/stock-16/copy-mode-search` passes: at 16 colours the option changes no ground, and the bar has no frame | **caught** |
+| The scrollback browser's right edge leaves the pane ground between its corners | Nothing in the fix draws the frame's ground: the browser leaves it unstyled and the compositor paints `pane_background` there | `.BorderRightBackground(theme.UI().Surface)` added to the browser's box in `renderScrollbackBrowser` | `TestPaneOverlaysReachTheRemainingSurfaces/scrollback-browser`, at `wantBrowserFrameOnPane` (`the scrollback browser's frame at {x0:0 x1:119 y0:0 y1:39} is not all on the pane's ground {Kind:2 Index:0 R:32 G:48 B:64}`, then `(119,1) "│" bg={Kind:2 Index:0 R:58 G:57 B:67}` for each row of the right edge). The same binary passes the subtest as it stood on `99f3bec50`, before the assertion: its six frame probes are the four corners and two cells by the top-left, and lipgloss gives the right edge's ground to neither of the right-hand corners | **caught** |
+| The scrollback browser's whole frame on the chrome's shade | As above | `.BorderBackground(theme.UI().Surface)` added to the browser's box | `TestPaneOverlaysReachTheRemainingSurfaces/scrollback-browser` (`the scrollback browser does not read as a pane window`, all six frame probes `bg={Kind:2 Index:0 R:58 G:57 B:67}`). This is the check that already held the frame's ground at the corners; it fails before `wantBrowserFrameOnPane` is reached | **caught** |
+
+After review of #1096, `wantBrowserFrameOnPane` holds every cell of the browser's frame, all four edges end to end, to a frame glyph on `#203040`. The two rows above were each built into their own binary from `3451ed6b0`'s code (the same as `99f3bec50`'s; the commit changes only the test) with one line added to `internal/app/render_scrollback_browser.go`, and run against the test as of `3451ed6b0`; the positive run on that code passes `TestPaneOverlaysReachTheRemainingSurfaces` and `TestStockRemainingSurfacesKeepTheirOwnLook`. Run on 2026-10-25.
+
+### The scrollback browser and its help modal follow border_style
+
+The browser and its help modal drew `lipgloss.RoundedBorder()` whatever `appearance.border_style` said; they now draw `overlay.EdgeBorder()`, the pushed frame glyphs with the rounded fallback a frame that is a surface's only edge takes under `hidden`. `TestScrollbackBrowserFollowsBorderStyle` attaches a truecolor client, prints two commands with OSC 133 marks, opens the browser and then its help modal with `?`, and reads the corners and edges of each at cells found from its own text. `/double` wants `╔ ╗ ╚ ╝ ═ ║` on both; `/hidden` wants both to keep `╭ ╮ ╰ ╯ ─ │`. Run against a build of the code before the change (`4f1c12540`, whose code is `94b5305d2`'s), `/double` fails on the browser (`got tl="╭" tr="╮" bl="╰" br="╯" top="─" side="│", want tl="╔" …`) and `/hidden` passes. Each control below was built into its own binary from `2d83185b6` with one line changed, and the test run against it; the positive run on `2d83185b6` passes `TestScrollbackBrowserFollowsBorderStyle`, `TestOverlayBordersFollowBorderStyle`, `TestPaneOverlaysReachTheRemainingSurfaces` and `TestStockRemainingSurfacesKeepTheirOwnLook`. Run on 2026-10-25.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| The browser keeps the rounded frame under `double` | `overlay.EdgeBorder()` on the browser's box in `renderScrollbackBrowser` | Put back to `lipgloss.RoundedBorder()` | `TestScrollbackBrowserFollowsBorderStyle/double` (`the scrollback browser under double at {x0:0 x1:119 y0:0 y1:39}: got tl="╭" tr="╮" bl="╰" br="╯" top="─" side="│", want tl="╔" tr="╗" bl="╚" br="╝" top="═" side="║"`) | **caught** |
+| The help modal keeps the rounded frame under `double` | `overlay.EdgeBorder()` on the modal in `overlayBrowserHelp` | Put back to `lipgloss.RoundedBorder()` | `TestScrollbackBrowserFollowsBorderStyle/double` (`the browser's help modal under double at {x0:37 x1:82 y0:9 y1:30}: got tl="╭" tr="╮" bl="╰" br="╯" top="─" side="│", want tl="╔" …`) | **caught** |
+| The browser loses its frame under `hidden` | The rounded fallback `edgeFrame` gives a blank frame | `EdgeBorder` built from `dialogFrame()` instead of `edgeFrame()` | `TestScrollbackBrowserFollowsBorderStyle/hidden` (`the scrollback browser never opened with a frame found from its text`; the browser's title and rows are on screen with no frame round them). `/double` passes, as it should: there the two agree | **caught** |
+
+## The files menu's Preview from any focus
+
+`TestRailQuickLook` now starts with the keyboard in a pane, before the rail has had it. It right-clicks `main.go` and picks Preview. The preview must show `main.go` and stay open, `j` must move it to `notes.md`, and after `esc` the keys must reach the shell. Later in the test, Preview runs from the focused rail, where `esc` must leave the keyboard with the rail. This replaces the check in "The files menu previews the row it was opened on", where `j` went on from the old cursor row. Each control was built into its own binary. Run on 2026-10-30 on Linux.
+
+```bash
+go build -o /tmp/tuios ./cmd/tuios
+cd e2e/tui && TUIOS_E2E=1 TUIOS_E2E_BIN=/tmp/tuios go test -count=1 -run '^TestRailQuickLook$' .
+
+## Rail labels an agent by its title
+
+`TestRailNamesAnAgentByItsTitle` runs stand-in programs that the detector names
+as each harness, and sets the titles each harness writes. A title that says
+nothing must leave the program's name on the row, and an anchor title has to
+leave the rail first, so a title the client never read cannot pass.
+`TestRailRepeatedLabelStaysWithItsPane` opens six agents that show only the
+program, and requires each row to carry the start of its own window id, before
+and after the first pane closes. Two agents with one name and two bare shells
+must keep their positions. `TestIdleCostStaysLow/agent_spinner_in_a_watched_pane` holds
+a spinner in the title of the focused pane to the idle budget.
+
+Run on 2026-10-30 on Linux. The tests pass on the fixed build, and each control
+below fails at the step named:
+
+```bash
+go build -o /tmp/tuios ./cmd/tuios
+cd e2e/tui && TUIOS_E2E=1 TUIOS_E2E_BIN=/tmp/tuios go test -count=1 \
+  -run 'TestRailNamesAnAgentByItsTitle|TestRailRepeatedLabelStaysWithItsPane|TestIdleCostStaysLow/agent' .
+```
+
+| Control: what was cut | Where it fails | Verdict |
+| --- | --- | --- |
+| The whole fix: a build of origin/main before it | "ASSERTION: Preview from a pane did not show the row the menu was opened on" | **caught** |
+| `m.sidebarSetCursor(row)` in `quickLookMenu` (`internal/app/quicklook.go`) | The same step | **caught** |
+| `m.EnterSidebarFocus()` in `quickLookMenu` | The same step | **caught** |
+| `m.sidebarFollowSession = ""` in `quickLookMenu`, so the next frame puts the cursor on the session row | The same step | **caught** |
+| `ql.borrowed = true` in `quickLookMenu`, so `esc` leaves the rail with the keyboard | `command "echo back-$((40+4))" never produced "back-44"` | **caught** |
+| The `!m.SidebarFocused` check on `ql.borrowed`, so Preview always gives the keyboard back | "ASSERTION: after Preview and esc the rail lost the keyboard" | **caught** |
+| `railWindowLabel` does not ask `harness.TitleLabel`, as before | "the anchor title never reached the rail": the row reads `claude` | **caught** |
+| `TitleLabel` keeps the marks in front of the title | `⠂ Fix the test` gives `claude` | **caught** |
+| The title is ranked above the custom name | "the custom name never reached the rail" | **caught** |
+| `gemini-cli` leaves the status-only list | "a row took Gemini CLI's status for a name" | **caught** |
+| `isPaneDefaultTitle` is not checked | "an agent with no title has no row with the program's name": the row reads `Terminal 8bf1c038`. `TestCrushPermissionAnsweredFromTheInbox` also fails, at "the rail row" | **caught** |
+| A state sync writes the title on a watched pane, as before | Two lanes on two cores: "the anchor title never reached the rail", in 3 of 3 runs | **caught** |
+| `looksLikePath` is not checked | `user@host:~/dev/SENTINEL` reaches the row | **caught** |
+| `disambiguate` appends the position on every row, as before | "a row does not carry the start of its window id": `claude 1` to `claude 6` | **caught** |
+| `agentRowUnnamed` is true for every agent | "two agents with one name do not show their positions" | **caught** |
+| `disambiguate` appends the window id on every row | "two agents with one name do not show their positions" | **caught** |
+| `disambiguate` appends the window id on rows with no agent | "repeated shells do not show plain numbers" | **caught** |
+| `unwatchedTitles` passes no harness | "the title of an unwatched pane never reached the rail" | **caught** |
+| `railWindowLabel` returns the raw title of an agent | The watched pane goes over budget: 40 ticks and 40 renders in the window, 0 and 0 on the fixed build | **caught** |
+
+One claim did not need code. A hidden agent's frozen local title differs from
+the row, so `tickPolledWork` sees drift. A guard against that drift changed
+nothing in `TestIdleCostStaysLow/agent_title_on_a_hidden_workspace`, with or
+without a clock: 2 ticks, 0 renders. The idle gate is not asked while no tick
+is due, so the guard was left out.
+
+The frames are `rail-named-agents`, `rail-repeated-before-close` and
+`rail-repeated-after-close` under `TUIOS_E2E_FRAMES`, in the test's folder.

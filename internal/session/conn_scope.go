@@ -129,6 +129,7 @@ var verbScopes = map[string]scopeKind{
 	"list-spaces":        scopeGlobal,
 	"pick-space":         scopeGlobal,
 	"list-hosts":         scopeGlobal,
+	"list-routes":        scopeGlobal,
 	"list-host-sessions": scopeGlobal,
 	"list-host-agents":   scopeGlobal,
 	"list-themes":        scopeGlobal,
