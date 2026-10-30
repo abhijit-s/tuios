@@ -11127,3 +11127,13 @@ is due, so the guard was left out.
 
 The frames are `rail-named-agents`, `rail-repeated-before-close` and
 `rail-repeated-after-close` under `TUIOS_E2E_FRAMES`, in the test's folder.
+
+### A transcript under CLAUDE_CONFIG_DIR (#1390)
+
+`TestTranscriptPathFollowsClaudeConfigDir` in `agent_transcript_review_test.go`. On 2026-10-31 the control below was built into a binary and the test was run against it on macOS. The same test passed on the branch build.
+
+The positive halves: a hook with `CLAUDE_CONFIG_DIR` set joins its profile's file, and a hook with the variable set still joins a file under `~/.claude/projects`. The refusals that hold on the fixed build: the profile's file from a hook without the variable, a path outside both folders, and a link in the profile's folder that leads out.
+
+| Control: what was cut | Test | Result |
+| --- | --- | --- |
+| `joinReportedTranscript` passes no environment to `transcriptPathAllowed`, so only the daemon's folder is checked, as before | `TestTranscriptPathFollowsClaudeConfigDir` | **caught**: "a hook with CLAUDE_CONFIG_DIR naming its profile's file: refused" |
