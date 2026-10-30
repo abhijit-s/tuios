@@ -723,7 +723,8 @@ The dock shows the note when you attach or switch to the session. See
 `p` in window mode pins the focused pane as the picture-in-picture view, a
 small live copy of the pane in a corner of the screen. Press `p` again, on any
 pane, to unpin it. A click on the view focuses the pane. The action is
-`toggle_pip`, and `[pip]` sets the size and the corner. See
+`toggle_pip`, and `[pip]` sets the size and the corner. `[pip] enabled = false`
+turns the view off. See
 [SESSIONS.md](SESSIONS.md#picture-in-picture).
 
 ## Rail pane

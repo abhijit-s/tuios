@@ -121,6 +121,7 @@ var settingLabels = map[string]string{
 	"hints.dim":                           "Dim around hints",
 	"hints.all_panes":                     "Hints on all panes",
 	"scratch.width":                       "Scratch width",
+	"pip.enabled":                         "Picture-in-picture",
 	"pip.width":                           "Picture-in-picture width",
 	"pip.height":                          "Picture-in-picture height",
 	"pip.corner":                          "Picture-in-picture corner",

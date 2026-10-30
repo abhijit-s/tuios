@@ -40,6 +40,9 @@ func (m *OS) rebuildPaletteItems() {
 	if !m.DaemonRestartAvailable() {
 		static = slices.DeleteFunc(static, func(it CommandPaletteItem) bool { return it.Name == paletteRestartDaemonName })
 	}
+	if !m.pipEnabled() {
+		static = slices.DeleteFunc(static, func(it CommandPaletteItem) bool { return it.Name == palettePiPName })
+	}
 	if len(m.MultifocusSet) == 0 {
 		static = slices.DeleteFunc(static, func(it CommandPaletteItem) bool { return it.Name == paletteMultiCopyName })
 	}

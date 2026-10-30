@@ -24,7 +24,8 @@ Name the pane by id or name. Omit it to pin the focused pane. Name the pinned
 pane again to unpin it. --off unpins whatever is pinned.
 
 The view belongs to the client, not to the session. It needs an attached
-client, and a detach forgets it. Set its size and corner in the [pip] table.`,
+client, and a detach forgets it. Set its size and corner in the [pip] table.
+With [pip] enabled = false the command refuses to pin, and --off still works.`,
 		Example: `  # Watch the agent pane while you work in another pane
   tuios pip agent
 

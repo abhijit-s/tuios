@@ -489,3 +489,78 @@ func TestPiPDoesNotFreezeAcrossASessionSwitch(t *testing.T) {
 		t.Fatalf("the view is frozen at tick %d after the session round trip\n%s", before, term.Snapshot())
 	}
 }
+
+// palettePiPRow is the palette's picture-in-picture command.
+const palettePiPRow = "pin or unpin the focused pane"
+
+// paletteShowsPiP opens the palette, filters it to the picture-in-picture
+// command, and reports whether the row is listed. The row is looked for after
+// a row the same query always lists, the settings row for pip.corner, has
+// drawn, so a palette still filtering cannot read as a missing row.
+func paletteShowsPiP(t *testing.T, term *tuitest.Terminal, when string) bool {
+	t.Helper()
+	toWindowMode(t, term)
+	if err := term.SendKeys(tuitest.Ctrl('b'), "P"); err != nil {
+		t.Fatal(err)
+	}
+	waitPaletteOpen(t, term, when)
+	if err := term.SendKeys("picture"); err != nil {
+		t.Fatal(err)
+	}
+	if err := term.WaitForText("Picture-in-picture corner", uiTimeout); err != nil {
+		t.Fatalf("%s: the palette never listed the corner setting\n%s", when, term.Snapshot())
+	}
+	shown := strings.Contains(term.Screen().Text(), palettePiPRow)
+	closePalette(t, term, when)
+	return shown
+}
+
+// TestPiPOffInTheConfig is [pip] enabled = false (#1381), turned off while a
+// view is up: the view goes, p pins nothing and says why, the palette leaves
+// the command out, tuios pip refuses, and turning it back on pins again.
+//
+// How it could pass wrongly: the view could be gone only because the focus
+// moved to its pane. The focus stays on the other pane throughout, where the
+// view was showing. The palette row could be missing because the palette had
+// not filtered yet; see paletteShowsPiP.
+func TestPiPOffInTheConfig(t *testing.T) {
+	base := t.TempDir()
+	term := startPiPPanes(t, base, []string{"new", "work"},
+		`i=0; while :; do i=$((i+1)); echo PIPTICK-$i; sleep 0.2; done`)
+	pinWithKey(t, term, "Pinned agent")
+	mouseClick(t, term, 20, 10, tuitest.MouseLeft, 0)
+	waitPiP(t, term, "agent", "after focusing the other pane")
+	if !paletteShowsPiP(t, term, "with the view on") {
+		t.Fatalf("the palette has no picture-in-picture command with the view on\n%s", term.Snapshot())
+	}
+
+	if out, err := tuiosCLI(t, base, "set-config", "pip.enabled", "false"); err != nil {
+		t.Fatalf("set-config pip.enabled false: %v\n%s", err, out)
+	}
+	waitNoPiP(t, term, "agent", "after pip.enabled was turned off")
+
+	pinWithKey(t, term, "Picture-in-picture is off")
+	time.Sleep(time.Second)
+	if _, ok := findPiPBox(term.Screen(), "agent"); ok {
+		t.Fatalf("p brought the view back with pip.enabled off\n%s", term.Snapshot())
+	}
+	if paletteShowsPiP(t, term, "with the view off") {
+		t.Fatalf("the palette lists the picture-in-picture command with the view off\n%s", term.Snapshot())
+	}
+	out, err := tuiosCLI(t, base, "pip", "agent", "-s", "work")
+	if err == nil || !strings.Contains(out, "[pip] enabled") {
+		t.Fatalf("tuios pip agent with the view off: want a refusal naming [pip] enabled, got err %v\n%s", err, out)
+	}
+	if _, ok := findPiPBox(term.Screen(), "agent"); ok {
+		t.Fatalf("tuios pip brought the view back with pip.enabled off\n%s", term.Snapshot())
+	}
+	t.Logf("with pip.enabled off, tuios pip says: %s", strings.TrimSpace(out))
+
+	if out, err := tuiosCLI(t, base, "set-config", "pip.enabled", "true"); err != nil {
+		t.Fatalf("set-config pip.enabled true: %v\n%s", err, out)
+	}
+	if out, err := tuiosCLI(t, base, "pip", "agent", "-s", "work"); err != nil || !strings.Contains(out, "Pinned") {
+		t.Fatalf("tuios pip agent with the view on again: %v\n%s", err, out)
+	}
+	waitPiP(t, term, "agent", "after pip.enabled was turned on again")
+}
