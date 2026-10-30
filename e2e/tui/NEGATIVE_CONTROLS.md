@@ -10612,3 +10612,12 @@ The positive half is in the same runs: `pill` and `flat` pass on every build. Th
 | Control: what was cut | Where it fails | Verdict |
 | --- | --- | --- |
 | `notePaneExitedAlone` no longer starts the hold, so a save after a pane is killed by a signal writes the smaller layout (`internal/session/workspace_renumber.go`) | `attached`: "session \"reboot-attached\" never appeared in the listing". The client closed each pane, the daemon saved a session with no windows, and the next start discarded it. `detached` passes on both builds, because no client removes the windows | **caught** |
+## notifications.level keeps info messages off the dock (#1361)
+
+`TestNotificationLevelKeepsInfoOffTheDock` sets `notifications.level = "warning"`, raises a warning (`clear_scrollback` with no pane open) and an info message (toggling tiling), and opens the log viewer. The control was built into its own binary. Run on 2026-10-30 on macOS arm64.
+
+| Control: what was cut | Where it fails | Verdict |
+| --- | --- | --- |
+| The level check in `showNotification` (`internal/app/os_notify.go`) | "ASSERTION: the dock shows an info message under level warning" | **caught** |
+
+The positive half is in the same run: the warning reaches the dock on both builds.
