@@ -12156,3 +12156,12 @@ The positive half is in the same runs: `pill` and `flat` pass on every build. Th
 | The build before this change (upstream main at `92258aafe`) | `TestRiskInWorktree`: "ASSERTION: repo-feat-kinder-greeting marks an Edit inside its worktree outside the worktree: [outside the worktree cut short]", the same for `demo`; `TestRiskLinkedRoot`: the same assertion | **caught** |
 | `resolveAbove` in `approvalRoot` (`internal/session/approval_risk.go`): the managed worktree is taken as recorded, through the link | `TestRiskLinkedRoot`: "ASSERTION: repo-feat-kinder-greeting marks an Edit inside its worktree outside the worktree". `TestRiskInWorktree` passes, since its panes start in the worktree and the start folder is resolved when recorded | **caught** |
 | The `resolve` of the shown directories in `shownOutside` (`internal/risk/risk.go`) | `TestRiskInWorktree`: both panes' Edits marked "outside the worktree" | **caught** |
+## notifications.level keeps info messages off the dock (#1361)
+
+`TestNotificationLevelKeepsInfoOffTheDock` sets `notifications.level = "warning"`, raises a warning (`clear_scrollback` with no pane open) and an info message (toggling tiling), and opens the log viewer. The control was built into its own binary. Run on 2026-10-30 on macOS arm64.
+
+| Control: what was cut | Where it fails | Verdict |
+| --- | --- | --- |
+| The level check in `showNotification` (`internal/app/os_notify.go`) | "ASSERTION: the dock shows an info message under level warning" | **caught** |
+
+The positive half is in the same run: the warning reaches the dock on both builds.
