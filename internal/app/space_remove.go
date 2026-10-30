@@ -112,7 +112,7 @@ func (m *OS) CloseSpace(space string) tea.Cmd {
 		return nil
 	}
 	m.Cleanup()
-	return tea.Quit
+	return m.QuitCmd()
 }
 
 // callVerb makes one verb call and reports only whether it was refused, a
