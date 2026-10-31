@@ -364,7 +364,7 @@ func upgradeLive(say func(string, ...any), binary string) (upgradeOutcome, error
 			return o, &notLiveError{
 				reason: "the daemon refused: " + verr.Message, running: true, from: before.Version,
 				unconfirmed: verr.Code == session.ErrVerbForbidden,
-				err:         &diagnosticError{What: verr.Message + ".", Cause: "the daemon refused the upgrade.", Fix: "nothing was changed. Fix what the message names and run 'tuios daemon upgrade' again."},
+				err:         &diagnosticError{What: strings.TrimSuffix(verr.Message, ".") + ".", Cause: "the daemon refused the upgrade.", Fix: "nothing was changed. Fix what the message names and run 'tuios daemon upgrade' again."},
 			}
 		}
 		return o, err
