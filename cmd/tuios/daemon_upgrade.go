@@ -348,8 +348,14 @@ func upgradeLive(say func(string, ...any), binary string) (upgradeOutcome, error
 	raw, err = client.CallWithTimeout("daemon-upgrade", map[string]any{"binary": binary}, session.UpgradeConfirmWait+daemonUpgradeWait)
 	_ = client.Close()
 	if err != nil {
-		say("refused\n")
 		var verr *session.VerbCallError
+		// A pane's upgrade that nobody said Yes to is refused as forbidden,
+		// and the binary was never what said no.
+		if errors.As(err, &verr) && verr.Code == session.ErrVerbForbidden {
+			say("not confirmed\n")
+		} else {
+			say("refused\n")
+		}
 		if errors.As(err, &verr) && verr.Code == session.ErrVerbUnknownVerb {
 			return o, &notLiveError{
 				reason: fmt.Sprintf("the daemon (%s, pid %d) predates live upgrades", before.Version, before.PID), running: true, from: before.Version,
