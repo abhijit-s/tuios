@@ -58,6 +58,10 @@ import (
 // unrelated thread next took its id. resume is dropped on load as well, because
 // the restore that follows every start opens it again from the window's
 // recorded conversation, which is where the fact lives.
+//
+// A live handoff is not a restart. The pane's process goes on, and the prompt is
+// still on its screen, so loadHandoff keeps approval, plan and question items for a
+// pane that still waits. Nothing new happened, so they raise no alert.
 
 // Attention kinds. They are wire values: the kind field of an item and the
 // kind filter of list-attention.
@@ -661,6 +665,23 @@ func (a *attentionStore) noteAgentState(sessionName string, ev SessionEvent) {
 
 	switch state {
 	case AgentStateNeedsInput.Name():
+		// A quiet pane's question stays out of the queue. An approval or a login
+		// does not, since the pane cannot move until a person acts.
+		if ev.agentQuiet && !AgentKindReachesPerson(ev.hookKind) {
+			key := attentionKey(AttentionQuestion, sessionName, ev.Window, 0)
+			cur, open := a.items[a.byKey[key]]
+			if !open || cur.Kind != AttentionQuestion {
+				// The prompt it replaced has gone. Without this, an approval
+				// followed by a question stayed open and said the wrong thing.
+				if open && cur.Kind == AttentionApproval {
+					a.closeKeyLocked(key, AttentionClosedResolved)
+				}
+				break
+			}
+			// A question item is already open: a login the pane has moved on from,
+			// or a question a pane could not close (see closeQuiet). It follows
+			// what the pane says now, so it does not go stale.
+		}
 		if a.askShownLocked(sessionName, ev.Window, ev.hookMessage) {
 			// The pane shows its own open ask-human question as its state
 			// (ask_human_state.go). The ask item is the row for it, with
@@ -679,13 +700,16 @@ func (a *attentionStore) noteAgentState(sessionName string, ev SessionEvent) {
 		it.Summary = attentionText(ev.hookMessage, attentionMaxSummary)
 		a.upsertLocked(it)
 	case AgentStateErrored.Name():
+		if ev.agentQuiet {
+			break
+		}
 		it := base
 		it.Kind = AttentionErrored
 		it.Summary = attentionText(ev.hookMessage, attentionMaxSummary)
 		a.upsertLocked(it)
 	}
 
-	if ev.completionSeq > ev.prevCompletionSeq && agentStateFinishes(AgentState(state)) {
+	if !ev.agentQuiet && ev.completionSeq > ev.prevCompletionSeq && agentStateFinishes(AgentState(state)) {
 		it := base
 		it.Kind = AttentionFinished
 		it.Summary = attentionText(ev.hookMessage, attentionMaxSummary)
@@ -1148,6 +1172,26 @@ func writeAttentionFile(path string, data []byte) {
 	}
 }
 
+// saveNow writes the queue as it stands and goes on saving. A handoff takes it
+// before the exec: a save still on its timer would be lost with this image, and
+// the next one would load a queue from before it.
+func (a *attentionStore) saveNow() {
+	if a == nil {
+		return
+	}
+	a.mu.Lock()
+	if a.saveTimer != nil {
+		a.saveTimer.Stop()
+		a.saveTimer = nil
+	}
+	path := a.path
+	data := a.encodeLocked()
+	a.mu.Unlock()
+	if path != "" {
+		writeAttentionFile(path, data)
+	}
+}
+
 // saveNowAndFreeze writes the queue as it stands and stops saving from then
 // on. It is the daemon's final save, taken before shutdown closes any pane.
 func (a *attentionStore) saveNowAndFreeze() {
@@ -1186,6 +1230,16 @@ func (a *attentionStore) saveNowAndFreeze() {
 // same key. A saved item whose id one of them already holds gets a fresh id,
 // so byKey and items always agree.
 func (a *attentionStore) load(path string, live func(session, window string) bool) {
+	a.loadKeeping(path, live, nil)
+}
+
+// loadHandoff is load after a live handoff. waiting reports whether a pane still
+// waits on a person.
+func (a *attentionStore) loadHandoff(path string, live, waiting func(session, window string) bool) {
+	a.loadKeeping(path, live, waiting)
+}
+
+func (a *attentionStore) loadKeeping(path string, live, waiting func(session, window string) bool) {
 	var f attentionFile
 	data, err := os.ReadFile(path)
 	if err == nil {
@@ -1201,6 +1255,14 @@ func (a *attentionStore) load(path string, live func(session, window string) boo
 			if it.ID == "" || !live(it.Session, it.Window) {
 				continue
 			}
+		case AttentionApproval, AttentionPlan, AttentionQuestion:
+			if waiting == nil || it.ID == "" || !waiting(it.Session, it.Window) {
+				continue
+			}
+			// A hold is a hook's connection, and it did not cross the handoff.
+			// The item stays open as long as the pane is blocked, as it does
+			// when any hold ends.
+			it.RequestID, it.Options, it.AlwaysScope, it.Expires = "", nil, nil, 0
 		default:
 			continue
 		}

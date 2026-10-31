@@ -4340,6 +4340,7 @@ Some commands also answer to a short name: `attach` to `a`, `new` to `n`,
 | `tuios list-workspaces` | List the workspaces in a session and how many windows each holds |
 | `tuios compact-workspaces` | Number the workspaces that hold panes 1 to N, closing the gaps between them |
 | `tuios set-window` | Rename a window (`--name`), minimize it (`--minimize`) or restore it (`--restore`) |
+| `tuios set-agent-quiet` | Keep a window's finished turns, questions and failures out of the Inbox. `--off` clears the mark. Needs an agent in the pane and the admin grant |
 | `tuios split-window <horizontal\|vertical\|left\|right\|up\|down>` | Divide a pane and open a new one beside it. A side names where the new pane goes. Needs an attached client and tiling on |
 | `tuios set-layout` | Turn tiling on or off (`--tiling`), reset the splits (`--equalize`: every split to half in BSP, and in master-stack the configured master ratio with even shares for the other panes), flip the focused split (`--rotate`), or shape the master-stack layout of the current workspace (`--master-position left\|right\|top\|bottom\|center`, `--masters N`). See [LAYOUT_MODES.md](LAYOUT_MODES.md#master-stack-layout) |
 
@@ -5807,7 +5808,7 @@ Manage TUIOS configuration file.
 - `tuios config path`: Print configuration file path
 - `tuios config edit`: Edit configuration in $EDITOR
 - `tuios config reset`: Reset configuration to defaults
-- `tuios config apply`: Apply `config.toml` to the running daemon now
+- `tuios config apply`: Apply `config.toml` to the running daemon and clients now
 - `tuios config browse`: Search the settable options and set one, in an explorer
 - `tuios config files`: List the files the config is read from
 - `tuios config origin`: Show which file sets each key
@@ -5817,6 +5818,8 @@ Manage TUIOS configuration file.
 
 Apply `config.toml` to the running daemon now, including the changes that give
 panes or other machines more than they had.
+
+Every tuios client on this machine also applies the file as it is now.
 
 A process in a pane can write `config.toml`, so the daemon applies a change to
 the bounds of panes and links at once only when the change gives less: a

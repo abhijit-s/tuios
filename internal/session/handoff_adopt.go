@@ -242,7 +242,7 @@ func (d *Daemon) adopt(fd int, fb *adoptFallback, kept map[int]int) error {
 	_ = os.Unsetenv(handoffKeptEnv)
 	d.lastHandoff.Store(&stats)
 
-	d.attention.load(attentionPath(), d.attentionLive)
+	d.attention.loadHandoff(attentionPath(), d.attentionLive, d.attentionWaiting)
 	d.noteHostProblems(d.configProblems())
 	d.outbox.load(outboxPath())
 	d.reviewNotes.load(reviewNotesPath(), func(window string) bool { return d.sessionOfWindow(window) != "" })

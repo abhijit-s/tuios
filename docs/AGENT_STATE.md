@@ -2034,6 +2034,44 @@ count has moved past that is drawn exactly as an unread `done` pane is, and
 focusing it puts it back to its own state. A turn that ends in the focused pane
 counts as seen.
 
+## Quiet panes
+
+`tuios set-agent-quiet -w NAME` marks a pane as a background worker. Use it when
+a tool runs several agents and reports on them itself.
+
+While a pane is quiet:
+
+- The pane opens no `finished`, `question` or `errored` item in the Inbox.
+- Its open items of those kinds close.
+- The client shows no alert for it.
+- The rail row says `quiet`, and `list-agents` and `get-agent-state` report
+  `quiet: true`.
+
+These do not change:
+
+- The agent state, `completion_seq` and the `agent-state` events.
+- An approval or a login, which still reaches the Inbox and the alerts. A login
+  is `kind=auth`, or a manifest rule such as Hermes's credential prompt.
+- An item that the queue opens on the pane, such as a stalled message.
+
+On a narrow rail the row says `z` in place of `quiet`. In the agents view, the row
+of a quiet pane that waits says that it is not in the Inbox.
+
+`--off` clears the mark. The old items do not open again, and the next
+transition opens its own. If the pane waits on a question at that moment, the
+question opens at once with its alert. The mark goes when the agent leaves the
+pane or the pane closes, and a pane that tuios restores after a restart is not
+quiet.
+
+The verb needs an agent in the pane, and the `admin` grant. In strict mode an
+agent cannot hide its own questions from you. In the default mode `open` every
+pane holds `admin`, so a moderator pane can quiet its workers. Mark workers before
+they ask: when a pane calls the verb, an open question stays open. Only you can
+close one this way. Over a link, the verb needs both `write` and `respond`.
+
+Calm mode is different: it applies to the whole client, and it does not change the
+Inbox.
+
 ## Indicator
 
 tuios draws a mark for each pane's state. It is the same mark, in the same
@@ -4350,6 +4388,12 @@ the one that owns the pane. These filters keep those events off the pane:
   sets the conversation that owns the pane. A report for another conversation
   is refused with `foreign_session`, at rest and mid-turn. It makes no Inbox
   item and no notification. The daemon logs the refusal at debug level.
+- Codex's shared server keeps the `TUIOS_PANE_ID` of the pane that started it.
+  When that pane closes, every hook names a pane that is gone. tuios then shows
+  an Inbox item, `Codex hooks`, after two such reports at least 10 seconds apart.
+  Restart the server from outside tuios to fix it. The item closes on the next
+  report that reaches a pane. Until then the pane takes its state from the screen
+  rules, and the hookless search still finds its rollout for the thread.
 - Another conversation's `SessionStart` takes the pane over, because it looks
   like `/new` or `/resume` in the pane. A `SessionStart` after a compaction
   (source `compact`) is the same conversation and takes nothing over.

@@ -474,6 +474,9 @@ type Window struct {
 	// AgentSettled marks an agent the person put away on the Settled shelf,
 	// as the daemon synced it.
 	AgentSettled bool
+	// AgentQuiet marks a pane that raises no alert unless it asks for an
+	// approval. The rail marks the row.
+	AgentQuiet bool
 	// AgentSubagents is how many subagents the pane's agent is running, as the
 	// daemon synced it. Zero for none, and from a daemon that counts none.
 	AgentSubagents int
@@ -565,7 +568,14 @@ const (
 	CopyModeVisualChar
 	// CopyModeVisualLine is line-wise visual selection
 	CopyModeVisualLine
+	// CopyModeVisualBlock is a rectangular visual selection
+	CopyModeVisualBlock
 )
+
+// InVisual reports whether the state is one of the visual selections.
+func (s CopyModeState) InVisual() bool {
+	return s == CopyModeVisualChar || s == CopyModeVisualLine || s == CopyModeVisualBlock
+}
 
 // Position represents a 2D coordinate
 type Position struct {

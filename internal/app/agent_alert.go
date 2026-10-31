@@ -6,6 +6,7 @@ import (
 	"github.com/Gaurav-Gosain/tuios/internal/config"
 	"github.com/Gaurav-Gosain/tuios/internal/hooks"
 	"github.com/Gaurav-Gosain/tuios/internal/overlay"
+	"github.com/Gaurav-Gosain/tuios/internal/session"
 	"github.com/Gaurav-Gosain/tuios/internal/sessiontree"
 	"github.com/Gaurav-Gosain/tuios/internal/sound"
 	"github.com/Gaurav-Gosain/tuios/internal/terminal"
@@ -51,6 +52,28 @@ func (m *OS) agentAlertPolicy() config.AgentAlertPolicy {
 	return config.ResolveAgentAlerts(&m.UserConfig.Notifications.Agent)
 }
 
+// agentAlertQuiet reports whether a quiet pane keeps this transition to itself.
+// An approval or a login still reaches the person, as it does in the Inbox.
+func agentAlertQuiet(w *terminal.Window, to string) bool {
+	return quietHoldsAlert(w.AgentQuiet, w.AgentKind, to)
+}
+
+func quietHoldsAlert(quiet bool, kind, to string) bool {
+	return quiet && (to != "needs_input" || !session.AgentKindReachesPerson(kind))
+}
+
+// noteQuietLifted raises the alert a sync owes a pane that stayed on needs_input
+// and that the mark no longer holds: its question became an approval, or the
+// mark was cleared while it waits. No state changed, so noteAgentState is silent.
+func (m *OS) noteQuietLifted(w *terminal.Window, fromState string, fromQuiet bool, fromKind string) {
+	if fromState != "needs_input" || w.AgentState != "needs_input" {
+		return
+	}
+	if quietHoldsAlert(fromQuiet, fromKind, "needs_input") && !agentAlertQuiet(w, "needs_input") {
+		m.considerAgentAlert(w, "needs_input", "needs_input")
+	}
+}
+
 // considerAgentAlert decides what one transition earns. It runs on the Update
 // goroutine inside the state sync, so it does no I/O beyond the host write,
 // which is a single mutex-guarded Write.
@@ -75,6 +98,9 @@ func (m *OS) considerAgentAlert(w *terminal.Window, from, to string) {
 	// back inside the settle window produces nothing rather than two alerts.
 	delete(m.pendingAgentAlerts, w.ID)
 
+	if agentAlertQuiet(w, to) {
+		return
+	}
 	if !policy.Alerts(to) {
 		return
 	}
@@ -140,6 +166,10 @@ func (m *OS) windowByID(id string) *terminal.Window {
 
 // fireAgentAlert writes the alert to every sink the policy leaves on.
 func (m *OS) fireAgentAlert(w *terminal.Window, from, to string, policy config.AgentAlertPolicy) {
+	// The pane went quiet during the settle.
+	if agentAlertQuiet(w, to) {
+		return
+	}
 	word, sev := agentTransitionNotice(to)
 	if word == "" {
 		return

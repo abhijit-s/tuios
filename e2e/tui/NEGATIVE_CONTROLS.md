@@ -7,6 +7,102 @@ below. Two of them are **not** caught here; that is written down rather than
 papered over, because a suite whose real coverage is unknown is worse than no
 suite.
 
+## An edit back to a tuios save reaches the screen
+
+`TestAnEditBackToATuiosSaveReachesTheScreen` follows issue 1411. tuios saves the
+file twice with leader `Z`. A hand edit turns the beam on, and a hand edit back to
+the saved bytes has to turn it off. Then `tuios config apply` has to bring in an
+included file that the watcher has no event for.
+
+Run on 2026-10-31 on Linux. A build with `onlySelfWrites` matching every save in
+the ring, whatever the watcher has seen, failed: `an edit back to the bytes of a
+tuios save never reached the screen`. A build with `askClientsToApply` cut failed:
+`tuios config apply never reached the client`. The fixed build passes.
+
+`TestWatcherDropsTuiosOwnSave` failed on the first build with `an edit back to the
+first of the quick saves: the watcher delivered nothing`, and
+`TestWatcherDeliversTheFileWhenAskedToApply` failed with the stamp event ignored.
+## Block selection in copy mode
+
+`TestCopyBlockSelection` starts a block with `ctrl+v`, reads the rectangle off the
+cell grounds, and compares what `y` and a copy pipe write, untrimmed.
+
+Run on 2026-10-31 on Linux. Each control fails and the fixed build passes.
+
+| Control | Failure |
+| --- | --- |
+| `extractVisualText` ignores the block | `the block copied "A one two\nBLOCK-B 中文 x\nBLOCK-C\nBLOCK-D   ", want "A on\nB 中\nC\nD   "` |
+| The render path stops at each row's text | `the selection is not a rectangle` |
+| `BlockRowSpan` does not widen | `the selection does not cover a wide character on its edge` |
+
+## A Codex rollout joins without a hook
+
+`TestCodexRolloutJoinsWithoutAHook` follows issue 1391. A stub named `codex` runs in
+a pane, a rollout matches it, and Codex's real hook runs with the id of a closed
+pane. The search must join the rollout, and the Inbox must name the problem.
+
+Run on 2026-10-31 on Linux. Linux has `/proc`, so the old read of a process's folder
+works here, and this test passes on a build without that fix. The first control
+stands in for macOS, where that read found nothing. It fails, and the fixed build
+passes.
+
+| Control | Failure |
+| --- | --- |
+| The agent's folder reads as unknown, as it did on macOS | `the pane never joined the matching rollout` |
+| `noteSharedServerHook` is not called | `reports for a closed pane raised no notice` |
+| `goneHookWait` is 0 | `two quick reports for a closed pane raised the notice` |
+| `closeConfigNotice` is not called | `a report that reached a pane left the notice open` |
+## A quiet pane keeps out of the Inbox
+
+`TestQuietPaneKeepsOutOfTheInbox` types state reports into a real pane's shell,
+with the pane not focused, because a client that has the pane focused closes a
+finished item as soon as it sees it.
+
+Run on 2026-10-31 on Linux. The fixed build passes 3 runs of 3. Each control is one
+edit, and each fails at the step named.
+
+| Control | Failure |
+| --- | --- |
+| `noteAgentState` ignores the mark | `a quiet pane reached the Inbox` |
+| The mark holds back an approval too | `a quiet pane's approval did not reach the Inbox` |
+| `agentAlertQuiet` returns false | `a quiet pane raised an alert named QUIET-TURN` |
+| `set-agent-quiet` is `scopeOpen` | `the pane marked itself quiet` |
+| `closeQuiet` is not called | `going quiet left the item open` |
+| The rail row has no mark | `the rail row does not say quiet` |
+| `noteQuietLifted` is not called | `no alert named QUIET-APPROVE` |
+| An approval that becomes a question stays open | `the Inbox holding QUIET-APPROVE is not false` |
+| `AgentKindReachesPerson` leaves out auth | `the Inbox holding QUIET-LOGIN is not true` |
+| The mark is allowed with no agent | `set-agent-quiet on a pane with no agent` |
+| `--off` raises nothing | `the Inbox holding QUIET-OPEN is not true` |
+| A pane closes an open question | `the Inbox holding LOUD-ASK is not true` |
+| The mark stays when the agent leaves | `the next agent inherited the mark` |
+
+`TestAgentWorkVerbsAreClassifiedAsThePlanSays` holds `set-agent-quiet` to `write` and
+`respond` over a link, and `TestACredentialPromptIsALogin` holds the Hermes and Amp
+prompts to `auth`.
+
+## Open prompts across a live handoff
+
+`TestDaemonUpgradeKeepsOpenPrompts` opens a question and an approval, attaches a
+client and runs `test-handoff`. Each item must keep its id, and the client must get
+no new alert.
+
+Run on 2026-10-31 on Linux. A build that loads the Inbox as a restart does failed:
+`the item for OPEN-QUESTION across the handoff: before {ID:1 Kind:question
+Summary:OPEN-QUESTION}, after {ID: Kind: Summary:}`. A build with no save before the
+exec failed the same way, because the save was still on its timer. The fixed build
+passes 2 runs of 2.
+## A far folder's change before its watch starts
+
+`TestFilesFollowAWindowOnAHost` holds the far watch back for 1.5 s with
+`TUIOS_E2E_WATCH_START_DELAY_MS`, so the file is removed after the list shows it and
+before the watch is up. Without the hold the race failed five CI runs in three days.
+
+Run on 2026-10-31 on Linux. The fixed build passes 3 runs of 3. With no read when
+the far watch starts, the test failed with the message from CI: `a file removed on
+the far machine stayed on the list`. With `wait-dir` ignoring `after`, it failed
+with `a change between two waits was not the answer to the second`.
+
 ## tuios tutor keeps out of the person's home
 
 `TestTutorBasics` plants an Omarchy theme, Catppuccin Latte, under the
@@ -12936,3 +13032,24 @@ The positive halves: a hook with `CLAUDE_CONFIG_DIR` set joins its profile's fil
 | `joinReportedTranscript` passes no environment to `transcriptPathAllowed`, so only the daemon's folder is checked, as before | `TestTranscriptPathFollowsClaudeConfigDir` | **caught**: "a hook with CLAUDE_CONFIG_DIR naming its profile's file: refused" |
 | `agentHomeDir` takes a value with a `{` in it, so `RootIn` cuts the path inside the value and `CLAUDE_CONFIG_DIR=<base>/braced/{x` makes the folder `<base>/braced` | `TestTranscriptPathFollowsClaudeConfigDir` | **caught**: "a CLAUDE_CONFIG_DIR with a { naming a file above its projects folder: want transcript_refused", the hook joined `braced/logs/above.jsonl` |
 | `transcriptPathAllowed` does not check that the resolved peer folder still ends in `projects`, so `<any>/projects` linked to another folder counts | `TestTranscriptPathFollowsClaudeConfigDir` | **caught**: "a projects folder that is a link to another folder: want transcript_refused", the hook joined `claude-linked/projects/demo/target.jsonl` |
+## A dock cell watching agent state hears every transition
+
+`TestDockAgentCellClearsWhenTheAnswerMovesThePaneOn` draws a dock cell that counts the session's panes on `needs_input`, refreshed on `event:after-agent-state`, with `working` left out of `[notifications.agent.states]`. The pane goes to `needs_input` and the cell has to read `WAIT1`, then the pane goes to `working` and the cell has to read `WAIT0` again.
+
+Run on 2026-10-31 on macOS (arm64). The test passes on the fixed build, 6 runs of 6, and the control fails at the step named:
+
+| Control: what was cut | Where it fails | Verdict |
+| --- | --- | --- |
+| The `NotifyDockEvent` call at the head of `considerAgentAlert` (`internal/app/agent_alert.go`), so the dock hears agent state only through an alert | "the dock cell never read WAIT0 after the answer moved the pane to working": the cell still reads `WAIT1` | **caught** |
+
+The same test then holds a run on a file after it has read `needs_input`, moves the pane to `working` during that run, and releases it. The event has to start one more run (issue 1416).
+
+Run on 2026-10-31 on Linux. A build with the re-run kept for the rail only failed: `an event during a run did not start one more run: runs "1\n"`. In the same build `TestDockEngineCoalescesAnEventMidRun/dock_cell` failed with `the one pending re-run`. A build with the re-run kept for every refresh failed `TestDockEngineDropsAnIntervalMidRun`: `an interval mid-run queued a re-run, which read "polled"`. The fixed build passes.
+
+### hosts sync and a paired phone
+
+Run on 2026-10-31 on Linux. The fleet in `hosts_sync_test.go` has a `[hosts.phone]` table with no addr, as `tuios pair` writes.
+
+| Control: what was cut | Test that fails | Verdict |
+| --- | --- | --- |
+| The addr check in `resolveSyncTargets`, so the whole table is synced | `TestHostsSync` ("sync printed no JSON": host "phone" was ignored, because it has no addr) | fails as it should |

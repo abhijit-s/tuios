@@ -67,6 +67,12 @@ While that machine's link is down it ends in `[unreachable, seen 5m ago]`.
   `list-agents` shows `settled`. You cannot settle yourself or another agent.
   Your row shows your state, how long you have been in it, and what you do
   now. Report your state as it changes; that view is drawn from it.
+- A pane marked with `tuios set-agent-quiet -w NAME` is a background worker. It
+  opens no finished, question or errored item, and its state and events do not
+  change. An approval or a login still reaches the person. `list-agents` shows
+  `quiet`, and `--off` clears the mark. It needs the admin grant and an agent in
+  the pane. Mark your workers before they ask: a pane leaves an open question
+  open, and only the person closes one this way.
 - Your finished turn's row shows a recap of what you did (turns, files,
   commands, the last test run, your last words), and the person can reply to
   it with `r`. The reply is queued and typed when you are next at rest, so

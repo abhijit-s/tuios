@@ -254,6 +254,13 @@ type WindowState struct {
 	// set by a client. Additive: false, which is what an older daemon sends,
 	// means not settled.
 	AgentSettled bool `json:"agent_settled,omitempty"`
+	// AgentQuiet marks a pane whose finished turns, questions and failures do
+	// not reach the person's Inbox or the client's alerts. The agent state and
+	// its events do not change, and an approval still reaches the person. Only
+	// set-agent-quiet sets it (see agent_quiet.go). Daemon-owned like
+	// AgentQueued and never set by a client. Additive: false, which is what an
+	// older daemon sends, means not quiet.
+	AgentQuiet bool `json:"agent_quiet,omitempty"`
 	// AgentSubagents is how many subagents the pane's agent is running, as its
 	// hooks reported them (see agent_subagents.go). Daemon-owned like
 	// AgentQueued and never set by a client. Additive: zero, which is what an
@@ -3722,6 +3729,7 @@ func (s *Session) mutateStateLocked(fn func(state *SessionState) error) (*Sessio
 	clearStaleSilenceLocked(before, s.state)
 	clearNowAtRestLocked(before, s.state)
 	wakeSettledLocked(before, s.state)
+	clearQuietOfLeftAgentLocked(before, s.state)
 	s.forgetSubagentsLocked(s.state)
 	pruneDeadLeaves(s.state)
 	// A daemon-side mutation is exactly what a client sync must not undo, so it
@@ -4001,6 +4009,7 @@ func (s *Session) windowSummaries() []WindowSummary {
 			AgentMeta:     w.AgentMeta,
 			AgentQueued:   w.AgentQueued,
 			DraftHeld:     w.AgentDraftHeld,
+			AgentQuiet:    w.AgentQuiet,
 			AgentSettled:  w.AgentSettled,
 			Subagents:     w.AgentSubagents,
 			SubagentList:  w.AgentSubagentList,
