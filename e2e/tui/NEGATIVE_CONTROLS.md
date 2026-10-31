@@ -10052,6 +10052,14 @@ process with the pane's `TUIOS_PANE_ID`, which is the case this fix refuses,
 and failed against it. The driver now runs in the pane, as a harness's plugins
 do, and both pass on the fixed build and on `ccde47cf`.
 
+Run on 2026-10-31 on macOS, on `upstream/main` at `1191cb06a` plus the branch. Claude Code's daemon stays a child of the claude in the pane that started it, so every background session it runs descends from that pane, and the check took descent from the pane for being in it before it looked for a harness daemon. The test gains a case for that: a `claude`-named server started with `--bg-pty-host` from the pane's shell, by a program that stays its parent, runs the hook on a terminal of its own while the pane is `done`.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| A background session whose daemon the pane started set the pane's state | yes | `harnessOutsidePane` asks `processInPane` again, so a harness that descends from the pane is kept before the daemon walk | the same test ("a prompt from a background session whose daemon the pane started: applied=true reason=\"\", want refused with foreign_pane", then "took the pane over: {State:working … AgentSession:phantom-2}, want done with mux-1"), 6 runs of 6 | **caught** |
+
+The `conmon` prompt step fails now and then on both builds: the prompt is applied (`applied=true`, `state=working` in the artifact), and the pane is back at `none` when the test reads it, because the stand-in harness has exited and the daemon clears a hooked agent's pane once its harness exits.
+
 ## The go-to picker (goto_picker)
 ### A pane's upgrade confirmed at a client
 
