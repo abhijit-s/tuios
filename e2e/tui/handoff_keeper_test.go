@@ -100,6 +100,45 @@ func processRunning(pid int) bool {
 	return err == nil && stat != "" && !strings.HasPrefix(stat, "Z")
 }
 
+// stderrOf is the file pid has as its descriptor 2, with symlinks resolved:
+// from /proc on Linux, from lsof elsewhere.
+func stderrOf(t *testing.T, pid int) string {
+	t.Helper()
+	var name string
+	if runtime.GOOS == "linux" {
+		target, err := os.Readlink("/proc/" + strconv.Itoa(pid) + "/fd/2")
+		if err != nil {
+			t.Fatalf("read the stderr of %d: %v", pid, err)
+		}
+		name = target
+	} else {
+		out, err := exec.Command("lsof", "-a", "-p", strconv.Itoa(pid), "-d", "2", "-Fn").Output()
+		if err != nil {
+			t.Fatalf("lsof the stderr of %d: %v\n%s", pid, err, out)
+		}
+		for _, line := range strings.Split(string(out), "\n") {
+			if strings.HasPrefix(line, "n") {
+				name = line[1:]
+			}
+		}
+	}
+	if resolved, err := filepath.EvalSymlinks(name); err == nil {
+		return resolved
+	}
+	return name
+}
+
+// daemonLogOf is the daemon log under base, with symlinks resolved.
+func daemonLogOf(t *testing.T, base string) string {
+	t.Helper()
+	path := filepath.Join(xdgDir(base, "XDG_STATE_HOME"), "tuios", "daemon.log")
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		t.Fatalf("resolve %s: %v", path, err)
+	}
+	return resolved
+}
+
 // TestDaemonUpgradeKeeperStandsDown upgrades the daemon with nothing going
 // wrong and checks the keeper's life: it runs while the upgrade is held
 // between the manifest write and the exec, as the daemon's child, and once
@@ -175,9 +214,11 @@ func TestDaemonUpgradeKeeperStandsDown(t *testing.T) {
 // where noted; the daemon answers, from the kept tuios.prev under a new pid;
 // the command reports the recovery; a pane told to exit afterwards does not
 // read as exited before it is told, and is heard when it does, its kept-open
-// window saying how; and no keeper is left. The status is 9 where the kernel
-// tells a non-parent (statusKeptForNonParent), and elsewhere wait-for omits it
-// and the window says it is not known.
+// window saying how; the restored image's stderr is the daemon log, as the
+// first daemon's is, so a panic in it leaves a trace; and no keeper is left.
+// The status is 9 where the kernel tells a non-parent
+// (statusKeptForNonParent), and elsewhere wait-for omits it and the window
+// says it is not known.
 func TestDaemonUpgradeSurvivesACrashOfTheNewImage(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -204,6 +245,8 @@ func TestDaemonUpgradeSurvivesACrashOfTheNewImage(t *testing.T) {
 			waitHandoffPane(t, base, sess, counter, regexp.MustCompile(`^k-50$`), 20*time.Second)
 			before := panePIDs(t, base, sess)
 			img := helloImage(t, base)
+			logPath := daemonLogOf(t, base)
+			stderrBefore := stderrOf(t, img.PID)
 			ticksBefore := counterLines(mustScrollback(t, base, sess, counter), "k-")
 
 			started := time.Now()
@@ -212,6 +255,7 @@ func TestDaemonUpgradeSurvivesACrashOfTheNewImage(t *testing.T) {
 			took := time.Since(started)
 			after := helloImage(t, base)
 			exe := executableOf(t, after.PID)
+			stderrAfter := stderrOf(t, after.PID)
 			afterPIDs := panePIDs(t, base, sess)
 			stats := handoffStats(t, base)
 			oldAlive := processRunning(img.PID)
@@ -240,6 +284,7 @@ func TestDaemonUpgradeSurvivesACrashOfTheNewImage(t *testing.T) {
 				"exit_after": code, "exit_known": known, "exit_note": note, "exited_before_quit": earlyErr == nil,
 				"exiter_gone": exiterGone, "kernel_keeps_status": statusKeptForNonParent(t),
 				"keepers_left": left, "keeper_gone_ms": gone.Milliseconds(),
+				"daemon_log": logPath, "stderr_before": stderrBefore, "stderr_after": stderrAfter,
 			})
 
 			if after.PID == img.PID || oldAlive {
@@ -253,6 +298,14 @@ func TestDaemonUpgradeSurvivesACrashOfTheNewImage(t *testing.T) {
 				}
 			} else if !strings.HasSuffix(exe, string(filepath.Separator)+filepath.Join("handoff", "tuios.prev")) {
 				t.Errorf("ASSERTION: the daemon runs %s after the crash, want the kept tuios.prev", exe)
+			}
+			// The positive half is the first daemon's: a search that found
+			// no file at all would otherwise pass for the restored one too.
+			if stderrBefore != logPath {
+				t.Errorf("ASSERTION: the daemon's stderr before the upgrade is %q, want the daemon log %s", stderrBefore, logPath)
+			}
+			if stderrAfter != logPath {
+				t.Errorf("ASSERTION: the restored daemon's stderr is %q, want the daemon log %s", stderrAfter, logPath)
 			}
 			if rec, _ := stats["recovered"].(bool); !rec {
 				t.Errorf("ASSERTION: the image does not say the keeper brought it back: %v", stats)
