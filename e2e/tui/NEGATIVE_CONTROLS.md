@@ -11127,3 +11127,13 @@ is due, so the guard was left out.
 
 The frames are `rail-named-agents`, `rail-repeated-before-close` and
 `rail-repeated-after-close` under `TUIOS_E2E_FRAMES`, in the test's folder.
+
+## A dock cell watching agent state hears every transition
+
+`TestDockAgentCellClearsWhenTheAnswerMovesThePaneOn` draws a dock cell that counts the session's panes on `needs_input`, refreshed on `event:after-agent-state`, with `working` left out of `[notifications.agent.states]`. The pane goes to `needs_input` and the cell has to read `WAIT1`, then the pane goes to `working` and the cell has to read `WAIT0` again.
+
+Run on 2026-10-31 on macOS (arm64). The test passes on the fixed build, 6 runs of 6, and the control fails at the step named:
+
+| Control: what was cut | Where it fails | Verdict |
+| --- | --- | --- |
+| The `NotifyDockEvent` call at the head of `considerAgentAlert` (`internal/app/agent_alert.go`), so the dock hears agent state only through an alert | "the dock cell never read WAIT0 after the answer moved the pane to working": the cell still reads `WAIT1` | **caught** |
