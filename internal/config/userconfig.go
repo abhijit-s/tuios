@@ -1137,7 +1137,7 @@ func DefaultConfig() *UserConfig {
 			Links:                    LinksAll,
 			LinkClick:                LinkClickBoth,
 			LinkHover:                LinkHoverSafe,
-			DropPreview:              DropPreviewFill,
+			DropPreview:              DropPreviewOutline,
 			DropPreviewDelay:         DefaultDropPreviewDelay.String(),
 			HideWindowButtons:        false,
 			WindowButtonStyle:        WindowButtonStyleDots,
@@ -2653,7 +2653,7 @@ func ApplyAppearanceConfig(cfg *UserConfig, s *Settings) {
 	if slices.Contains(DropPreviewModes, cfg.Appearance.DropPreview) {
 		s.DropPreview = cfg.Appearance.DropPreview
 	} else {
-		s.DropPreview = DropPreviewFill
+		s.DropPreview = DropPreviewOutline
 	}
 	s.DropPreviewDelay, _ = ParseDropPreviewDelay(cfg.Appearance.DropPreviewDelay)
 

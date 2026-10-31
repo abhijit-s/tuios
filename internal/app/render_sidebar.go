@@ -1630,7 +1630,7 @@ func (m *OS) sidebarPanelLinesForTree(tree sessiontree.Tree) ([]string, int) {
 	// may claim. A section with no rows is dropped whole, header included, so an
 	// empty section costs the rail nothing rather than costing it a label over a
 	// gap.
-	plans := sidebarLayoutPlans(&m.Settings)
+	plans := m.sidebarPlans()
 	// With the terminals section above the sessions one, a peek keeps the height
 	// the section has at rest. The pointer that asked for it is on a session
 	// row, and a peek that resized the section moved that row out from under the
@@ -1938,7 +1938,7 @@ func (m *OS) sidebarPanelLinesForTree(tree sessiontree.Tree) ([]string, int) {
 	// anchor above and before the cursor's auto-scroll below, so the three
 	// mechanisms agree on what is on screen and the cursor keeps the last word.
 	// See sidebar_reveal.go.
-	m.sidebarRevealFocus(sessions, terminals, capRows[sidebarSectionTerminals], capRows[sidebarSectionSessions])
+	m.sidebarRevealFocus(sessions, sessionRows, terminals, capRows[sidebarSectionTerminals], capRows[sidebarSectionSessions])
 	if m.sidebarRailFocused() && haveCursorTarget {
 		if sec, idx, ok := m.sidebarCursorIndex(cursorTarget, sessionRows, spaceRows, terminals, agents, files); ok {
 			if rows := capRows[sec]; rows > 0 {

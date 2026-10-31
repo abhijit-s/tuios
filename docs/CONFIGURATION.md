@@ -1178,12 +1178,12 @@ While you drag a tiled pane in BSP, tuios shows where the pane would land if you
 
 | Option | What it does | Values | Default |
 |---|---|---|---|
-| `appearance.drop_preview` | What the preview draws. `fill` draws the frame and tints the area inside it, `outline` draws only the frame, and `off` draws nothing | `fill`, `outline`, `off` | `fill` |
+| `appearance.drop_preview` | What the preview draws. `fill` draws the frame and tints the area inside it, `outline` draws only the frame, and `off` draws nothing | `fill`, `outline`, `off` | `outline` |
 | `appearance.drop_preview_delay` | How long the pointer stays on one drop zone before its preview shows. A zone you leave before the delay is never drawn, so carrying a pane across the screen does not flash a zone over every pane on the way | a duration such as `120ms`, or `0` to show it at once | `120ms` |
 
 ```toml
 [appearance]
-drop_preview = "outline"
+drop_preview = "fill"
 drop_preview_delay = "250ms"
 ```
 
@@ -1979,6 +1979,24 @@ gesture stays on the header's right-click menu, as `Fold group` and
 Independent of the option, the daemon now records the main checkout the way
 it records a worktree, so `tuios worktree ls` and the worktree verbs see it
 alongside the worktrees it was split into.
+
+## Keep the files section shut by default
+
+Leave `files` out of `appearance.sidebar.sections` to keep the section shut when
+you attach:
+
+```toml
+[appearance.sidebar]
+sections = "sessions:25,terminals,agents:34"
+```
+
+Click `files` in the rail's footer to open the section. Click it again to close
+it. File search and a click on a folder link also open it.
+
+The section goes after `terminals` with a share of 25, as in the default layout.
+A layout with no `terminals` has it after `sessions`, and a layout with neither
+has it above `agents`. The section stays open for this client until you close it
+or the client exits. The value of `appearance.sidebar.sections` does not change.
 
 ## The files section style
 

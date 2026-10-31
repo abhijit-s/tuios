@@ -204,7 +204,7 @@ func (m *OS) CycleSessionInSpace(delta int) {
 		m.ShowNotification("No spaces", "info", m.Settings.NotificationDuration)
 		return
 	}
-	target := neighbourSession(sessionsInSpace(sessions, space), delta)
+	target := railNeighbourIn(sessionsInSpace(sessions, space), delta)
 	if target == "" {
 		where := "outside a space"
 		if space != "" {

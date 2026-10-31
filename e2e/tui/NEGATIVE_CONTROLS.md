@@ -5426,7 +5426,7 @@ Run on 2026-10-14 on macOS. The tests are in `bsp_drop_preview_test.go`: `appear
 | Control: what was cut | Test that fails | Verdict |
 | --- | --- | --- |
 | The `DropPreviewOff` early return in `UpdateDropZone` | `TestDropPreviewOffDrawsNothing` ("cell (0,0), outside the landing rectangle, changed mid-drag": the left-edge zone is drawn); the other three pass, which is their positive half | **caught** |
-| The `DropPreviewOutline` term in `applyDropZone`, so outline fills like fill | `TestDropPreviewOutlineDrawsOnlyTheFrame` ("cell (1,1) inside the landing rectangle {... X:0 Y:0 Width:30 Height:38} is painted mid-drag with the outline-only preview") | **caught** |
+| The `DropPreviewOutline` term in `applyDropZone`, so outline fills like fill | `TestDropPreviewDefaultDrawsOnlyTheFrame` ("cell (1,1) inside the landing rectangle {... X:0 Y:0 Width:30 Height:38} is painted mid-drag with the outline-only preview") | **caught** |
 | The delay in `UpdateDropZone` (`delay` forced to 0, so every zone shows at once) | `TestDropPreviewWaitsForItsDelay` and `TestADropZoneLeftBeforeItsDelayNeverShows` ("cell (0,0), outside the landing rectangle, changed mid-drag": the zone is up in the frame read right after the move) | **caught** |
 | The generation check in `showDropZone`, so a delay armed for a zone the pointer left shows the zone it is on now | `TestADropZoneLeftBeforeItsDelayNeverShows` ("cell (0,0), outside the landing rectangle, changed mid-drag": the left edge's delay running out drew A's middle half the delay early); `TestDropPreviewWaitsForItsDelay` passes, as it should, since it never leaves its zone | **caught** |
 | `m.renderSkipped = false` in `showDropZone` | none | **not caught** |
@@ -5444,9 +5444,17 @@ mirrors a session's layout uses both.
 | This branch | the change | both pass: left puts the new pane at x=0 and the old one at x=60; up puts it at y=0 over y=19; one `layout-changed` for workspace 1 | **guard** |
 | `SplitToward` maps left and up to right and down | mutant | `TestSplitWindowTakesTheNamedSide` fails: the new pane is at x=60 and at y=19 | **caught** |
 | `layoutChanges` call cut from `diffLifecycle` | mutant | `TestLayoutChangedFollowsASplit` fails: no `layout-changed` within 10s on a live subscription | **caught** |
+### BSP drop preview default
+
+Run on 2026-10-31 on Linux. The default for `appearance.drop_preview` is now `outline`.
+
+| Control: what was cut | Test that fails | Verdict |
+| --- | --- | --- |
+| The default in `internal/config/userconfig.go`, put back to `fill` | `TestDropPreviewDefaultDrawsOnlyTheFrame` ("cell (1,1) inside the landing rectangle ... is painted mid-drag with the outline-only preview") | fails as it should |
+
 ### BSP drop preview look
 
-Run on 2026-10-14 on Linux. The preview's frame is the panes' border glyphs, and the fill washes the text under it into one tint. Each control cuts one line of `applyDropZone` or `washDropCell` in `internal/app/drop_zone_render.go`, and runs `TestDropPreviewFillWashesTheZone`, `TestDropPreviewOutlineDrawsOnlyTheFrame` and the `left` and `sibling-left` rows of `TestADropOnAPaneEdgeSplitsIt` against the cut binary. The fixed build passes the whole `Drop|EdgeZones` set.
+Run on 2026-10-14 on Linux. The preview's frame is the panes' border glyphs, and the fill washes the text under it into one tint. Each control cuts one line of `applyDropZone` or `washDropCell` in `internal/app/drop_zone_render.go`, and runs `TestDropPreviewFillWashesTheZone`, `TestDropPreviewDefaultDrawsOnlyTheFrame` and the `left` and `sibling-left` rows of `TestADropOnAPaneEdgeSplitsIt` against the cut binary. The fixed build passes the whole `Drop|EdgeZones` set.
 
 | Control: what was cut | Test that fails | Verdict |
 | --- | --- | --- |
@@ -12733,6 +12741,32 @@ The browser and its help modal drew `lipgloss.RoundedBorder()` whatever `appeara
 | The help modal keeps the rounded frame under `double` | `overlay.EdgeBorder()` on the modal in `overlayBrowserHelp` | Put back to `lipgloss.RoundedBorder()` | `TestScrollbackBrowserFollowsBorderStyle/double` (`the browser's help modal under double at {x0:37 x1:82 y0:9 y1:30}: got tl="╭" tr="╮" bl="╰" br="╯" top="─" side="│", want tl="╔" …`) | **caught** |
 | The browser loses its frame under `hidden` | The rounded fallback `edgeFrame` gives a blank frame | `EdgeBorder` built from `dialogFrame()` instead of `edgeFrame()` | `TestScrollbackBrowserFollowsBorderStyle/hidden` (`the scrollback browser never opened with a frame found from its text`; the browser's title and rows are on screen with no frame round them). `/double` passes, as it should: there the two agree | **caught** |
 
+## The files control opens a section the layout leaves out (#1385)
+
+`TestRailFilesOpenOnDemand` uses the layout `sessions:25,terminals,agents:34`. It
+reads the rail with files shut, clicks the footer's `files`, and reads the section
+between `terminals` and `agents`. On a short rail it then compares the rail with
+the same rail under the layout `sessions:25,terminals,files:25,agents:34`, which
+must match line for line. A second click hides the section, file search opens it,
+and a layout with no `terminals` has it after `sessions`.
+
+Run on 2026-10-31 on Linux, each with a Go overlay on one build:
+
+| Removed | The test fails with | Result |
+|---------|---------------------|--------|
+| `sidebarPlans` returns the layout alone, as on main | "a click on files did not open the section between terminals and agents" | **caught** |
+| `sidebarPlansWithFiles` appends the section at the end of the layout | The same line | **caught** |
+| `sidebarPlansWithFiles` has no `terminals` anchor | The same line | **caught** |
+| The opened section has no share | "the opened section differs from a section the layout names": `files` shows one row more and `terminals` one row less | **caught** |
+
+One control did not fail. With the `sessions` anchor removed, the layout
+`sessions:25,agents:34` still has the section in the same place, because after
+`sessions` and above `agents` are one position there. So the order of those two
+rules has no test.
+
+The frames are `files-shut`, `files-open`, `files-open-short`, `files-search` and
+`files-no-terminals` under `TUIOS_E2E_FRAMES`, in the test's folder.
+
 ## The files menu's Preview from any focus
 
 `TestRailQuickLook` now starts with the keyboard in a pane, before the rail has had it. It right-clicks `main.go` and picks Preview. The preview must show `main.go` and stay open, `j` must move it to `notes.md`, and after `esc` the keys must reach the shell. Later in the test, Preview runs from the focused rail, where `esc` must leave the keyboard with the rail. This replaces the check in "The files menu previews the row it was opened on", where `j` went on from the old cursor row. Each control was built into its own binary. Run on 2026-10-30 on Linux.
@@ -12740,6 +12774,30 @@ The browser and its help modal drew `lipgloss.RoundedBorder()` whatever `appeara
 ```bash
 go build -o /tmp/tuios ./cmd/tuios
 cd e2e/tui && TUIOS_E2E=1 TUIOS_E2E_BIN=/tmp/tuios go test -count=1 -run '^TestRailQuickLook$' .
+
+## A switch scrolls the sessions section to the grouped row (#1386)
+
+`TestRailRevealsGroupedRow` makes six sessions that the rail draws as nine rows:
+two space headings and a repository row are the extra three. The section shows
+seven rows, so the sessions fit and the rows do not. The test switches to the
+last row, then shrinks the terminal, switches to a middle row, folds the
+repository, switches into it, and last creates a session with a switch.
+
+Run on 2026-10-31 on Linux, each with a Go overlay on one build:
+
+| Removed | The test fails with | Result |
+|---------|---------------------|--------|
+| The whole fix: `sidebar_reveal.go` and `render_sidebar.go` as on main | "a switch to the last row: the sessions section does not show feat/two". The rail ends in `… +2` | **caught** |
+| The index is the place in the session list, and the total is the rows | The same line | **caught** |
+| The index is the row, and the total is the session list | The same line | **caught** |
+| `sidebarAttachedRow` returns -1 for a session in a folded repository | "a switch into the folded repository: the sessions section does not show · repo" | **caught** |
+
+The stand-in for a folded machine has no control. The suite does not fold the
+attached machine's group with this fixture.
+
+The frames are `reveal-before`, `reveal-last-row`, `reveal-middle-row`,
+`reveal-folded` and `reveal-new-session` under `TUIOS_E2E_FRAMES`, in the test's
+folder.
 
 ## Rail labels an agent by its title
 
@@ -12811,3 +12869,34 @@ Run on 2026-10-31 on macOS (arm64). The test passes on the fixed build, 6 runs o
 | Control: what was cut | Where it fails | Verdict |
 | --- | --- | --- |
 | The `NotifyDockEvent` call at the head of `considerAgentAlert` (`internal/app/agent_alert.go`), so the dock hears agent state only through an alert | "the dock cell never read WAIT0 after the answer moved the pane to working": the cell still reads `WAIT1` | **caught** |
+## Session keys follow the rail's order (#1299)
+
+`TestSessionKeysFollowRail` makes `loose`, `filed` in the space `work`, the
+worktree session `repo-feat-one`, `notes`, and the worktree session
+`repo-feat-two`, in that order. The rail draws `filed`, `loose`, the two
+worktree sessions, `notes`. The test reads the number on each row, then presses
+`switch_session_1`, `next_session`, `switch_session_3`, `next_session` and
+`switch_session_5`.
+
+Run on 2026-10-31 on Linux, each with a Go overlay on one build:
+
+| Removed | The test fails with | Result |
+|---------|---------------------|--------|
+| The whole fix: `session_tree.go` and `sidebar_hosts.go` as on main | "the rail's numbers do not count its rows": the rows read `2 filed`, `1 loose`, `3 feat/one`, `5 feat/two`, `4 notes` | **caught** |
+| `railNeighbourSession` and `railSessionAt` read `localSessionNodes`. The rail's numbers stay fixed | "no client shows session filed" at `switch_session_1` | **caught** |
+| `railNeighbourSession` alone reads `localSessionNodes` | "no client shows session loose" at `next_session` from `filed` | **caught** |
+
+The frames are `session-keys-rail` and `session-keys-notes` under
+`TUIOS_E2E_FRAMES`, in the test's folder.
+## The folded Done heading on the task board
+
+`drawFoldFocus` read `ckGroupTitles[r.group]` before its board check. On the board `r.group` is a stage. Done is stage 6, and the table has 6 entries, so the cursor on the heading panicked the client. Only Done reached this: it is the one stage past the table, and the one stage that starts folded.
+
+Run on 2026-10-31 on Linux against builds from this branch, on `0e1679cfb`. Each control fails `TestTaskBoardGroupsCardsByStage`, which passes on the fixed build.
+
+| Control: what was cut | Where it fails | Verdict |
+| --- | --- | --- |
+| The whole fix: `drawFoldFocus` as on main | "waiting for the focus of the folded Done stage". The screen shows "tuios hit a bug" and "index out of range [6] with length 6" | **caught** |
+| `ckStageTitle(r.group)` in `drawFoldFocus` becomes `ckStageTitle(0)`, so there is no crash and the title is wrong | "the focus title is \"   Todo  1\", want Done and its count" | **caught** |
+
+The frame is `task-board-done-focus-200x55` under `TUIOS_E2E_FRAMES`, in the test's folder. Repeat from `e2e/tui` with `TUIOS_E2E=1 TUIOS_E2E_BIN=/path/to/tuios go test -count=1 -run '^TestTaskBoardGroupsCardsByStage$' -v .`.
