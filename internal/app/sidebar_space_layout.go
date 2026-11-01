@@ -89,15 +89,15 @@ func (m *OS) sidebarLayoutRows(local []sessiontree.Node) []sessiontree.Node {
 				members = append(members, unspaced(n))
 			}
 		}
-		return sessiontree.GroupByRepo(members)
+		return m.sidebarRepoGrouping()(members)
 	case config.SidebarSpacesOff:
 		flat := make([]sessiontree.Node, len(local))
 		for i, n := range local {
 			flat[i] = unspaced(n)
 		}
-		return sessiontree.GroupByRepo(flat)
+		return m.sidebarRepoGrouping()(flat)
 	default:
-		return sessiontree.GroupBySpace(local, sessiontree.GroupByRepo)
+		return sessiontree.GroupBySpace(local, m.sidebarRepoGrouping())
 	}
 }
 

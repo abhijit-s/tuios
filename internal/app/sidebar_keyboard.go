@@ -452,12 +452,6 @@ func (m *OS) SidebarActivateCursor() bool {
 	case sidebarRowCollapse:
 		m.SidebarToggleCollapsed()
 	case sidebarRowRepo:
-		if m.sidebarRepoGotoMain(row.SessionID) {
-			// The header pointed at the main checkout's session, and the
-			// session took the focus, so the row hands the keyboard over the
-			// way a session row does.
-			return false
-		}
 		// Folding a group is a change to the rail, not a place to go, so the
 		// keyboard stays in the rail on the row that was folded.
 		m.SidebarToggleRepoCollapsed(row.SessionID)
@@ -502,26 +496,25 @@ func (m *OS) SidebarReorderCursor(delta int) {
 		m.sidebarReorderHost(row.SessionID, delta)
 		return
 	}
-	if row.Kind != sidebarRowSession {
+	if row.Kind != sidebarRowSession && row.Kind != sidebarRowRepo {
 		return
 	}
-	order := append([]string(nil), m.SidebarSessionIDs...)
-	from := -1
-	for i, id := range order {
-		if id == row.SessionID {
-			from = i
-			break
-		}
+	order, blocks := m.sidebarDrawnOrder()
+	moved := false
+	if row.Kind == sidebarRowRepo {
+		order, moved = blocks.stepGroup(order, sidebarRepoBlockKey(row.WindowID, row.SessionID), delta)
+	} else {
+		order, moved = blocks.stepRow(order, row.SessionID, delta)
 	}
-	to := from + delta
-	if from < 0 || to < 0 || to >= len(order) {
+	if !moved {
 		return
 	}
-	order[from], order[to] = order[to], order[from]
 	m.commitSessionOrder(order)
 	// The rail relays out next frame; follow the moved session so the cursor and
 	// its highlight ride to the new slot rather than staying on a fixed index.
-	m.sidebarFollowSession = row.SessionID
+	if row.Kind == sidebarRowSession {
+		m.sidebarFollowSession = row.SessionID
+	}
 }
 
 // sidebarReorderHost moves one machine's group delta places among the other

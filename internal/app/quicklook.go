@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"image/color"
 	"io/fs"
 	"path/filepath"
 	"slices"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 
 	"github.com/Gaurav-Gosain/tuios/internal/composer"
 	"github.com/Gaurav-Gosain/tuios/internal/diffview"
@@ -29,9 +31,15 @@ import (
 // space on a row of the files section opens it; space or esc closes it. The
 // preview follows the cursor: j and k walk the listing and the preview
 // shows each file as the cursor reaches it, without being opened again. It
-// is not a mode. Every key it does not use goes to the rail as before, and
+// is not a mode. J and K move inside the file, by half a page for text, and the
+// wheel over the panel does too. Every other key goes to the rail as before, and
 // the preview closes when the rail lets go of the keyboard, when the cursor
 // leaves the files section, or on a click outside it.
+//
+// Tab moves the keyboard inside the file, where the scope takes every key and
+// plain keys act on the file, so d there cannot reach the rail's delete. esc or
+// Tab comes back. f fills the area of the panes. Inside a text, / searches, n and
+// N go on, : goes to a line, and w wraps long lines.
 //
 // The files menu's Preview is the same preview with a way in from anywhere: it
 // gives the rail the keyboard, moves the cursor to the row, and closing gives
@@ -39,8 +47,8 @@ import (
 //
 // The content comes from the machine the file is on. A file of a listing on
 // another machine goes to that machine's file-preview verb over the link,
-// which reads it there and sends back the small result: the first 256 KiB of
-// a text, an image scaled down, the first page of a PDF, a frame of a film.
+// which reads it there and sends back the small result: 256 KiB of a text, an
+// image scaled down, the first page of a PDF, a frame of a film.
 // A file on this machine goes through the same code in this process
 // (session.PreviewLocalFile), so a client with no daemon has quick look too.
 // A folder is read the way the rail reads one (readListing).
@@ -51,32 +59,45 @@ import (
 // does not, a line of words at 16 colours), and for anything else its type
 // and size.
 //
+// A text is read in windows on demand. See quicklook_text.go.
+//
 // Nothing runs while it is closed: no timer, no watch, no read. A read runs
 // once per row the cursor stops on, and only one at a time: a key held down
-// starts one read, and the read for the row the cursor ended on follows it.
+// starts one read, and the read for the row the cursor ended on follows it. The
+// same holds for a window of a text, where the next read goes to the position the
+// keys ended on.
+//
+// A picture waits for a resize of the terminal to settle, then is scaled once
+// for the size the person stopped at. See keepPicturesFrame for why the host
+// still holds it then.
 
 // overlayKindQuickLook names the panel's layer.
 const overlayKindQuickLook = "quicklook"
 
 const (
-	// quickLookMaxLines bounds the lines of a text the preview keeps. The
-	// verb sends at most 256 KiB; a file of short lines can still hold tens
-	// of thousands of them, and nobody scrolls that far in a preview.
-	quickLookMaxLines = 5000
 	// quickLookMarkdownMax bounds the Markdown the preview lays out.
 	quickLookMarkdownMax = 64 << 10
-	// quickLookMaxPx is the long side of a picture asked for. The panel is at
-	// most quickLookMaxW cells wide, which is under 1200 pixels at any cell
-	// size a terminal uses.
-	quickLookMaxPx = 1200
-	// quickLookMaxW and quickLookMaxH bound the panel's inner size in cells.
+	// quickLookMaxPx is the long side of a picture asked for. The largest panel
+	// that is not full size is quickLookPicW cells wide.
+	quickLookMaxPx = 1600
+	// quickLookMaxW and quickLookMaxH bound the panel's inner size in cells for
+	// reading, and quickLookPicW and quickLookPicH for a picture, unless the
+	// person asks for full size.
 	quickLookMaxW = 110
 	quickLookMaxH = 48
+	quickLookPicW = 180
+	quickLookPicH = 60
+	// A terminal under quickLookSmallW by quickLookSmallH gives the panel all of
+	// its screen.
+	quickLookSmallW = 60
+	quickLookSmallH = 20
 	// quickLookTimeout bounds a read on this machine. The tools a PDF or a
 	// film needs have their own limit inside it.
 	quickLookTimeout = 25 * time.Second
 	// quickLookWheelStep is the lines one wheel notch scrolls.
 	quickLookWheelStep = 3
+	// quickLookPromptMax bounds what the search prompt holds.
+	quickLookPromptMax = 256
 )
 
 // quickLookTarget is the row the preview is for.
@@ -100,11 +121,23 @@ type quickLookResult struct {
 	size int64
 	mime string
 	note string
-	// lines and spans are a text's lines and their highlighting. more says
-	// the file holds more than the lines kept.
+	// lines and spans are the held part of a text and its highlighting. more
+	// says the file holds more than the lines kept, and older says the machine
+	// has no windows to send the rest of it.
 	lines []string
 	spans [][]diffview.Span
 	more  bool
+	older bool
+	// stopped says a window could not be read, so no more are asked for.
+	stopped bool
+	// startOff and endOff are the bytes of the file the lines hold, and parts
+	// the windows they came in, oldest in the file first, so whole windows can
+	// be let go. firstLine is the line number of lines[0], 0 when it is not
+	// known. cutLong says a line was cut.
+	startOff, endOff int64
+	parts            []quickLookPart
+	firstLine        int
+	cutLong          bool
 	// md is a Markdown file's text.
 	md string
 	// img is the picture: an image, a PDF page or a film frame. width and
@@ -130,6 +163,32 @@ type quickLookState struct {
 	fetching bool
 	res      *quickLookResult
 	scroll   int
+	// jump is the window a key asked for that is not read yet. inside says the
+	// keyboard is inside the file, and full that the panel fills the panes.
+	jump   quickLookMove
+	inside bool
+	full   bool
+	// seek is the search or count a quickLookSeek read asks for. prompt and input
+	// are the row at the bottom of a text being typed in, query the last search,
+	// and status what the last search or count said. wrap says long lines wrap,
+	// and wrapSet that the person chose it for this open.
+	seek session.PreviewSeek
+	// resume is where a search that ran out of its time goes on from, 0 for
+	// none.
+	resume int64
+	prompt quickLookPromptKind
+	input  string
+	query  string
+	status string
+	// statusLine says status answers a go to line, so the search row leaves the
+	// query out: the query stays for n, and it is not what the message is about.
+	statusLine bool
+	wrap       bool
+	wrapSet    bool
+	// hostOlder holds the machines whose file-preview verb has no windows, and
+	// hostAsked those it was asked of, once per link.
+	hostOlder map[string]bool
+	hostAsked map[string]bool
 	// borrowed says the files menu's Preview took the keyboard for the rail.
 	// Closing the preview gives it back. See CloseQuickLook.
 	borrowed bool
@@ -144,6 +203,34 @@ type quickLookState struct {
 	look    ckLook
 	dv      *diffview.Theme
 	lookKey ckLookKey
+	// framed is the last panel drawn, with what it was drawn from, so a frame
+	// composed for another reason reuses it.
+	framed quickLookFrame
+}
+
+// quickLookFrame is a drawn panel and its key. Where the panel is placed is
+// not kept: the origin follows the screen and the rail on every render.
+type quickLookFrame struct {
+	ok            bool
+	look          ckLookKey
+	res           *quickLookResult
+	target        quickLookTarget
+	scroll        int
+	inside        bool
+	prompt        quickLookPromptKind
+	input         string
+	query         string
+	status        string
+	wrap          bool
+	innerW, bodyH int
+	key           string
+	seekKey       string
+	insideKey     string
+	// What Dialog.Render reads from the palette, and the frame's glyphs.
+	canvas, fgMute, frame, accent, accentBright, fgDim color.Color
+	border                                             lipgloss.Border
+	content                                            string
+	geo                                                overlay.Geometry
 }
 
 // quickLookPic is the picture's box on the screen and how it is shown.
@@ -255,9 +342,15 @@ func (m *OS) dropQuickLook() {
 	ql.borrowed = false
 	ql.res = nil
 	ql.scroll = 0
+	ql.jump = quickLookNoMove
+	ql.inside = false
+	ql.full = false
+	ql.prompt, ql.input, ql.query, ql.status = quickLookNoPrompt, "", "", ""
+	ql.wrapSet = false
 	ql.box = overlay.Rect{}
 	ql.pic = quickLookPic{}
 	ql.mdLines = nil
+	ql.framed = quickLookFrame{}
 }
 
 // QuickLookSync keeps the preview on the row under the cursor. The input
@@ -280,7 +373,7 @@ func (m *OS) QuickLookSync() tea.Cmd {
 	if t != ql.target {
 		return m.quickLookShow(t)
 	}
-	return m.quickLookPicture()
+	return nil
 }
 
 // quickLookCursorTarget is the row under the rail's cursor, when it is a row
@@ -325,11 +418,17 @@ func (m *OS) quickLookShow(t quickLookTarget) tea.Cmd {
 	ql := &m.quickLook
 	ql.target = t
 	ql.scroll = 0
+	ql.jump = quickLookNoMove
+	ql.inside = false
+	ql.prompt, ql.input, ql.query, ql.status = quickLookNoPrompt, "", "", ""
+	if !ql.wrapSet {
+		ql.wrap = quickLookWrapsByDefault(t.name)
+	}
 	if t.up || t.refuse != "" {
 		return nil
 	}
 	if ql.res != nil && ql.res.target == t {
-		return m.quickLookPicture()
+		return nil
 	}
 	if ql.fetching {
 		return nil
@@ -417,21 +516,19 @@ func quickLookDecode(t quickLookTarget, raw json.RawMessage, err error, ascii bo
 			return res
 		}
 		res.kind = "text"
-		text := strings.TrimSuffix(r.Text, "\n")
-		lines := strings.Split(text, "\n")
-		if len(lines) > quickLookMaxLines {
-			lines, res.more = lines[:quickLookMaxLines], true
+		text := r.Text
+		if r.Truncated {
+			// The last line is cut where the bytes ran out, and the next window
+			// starts it again.
+			if i := strings.LastIndexByte(text, '\n'); i >= 0 {
+				text = text[:i+1]
+			}
 		}
-		if r.Truncated && len(lines) > 1 {
-			// The last line is cut where the bytes ran out.
-			lines, res.more = lines[:len(lines)-1], true
-		}
-		res.more = res.more || r.Truncated
-		for i, l := range lines {
-			lines[i] = ckCodeText(strings.TrimSuffix(l, "\r"), ascii)
-		}
-		res.lines = lines
-		res.spans = diffview.Highlight(t.path, lines)
+		res.lines, res.spans, res.cutLong = quickLookLines(t.path, text, ascii)
+		res.more = r.Truncated
+		res.endOff = int64(len(text))
+		res.firstLine = 1
+		res.parts = []quickLookPart{{lines: len(res.lines), bytes: res.endOff}}
 	case "image", "pdf", "video":
 		res.kind = r.Kind
 		if r.Image != "" {
@@ -488,7 +585,7 @@ func (m *OS) applyQuickLook(msg quickLookMsg) tea.Cmd {
 	}
 	if msg.res.target == ql.target {
 		ql.res = msg.res
-		return m.quickLookPicture()
+		return nil
 	}
 	return m.quickLookShow(ql.target)
 }
@@ -504,10 +601,23 @@ func (m *OS) quickLookSize() (innerW, bodyH int) {
 	}
 	r := m.viewReserve()
 	usable := max(rh-r.Top-r.Bottom, 1)
-	innerW = min(max(cw*4/5, 24), quickLookMaxW, rw-2)
-	innerW = max(innerW, overlay.MinDialogWidth)
-	bodyH = min(max(usable*4/5-2, 3), quickLookMaxH, max(rh-2, 1))
-	return innerW, bodyH
+	ql := &m.quickLook
+	switch {
+	case ql.full:
+		innerW = min(max(cw-4, 24), rw-2)
+		bodyH = min(max(usable-4, 3), max(rh-2, 1))
+	case rw < quickLookSmallW || rh < quickLookSmallH:
+		innerW = max(rw-2, 1)
+		bodyH = max(rh-2, 1)
+	default:
+		capW, capH := quickLookMaxW, quickLookMaxH
+		if session.PreviewShowsPicture(ql.target.name) {
+			capW, capH = quickLookPicW, quickLookPicH
+		}
+		innerW = min(max(cw*4/5, 24), capW, rw-2)
+		bodyH = min(max(usable*4/5-2, 3), capH, max(rh-2, 1))
+	}
+	return max(innerW, overlay.MinDialogWidth), bodyH
 }
 
 // quickLookPicBox is the picture's box in the body: the largest that holds
@@ -529,12 +639,27 @@ func (m *OS) quickLookPicBox(img *composer.Image, innerW, bodyH int) (x, y, cols
 	return 1 + (availW-cols)/2, 1 + (availH-rows)/2, cols, rows
 }
 
+// previewResizing says a resize of the terminal is still in flight. A preview's
+// picture waits for it to settle, as a pane's images do: it is decoded and scaled
+// once for the size the person stopped at, and a drag of the window's edge sends
+// the host no picture at all. The time is the same guard the resize deferral has:
+// a settle that never comes does not hide the picture for good.
+func (m *OS) previewResizing() bool {
+	return m.viewportResizing && time.Since(m.viewportResizeAt) <= resizeDeferralTimeout
+}
+
 // quickLookPicture prepares the picture at the size the panel shows it, when
-// it is not ready. It is nil when there is nothing to do.
+// it is not ready. Update asks after every message, because more than input
+// moves the box or the key: a settled resize, a session sized by another client,
+// a theme. It is one comparison while the preview is closed, and nil when there
+// is nothing to do.
 func (m *OS) quickLookPicture() tea.Cmd {
 	ql := &m.quickLook
+	if !ql.open {
+		return nil
+	}
 	r := ql.res
-	if !ql.open || r == nil || r.img == nil || r.target != ql.target {
+	if r == nil || r.img == nil || r.target != ql.target || m.previewResizing() {
 		return nil
 	}
 	p := m.replyPreviewer()
@@ -587,9 +712,9 @@ func (m *OS) QuickLookWheel(x, y int, up bool) bool {
 		return false
 	}
 	if up {
-		ql.scroll = max(ql.scroll-quickLookWheelStep, 0)
+		m.QuickLookScroll(-quickLookWheelStep)
 	} else {
-		ql.scroll += quickLookWheelStep // the draw holds it to the end
+		m.QuickLookScroll(quickLookWheelStep) // the draw holds it to the end
 	}
 	return true
 }
@@ -625,19 +750,51 @@ func (m *OS) renderQuickLook() (string, int, int) {
 	pal := m.overlayUI()
 	innerW, bodyH := m.quickLookSize()
 	l, dv := m.quickLookLook(pal)
-	c := (*ckCanvas)(nil).reset(innerW, bodyH, ckColor(pal.Canvas))
-	pic := m.drawQuickLook(c, l, dv, innerW, bodyH)
-
-	title := ql.target.name
-	if ql.target.dir {
-		title += "/"
-	}
 	key := "space"
 	if keys := m.KeybindRegistry.GetSidebarFilesKeys("file_quick_look"); len(keys) > 0 {
 		key = keys[0]
 	}
-	hints := []overlay.Hint{{Key: key, Label: "close"}, {Key: "↑↓", Label: "other files"}}
-	content, geo := overlay.Dialog{Title: title, Width: innerW, Body: c.render(), Hints: hints}.Render(pal)
+	var seekKey, insideKey string
+	if keys := m.KeybindRegistry.GetQuickLookKeys("seek_down"); len(keys) > 0 {
+		seekKey = keys[0]
+	}
+	if keys := m.KeybindRegistry.GetQuickLookKeys("go_inside"); len(keys) > 0 {
+		insideKey = keys[0]
+	}
+	// The border is in the key: the frame glyphs are a package global set from
+	// border_style every frame, outside the palette.
+	f := quickLookFrame{ok: true, look: ql.lookKey, res: ql.res, target: ql.target, scroll: ql.scroll, inside: ql.inside,
+		prompt: ql.prompt, input: ql.input, query: ql.query, status: ql.status, wrap: ql.wrap,
+		innerW: innerW, bodyH: bodyH, key: key, seekKey: seekKey, insideKey: insideKey, border: m.Settings.OverlayBorder(),
+		canvas: pal.Canvas, fgMute: pal.FgMute, frame: pal.Frame, accent: pal.Accent,
+		accentBright: pal.AccentBright, fgDim: pal.FgDim}
+	var content string
+	var geo overlay.Geometry
+	var pic quickLookPic
+	if k := &ql.framed; k.ok && k.look == f.look && k.res == f.res && k.target == f.target && k.scroll == f.scroll && k.inside == f.inside &&
+		k.prompt == f.prompt && k.input == f.input && k.query == f.query && k.status == f.status && k.wrap == f.wrap &&
+		k.innerW == f.innerW && k.bodyH == f.bodyH && k.key == f.key && k.seekKey == f.seekKey && k.insideKey == f.insideKey && k.border == f.border &&
+		k.canvas == f.canvas && k.fgMute == f.fgMute && k.frame == f.frame && k.accent == f.accent &&
+		k.accentBright == f.accentBright && k.fgDim == f.fgDim {
+		content, geo = k.content, k.geo
+	} else {
+		c := (*ckCanvas)(nil).reset(innerW, bodyH, ckColor(pal.Canvas))
+		pic = m.drawQuickLook(c, l, dv, innerW, bodyH)
+		title := ql.target.name
+		if ql.target.dir {
+			title += "/"
+		}
+		hints := m.quickLookHints(key)
+		content, geo = overlay.Dialog{Title: title, Width: innerW, Body: c.render(), Hints: hints}.Render(pal)
+		// Only a finished text, markdown, folder, binary or error body is kept;
+		// a picture's cells arrive later.
+		ql.framed = quickLookFrame{}
+		if r := ql.res; r != nil && r.target == ql.target && r.kind != "image" && r.kind != "pdf" && r.kind != "video" {
+			f.scroll = ql.scroll // after the draw clamped it
+			f.content, f.geo = content, geo
+			ql.framed = f
+		}
+	}
 	x, y := m.overlayOrigin(overlayKindQuickLook, geo)
 	ql.box = overlay.Rect{X0: x, Y0: y, X1: x + geo.Width, Y1: y + geo.Height}
 	ql.pic = quickLookPic{}
@@ -685,34 +842,78 @@ func (m *OS) drawQuickLook(c *ckCanvas, l ckLook, dv *diffview.Theme, w, h int) 
 	}
 
 	// The line that says what it is, and where when it is not here.
+	bodyTop, bodyRows := 1, max(h-1, 0)
+	if quickLookText(r) && m.quickLookSearchRow() {
+		bodyRows = max(bodyRows-1, 1)
+		quickLookDrawSearchRow(c, pal, ql, h-1, w)
+	}
 	meta := quickLookMeta(r)
 	right := []ckSeg{}
+	if ql.inside {
+		right = append(right, ckSeg{t: "Inside the file", fg: pal.AccentBright, attrs: ckBold}, ckSeg{t: " "})
+	}
+	if pos := quickLookPosition(r, ql.scroll, bodyRows); pos != "" {
+		right = append(right, ckSeg{t: pos, fg: pal.FgMute}, ckSeg{t: " "})
+	}
 	if t.host != "" {
 		right = append(right, ckSeg{t: "on " + t.host, fg: pal.FgMute}, ckSeg{t: " "})
 	}
 	rx := c.textR(w, 0, right...)
 	c.text(1, 0, rx-1, ckSeg{t: meta, fg: pal.FgMute})
 
-	bodyTop, bodyRows := 1, max(h-1, 0)
 	scrollTo := func(n int) int {
-		ql.scroll = min(ql.scroll, max(n-bodyRows, 0))
+		ql.scroll = max(min(ql.scroll, n-bodyRows), 0)
 		return ql.scroll
 	}
 	switch r.kind {
 	case "text":
-		from := scrollTo(len(r.lines))
-		gutter := len(strconv.Itoa(len(r.lines)))
-		codeX := 1 + gutter + 2
-		codeW := max(w-codeX-1, 1)
-		for i := 0; i < bodyRows && from+i < len(r.lines); i++ {
-			n := from + i
-			num := strconv.Itoa(n + 1)
-			c.text(1+gutter-len(num), bodyTop+i, 0, ckSeg{t: num, fg: pal.FgMute})
+		// While a window is on its way, a key past the held text keeps its place,
+		// so a held key loses no presses: the panel shows the edge, and the read
+		// brings the text up to the position.
+		codeX := 1
+		gutter := 0
+		if r.firstLine > 0 {
+			gutter = len(strconv.Itoa(r.firstLine + len(r.lines) - 1))
+			codeX = 1 + gutter + 2
+		}
+		codeW := max(w-codeX-2, 1)
+		last := len(r.lines) - bodyRows
+		if ql.wrap {
+			last = quickLookLastWrapped(r.lines, bodyRows, codeW)
+		}
+		from := max(min(ql.scroll, last), 0)
+		if ql.scroll > from && (!r.more || r.older || r.stopped) {
+			ql.scroll = from
+		}
+		if ql.scroll < 0 && (r.startOff == 0 || r.older || r.stopped) {
+			ql.scroll = 0
+		}
+		quickLookBar(c, pal, w-1, bodyTop, bodyRows, r, from)
+		row := 0
+		for n := from; row < bodyRows && n < len(r.lines); n++ {
+			if r.firstLine > 0 {
+				num := strconv.Itoa(r.firstLine + n)
+				c.text(1+gutter-len(num), bodyTop+row, 0, ckSeg{t: num, fg: pal.FgMute})
+			}
 			var sp []diffview.Span
 			if n < len(r.spans) {
 				sp = r.spans[n]
 			}
-			c.draw(codeX, bodyTop+i, codeW, dv.Code(r.lines[n], sp, diffview.Range{}, diffview.Context, false, 0, codeW))
+			rows := 1
+			if ql.wrap {
+				rows = quickLookWrapRows(r.lines[n], codeW)
+			}
+			for k := 0; k < rows && row < bodyRows; k++ {
+				// One cell more than the row, so a wrapped row ends in text and
+				// not in the ellipsis of a cut line.
+				width := codeW
+				if ql.wrap {
+					width = codeW + 1
+				}
+				c.draw(codeX, bodyTop+row, codeW, dv.Code(r.lines[n], sp, diffview.Range{}, diffview.Context, false, k*codeW, width))
+				quickLookLightMatches(c, pal, ql.query, r.lines[n], codeX, bodyTop+row, codeW, k*codeW)
+				row++
+			}
 		}
 	case "markdown":
 		width := max(w-3, 4)
@@ -787,10 +988,16 @@ func quickLookMeta(r *quickLookResult) string {
 	switch r.kind {
 	case "text":
 		parts = append(parts, quickLookSize(r.size))
-		if r.more {
-			parts = append(parts, "Showing the first "+strconv.Itoa(len(r.lines))+" lines.")
-		} else {
+		switch {
+		case r.older:
+			parts = append(parts, "This machine runs an older tuios. It sends only the start of the file.")
+		case r.stopped:
+			parts = append(parts, "tuios could not read the rest of the file.")
+		case !r.more && r.startOff == 0:
 			parts = append(parts, plural.Count(len(r.lines), "line"))
+		}
+		if r.cutLong {
+			parts = append(parts, "Long lines are cut.")
 		}
 	case "markdown":
 		parts = append(parts, "Markdown", quickLookSize(r.size))
@@ -896,4 +1103,95 @@ func quickLookCellsKey(p *replyPreview, img *composer.Image, cols, rows int) pre
 	k := p.cellsKey(img, cols, rows)
 	k.kind = mosaic.Half
 	return k
+}
+
+// quickLookMoves reports whether r is something the keys scroll.
+func quickLookMoves(r *quickLookResult) bool {
+	return r != nil && (r.kind == "text" || r.kind == "markdown" || r.kind == "dir")
+}
+
+// quickLookHints is the keys that work now, most useful first. The panel's
+// footer drops from the end what does not fit.
+func (m *OS) quickLookHints(closeKey string) []overlay.Hint {
+	ql := &m.quickLook
+	reg := m.KeybindRegistry
+	pair := func(keys func(string) []string, a, b string) string {
+		ak, bk := keys(a), keys(b)
+		if len(ak) == 0 || len(bk) == 0 {
+			return ""
+		}
+		return ak[0] + " " + bk[0]
+	}
+	add := func(h []overlay.Hint, key, label string) []overlay.Hint {
+		if key == "" {
+			return h
+		}
+		return append(h, overlay.Hint{Key: key, Label: label})
+	}
+	first := func(keys []string) string {
+		if len(keys) == 0 {
+			return ""
+		}
+		return keys[0]
+	}
+	if ql.inside {
+		in := reg.GetQuickLookInsideKeys
+		h := add(nil, first(in("go_back")), "back to files")
+		if quickLookText(ql.res) {
+			h = add(h, first(in("find")), "search")
+			h = add(h, first(in("go_to")), "go to line")
+			wrap := "wrap"
+			if ql.wrap {
+				wrap = "cut lines"
+			}
+			h = add(h, first(in("wrap")), wrap)
+		}
+		h = add(h, pair(in, "line_down", "line_up"), "line")
+		h = add(h, pair(in, "half_down", "half_up"), "half page")
+		h = add(h, pair(in, "start", "end"), "start, end")
+		h = add(h, first(in("full_size")), "full size")
+		return add(h, closeKey, "close")
+	}
+	out := reg.GetQuickLookKeys
+	h := add(nil, closeKey, "close")
+	if quickLookMoves(ql.res) {
+		h = add(h, pair(out, "seek_down", "seek_up"), "half page")
+		h = add(h, first(out("go_inside")), "go inside")
+	}
+	h = append(h, overlay.Hint{Key: "↑↓", Label: "other files"})
+	return add(h, first(out("full_size")), "full size")
+}
+
+// QuickLookInside reports whether the keyboard is inside the previewed file.
+func (m *OS) QuickLookInside() bool { return m.quickLook.open && m.quickLook.inside }
+
+// QuickLookGoInside moves the keyboard inside the file. It reports false for a
+// file with nothing to move through.
+func (m *OS) QuickLookGoInside() bool {
+	ql := &m.quickLook
+	if !ql.open || !quickLookMoves(ql.res) {
+		return false
+	}
+	ql.inside = true
+	return true
+}
+
+// QuickLookGoBack moves the keyboard back to the list.
+func (m *OS) QuickLookGoBack() { m.quickLook.inside = false }
+
+// QuickLookFullSize fills the area of the panes, or goes back.
+func (m *OS) QuickLookFullSize() { m.quickLook.full = !m.quickLook.full }
+
+// QuickLookOpenTextForTest opens the preview on the row under the cursor with
+// text as its result, with no read. It reports false off a file row.
+func (m *OS) QuickLookOpenTextForTest(text string) bool {
+	t, ok := m.quickLookCursorTarget()
+	if !ok {
+		return false
+	}
+	ql := &m.quickLook
+	ql.open, ql.target = true, t
+	lines, spans, _ := quickLookLines(t.path, text, false)
+	ql.res = &quickLookResult{target: t, kind: "text", lines: lines, spans: spans, size: int64(len(text)), endOff: int64(len(text)), firstLine: 1}
+	return true
 }

@@ -18,10 +18,19 @@ type sidebarDragState struct {
 	// sessions, and a plain click folds the group.
 	SessionID string
 	Host      bool
-	PressX    int
-	PressY    int
-	Dragging  bool
-	Order     []string
+	// Repo says the pressed row is a repository's fold control, and SessionID
+	// and Space name that repository's group: a plain click folds it, and a drag
+	// moves it. A main checkout's row moves its group the same way, with Repo
+	// unset, because a click on the row itself opens the session.
+	Repo     bool
+	Space    string
+	PressX   int
+	PressY   int
+	Dragging bool
+	Order    []string
+	// Blocks is what moves together, read once when the drag starts. See
+	// sidebarOrderBlocks.
+	Blocks sidebarOrderBlocks
 	// PinnedTold says this gesture has already answered a drag on the machine
 	// that cannot be dragged. Motion arrives on every cell the pointer crosses,
 	// and a toast per cell is not an answer.
@@ -465,8 +474,15 @@ func (m *OS) sidebarClick(x, y int, right bool) bool {
 	case sidebarRowCollapse:
 		m.SidebarToggleCollapsed()
 	case sidebarRowRepo:
-		if !m.sidebarRepoGotoMain(hit.SessionID) {
-			m.SidebarToggleRepoCollapsed(hit.SessionID)
+		// The same gesture as a session row: a release on the row folds the
+		// group, a drag moves the whole group. See sidebarDragGroupMotion.
+		m.SidebarDrag = sidebarDragState{
+			PressActive: true,
+			SessionID:   hit.SessionID,
+			Repo:        true,
+			Space:       hit.WindowID,
+			PressX:      x,
+			PressY:      y,
 		}
 	case sidebarRowSpace:
 		m.SidebarToggleSpaceCollapsed(hit.SessionID)
@@ -661,9 +677,7 @@ func (m *OS) sidebarActivateRow(hit sidebarRowHit) {
 	case sidebarRowCollapse:
 		m.SidebarToggleCollapsed()
 	case sidebarRowRepo:
-		if !m.sidebarRepoGotoMain(hit.SessionID) {
-			m.SidebarToggleRepoCollapsed(hit.SessionID)
-		}
+		m.SidebarToggleRepoCollapsed(hit.SessionID)
 	case sidebarRowSpace:
 		m.SidebarToggleSpaceCollapsed(hit.SessionID)
 	case sidebarRowSpaceSwitch:
@@ -720,7 +734,7 @@ func (m *OS) sidebarDragMotion(x, y int) bool {
 		if d.Host {
 			d.Order = append([]string(nil), m.SidebarHostIDs...)
 		} else {
-			d.Order = append([]string(nil), m.SidebarSessionIDs...)
+			d.Order, d.Blocks = m.sidebarDrawnOrder()
 		}
 	}
 
@@ -730,13 +744,12 @@ func (m *OS) sidebarDragMotion(x, y int) bool {
 		// stays where it was and the release puts the session last.
 		return true
 	}
-
-	var targetID string
-	if d.Host {
-		targetID = m.sidebarHostRowIDAt(y)
-	} else {
-		targetID = m.sidebarSessionRowIDAt(y)
+	if !d.Host {
+		m.sidebarDragGroupMotion(d, y)
+		return true
 	}
+
+	targetID := m.sidebarHostRowIDAt(y)
 	if targetID == "" || targetID == d.SessionID {
 		return true
 	}
@@ -848,7 +861,9 @@ func (m *OS) sidebarRelease(x, y int) bool {
 	switch {
 	case d.Host && hit.Kind == sidebarRowHost:
 		m.SidebarToggleHostCollapsed(hit.SessionID)
-	case !d.Host && hit.Kind == sidebarRowSession:
+	case d.Repo && hit.Kind == sidebarRowRepo:
+		m.SidebarToggleRepoCollapsed(hit.SessionID)
+	case !d.Host && !d.Repo && hit.Kind == sidebarRowSession:
 		m.sidebarSwitchSession(hit.SessionID)
 	}
 	return true
@@ -1079,6 +1094,9 @@ func (m *OS) openSidebarContextMenu(hit sidebarRowHit, x, y int) {
 			// quit menu offers, anchored where the user right-clicked, plus the
 			// colour of the row's own session.
 			cm.SessionID = hit.SessionID
+			// A main checkout's row is its repository's row too, and the menu's
+			// fold row reads the repository from here.
+			cm.Repo = m.sidebarHeadRepo(hit.SessionID)
 			cm.Title, cm.Items = m.sessionMenu(hit.SessionID)
 		} else {
 			cm.Title, cm.Items = m.desktopMenu()

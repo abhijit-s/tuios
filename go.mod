@@ -54,7 +54,7 @@ require (
 	github.com/charmbracelet/x/conpty v0.2.0 // indirect
 	github.com/charmbracelet/x/term v0.2.2
 	github.com/charmbracelet/x/termios v0.1.1 // indirect
-	github.com/charmbracelet/x/windows v0.2.2 // indirect
+	github.com/charmbracelet/x/windows v0.2.2
 	github.com/clipperhouse/displaywidth v0.11.0 // indirect
 	github.com/clipperhouse/uax29/v2 v2.7.0 // indirect
 	github.com/coder/websocket v1.8.15
@@ -88,5 +88,5 @@ require (
 	tuios.dev/sketch v0.4.1-0.20261101044610-110fb596ed93
 	tuios.dev/swatch v0.1.2-0.20261030111253-c0f512aa3148
 	tuios.dev/tml v0.1.2-0.20261101044251-193bbd706cd8
-	tuios.dev/vt v0.3.3-0.20261030005101-f3383d2005bd
+	tuios.dev/vt v0.3.3-0.20261101171432-b7643f25e058
 )

@@ -410,7 +410,8 @@ func (m *OS) Init() tea.Cmd {
 		listenDnDUntil(m.stopSignal(), m.ensureDnDInbox()),
 	}
 
-	// Ask an SSH client's terminal whether it draws sixel. See sixel_probe.go.
+	// Ask an SSH client's terminal whether it draws sixel, or a local one
+	// that answered the startup probe late. See sixel_probe.go.
 	if cmd := m.sixelProbe(); cmd != nil {
 		cmds = append(cmds, cmd)
 	}
@@ -937,6 +938,14 @@ func (m *OS) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		msg = TickerMsg(dt.at)
 	}
 	model, cmd := m.update(msg)
+	// Whatever this message did may have moved the box of quick look's picture,
+	// or the position in its text.
+	if qc := m.quickLookPicture(); qc != nil {
+		cmd = tea.Batch(cmd, qc)
+	}
+	if qc := m.quickLookWindow(); qc != nil {
+		cmd = tea.Batch(cmd, qc)
+	}
 	// Input may switch the center workspace, edit an edge's session assignment,
 	// or finish a rail resize. Reconcile after it has changed the model.
 	switch msg.(type) {
@@ -1228,6 +1237,11 @@ func (m *OS) handleMsg(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 
 	case quickLookMsg:
 		cmd := m.applyQuickLook(msg)
+		m.renderSkipped = false
+		return m, cmd
+
+	case quickLookWindowMsg:
+		cmd := m.applyQuickLookWindow(msg)
 		m.renderSkipped = false
 		return m, cmd
 

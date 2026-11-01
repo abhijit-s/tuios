@@ -2397,6 +2397,21 @@ call sites, each with a copy of `lipgloss.Style`. It now carries
 `//go:noinline`. A helper that runs once per action, or that returns a large
 struct, should carry it too.
 
+`StateFingerprint` hashed through a closure that the compiler inlined at each of
+about 170 field calls. It now hashes through the method value `h.str` of a small
+`fpHash` type, which keeps one copy. Main at 856b4be2 (Go 1.27.3, release flags)
+measured 49,049,760 bytes on linux/amd64 and 45,529,074 on darwin/arm64, and the
+change measured 49,016,992 and 45,495,874, which is 32,768 and 33,200 bytes
+less. The fingerprint is the same value for the same state (150,000 random
+states compared with main's, all identical). A scratch benchmark of 12 windows
+over 3 workspaces with uuid-like ids, titles and cwds and 3 BSP trees of 7
+splits each, 8 runs each of main and the change alternated on one core, went
+from 20.59 us to 11.31 us (-45%, p<0.001), 4,400 to 762 B/op and 547 to 72
+allocs/op. This path runs on every keystroke and every broadcast, so the cut
+carries no `//go:noinline`: with it the size was the same and the hash slower.
+The binary-size job would show the bytes coming back if a future compiler
+inlined method values.
+
 A map literal of slices compiles to code that runs at every start. A map literal
 of arrays of constants compiles to data. `verbCapabilities` uses this form.
 
@@ -5438,3 +5453,35 @@ both encoders.
   723,706 B for the framed one (1.144 times). It was also slower: 29.0 ms
   against 31.3 ms bare (+7.8%) and 33.4 ms against 36.4 ms framed (+8.8%).
   Sub makes the file larger and the encode slower, so unfiltered rows stay.
+
+## 2026-11 quick look keeps its drawn panel
+
+While quick look is open, every overlay compose drew the whole panel again,
+including frames caused only by pane output: a new canvas, the body and the
+dialog around it. On a 2,000-line highlighted Go file that is about 1.5 ms,
+751 KiB and 2,187 allocations per frame. The panel is now kept and drawn again
+only when something it shows changed.
+
+Measured with a scratch benchmark (`keystrokeOS(b, 1, 200, 60)`, a keybind
+registry, quick look open on a 2,000-line highlighted text result, one
+`renderQuickLook` per iteration), base and branch test binaries alternated for
+8 rounds, `nice -n 10 taskset -c 0-5`, `-test.cpu 1`, `-test.benchtime 200x`,
+benchstat, Go 1.27.3 (`go version` checked on both binaries):
+
+| | base | branch |
+|---|---|---|
+| time per frame | 1.50 ms ± 4% | 444 ns ± 3% |
+| memory per frame | 750.7 KiB | 0 |
+| allocations per frame | 2,187 | 0 |
+
+The kept panel is keyed on everything that is drawn into it: the look
+(theme generation, colour depth, ascii and nerd-font settings, canvas, panel,
+text and accent colours, the glyph set), the result and its target, the scroll
+after the draw clamped it, the panel's inner width and body height, the close
+key, the palette's canvas, muted, frame, accent, bright accent and dim inks,
+and the border style (the frame glyphs are set from `appearance.border_style`
+outside the palette). Where the panel sits is never kept: the origin and the
+mouse box are worked out on every frame, so a resize moves the
+panel even when its size stays the same. A picture is never kept, nor is a
+result still being read or a stale one. Closing the panel drops the kept
+frame, so a large file is not held after it.

@@ -289,7 +289,7 @@ func clearAgentMarks(nodes []sessiontree.Node) {
 // sessions are cycled: a row on another machine is a different connection,
 // which a cycle key must not open by surprise.
 func (m *OS) railNeighbourSession(delta int) string {
-	return railNeighbourIn(railSessionOrder(m.BuildSessionTree().Sessions), delta)
+	return railNeighbourIn(m.railSessionOrder(m.BuildSessionTree().Sessions), delta)
 }
 
 // railSessionOrder is the attached machine's sessions in the order the rail's
@@ -300,8 +300,8 @@ func (m *OS) railNeighbourSession(delta int) string {
 // the place they would be drawn, so a cycle key can still reach them and the
 // current session is never missing from the list. With no space and no
 // worktree record the grouping changes nothing and this is the tree's order.
-func railSessionOrder(nodes []sessiontree.Node) []sessiontree.Node {
-	rows := sessiontree.GroupBySpace(localSessionNodes(nodes), sessiontree.GroupByRepo)
+func (m *OS) railSessionOrder(nodes []sessiontree.Node) []sessiontree.Node {
+	rows := sessiontree.GroupBySpace(localSessionNodes(nodes), m.sidebarRepoGrouping())
 	sessions := make([]sessiontree.Node, 0, len(rows))
 	for _, n := range rows {
 		if n.Kind == sessiontree.KindSession {
@@ -354,7 +354,7 @@ func (m *OS) SwitchToSessionByIndex(n int) {
 // railSessionAt is the session at the rail position n (0-based) in
 // railSessionOrder, and false when there is no session there.
 func (m *OS) railSessionAt(n int) (sessiontree.Node, bool) {
-	sessions := railSessionOrder(m.BuildSessionTree().Sessions)
+	sessions := m.railSessionOrder(m.BuildSessionTree().Sessions)
 	if n < 0 || n >= len(sessions) {
 		return sessiontree.Node{}, false
 	}

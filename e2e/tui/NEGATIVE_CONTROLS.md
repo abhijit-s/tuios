@@ -7,6 +7,136 @@ below. Two of them are **not** caught here; that is written down rather than
 papered over, because a suite whose real coverage is unknown is worse than no
 suite.
 
+## Quick look keeps its picture through a resize
+
+`TestRailQuickLookKittyPicture` opens quick look on a host with kitty graphics
+and reads the host through `hostPictures`. An ED 2 now drops every picture and
+its data in that model, and a placement of a picture the host does not hold
+shows nothing. I checked those rules by replaying streams through kitty 0.49.2's
+own parser and graphics manager, with no window. ghostty's
+`ImageStorage.clearScreen` does the same in its source.
+
+The test resizes the terminal four ways: same box, a new box, back to a size
+already drawn, and a burst of 30 steps. It also opens a panel over the picture,
+walks past the pictures tuios leaves on the host, and resizes a PDF page.
+`TestCockpitReplyClipboardImageFirstPaste` runs an editor over a draft with a
+picture. The renderer erases the screen when it starts again, with no resize of
+its own making. `TestAnErasingFrameCarriesItsPictures` is a kept unit test for the
+order the suite cannot force.
+
+Run on 2026-11-01 on Linux. All three pass on the fixed build, and a binary of
+main (7aaaed819) fails the first two. Each control was built into its own binary.
+
+| Control: what was cut | Where it fails | Verdict |
+| --- | --- | --- |
+| Main without the fix | `TestRailQuickLookKittyPicture` ("a wider terminal took pic.png off the host: the host shows 0 pictures"), `TestCockpitReplyClipboardImageFirstPaste` ("back from the editor the host holds 0 pictures") | **caught** |
+| The commit before #1437, for the same run through kitty's core | The same picture is gone after the second resize, so #1437 did not cause this | **caught** |
+| `AddEraseHook` not called | The same two tests, with the same messages | **caught** |
+| `hostErased` forgets the uploads and sends nothing | `TestAnErasingFrameCarriesItsPictures` ("the two frames carried no single upload and placement"). Both e2e tests pass: a settle or the return from the editor brings a later frame, so only the unit test holds this | **caught** |
+| `Update` does not ask `quickLookPicture` after a message | `TestRailQuickLookKittyPicture` ("no kitty placement of the picture at its own size was sent") | **caught** |
+| `previewResizing` always false | `TestRailQuickLookKittyPicture` ("30 resizes in a burst placed the picture 56 times") | **caught** |
+| `trimHost` not called, so only the 64 of the previewer are freed | `TestRailQuickLookKittyPicture` ("after the walk the host holds 10 pictures, the bound is 8") | **caught** |
+
+The frames are `quick-look-kitty-taller`, `quick-look-kitty-pdf-resized` and, on a
+failure, `quick-look-picture-missing` under `TUIOS_E2E_FRAMES`.
+
+I also ran main and this branch in a real kitty 0.49.2 under a private Xvfb, with
+a blue PDF page, and counted the blue pixels of a screenshot of the display after
+each step. Main has 0 after a resize that keeps the box, 0 back at an earlier size,
+and 0 after a close and a reopen. This branch has the page after each of those. A
+pointer move before each screenshot makes kitty paint. See the pull request.
+
+## A picture in a pane and the launcher's icons survive a resize
+
+`TestPanePictureSurvivesAResize` shows a kitty picture once from a shell in a pane and resizes the terminal six times. `TestLauncherIconsSurviveAResize` resizes under the open launcher. Each resize must carry no ED 2 and must place the picture again. A resize of one row or column can leave the launcher's panel where it was, and only the erase then asks for the icons.
+
+Run on 2026-11-01 on Linux. Both pass on the fixed build. Each control was built into its own binary.
+
+| Control: what was cut | Where it fails | Verdict |
+| --- | --- | --- |
+| `keepHostPictures` always false, so frames keep the ED 2 | `TestPanePictureSurvivesAResize` ("a resize to [160 40] did not place the picture again"), `TestLauncherIconsSurviveAResize` ("a resize to [140 40] did not place the icons again") | **caught** |
+| `replaceAll` always false in `RefreshAllPlacements` | `TestPanePictureSurvivesAResize` ("a resize to [160 40] did not place the picture again") | **caught** |
+| The launcher's `AddEraseHook` not called | `TestLauncherIconsSurviveAResize` ("a resize to [121 40] did not place the icons again"). The first form of the test passed here: every size it used moved the panel. So the test now has steps of one row and one column | **caught** |
+| `hostScreenErased` not cleared with nothing placed, so the startup frame's erase stays set | `TestKittyMultiplePlacements` ("the guest placed the image 9 times and the host was told 12 times") | **caught** |
+| The browser client gets the rewrite too | `touch.spec.mjs:529` in clienttests (`Expected: 47`, `Received: 103`), in CI on an earlier commit of this change | **caught** |
+
+These tests hold the rules, not the pixels. The pixels were counted in a real kitty 0.49.2 under a private Xvfb: main has 0 blue pixels after the first resize, and the fixed build keeps every one through six resizes.
+
+## Quick look moves inside a file
+
+`TestQuickLookMovesInsideAFile` walks a log of 6000 numbered rows, about 1.1 MB, with `J` and `K`, in one burst of keys, past what the preview holds and back. Each row on screen must sit beside its own line number. The test then goes inside with `Tab`, checks that `d` does not reach the rail, goes to both ends, comes back with `esc`, uses the wheel and toggles full size.
+
+Run on 2026-11-02 on Linux. The test passes on the change. Each control was built into its own binary.
+
+| Control: what was cut | Where it fails | Verdict |
+| --- | --- | --- |
+| `Update` does not ask `quickLookWindow` | "J did not read on past the first window: the first row is 1290" | **caught** |
+| The line number is not moved when a window is let go | "the first row is 0 (a row and a number differ: "3677  row 4993 x")". The first form of the test stopped at row 3000, under what the preview holds, and passed here, so it now goes to row 5000 | **caught** |
+| A key past the held text is held to its edge | "J did not read on past the first window: the first row is 2964" | **caught** |
+| The scope inside the file does not take every key | "j inside did not move a line" | **caught** |
+| `f` does nothing | "f did not make the panel taller" | **caught** |
+
+`TestQuickLookHostHasWindows` is a kept wire compatibility test. The suite has no older daemon, and an older daemon ignores `offset`.
+
+The frames are `quick-look-log-start`, `-far`, `-inside`, `-end`, `-full` and `quick-look-far-log-end` under `TUIOS_E2E_FRAMES`.
+
+## Quick look searches a file
+
+`TestQuickLookMovesInsideAFile` searches in a log of 6000 rows, past what is held in both directions, goes to a line, goes past the last line, and wraps. `TestQuickLookLightsAMatchAtEachDepth` checks every cell of a match at truecolor, 256 and 16 colours. `TestQuickLookOnAFarFile` searches and goes to a line over the link. `TestQuickLookSearchGoesOnFromWhereItStopped` is a kept unit test, since the suite has no way to run a search out of its 5 seconds.
+
+Run on 2026-11-02 on Linux. All pass on the change. Each control was built into its own binary.
+
+| Control: what was cut | Where it fails | Verdict |
+| --- | --- | --- |
+| The prompt is not read first, so a space closes the preview | `TestQuickLookLightsAMatchAtEachDepth` ("the search did not end"). This was the first bug the test found | **caught** |
+| A match is not lit | "at truecolor the match has 0 of 8 cells lit", and the same at 256 | **caught** |
+| The search looks only at the held text | "the search did not find a row far down the file" | **caught** |
+| The backward search finds nothing | "N did not find the row far behind" | **caught** |
+| A line found keeps no number | "go to a line did not show that line" | **caught** |
+| `w` does nothing | "w did not wrap the lines" | **caught** |
+| A go to line message keeps the old query beside it | "a line past the end did not say how many there are" | **caught** |
+
+The frames are `quick-look-search-truecolor`, `-256` and `-16`, `quick-look-log-search`, `-goto` and `-wrap` under `TUIOS_E2E_FRAMES`.
+
+## Quick look moves on a resize
+
+`TestQuickLookMovesOnAResize` opens quick look on `main.go`, then resizes the
+terminal from 140 to 260 columns and from 260 to 240. At 260 and 240 columns
+the panel is at its widest, so the second resize leaves its size as it was. The
+panel's left edge must move, and its width must stay the same. The test reads
+the place and the width off the panel's top frame.
+
+Run on 2026-11-01 on Linux. The test passes on main. The control was built into
+its own binary.
+
+| Control: what was cut | Where it fails | Verdict |
+| --- | --- | --- |
+| `panelCenterX` (`internal/app/overlay_hit.go`) returns `viewReserve().Left`, so the panel's left edge does not depend on the screen's width | "ASSERTION: after a resize from 260 to 240 columns the panel did not move: the panel's left edge is at 28, 112 wide" | **caught** |
+
+The frame is `quick-look-resized` under `TUIOS_E2E_FRAMES`.
+## Killed sessions release their transcript joins
+
+`TestKilledSessionsReleaseTheirTranscriptJoins` starts a daemon with `--pprof`,
+joins one survivor session to a transcript in a project directory, then joins a
+window of each of 30 more sessions with the real SessionStart hook (one in the
+survivor's directory, the rest in a directory each) and kills the 30. Before the
+kills the daemon holds one inotify watch more per new directory and every window
+reads its first record. Once the daemon's goroutines are back to the baseline
+after the kills, the watch count must be back to the baseline, and the survivor
+must still get a `transcript` event when its file grows. The control (the call
+that ends the joins cut from `Session.Stop`) is caught by the watch count, which
+is read only on Linux (the daemon's `/proc` fdinfo), so off Linux the test does
+not see the leak. The heap is not asserted: post-collection `HeapAlloc` is read
+every 500 ms for 10 s after the kills and written to the artifact with each
+reading's offset, because pane timers of about a second still hold a just-killed
+session for that long.
+
+Run on 2026-11-01 on Linux, go1.27.3. On a build whose `Session.Stop` does not
+end the joins, the test fails: `the killed sessions kept their watches: want 3
+(W0), got 32 (32 before the kills)`. On that build the heap after the kills
+settles at about 63 KB above the baseline per killed session within about a
+second and stays there for the rest of the 10 s.
+
 ## An edit back to a tuios save reaches the screen
 
 `TestAnEditBackToATuiosSaveReachesTheScreen` follows issue 1411. tuios saves the
@@ -4890,6 +5020,25 @@ the fix.
 | Control: what was cut | Where it failed | Verdict |
 | --- | --- | --- |
 | ED 2 fills with `e.scr.blankCell()` (back to `e.scr.Clear()`) | "cells the clear painted lost the program's background": all three probes on the terminal's own background | **caught** |
+
+### ED 2 keeps the program's background on libghostty (#1436)
+
+The library erases under a coloured pen with cells that hold the colour in
+their content and have style ID 0. `TestGhosttyDiffErasedCellsKeepThePenBackground`
+in `vt/ghostty_erase_background_test.go` runs on the ghostty-vt job. It compares
+each erase under each pen with the pure emulator, through both the decoder and
+the cgo getters. CI's e2e job does not build the ghostty backend, so
+`TestEraseDisplayKeepsTheProgramBackground` covers this backend only when
+`TUIOS_E2E_BIN` names a ghostty binary.
+
+The controls were run on 2026-11-01 on branch `fix/ghostty-erased-cell-background`.
+
+| Control: what was cut | Where it failed | Verdict |
+| --- | --- | --- |
+| The whole fix, on a ghostty binary | `TestEraseDisplayKeepsTheProgramBackground`: all three probes on the terminal's own background | **caught** |
+| The whole fix | `TestGhosttyDiffErasedCellsKeepThePenBackground`: all 120 pen and erase cases, and the `the decoder reads the manifest`, `osc 4` and `history` subtests. `TestGhosttyBackgroundColourEraseAgrees`: all 5 cases | **caught** |
+| `backgroundOnlyStyle` in `readHistoryLine` | The `history` subtest only | **caught** |
+
 ### tuios call
 
 Run on 2026-10-11 on branch `feat/call-verb`. The control cuts one thing from
@@ -12560,6 +12709,18 @@ under `TUIOS_E2E_FRAMES`.
 | The same cut, with the "on build" wait passed by a comment in the file that held those words (an earlier draft of the test) | `TestQuickLookOnAFarFile`: "the far machine did not judge the file with two names", linked.txt read locally | **caught** |
 | `quickLookCellsKey` keeps the panes' glyph set (quadrants) | `TestRailQuickLook`: "the picture has 7 quadrant glyphs; the preview draws half blocks" | **caught** |
 | `quickLookPlacement` answers false | `TestRailQuickLookKittyPicture`: "no kitty placement of the picture at its own size was sent" | **caught** |
+
+### Quick look frees the pictures it leaves
+
+`TestQuickLookFreesThePicturesItLeaves` writes 80 small pictures, `p-00.png` to `p-79.png`, into the quick look folder and walks quick look over them one row at a time on a host with kitty graphics, waiting at each row for the new picture's placement. It counts the ids in the previews' range (0xF2000000 and up) that were uploaded and those freed with the uppercase delete, `a=d,d=I`. At most 64 may be left. The picture on screen must not be freed and its last placement must stand, and no id may be freed twice. The ids are written to `preview-ids.txt` in the test's artifact folder.
+
+Run on 2026-11-01 on Linux. The control is a build of `856b4be28`, which unplaces a picture that leaves the screen and keeps it uploaded. It fails, and its log shows the picture on screen placed and nothing freed twice:
+
+| Control: what was cut | Where it fails | Verdict |
+| --- | --- | --- |
+| Freeing an evicted picture on the host (the build of `856b4be28`) | "80 pictures are still in the terminal after quick look showed 80, want at most 64" (80 uploaded, 0 freed, 80 live) | **caught** |
+
+Repeat from `e2e/tui` with `TUIOS_E2E=1 TUIOS_E2E_BIN=/path/to/tuios go test -count=1 -run '^TestQuickLookFreesThePicturesItLeaves$' -v .`.
 ## Long-running commands write --cpuprofile
 
 `TestCPUProfileWrittenByLongRunningCommands` starts each command that keeps
@@ -13225,3 +13386,51 @@ Run on 2026-11-01 on macOS (arm64), on `856b4be28`. Both tests pass on the fixed
 | `screenShowsTaken` not reading the input box, so a turn on the screen alone is taken | Second test: "Enter not read as submit: the stalled question is open=false after 15s, want true". The first passes | **caught** |
 
 Repeat from `e2e/tui` with `TUIOS_E2E=1 TUIOS_E2E_BIN=/path/to/tuios go test -count=1 -run 'TestQueuedMessageTakenWhileItsHookIsLost|TestQueuedMessageLeftInTheBox' -v .`. The state log of each run is `queue-taken-hook-lost.log` and `queue-left-in-box.log` under `TUIOS_E2E_FRAMES`.
+### A transcript under CLAUDE_CONFIG_DIR (#1390)
+
+`TestTranscriptPathFollowsClaudeConfigDir` in `agent_transcript_review_test.go`. On 2026-10-31 each control below was built into a binary and the test was run against it on macOS. The same test passed on the branch build.
+
+The positive halves: a hook with `CLAUDE_CONFIG_DIR` set joins its profile's file, a hook whose `CLAUDE_CONFIG_DIR` is a link to the profile joins the same file, and a hook with the variable set still joins a file under `~/.claude/projects`. The refusals that hold on the fixed build: the profile's file from a hook without the variable, a path outside both folders, a link in the profile's folder that leads out, a file above the projects folder named through a `{` in the variable, and a file under a `projects` folder that is a link to another folder.
+
+| Control: what was cut | Test | Result |
+| --- | --- | --- |
+| `joinReportedTranscript` passes no environment to `transcriptPathAllowed`, so only the daemon's folder is checked, as before | `TestTranscriptPathFollowsClaudeConfigDir` | **caught**: "a hook with CLAUDE_CONFIG_DIR naming its profile's file: refused" |
+| `agentHomeDir` takes a value with a `{` in it, so `RootIn` cuts the path inside the value and `CLAUDE_CONFIG_DIR=<base>/braced/{x` makes the folder `<base>/braced` | `TestTranscriptPathFollowsClaudeConfigDir` | **caught**: "a CLAUDE_CONFIG_DIR with a { naming a file above its projects folder: want transcript_refused", the hook joined `braced/logs/above.jsonl` |
+| `transcriptPathAllowed` does not check that the resolved peer folder still ends in `projects`, so `<any>/projects` linked to another folder counts | `TestTranscriptPathFollowsClaudeConfigDir` | **caught**: "a projects folder that is a link to another folder: want transcript_refused", the hook joined `claude-linked/projects/demo/target.jsonl` |
+
+## The pill on a worktree row
+
+`TestSidebarPillKeepsTreeBars` attaches to the last worktree of a group with `row_style = "pill"` and compares the columns of the tree bars and of the names.
+
+Run on 2026-11-01 on Linux against a build of `origin/main` at `90af97147`, which has no fix:
+
+| Control: what was cut | Where it fails | Verdict |
+| --- | --- | --- |
+| The whole fix | "the current row's bar is in column 4 and its sibling's in column 3", and the same for the names, columns 7 and 6 | caught |
+
+The frame is `rail-pill-tree-bars` under `TUIOS_E2E_FRAMES`, in the test's folder.
+
+## The main checkout's row is the repository's row
+
+`TestRailMainCheckoutIsRepoRow` runs at 30 and 18 columns. `TestRailRevealsGroupedRow` and `TestSidebarGroupsMainCheckout` cover the same rows from the reveal and from `group_main = true`. `TestSidebarDragReordersSessions` covers the moves of a group (#1418).
+
+Run on 2026-11-01 on Linux. Each control is one change to a build of this branch.
+
+| Control: what was cut | Test | Where it fails | Verdict |
+| --- | --- | --- | --- |
+| `sidebarAttachedRow` accepts only a repository's own row | `TestRailRevealsGroupedRow` | "a switch into the fold on a main checkout's row: the sessions section does not show mainsess" | caught |
+| The main checkout's row records no fold control | `TestRailMainCheckoutIsRepoRow/30` | "the folded row does not show the attached session", because the click on the mark opens the session | caught |
+| The fold control stays clickable and leaves the keyboard's list | `TestRailMainCheckoutIsRepoRow/30` | "enter on the fold mark did not fold the group and keep the rail" | caught |
+| The session menu has no fold row | `TestRailMainCheckoutIsRepoRow/30` | "the row's menu has no Fold group" | caught |
+| `sessionWorktreeInfo` hides the main checkout unless `group_main` is on | `TestRailMainCheckoutIsRepoRow/30` | "New worktree on the main checkout's row opened no dialog" | caught |
+| A folded row does not take the attached session's mark | `TestRailMainCheckoutIsRepoRow/30` | "the folded row does not show the attached session" | caught |
+| `ckBranch` returns a main checkout's branch | `TestRailMainCheckoutIsRepoRow/30` | "the Inbox row lost the agent's message" | caught |
+| A release on a repository's row does not fold | `TestSidebarGroupsMainCheckout` | "the header click did not fold the group" | caught |
+| A worktree row moves as a block of its own | `TestSidebarDragReordersSessions` | "a worktree row dragged over its sibling": the rows do not swap | caught |
+| The drag moves one id through the flat list, as it did before | `TestSidebarDragReordersSessions` | "the group's row dragged down": the group stays above zulu | caught |
+| A block swaps as soon as the pointer touches the block it passes | `TestSidebarDragReordersSessions` | "a session stopped over the middle of a group": zulu lands above the group | caught |
+| The reorder keys swap two ids in the flat list | `TestSidebarDragReordersSessions` | "J on the group's row": the group does not move past bravo | caught |
+
+The first Inbox assertion passed with its control, because the rail's agents section shows the same message. The assertion now waits for the Inbox to cover the rail, and the control is caught.
+
+The frames are `rail-compact-*` and `rail-drag-*` under the test's artifact folder.
