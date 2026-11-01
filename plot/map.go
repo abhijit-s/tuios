@@ -207,14 +207,17 @@ func (mp Map) land() Role {
 	return Track
 }
 
-// rng returns the range of the values, and false when there is none.
+// rng returns the range of the values, and false when there is none. A value
+// under a code the map does not know shades nothing, so it sets no range: one
+// large one would push every real country into the lowest shade.
 func (mp Map) rng() (lo, hi float64, ok bool) {
 	if (mp.Min != 0 || mp.Max != 0) && finite(mp.Min) && finite(mp.Max) && mp.Max > mp.Min {
 		return mp.Min, mp.Max, true
 	}
 	lo, hi, ok = math.Inf(1), math.Inf(-1), false
-	for _, v := range mp.Values {
-		if finite(v) {
+	wd := loadWorld()
+	for code, v := range mp.Values {
+		if _, known := wd.index[strings.ToUpper(strings.TrimSpace(code))]; known && finite(v) {
 			hi, ok = math.Max(hi, v), true
 			if v > 0 {
 				lo = math.Min(lo, v)
@@ -304,6 +307,35 @@ func (mp Map) Legend(m Mode) []LegendItem {
 		out[k] = LegendItem{Label: l, Role: ramp[k]}
 	}
 	return out
+}
+
+// LegendGrid returns the legend in one row at most w cells wide, as wide as it
+// needs. When the items of Legend fit, it is those. When they do not, it is one
+// mark per shade and the labels of the lowest and the highest shade, so the top
+// shades keep a meaning. When those labels do not fit either, it is the marks
+// alone.
+func (mp Map) LegendGrid(w int, m Mode) *Grid {
+	items := mp.Legend(m)
+	w = min(w, MaxSide)
+	if lw := LegendWidth(items); lw <= w {
+		g := NewGrid(lw, 1)
+		DrawLegend(g, 0, 0, items, m)
+		return g
+	}
+	n := len(items)
+	if n > w {
+		return NewGrid(0, 1)
+	}
+	span := " " + items[0].Label + block(m, " … ", " ... ") + items[n-1].Label
+	if n+width(span) > w {
+		span = ""
+	}
+	g := NewGrid(n+width(span), 1)
+	for i, it := range items {
+		g.set(i, 0, block(m, "■", asciiMarks[i%len(asciiMarks)]), it.Role)
+	}
+	g.Text(n, 0, span, Mute, false)
+	return g
 }
 
 // round2 rounds v to two significant digits, so a legend reads 2.8k and

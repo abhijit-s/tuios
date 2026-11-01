@@ -330,6 +330,176 @@ func TestFocusCycle(t *testing.T) {
 	sameAsFresh(t, s, 20, 6)
 }
 
+// TestFocusAccentMoves is about the frame after the focus moves: the surface
+// keeps its buffer between frames, so the card that paints the accent must
+// repaint although its own view state did not change.
+func TestFocusAccentMoves(t *testing.T) {
+	const w, h = 40, 14
+	s := mustSurface(t, `<tml version="1"><state>{"a": [{"t": "x"}], "b": [{"t": "y"}], "hide": false}</state><col>
+  <card title="One"><table id="ta" rows="state.a" select="single" on-select="emit('a')"><column field="t"/></table></card>
+  <card title="Two"><col><text>two</text><table id="tb" if="!state.hide" rows="state.b" select="single" on-select="emit('b')"><column field="t"/></table></col></card>
+  <row><card title="Three"><card title="Inner"><button id="ok" on-press="emit('ok')">OK</button></card></card></row>
+</col></tml>`)
+	buf := s.Render(w, h)
+	sameAsFresh(t, s, w, h)
+	for _, step := range []string{"tab", "tab", "tab", "shift+tab"} {
+		if _, err := s.Key(step); err != nil {
+			t.Fatal(err)
+		}
+		buf = s.Render(w, h)
+		if s.stats.built > 2 {
+			t.Errorf("%s built %d boxes: a focus move only repaints the cards", step, s.stats.built)
+		}
+		sameAsFresh(t, s, w, h)
+	}
+	// A click moves the focus too.
+	if _, err := s.Mouse(Mouse{X: 4, Y: rowWith(buf, "OK"), Button: MouseLeft}); err != nil {
+		t.Fatal(err)
+	}
+	s.Render(w, h)
+	sameAsFresh(t, s, w, h)
+	// A patch that takes the focused box away takes the accent with it.
+	for s.Focus() != "tb" {
+		if _, err := s.Key("tab"); err != nil {
+			t.Fatal(err)
+		}
+		s.Render(w, h)
+	}
+	if err := s.Set("state.hide", true); err != nil {
+		t.Fatal(err)
+	}
+	s.Render(w, h)
+	sameAsFresh(t, s, w, h)
+}
+
+// TestCardFocus pins which cards are tab stops and what enter does on each.
+func TestCardFocus(t *testing.T) {
+	const w, h = 40, 12
+	stops := func(src string) []string {
+		s := mustSurface(t, src)
+		s.Render(w, h)
+		var out []string
+		for _, b := range s.focus {
+			out = append(out, b.key)
+		}
+		return out
+	}
+	for _, c := range []struct {
+		name, card string
+		stop       bool
+	}{
+		{"plain", `<card id="c" title="C"><text>x</text></card>`, false},
+		{"fold true", `<card id="c" title="C" fold="true"><text>x</text></card>`, true},
+		{"fold false", `<card id="c" title="C" fold="false"><text>x</text></card>`, true},
+		{"fold bound", `<card id="c" title="C" fold="{state.f}"><text>x</text></card>`, true},
+		{"on-press", `<card id="c" title="C" on-press="emit('p')"><text>x</text></card>`, true},
+	} {
+		got := stops(`<tml version="1"><state>{"f": false}</state><col>` + c.card + `</col></tml>`)
+		if (len(got) == 1) != c.stop {
+			t.Errorf("%s: stops %v, want a stop: %v", c.name, got, c.stop)
+		}
+	}
+
+	// Enter runs on-press, and folds only when there is none.
+	s := mustSurface(t, `<tml version="1"><col><card id="c" title="C" fold="false" on-press="emit('p')"><text>x</text></card></col></tml>`)
+	s.Render(w, h)
+	res, err := s.Key("enter")
+	if err != nil || len(res.Effects) != 1 || res.Effects[0].Name != "p" {
+		t.Fatalf("enter on a card with on-press: %+v %v", res, err)
+	}
+	screenHas(t, s.Render(w, h), "x")
+
+	// A plain card that a click folded stays in reach of the keyboard, and
+	// keeps the focus when enter opens it.
+	s = mustSurface(t, `<tml version="1"><col><card id="c" title="C"><text>inside</text></card><button id="b" on-press="emit('b')">OK</button></col></tml>`)
+	buf := s.Render(w, h)
+	if _, err := s.Mouse(Mouse{X: 3, Y: rowWith(buf, "C"), Button: MouseLeft}); err != nil {
+		t.Fatal(err)
+	}
+	s.Render(w, h)
+	for s.Focus() != "c" {
+		if _, err := s.Key("tab"); err != nil {
+			t.Fatal(err)
+		}
+		s.Render(w, h)
+		if len(s.focus) != 2 {
+			t.Fatalf("a folded card is no stop: %d stops", len(s.focus))
+		}
+	}
+	if _, err := s.Key("enter"); err != nil {
+		t.Fatal(err)
+	}
+	screenHas(t, s.Render(w, h), "inside")
+	if s.focused() == nil || s.focused().key != "c" {
+		t.Fatalf("enter opened the card and the focus went to %v", s.focused())
+	}
+	sameAsFresh(t, s, w, h)
+	// Once tab leaves it, the open card is a plain card again.
+	if _, err := s.Key("tab"); err != nil {
+		t.Fatal(err)
+	}
+	s.Render(w, h)
+	if s.Focus() != "b" || len(s.focus) != 1 {
+		t.Fatalf("after tab: focus %q, %d stops", s.Focus(), len(s.focus))
+	}
+	sameAsFresh(t, s, w, h)
+}
+
+// TestMapCellAspect holds the map to its true shape on any cell, 2.5 times as
+// wide as it is tall, both in the box the layout gives it and in what it draws.
+// The text under it shows the layout measured the same rows the map drew.
+func TestMapCellAspect(t *testing.T) {
+	const w = 80
+	for _, c := range []struct {
+		aspect float64
+		rows   int
+	}{{1, 32}, {2, 16}, {19.0 / 8, 14}, {4, 8}} {
+		doc, problems, err := tml.Check([]byte(`<tml version="1"><state>{"r": [{"c": "US", "v": 1}]}</state><col>
+  <map data="state.r" x="c" y="v"/><text>after</text><spacer/>
+</col></tml>`), nil)
+		if err != nil {
+			t.Fatalf("%v %v", err, problems)
+		}
+		s, err := New(doc, &Options{CellAspect: c.aspect})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := rowWith(s.Render(w, 50), "after") - 1; got != c.rows {
+			t.Errorf("aspect %v: the map takes %d rows, want %d", c.aspect, got, c.rows)
+		}
+	}
+}
+
+// TestMapBlockInTallBox keeps the title, the map and the legend together in a
+// box much taller than the map, centred in it, and draws no legend over the map
+// when the box has no row for it.
+func TestMapBlockInTallBox(t *testing.T) {
+	const w, h = 100, 60
+	src := `<tml version="1"><state>{"r": [{"c": "US", "v": 8}]}</state>
+  <map data="state.r" x="c" y="v" title="Rates" h="fill"/>
+</tml>`
+	s := mustSurface(t, src)
+	buf := s.Render(w, h)
+	title, legend := rowWith(buf, "Rates"), rowWith(buf, "≥")
+	if title < 0 || legend < 0 {
+		t.Fatalf("no title or legend:\n%s", strings.Join(rows(buf), "\n"))
+	}
+	all := rows(buf)
+	for y := title + 1; y < legend; y++ {
+		if strings.TrimSpace(all[y]) == "" {
+			t.Fatalf("row %d between the title and the legend is empty:\n%s", y, strings.Join(all, "\n"))
+		}
+	}
+	if above, below := title, h-1-legend; above < 15 || above-below > 1 || below-above > 1 {
+		t.Errorf("the block is not centred: %d rows above, %d below", above, below)
+	}
+	// One row: the map takes it, and no legend mark lands on it.
+	s = mustSurface(t, strings.ReplaceAll(src, ` title="Rates"`, ""))
+	if got := rowWith(s.Render(w, 1), "≥"); got >= 0 {
+		t.Errorf("a legend on the only row: %q", rows(s.Render(w, 1))[got])
+	}
+}
+
 // TestControlCharsDropped draws a tree built in code, so tml.Sanitize never
 // saw it: no C0 or C1 control character or DEL may reach a cell, since a
 // cell's text goes to the terminal as is.

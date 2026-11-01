@@ -6,7 +6,9 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -420,6 +422,61 @@ func TestMapBudget(t *testing.T) {
 	for _, c := range []string{"US", "FR", "NO", "SG", "MT", "XK", "TW", "HK", "MF", "SX"} {
 		if _, ok := wd.index[c]; !ok {
 			t.Errorf("the map has no %s", c)
+		}
+	}
+}
+
+// TestMapUnknownCodes holds a value under a code the map does not know to what
+// the Values doc promises: it shows as nothing, so the map and the legend are
+// the ones the same values draw without it. A value that is the largest or the
+// only one shows the difference.
+func TestMapUnknownCodes(t *testing.T) {
+	known := map[string]float64{"US": 10, "BR": 3}
+	with := map[string]float64{"US": 10, "BR": 3, "ZZ": 1e6, " qq ": -5}
+	for _, log := range []bool{false, true} {
+		a, b := Map{Values: known, Log: log}, Map{Values: with, Log: log}
+		if la, lb := a.Legend(Braille), b.Legend(Braille); !slices.Equal(la, lb) {
+			t.Errorf("log %v: legend %v, without the unknown codes %v", log, lb, la)
+		}
+		if ga, gb := a.Draw(60, 16, Braille), b.Draw(60, 16, Braille); !reflect.DeepEqual(ga, gb) {
+			t.Errorf("log %v: the unknown codes move the map", log)
+		}
+		if got := (Map{Values: map[string]float64{"ZZ": 5}, Log: log}).Legend(Braille); got != nil {
+			t.Errorf("log %v: only an unknown code gives a legend: %v", log, got)
+		}
+	}
+}
+
+// TestMapLegendGrid holds the legend to its width without losing the top shade.
+func TestMapLegendGrid(t *testing.T) {
+	mp := Map{Values: map[string]float64{"US": 10, "BR": 3}, Format: func(v float64) string { return "$" + Compact(v) }}
+	full := LegendWidth(mp.Legend(Braille))
+	for _, c := range []struct {
+		w    int
+		want string
+	}{
+		{full, "■ $0  ■ ≥ $2  ■ ≥ $4  ■ ≥ $6  ■ ≥ $8"},
+		{full - 1, "■■■■■ $0 … ≥ $8"},
+		{15, "■■■■■ $0 … ≥ $8"},
+		{14, "■■■■■"},
+		{5, "■■■■■"},
+		{4, ""},
+		{0, ""},
+	} {
+		g := mp.LegendGrid(c.w, Braille)
+		if got := strings.TrimRight(g.String(), "\n"); got != c.want {
+			t.Errorf("width %d: %q, want %q", c.w, got, c.want)
+		}
+		if g.W > max(c.w, 0) {
+			t.Errorf("width %d: the legend is %d wide", c.w, g.W)
+		}
+	}
+	// Every shade keeps its own colour in the narrow form, and ASCII keeps the
+	// mark Draw gives that shade.
+	g := mp.LegendGrid(15, ASCII)
+	for i, want := range mapRamp {
+		if cell := g.At(i, 0); cell.Role != want || cell.Text != asciiMarks[i] {
+			t.Errorf("shade %d: %q in %s", i, cell.Text, cell.Role)
 		}
 	}
 }

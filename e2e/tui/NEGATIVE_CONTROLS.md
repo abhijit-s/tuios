@@ -102,6 +102,19 @@ Run on 2026-10-31 on Linux. The fixed build passes 3 runs of 3. With no read whe
 the far watch starts, the test failed with the message from CI: `a file removed on
 the far machine stayed on the list`. With `wait-dir` ignoring `after`, it failed
 with `a change between two waits was not the answer to the second`.
+## Timing races taken out of six tests
+
+Run on 2026-10-31 on Linux. Each test passes on the fixed build, and each control
+fails. `TestACancelledCopyStopsReadingItsSource` passed with the hash ignoring its
+context before this change, because a first run of a copy no longer hashes its
+source. It now pauses and resumes the copy, which does.
+
+| Test | Control | Failure |
+| --- | --- | --- |
+| `TestACancelledCopyStopsReadingItsSource` | `hashOpen` reads with `context.Background()` | `the daemon read 996 MB of the source in the 2 s after the copy was cancelled` |
+| `TestRestartServerFromAPaneLeavesADaemon` | The worker does not write the sessions line | `the restart log does not say the restart finished`, after the deadline |
+| `TestKittySlowClientHoldsTheGuest` | `holdForSlowSubscribers` returns at once | `the daemon held the guest for 0s of 3s` |
+| `TestNotificationTickComposesOnlyWhenTheBurnMoves` | The tick's `needsRender` holds for any message | `a tick right after the frame that drew the message composed again` |
 
 ## tuios tutor keeps out of the person's home
 
@@ -7104,6 +7117,24 @@ Run on 2026-10-17.
 |---|---|---|---|---|
 | f did not change the colour | yes | `ThemeEditorFix` sets the colour it already had | `TestThemeEditorQuickAndFix` ("f did not fix the accent's contrast") | **caught** |
 
+## The colour picker on a role the theme leaves unset (#1430)
+
+`TestThemeEditorQuickAndFix` goes on to the steps of the report, behind a host
+terminal with a background no theme draws. Enter on Dock ground must open the
+picker on the host's background, and the dock's cells must have the default
+background. Enter on Rail ground must open on `sidebar.background` from the
+config. Enter on Selection in one_dark must open on `appearance.selection`.
+
+Run on 2026-11-01.
+
+| Bug | Fix removed | How | Tests that fail | Verdict |
+|---|---|---|---|---|
+| Enter on an unset ground panicked | yes | the build of the commit before the fix | `TestThemeEditorQuickAndFix` ("the colour picker never opened on #0f2a14", with the nil pointer screen) | **caught** |
+| The dock's picker ignored the host | yes | `themeEditorGround` returns the theme's background and never `host.bg` | `TestThemeEditorQuickAndFix` ("the colour picker never opened on #0f2a14") | **caught** |
+| The rail's picker ignored the config | yes | `themeEditorGround` skips the `themeEditorConfigWins` branch | `TestThemeEditorQuickAndFix` ("the colour picker never opened on #123456") | **caught** |
+| Enter on an unset Selection had no colour | yes | `themeEditorColour` skips the selection fallback | `TestThemeEditorQuickAndFix` ("the colour picker never opened on #45475a") | **caught** |
+| The cursor's flash stayed on the dock | yes | `endThemeEditorFlash` does not put the draft back | `TestThemeEditorQuickAndFix` ("the dock paints a ground of its own") | **caught** |
+
 ## The rail's row style
 
 `TestLiveAppearanceKeepsTheScreen` gains `sidebar.row_style=pill` and
@@ -10702,6 +10733,42 @@ TUIOS_E2E=1 TUIOS_E2E_BIN=/path/to/tuios TUIOS_E2E_OLD_BIN=/path/to/tuios-v0.12.
   go test -count=1 -run '^(TestPaneUpgradeRefusesAnAnswerFromTheGUIBridge|TestPaneUpgradeRunsNoFileWithoutADialog)$' .
 ```
 
+### A quiesced pane is frozen
+
+- `TestSelfExecFreezesPaneDuringHandoff`: a probe pane turns on modes 2048 and 2031 and prints, through `cat -v`, every reply it hears, and on `SIGWINCH` or `SIGUSR1` the size the kernel gives it. A `test-handoff` is held 2.5 s between the manifest and the exec, and in the hold a `resize` to 117x33 and a `stream-pane` with a light `viewer` report go out on connections opened before the handoff; the test checks the old image answered them. After the exec the pane must be the size it was written down at, the kernel must give the program the same size, and the program must have heard no size report, no `SIGWINCH` and no scheme report in the span. A resize and a light push to the new image must then reach the program.
+- `TestHandoffPutBackAppliesWhatWasHeld`: the same calls in the hold of a handoff to a copy of the binary, which is replaced in the hold by a script that is not a tuios, so the exec runs the preflight again, it fails, and the daemon is put back with its clients attached. The pane must then be 117x33, the kernel must give the program 117x33, and the program's last size report must be 33x117 and its last scheme report light.
+
+Run on 2026-10-17 on macOS arm64 (Darwin 27, Go 1.26.9) against feat/live-handoff, one build per control. The first two controls were run again on 2026-10-31 (Go 1.27.3) against `pr/live-handoff-5`, where this fix follows the keeper, and were caught with the same messages.
+
+| Control | How | Test that fails | Verdict |
+| --- | --- | --- | --- |
+| A resize reaches a frozen pane | the `frozen` check at the top of `resizeStreamLocked` made `if false` | `TestSelfExecFreezesPaneDuringHandoff`: "after the handoff the pane is 28x98 and the kernel gives its program 33x117", "the program heard 2 in-band size reports by the handoff's end, 1 before it: [28x98 33x117]", "the program read its size 3 times by the handoff's end, want 2" | **caught** |
+| A colour push reaches a held session | the `reportsHeld` check in `applyReportColors` made `if false` | `TestSelfExecFreezesPaneDuringHandoff`: "the program heard 1 scheme reports by the handoff's end, 0 before it: [2]" | **caught** |
+| A put-back drops the held size | `Resume`'s `thaw` skips the `resizeStreamLocked` of the held size | `TestHandoffPutBackAppliesWhatWasHeld`: "after the put-back the pane is 28x98, want 33x117", "the kernel gives the program 28x98", "the program's last in-band size report is not 33x117: [28x98]" | **caught** |
+| A put-back drops the held colours | `releaseReportColors` skips the apply of the push it held | `TestHandoffPutBackAppliesWhatWasHeld`: "the program was not told of the light scheme pushed during the freeze: []" | **caught** |
+
+Not covered by a test: the cell size in pixels a TUI client reports (`UpdatePixelDimensions`), which no verb sends. It is held by the same flag, under `terminalMu` for the emulator and `winsizeMu` for the kernel, and applied by the same `thaw`.
+
+```sh
+TUIOS_E2E=1 TUIOS_E2E_BIN=/path/to/tuios \
+  go test -count=1 -run '^(TestSelfExecFreezesPaneDuringHandoff|TestHandoffPutBackAppliesWhatWasHeld)$' .
+```
+
+### Hooks are held across a handoff
+
+- `TestHandoffHoldsHooks`: an `after-workspace-switch` hook sleeps 3 s and appends to a file. A `select-workspace` on a connection opened before the handoff, answered by the old image, lands in a 1.5 s hold between the manifest and the exec. "exec": after the handoff, once the hook would have ended, the daemon must have no `<defunct>` child and the file must be empty. "put back": the binary is replaced in the hold, the handoff is put back, and the hook must run once.
+
+The hooks wait on the pipe holds of `handoff_refuse.go`, which shut once the panes are frozen; there is no hold of their own in the hooks manager. Run on 2026-10-31 on macOS arm64 (Darwin 27, Go 1.27.3) against `pr/live-handoff-5`, one build per control.
+
+| Control | How | Test that fails | Verdict |
+| --- | --- | --- | --- |
+| A hook takes no pipe hold | drop `m.SetHold(d.pipes.hold)` in `loadHooks` | `TestHandoffHoldsHooks/exec`: "the daemon has zombie children after the handoff: [5257 <defunct> <defunct>]", "a hook fired in the handoff's hold ran across the exec: \"ran\\n\"" | **caught** |
+| A put-back leaves the waiting hooks waiting | drop `close(p.closed)` from `pipeHolds.open` | `TestHandoffHoldsHooks/put_back`: "the hook held during the handoff ran 0 times after the put-back, want once" | **caught** |
+
+```sh
+TUIOS_E2E=1 TUIOS_E2E_BIN=/path/to/tuios go test -count=1 -run '^TestHandoffHoldsHooks$' .
+```
+
 ## Deleting a worktree from the close-confirmation dialog
 
 `TestSidebarCloseDeletesWorktree` takes the third row of the close dialog on
@@ -11951,6 +12018,50 @@ The fixed build passes 12 of 12 runs under the same load. The first draft of
 the test waited a fixed 1.5 s and used zsh. The CI runners have no zsh, so no
 pane was made. A draft that made the next pane right after the prompt caught
 only 5 of 48 cases: the client resized the new pane after its prompt.
+
+### Scrolling, master-stack and automatic empty-workspace panes
+
+The same fixture now covers scrolling and master-stack in daemon and
+standalone mode, a 100-column master-stack, and stock BSP/master-stack after
+the width keys have moved a divider. It starts tiled in the chosen layout;
+daemon cases also assert the client's reported `layout_mode`, because merely
+writing `startup.layout` while starting floating left the first workspace in
+BSP. The scrolling cases reveal the focused column before reading its frame.
+
+Each newly measured shell's first `stty size` must match the real frame, and
+its trap must log no `SIGWINCH` before the next pane is made. A daemon then
+switches to an empty workspace without a new-window key and waits for its pane
+request to finish before measuring that shell. A deliberate terminal resize
+must produce `SIGWINCH` in the same last shell: a dead trap cannot pass. The
+measurement begins in the shell's rc file, so a resize before that file runs
+is outside this observation.
+
+Run on 2026-10-31, macOS 27.2 arm64, Go 1.27.3. All size values below are
+**rows × columns**, as `stty` reports them. On upstream `3314abf8`, the new
+daemon cases fail; the four standalone cases pass and remain compatibility
+controls. The two caller/route controls below use separate `go build -overlay`
+binaries, leaving the helper and working tree intact. The table also records
+the stock baseline and an additional adjusted-divider compatibility control.
+
+| Control: what was cut | Where it fails | Verdict |
+| --- | --- | --- |
+| Stock upstream `3314abf8`, before the remaining paths are sized | `/daemon-scrolling`: new panes start `43x158`, frame `41x86`, one startup `SIGWINCH` each. `/daemon-master-stack`: `43x158` against `41x78` or `19x78`, one each. Automatic empty-workspace panes fail too: BSP `43x158` against `41x158`, scrolling against `41x86`; the 100-column master case records `28x98` against `26x48` or `12x48` for new panes | **caught** |
+| The `SendNewWindowIntentSized` call in `addDaemonWindowWith` (`internal/app/os_window.go`) replaced by `SendNewWindowIntent`, dropping the size at the actual send | `/daemon-scrolling`: new panes 1–3 start `43x158`, frame `41x86`, and each takes one startup `SIGWINCH`; its independently sized empty-workspace route still passes | **caught** |
+| `Cols: payload.Cols, Rows: payload.Rows` removed from `NewWindowOptions` in `handleExecuteCommand`'s `FocusIfShown` route (`internal/session/daemon_command.go`) | `/daemon`: only the automatic empty-workspace pane starts `43x158`, frame `41x158`, and takes one startup `SIGWINCH`; the ordinary new-window sends still pass | **caught** |
+| A broad `WorkspaceHasCustom` fallback, as in candidate `c708f5972` | `/daemon-bsp-resized` and `/daemon-master-resized`: after the width keys move a divider, all three later panes start `43x158` and take one startup `SIGWINCH`. That flag also marks ordinary divider adjustments, whose live tree/ratios still predict the new pane | **caught** |
+
+The fixed run keeps the default BSP/animation cases and the positive resize
+half in every case. The artifacts are `size.log`, `multiple-panes.png` and
+`resized.png` (plus text/styled captures) under each test's `TUIOS_E2E_FRAMES`
+folder. The two caller controls can be rerun with these subtest selections:
+
+```bash
+TUIOS_E2E=1 TUIOS_E2E_BIN=/path/to/control-new-window \
+  go test -count=1 -run '^TestNewPaneShellStartsAtItsSize$/^daemon-scrolling$' ./e2e/tui
+TUIOS_E2E=1 TUIOS_E2E_BIN=/path/to/control-workspace \
+  go test -count=1 -run '^TestNewPaneShellStartsAtItsSize$/^daemon$' ./e2e/tui
+```
+
 ## Next and previous agent walk the rail's order
 
 `TestCycleAgentsWalksTheRailOrder` makes two working agents in `alpha` and one in `bravo` waiting on an approval, so the rail's default needs-you order (`bravo/ag-b1`, `alpha/ag-a1`, `alpha/ag-a2`) differs from the order the panes were opened in. It checks the rail draws that order, then presses `alt+shift+j` and `alt+shift+k` in terminal mode from `alpha`'s plain shell, and the leader's `J` and `K`, and after each press reads the attached session from `ls --json` and its focused pane from `list-windows`. Each press moves to the next row, crossing sessions both ways, and next past the last and previous before the first wrap. A line typed at the end runs in the focused pane, so the keys never left terminal mode. Each control was built into its own binary from the feature commit and the test run against it; the unmodified binary passed. Run on 2026-10-27 on macOS.

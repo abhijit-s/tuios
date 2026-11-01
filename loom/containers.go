@@ -16,12 +16,17 @@ type cardWidget struct {
 	modal             bool
 	indent            int // 2, or 0 when the body starts with a cursor margin of its own
 	press             []tml.Action
+	// foldable is true when the document declared fold. A plain card is not a
+	// tab stop, or a screen of titled panels would be a screen of stops the
+	// person never wants (see focusable).
+	foldable bool
 }
 
 func (s *Surface) buildCard(b *box, vars map[string]any) widget {
 	n := b.src
 	w := &cardWidget{title: s.str(n, "title", vars), meta: s.str(n, "meta", vars),
-		role: s.roleOr(n, vars, "accent-bright"), modal: n.Type == "modal", press: s.actionsOf(n, "on-press")}
+		role: s.roleOr(n, vars, "accent-bright"), modal: n.Type == "modal", press: s.actionsOf(n, "on-press"),
+		foldable: n.AttrString("fold") != ""}
 	if f, ok := lookup(s.view.Fold, b); ok {
 		w.folded = f
 	} else {
@@ -82,11 +87,60 @@ func (w *cardWidget) paint(s *Surface, b *box, c *canvas, r Rect) {
 	if w.folded {
 		mark = s.g.foldShut
 	}
-	l := line{{text: mark + " ", st: style{fg: "mute"}}, {text: w.title, st: style{fg: "fg", attrs: attrBold}}}
+	// A card holding the focused box says so. Without it a document with
+	// several tables gives no clue which one the arrow keys reach: every table
+	// draws its own cursor row, and only the focused one takes the keys.
+	markRole, titleRole := "mute", "fg"
+	if holdsFocus(s, b) {
+		markRole, titleRole = "accent", "accent"
+	}
+	l := line{{text: mark + " ", st: style{fg: markRole}}, {text: w.title, st: style{fg: titleRole, attrs: attrBold}}}
 	if w.meta != "" {
 		l = append(l, span{text: "  " + w.meta, st: style{fg: w.role, attrs: attrBold}})
 	}
 	c.drawLine(r.Min.X, r.Min.Y, r.Dx(), l, alignLeft)
+}
+
+// holdsFocus reports whether the focused box is b or sits inside it.
+func holdsFocus(s *Surface, b *box) bool {
+	for f := s.focused(); f != nil; f = f.parent {
+		if f == b {
+			return true
+		}
+	}
+	return false
+}
+
+// markFocusCards repaints the cards the focus left or entered. A card draws
+// its title from the focus, and a focus move marks only the boxes it moved
+// between, which sit inside the card. Whatever moved it (tab, a click, a
+// patch that took the focused box away) comes through here. A repaint is
+// enough: nothing a card evaluates reads the focus, so its subtree is not
+// built again.
+func (s *Surface) markFocusCards() {
+	key := ""
+	if f := s.focused(); f != nil {
+		key = f.key
+	}
+	if key == s.litFocus {
+		return
+	}
+	old := s.litFocus
+	s.litFocus = key
+	var walk func(b *box) bool
+	walk = func(b *box) bool {
+		holds := b.key != "" && (b.key == key || b.key == old)
+		for _, k := range b.kids {
+			if walk(k) {
+				holds = true
+			}
+		}
+		if _, ok := b.w.(*cardWidget); ok && holds {
+			b.dirty = true
+		}
+		return holds
+	}
+	walk(s.root)
 }
 
 // frame draws a rounded border on r with a title on the top edge and a

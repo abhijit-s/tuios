@@ -29,11 +29,14 @@ type chartWidget struct {
 	donut  bool
 	roles  []plot.Role // bar: a role per row, from the row's role field
 	keys   []plot.LegendItem
-	grid   [][]float64 // heatmap: rows of columns
-	rowsL  []string    // heatmap row labels
-	colsL  []string    // heatmap column labels
-	height int         // the rows the chart wants, without the title
-	width  int         // the cells it wants, 0 for the whole width
+	grid   [][]float64        // heatmap: rows of columns
+	rowsL  []string           // heatmap row labels
+	colsL  []string           // heatmap column labels
+	codes  map[string]float64 // map: country code to value
+	logv   bool               // map: shade by the logarithm of the value
+	unit   string             // map: a prefix for the legend values
+	height int                // the rows the chart wants, without the title
+	width  int                // the cells it wants, 0 for the whole width
 }
 
 func (s *Surface) buildChart(b *box, vars map[string]any) widget {
@@ -88,6 +91,24 @@ func (s *Surface) buildChart(b *box, vars map[string]any) widget {
 	case "heatmap":
 		w.grid, w.rowsL, w.colsL = pivot(s.data(n, "data", vars), n.AttrString("x"), n.AttrString("y"), n.AttrString("v"))
 		w.height = len(w.rowsL) + 2
+	case "map":
+		rows := s.data(n, "data", vars)
+		vals := numbers(rows, n.AttrString("y"))
+		keys := labels(rows, n.AttrString("x"))
+		w.codes = make(map[string]float64, len(keys))
+		for i, k := range keys {
+			// The plot map is keyed by ISO 3166-1 alpha-2. A row that names
+			// anything else cannot be placed, so it is dropped rather than
+			// guessed at.
+			c := strings.ToUpper(strings.TrimSpace(k))
+			if len(c) != 2 || i >= len(vals) || math.IsNaN(vals[i]) {
+				continue
+			}
+			w.codes[c] = vals[i]
+		}
+		w.logv = s.flag(n, "log", vars, false)
+		w.unit = s.str(n, "unit", vars)
+		w.height = 0 // measured from the width, since the map keeps its shape
 	case "pie":
 		rows := s.data(n, "data", vars)
 		w.values = numbers(rows, n.AttrString("v"))
@@ -232,6 +253,16 @@ func labels(rows []any, field string) []string {
 	return out
 }
 
+// world returns the plot map a map chart draws, on the client's cell shape.
+func (w *chartWidget) world(s *Surface) plot.Map {
+	mp := plot.Map{Values: w.codes, Log: w.logv, Aspect: s.opts.CellAspect}
+	if w.unit != "" {
+		unit := w.unit
+		mp.Format = func(v float64) string { return unit + plot.Compact(v) }
+	}
+	return mp
+}
+
 func (w *chartWidget) titleRows() int {
 	if w.title != "" {
 		return 1
@@ -244,6 +275,12 @@ func (w *chartWidget) measure(s *Surface, _ *box, maxW int) (int, int) {
 	switch w.kind {
 	case "gauge", "progress":
 		return min(maxW, max(20, width(w.label)+16)), h
+	case "map":
+		// A map keeps its true shape, so its height follows from the width. One
+		// more row goes to the legend under it. A map is always wider than it
+		// is tall, so the width is a safe bound on the height.
+		_, rows := w.world(s).Fit(maxW, maxW, s.mode)
+		return maxW, rows + w.titleRows() + 1
 	case "sparkline":
 		if w.title != "" && w.height == 1 {
 			// One row: the title, the trend, the last value.
@@ -294,6 +331,15 @@ func (w *chartWidget) paint(s *Surface, _ *box, c *canvas, r Rect) {
 			c.text(x+n+1, r.Min.Y, last, style{fg: "fg", attrs: attrBold}, -1)
 		}
 		return
+	}
+	var world plot.Map
+	mapRows := 0
+	if w.kind == "map" {
+		// A map keeps its shape, so it cannot fill a tall box. The title, the
+		// map and the legend stay together as one block, centred.
+		world = w.world(s)
+		_, mapRows = world.Fit(r.Dx(), max(r.Dy()-w.titleRows()-1, 1), s.mode)
+		r.Min.Y += max(r.Dy()-w.titleRows()-mapRows-1, 0) / 2
 	}
 	if w.title != "" || w.legend() != nil {
 		end := r.Min.X
@@ -348,6 +394,13 @@ func (w *chartWidget) paint(s *Surface, _ *box, c *canvas, r Rect) {
 		// as columns do.
 		axis := w.axis || w.kind == "area" && r.Dy() >= 4 && r.Dx() >= 16
 		g = plot.Line{Series: w.series, Fill: w.kind == "area", Axis: axis, Labels: w.labels}.Draw(r.Dx(), r.Dy(), s.mode)
+	case "map":
+		g = world.Draw(r.Dx(), mapRows, s.mode)
+		// The legend goes right under the map, when a row is left for it.
+		if r.Dy() > mapRows {
+			lg := world.LegendGrid(r.Dx(), s.mode)
+			s.blit(c, lg, r.Min.X+(r.Dx()-lg.W)/2, r.Min.Y+mapRows)
+		}
 	case "heatmap":
 		g = plot.Heatmap{Values: w.grid, RowLabels: w.rowsL, ColLabels: w.colsL}.Draw(r.Dx(), r.Dy(), s.mode)
 	case "pie":
