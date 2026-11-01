@@ -548,7 +548,7 @@ func (s *Session) applyAgentReport(target string, r AgentReport) (AgentState, bo
 		switch {
 		case override:
 			next.blocker = true
-			next.prior = priorOf(claim, prev, w.AgentHarness)
+			next.prior = priorOf(claim, w)
 		case claim.blocker && r.Source == claim.source && r.State == prev:
 			// The same rule matching the same prompt again is the standing
 			// override, not a fresh claim. Forgetting what it displaced here
@@ -563,7 +563,7 @@ func (s *Session) applyAgentReport(target string, r AgentReport) (AgentState, bo
 			// whole turn that followed the answer, because the screen tier
 			// asserts no other state and outranks the detector.
 			next.blocker = true
-			next.prior = priorOf(claim, prev, w.AgentHarness)
+			next.prior = priorOf(claim, w)
 		}
 		switch {
 		case r.State == AgentStateNeedsInput, r.fromPane, r.paneWroteAt != 0:
@@ -734,15 +734,19 @@ func screenNamesPrompt(claim agentClaim, w *WindowState, r AgentReport) bool {
 		w.AgentMessage == herdrBlockedPlaceholder
 }
 
-// priorOf is what a visible-blocker override keeps of the claim it displaces.
-func priorOf(claim agentClaim, state AgentState, harness string) agentPriorClaim {
+// priorOf is what a visible-blocker override keeps of the claim it displaces,
+// on window w before the override is applied.
+func priorOf(claim agentClaim, w *WindowState) agentPriorClaim {
 	return agentPriorClaim{
 		source:       claim.source,
-		state:        state,
-		harness:      harness,
+		state:        w.AgentState,
+		harness:      w.AgentHarness,
 		herdrAt:      claim.herdrAt,
 		herdrAnchors: claim.herdrAnchors,
 		screenWins:   claim.screenWins,
+		message:      w.AgentMessage,
+		kind:         w.AgentKind,
+		event:        claim.event,
 	}
 }
 
@@ -904,7 +908,7 @@ func (s *Session) releaseAgentBlockerOverride(windowID string) bool {
 			return errNoBlockerRelease
 		}
 		w.AgentState = claim.prior.state
-		clearAgentNote(w)
+		w.AgentMessage, w.AgentKind = claim.prior.message, claim.prior.kind
 		w.AgentHarness = claim.prior.harness
 		w.AgentStateAt = time.Now().UnixNano()
 		// auto and sawProcess are the blocker's, not the displaced claim's:
@@ -921,6 +925,7 @@ func (s *Session) releaseAgentBlockerOverride(windowID string) bool {
 			herdrAt:      claim.prior.herdrAt,
 			herdrAnchors: claim.prior.herdrAnchors,
 			screenWins:   claim.prior.screenWins,
+			event:        claim.prior.event,
 		})
 		released = true
 		return nil
