@@ -13609,3 +13609,38 @@ Run on 2026-11-01 on macOS arm64, on `upstream/main` at `4c95caa50` plus the bra
 | `applyIdleVerdict` takes a hook's event prompt as any other claim: any idle look, the title's included, ends it at once once the pane wrote | `TestClaudePromptHoldsThroughABlankFrame`: "the menu, then a blank frame for 4s: the pane is idle, want it to stay needs_input". `TestClaudeURLFormHoldsWithoutARule` passes, since that report is not an event | **caught** |
 | `elicitation_url_dialog` sends `notification` as the other questions do | `TestClaudeURLFormHoldsWithoutARule` passes: the idle gate above holds the form on its own. The fixture test catches it: `TestTranslateFixtures/claude-code/Notification_elicitation_url_dialog` in `internal/integration` | not caught by e2e, caught by the fixture |
 | Both of the last two | `TestClaudeURLFormHoldsWithoutARule`: "the form drawn again, for 6s: the pane is idle, want it to stay needs_input" | **caught** |
+## Quick look moves in a film
+
+| Control: what was cut | Where it fails | Verdict |
+| --- | --- | --- |
+| `at_ms` in the verb | "J did not skip 5 percent", the frame is from another time | **caught** |
+| `at_ms` over the link | "J did not move the far film" | **caught** |
+| The frame read | "J did not skip 5 percent" | **caught** |
+| The new frame is shown | "J did not skip 5 percent", the clock moved and the frame did not | **caught** |
+| The second try, with no key frames | `TestFilePreviewOnAHost` ("a clip with one key frame gave no frame") | **caught** |
+| The third try, a second back | `TestFilePreviewOnAHost` ("the end of a film gave no frame") | **caught** |
+| A press on the bar | "a press on the bar did not seek" | **caught** |
+| The motion filter passes a drag | "a drag on the bar did not seek" | **caught** |
+| A drag on the bar | "a drag on the bar did not seek" | **caught** |
+| The release ends the drag | "a drag after the release went on seeking" | **caught** |
+| The filmstrip reads | "t did not show the filmstrip" | **caught** |
+| The filmstrip on the host | "t did not show the filmstrip" | **caught** |
+| The facts | "the film's facts did not show" | **caught** |
+| `duration_known` in the verb | `TestFilePreviewOnAHost` ("a seek with the facts known") | **caught** |
+
+The first drag test passed with the drag broken, because the press alone met its check. The stronger test found that the motion filter dropped every drag.
+
+## tuios plugins update
+
+`TestPluginsUpdate` updates a plugin from a bare repository over `file://`.
+Run on 2026-11-02, each control against the branch head with one change:
+
+| Claim | Control | Where it fails | Verdict |
+|---|---|---|---|
+| A trust change asks again under `--yes` | `hashChanged` always false | "update with a trust change under --yes" | **caught** |
+| A force-push asks again under `--yes` | `updateReason` skips the ancestor check | "update after a force-push under --yes" | **caught** |
+| A moved tag asks again under `--yes` | `updateReason` skips the tag check | "update of a moved tag under --yes" | **caught** |
+| A commit subject cannot write to the terminal | the subject is not quoted | "a commit subject reached the terminal" | **caught** |
+| `--check` changes nothing | the check return cut | "update --check changed plugins.lock" | **caught** |
+| A source that is gone exits 3 | the fetch failure is not marked | "update with the source gone" | **caught** |
+
