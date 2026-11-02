@@ -13481,3 +13481,87 @@ Run on 2026-11-02 on macOS (arm64). All four tests pass on the fixed build.
 | `removeLocked` closing the entry's `unwatch` | Fourth test: "the watch on the dropped message did not end within 10s" | **caught** |
 
 Repeat from `e2e/tui` with `TUIOS_E2E=1 TUIOS_E2E_BIN=/path/to/tuios go test -count=1 -run 'TestQueuedMessageTakenWhileItsHookIsLost|TestQueuedMessageLeftInTheBox|TestDroppingAStalledQueuedMessage' -v .`. The state log of each run is `queue-taken-hook-lost.log`, `queue-left-in-box.log`, `queue-stalled-late-stop.log` and `queue-stalled-rm.log` under `TUIOS_E2E_FRAMES`.
+## A kitty picture shows with no input
+
+kitty 0.49.2 with its cursor hidden does not show a picture until it reads one more write. CI has no kitty, so the pixels come from a local run: real kitty under a private Xvfb, tuios opens a PDF, shots over 8 seconds with no key and no pointer move. Blue pixels count the page.
+
+| Build | Quiet, 0.25 s to 8 s | After a pointer move, no new bytes |
+| --- | --- | --- |
+| Before the fix | 0 | 85149 |
+| With the fix | 85149 | 85149 |
+
+A replay of the captured stream into the same kitty, with one change per run, found the cause. tuios is not running in these.
+
+| Change | Quiet |
+| --- | --- |
+| The stream as it came, no brackets, or one bracket | 0 |
+| Only `CSI ? 25 l` before the picture | 0 |
+| No `CSI ? 25 l` before the picture | 85149 |
+| A changed cell, or a cursor toggle, in the same write | 0 |
+| An empty bracket with no gap | 0 |
+| An empty bracket, `CSI ? 25 l`, or `ESC 7 ESC 8`, 5 to 200 ms later | 85149 |
+
+| Control: what was cut | Where it fails | Verdict |
+| --- | --- | --- |
+| The empty write | `TestRailQuickLookKittyPicture` ("no empty write followed the picture") | **caught** |
+
+## Quick look turns the pages of a PDF
+
+| Control: what was cut | Where it fails | Verdict |
+| --- | --- | --- |
+| The read ahead | "the next page was not held in memory" | **caught** |
+| The read of the page asked for | "G did not go to the last page" | **caught** |
+| A held page is shown | "the next page was not held in memory" | **caught** |
+| A click on the bar | "a click on the bar did not turn the page" | **caught** |
+| The cache is freed on close | "a page that cannot be read did not say why" | **caught** |
+| A failed read stays a page | "a file with no read permission did not say so" | **caught** |
+| Words at 16 colours | "J did not show the words of the next page" | **caught** |
+| `pages_known` | `TestFilePreviewOnAHost` ("a page with the count known") | **caught** |
+| `page` over the link | "J did not turn the page over the link", the colour of page 1 | **caught** |
+
+The first versions of the last group missed two of these: the far test read only the number the keys set, and the failed read was not reached. Both tests were changed, and the runs above are on the changed tests.
+## A queued message taken while its hook is lost
+
+`TestQueuedMessageTakenWhileItsHookIsLostRaisesNoQuestion` and `TestQueuedMessageLeftInTheBoxRaisesAQuestionThatClosesOnceTaken` run a pane that draws Claude Code's input box, with Claude Code's real hook run for the reports that arrive. In use, Claude Code killed `tuios agent-hook` at its five second timeout on a loaded machine, for UserPromptSubmit, PreToolUse and Stop alike: two panes took their queued message, the daemon marked it stalled and opened "did not take it" in the Inbox, and the question stayed open since no report ever changed the panes' state. The first test takes a message with no hook at all for seven seconds and needs no question to open. The second leaves a message in the box while the screen shows the agent at work on something else, which must open the question, closes it with a hook report of working, then leaves a second message in the box and has the person press Enter with no report, which must close the question.
+
+Run on 2026-11-01 on macOS (arm64), on `856b4be28`. Both tests pass on the fixed build, and fail on an upstream main build at the same lines as the first control.
+
+| Control: what was cut | Where it fails | Verdict |
+| --- | --- | --- |
+| The `screenShowsTaken` look in `promptGate.check` (`internal/session/prompt_gate.go`) | First test: "the message the pane took opened a not-taken question [2]". Second test: "taken late with no report: the stalled question is open=true after 10s, want false" | **caught** |
+| `watchStalledQueue` (`internal/session/agent_queue.go`) returning at once | Second test: "taken late with no report: the stalled question is open=true after 10s, want false". The first passes | **caught** |
+| `screenShowsTaken` not reading the input box, so a turn on the screen alone is taken | Second test: "Enter not read as submit: the stalled question is open=false after 15s, want true". The first passes | **caught** |
+
+The late watch counts only the pane turning working and its screen. `TestQueuedMessageLeftInTheBoxStaysStalledThroughALateStop` leaves a message in the box of a pane resting on idle, ends the turn on the screen, and runs a late Stop and then a Notification of type `agent_needs_input`: the message must stay `stalled` through both, and the person pressing Enter, which the screen shows taken, must then drop it. `TestDroppingAStalledQueuedMessageEndsItsWatch` drops a stalled message with `tuios queue rm --all` and needs the daemon log to say "Stopped watching window" within ten seconds, rather than the watch polling for its ten minutes.
+
+Run on 2026-11-02 on macOS (arm64). All four tests pass on the fixed build.
+
+| Control: what was cut | Where it fails | Verdict |
+| --- | --- | --- |
+| `gate.late = true` in `watchStalledQueue`, so the late watch counts done, needs_input and a finished turn as the five second gate does (the review's report against `1809eff3a`) | Third test: "a late Stop dropped the message still in the box: \"Nothing is queued in session e2e-stall.\"". With the pane resting on done, where the Stop changes nothing, it fails one step later on "a late agent_needs_input dropped the message still in the box" | **caught** |
+| `removeLocked` closing the entry's `unwatch` | Fourth test: "the watch on the dropped message did not end within 10s" | **caught** |
+
+Repeat from `e2e/tui` with `TUIOS_E2E=1 TUIOS_E2E_BIN=/path/to/tuios go test -count=1 -run 'TestQueuedMessageTakenWhileItsHookIsLost|TestQueuedMessageLeftInTheBox|TestDroppingAStalledQueuedMessage' -v .`. The state log of each run is `queue-taken-hook-lost.log`, `queue-left-in-box.log`, `queue-stalled-late-stop.log` and `queue-stalled-rm.log` under `TUIOS_E2E_FRAMES`.
+
+## The plugin flow
+
+`TestPluginsFlowSaysWhatToDo` follows a person from a first install to an
+unlink: each refusal says what to do, a manifest this tuios does not fully
+know is refused, a plugin's process gets the variables `docs/PLUGINS.md`
+names, and the pane of an unlinked plugin does not come back after a daemon
+restart. `TestPluginsWalkthrough` runs the walkthrough in `docs/PLUGINS.md`
+with the files as the page prints them.
+
+Run on 2026-11-02, each control against the branch head with one change:
+
+| Claim | Control | Where it fails | Verdict |
+|---|---|---|---|
+| unlink closes the plugin's panes | `closePluginPanes` cut from `plugin.unlink` | "the pane of an unlinked plugin stays open", and "came back after a restart" | **caught** |
+| A key from a newer tuios is refused | `DisallowUnknownFields` cut | "a newer key loaded" | **caught** |
+| A newer `api` is refused | the check moved to 99 | "a newer api loaded" | **caught** |
+| `TUIOS_BIN` reaches the daemon with no `PATH` | the variable cut | `plugins run` fails | **caught** |
+| A plugin's process carries no pane's names | `TUIOS_SESSION` added | "TUIOS_SESSION is set" | **caught** |
+| A missing manifest names the folder, not the fetch folder | the check cut | "the error shows a temp folder or a code" | **caught** |
+
+The `min_tuios` refusal needs a stamped binary, so no e2e test covers it. It
+was run by hand on a build stamped 0.1.0 against `min_tuios = "99.0.0"`.
