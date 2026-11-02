@@ -13657,3 +13657,32 @@ Run on 2026-11-02, each control against the branch head with one change:
 | `--check` changes nothing | the check return cut | "update --check changed plugins.lock" | **caught** |
 | A source that is gone exits 3 | the fetch failure is not marked | "update with the source gone" | **caught** |
 
+## Quick look shows each kind of file
+
+| Control: what was cut | Where it fails | Verdict |
+| --- | --- | --- |
+| JSON layout | "the JSON was not laid out" | **caught** |
+| Numbers right aligned | "the numbers are not right aligned" | **caught** |
+| Cells take the column width | "the column is not lined up" | **caught** |
+| `h` `l` move columns | "l did not move a column" | **caught** |
+| gzip listing | "the tar.gz is not listed" | **caught** |
+| zip listing | "the zip is not listed" | **caught** |
+| Hex | "the binary file is not in hex" | **caught** |
+| A GIF frame by page | "J did not step the frames", the colour of frame 1 | **caught** |
+| The diff is sent | "v did not show the diff" | **caught** |
+| Git state in words | "v did not show the details" | **caught** |
+| `v` comes back | "v did not come back to the text" | **caught** |
+## The ui grant
+
+`TestPluginUIGrant` runs a shell plugin with `ui`. Run on 2026-11-02, each
+control against the branch head with one change:
+
+| Claim | Control | Where it fails | Verdict |
+|---|---|---|---|
+| `plugin-cell` needs `ui` | the `ui` refusal cut, and the grant check passes all | "cell.out without the grant" | **caught** |
+| `ui` does not type | `send-text` added to `pluginUIVerbs` | "type with the ui grant" | **caught** |
+| A client that attaches later gets the cells | `sendPluginCells` cut | "a late client has no cell" | **caught** |
+| A cell goes when its plugin stops | `dropCells` cut from `apply` | "the cell of a stopped plugin stays" | **caught** |
+| A cell must be in the manifest | the manifest check cut | "other with the ui grant" | **caught** |
+| A notice arrives after a cell | the client listener not armed again | "the notice did not show" | **caught** |
+

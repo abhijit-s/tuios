@@ -2023,6 +2023,7 @@ func getDefaultQuickLookKeybinds() map[string][]string {
 		"go_inside": {"tab"},
 		"full_size": {"f"},
 		"filmstrip": {"t"},
+		"next_view": {"v"},
 	}
 }
 
@@ -2031,20 +2032,23 @@ func getDefaultQuickLookKeybinds() map[string][]string {
 // so d here cannot reach the rail's delete.
 func getDefaultQuickLookInsideKeybinds() map[string][]string {
 	return map[string][]string{
-		"line_down": {"j", "down", "l", "right"},
-		"line_up":   {"k", "up", "h", "left"},
-		"half_down": {"d", "ctrl+d", "J", "pgdown"},
-		"half_up":   {"u", "ctrl+u", "K", "pgup"},
-		"start":     {"g", "home"},
-		"end":       {"G", "end"},
-		"go_back":   {"esc", "tab"},
-		"full_size": {"f"},
-		"find":      {"/"},
-		"find_next": {"n"},
-		"find_prev": {"N"},
-		"go_to":     {":"},
-		"wrap":      {"w"},
-		"filmstrip": {"t"},
+		"line_down":    {"j", "down"},
+		"line_up":      {"k", "up"},
+		"column_left":  {"h", "left"},
+		"column_right": {"l", "right"},
+		"next_view":    {"v"},
+		"half_down":    {"d", "ctrl+d", "J", "pgdown"},
+		"half_up":      {"u", "ctrl+u", "K", "pgup"},
+		"start":        {"g", "home"},
+		"end":          {"G", "end"},
+		"go_back":      {"esc", "tab"},
+		"full_size":    {"f"},
+		"find":         {"/"},
+		"find_next":    {"n"},
+		"find_prev":    {"N"},
+		"go_to":        {":"},
+		"wrap":         {"w"},
+		"filmstrip":    {"t"},
 	}
 }
 
