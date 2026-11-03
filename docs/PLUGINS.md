@@ -10,8 +10,13 @@ programs. The programs call tuios through the command line or the JSON socket.
 
 ## Write a plugin in ten minutes
 
-You need a shell and a running tuios. This plugin shows the last commits of the
-folder you work in, in a popup.
+You need a shell and a running tuios. The fastest start is
+`tuios plugins new NAME`, which makes a folder that works: a manifest, a script,
+a README and a GitHub workflow. `tuios plugins dev NAME` runs it and reloads it
+when you save a file.
+
+This plugin, written by hand, shows the last commits of the folder you work in,
+in a popup.
 
 Make a folder with two files. `tuios-plugin.toml`:
 
@@ -54,13 +59,25 @@ again. Run `tuios plugins install .` to answer.
 To remove the plugin, run `tuios plugins uninstall me.commits`. tuios keeps your
 folder.
 
+## Publish a plugin
+
+A plugin is a git repository. People install it with
+`tuios plugins install OWNER/REPO`, and `tuios plugins update` follows its default
+branch. To publish a version, push a tag such as `v0.1.0`. People install it with
+`tuios plugins install OWNER/REPO@v0.1.0`. The workflow that `tuios plugins new`
+writes runs `tuios plugins check` on each push, and attaches an archive of the
+plugin and its checksum to the release of each tag.
+
+Keep `version` in the manifest in step with the tag. Change the manifest only
+when you must: a new grant or a new command asks every person again.
+
 ## Commands
 
 Run these from a terminal outside tuios. A pane cannot change which plugins run.
 
 | Command | What it does |
 |---|---|
-| `tuios plugins install SOURCE` | Get, build and enable a plugin. `SOURCE` is `owner/repo[/dir][@ref]`, a git URL or a folder. |
+| `tuios plugins install SOURCE` | Get, build and enable a plugin. `SOURCE` is the name of a tuios plugin such as `pr-status`, `owner/repo[/dir][@ref]`, a git URL or a folder. |
 | `tuios plugins update [ID...]` | Move plugins to the newest commit of their ref. Shows the commits and asks. `--check` changes nothing. |
 | `tuios plugins uninstall ID` | Stop a plugin, close its panes and remove it. |
 | `tuios plugins list` | Show each plugin, its state and the reason for that state. |
@@ -72,6 +89,10 @@ Run these from a terminal outside tuios. A pane cannot change which plugins run.
 | `tuios plugins run ID ACTION` | Run an action. `--wait` prints its output. |
 | `tuios plugins open ID PANE` | Open a pane of the plugin. |
 | `tuios plugins log [ID]` | Show the last runs and their output. |
+| `tuios plugins stats` | Show what each plugin costs: processes and memory now, and runs and run time since the daemon started. |
+| `tuios plugins new NAME` | Make a plugin folder that works, with a GitHub workflow. `--id` sets the id. |
+| `tuios plugins check [PATH]` | Read a plugin folder as tuios would and say what is wrong. Exits 1 when it cannot load. A CI job can run it. |
+| `tuios plugins dev PATH` | Install a folder in place and reload it when a file changes. It asks once at the start. |
 
 `tuios --skill plugins` prints this page's rules for an agent.
 
@@ -100,14 +121,22 @@ A `[[process]]` has `id`, `run` and `command`. `run` says when it runs:
 |---|---|---|---|
 | `action` | When a person runs it from the palette, a key or `tuios plugins run` | `title`, `description`, `contexts` | None |
 | `pane` | When a person opens it from the palette or `tuios plugins open` | `title`, `description`, `placement`, `width`, `height` | None |
+| `event` | Each time an event in `on` happens, such as a focus. The command runs and exits | `on` | None. A run when the event happens |
 | `startup` | Once, when the daemon starts or you enable the plugin | | A process and a reaper for as long as it runs |
 
 `placement` is `popup`, `overlay`, `split`, `tab` or `zoomed`. A `command` is an
 argv array. No shell reads it. A program with a `/` in its name is found from the
 plugin folder. A program without one is found on `PATH`.
 
-**Use an action or a pane when you can.** They cost nothing until a person uses
-them. A `startup` process stays in memory and wakes up for as long as it runs.
+The events are `pane.created`, `pane.closed`, `pane.focused`, `pane.moved`,
+`pane.exited`, `pane.agent_detected`, `pane.agent_status_changed`, the same for
+`tab` (`created`, `closed`, `renamed`, `moved`, `focused`) and `workspace`
+(`created`, `updated`, `closed`, `renamed`, `moved`, `reordered`, `focused`), and
+`worktree.created`, `worktree.opened` and `worktree.removed`. A plugin runs at
+most 20 event commands in 10 seconds. tuios drops the rest.
+
+**Use an action, a pane or an event when you can.** They cost nothing until a
+person uses them or the event happens. A `startup` process stays in memory and wakes up for as long as it runs.
 Use one only when the plugin must watch something all the time.
 
 ## The environment
@@ -122,6 +151,8 @@ Every process of a tuios plugin gets these variables.
 | `TUIOS_PLUGIN_CONFIG_DIR` | A folder for the plugin's settings. An update keeps it. |
 | `TUIOS_PLUGIN_STATE_DIR` | A folder for the plugin's data. An update keeps it. |
 | `TUIOS_PLUGIN_ENTRY` | The `id` of the `[[process]]`, for an action or a pane. |
+| `TUIOS_PLUGIN_EVENT` | The event that ran an `event` process, such as `pane.focused`. |
+| `TUIOS_PLUGIN_EVENT_JSON` | The event as JSON. |
 | `TUIOS_PLUGIN_SESSION` | The session of the focused pane. `-s` takes it. |
 | `TUIOS_PLUGIN_PANE` | The focused pane. `-w` takes it. |
 | `TUIOS_PLUGIN_CWD` | The folder of the focused pane. |
@@ -226,22 +257,25 @@ a plugin does nothing. `tuios --skill tml` has the components.
 | tuios | Change | What to do |
 |---|---|---|
 | next | New: `tuios plugins update`. | Nothing. |
+| next | New: `tuios plugins stats`. | Nothing. |
+| next | New: `tuios plugins new`, `check` and `dev`. `check` warns on an old key such as `schema`. | Run `tuios plugins check` in your CI. |
+| next | New: `run = "event"` with `on`, `TUIOS_PLUGIN_EVENT` and `TUIOS_PLUGIN_EVENT_JSON`. | Move hooks out of a `herdr-plugin.toml`. |
+| next | New: `tuios plugins install NAME` for the plugins of the tuios release. | Nothing. |
+| next | tuios draws eight Mermaid types itself. `tuios plugins install sketch` brings the rest to `tuios mermaid`. | Nothing. |
 | next | New: the `ui` grant, `[[cell]]`, `tuios plugin-cell` and `tuios plugin-notify`. | A plugin that uses them sets `min_tuios`. A plugin that held `write` only to open a panel can ask for `ui`. |
 | next | `api` replaces `schema`. `schema = 1` still works and `tuios plugins info` warns. | Write `api = 1`. |
 | next | New variables: `TUIOS_BIN`, `TUIOS_PLUGIN_ROOT`, `TUIOS_PLUGIN_CONFIG_DIR`, `TUIOS_PLUGIN_STATE_DIR`, `TUIOS_PLUGIN_ENTRY`, `TUIOS_PLUGIN_SESSION`, `TUIOS_PLUGIN_PANE`, `TUIOS_PLUGIN_CWD`, `TUIOS_PLUGIN_CONTEXT_JSON`. | Use these instead of `HERDR_PLUGIN_*` in a tuios plugin. |
 
 ## Not in this tuios yet
 
+
 These parts are planned. The names are the ones the plan uses, and they can change
 until a release has them. A manifest that uses one is refused today.
 
 | Part | Names | What it adds |
 |---|---|---|
-| Hooks | `run = "event"`, `on = [...]`, `[permissions] events`, `TUIOS_PLUGIN_EVENT`, `TUIOS_PLUGIN_EVENT_JSON` | Runs a command on an event. No process waits. |
 | A timer | `run = "interval"`, `every = "60s"` | Runs a command on a timer that exists only while the plugin is enabled. |
 | Suggested keys | `[[key]]` | Offers a key. It is off until you accept it. |
-| Author tools | `tuios plugins new NAME`, `check [PATH]`, `dev PATH` | Makes a folder, checks a manifest, and runs a folder with reload. |
-| Cost | `tuios plugins stats` | Shows the processes, memory and runs of each plugin. |
 | Files only | `[[theme]]`, `[[saver]]` | A plugin that runs nothing needs no typed approval. |
 
 ### Draft: the saver file
@@ -316,6 +350,21 @@ it, and the folders that open plugin panes run from. It removes the other
 folders of the plugin. When a build fails or you stop it, the plugin runs
 from its old folder. When tuios cannot restart the plugin, it keeps the old
 folders and tells you to restart the daemon.
+
+### Plugins of the tuios release
+
+Each tuios release carries its own plugins. `tuios plugins install pr-status`
+takes the plugin from the release of the tuios that runs, and needs no git and
+no build. tuios checks each file against the `checksums.txt` of the release, and
+`plugins.lock` pins the version and a hash of the files. On another machine,
+`tuios plugins install` gets the same files or nothing.
+
+`tuios plugins update` moves these plugins to the release of the tuios that
+runs. `tuios update` does that after it installs a new tuios. A failure keeps
+the old plugin running. When a package manager updates tuios, run
+`tuios plugins update` after it. A tuios that you built yourself has no release,
+so install the plugin from its folder:
+`tuios plugins install Gaurav-Gosain/tuios/plugins/pr-status`.
 
 ### Update
 

@@ -4441,10 +4441,13 @@ Some commands also answer to a short name: `attach` to `a`, `new` to `n`,
 |---------|--------------|
 | `tuios plugin-cell set ID TEXT [--action ACTION]`, `tuios plugin-cell clear ID` | From a plugin with the `ui` grant: set or clear a dock cell its manifest names. A click runs `ACTION` |
 | `tuios plugin-notify TEXT [--level LEVEL]` | From a plugin with the `ui` grant: show a notification under the plugin's name |
-| `tuios plugins install SOURCE [--ref REF] [--subdir DIR] [--yes] [--no-enable] [--no-build] [--replace] [--grant admin]` | Get a plugin with git, build it, pin its commit in `plugins.lock` and enable it. `SOURCE` is `owner/repo[/dir][@ref]` on github.com, a git URL (`https://`, `ssh://`, `git@host:path`, `file://`) with an optional `@ref`, or a local folder. tuios shows the plan and asks first. A native plugin that asks for `admin` needs `--grant admin`. Each install builds into a new folder. A failed build changes nothing that runs. Needs `git`. Refused inside a pane |
+| `tuios plugins install SOURCE [--ref REF] [--subdir DIR] [--yes] [--no-enable] [--no-build] [--replace] [--grant admin]` | Get a plugin with git, build it, pin its commit in `plugins.lock` and enable it. `SOURCE` is the name of a plugin of the tuios release, such as `pr-status`, `owner/repo[/dir][@ref]` on github.com, a git URL (`https://`, `ssh://`, `git@host:path`, `file://`) with an optional `@ref`, or a local folder. tuios shows the plan and asks first. A native plugin that asks for `admin` needs `--grant admin`. Each install builds into a new folder. A failed build changes nothing that runs. Needs `git`. Refused inside a pane |
 | `tuios plugins update [ID...] [--check] [--yes] [--grant admin]` | Move installed plugins to the newest commit of their ref. tuios shows the commits and asks. It asks again, also with `--yes`, on a change to what the plugin runs or asks for, a rewritten history or a moved tag. `--check` changes nothing. Exits 3 when a source cannot be reached. Refused inside a pane |
 | `tuios plugins uninstall ID [--yes]` | Undo `tuios plugins install`. Disable the plugin, stop its processes and close its panes. Remove it from `plugins.lock`, remove its folder in `$XDG_DATA_HOME/tuios/plugins/` and remove its approval. `ID` can also be the source you installed from. The config and state folders of the plugin stay. Refused for a plugin that `install` did not install: use `unlink` for a linked folder. Refused inside a pane |
 | `tuios plugins approve ID [--deny] [--grant admin] [--yes]` | Allow a tuios plugin to run on this machine, or deny it. tuios shows what the plugin runs and its grants, and asks first. A plugin that asks for `admin` needs `--grant admin`. When the plugin's manifest changes, it waits for a new answer. Refused inside a pane and from a plugin |
+| `tuios plugins new NAME [--id ID]` | Make a plugin folder that works: a manifest, a shell script, a README and a GitHub workflow that runs `check` and attaches the plugin to the release of a tag |
+| `tuios plugins check [PATH]` | Read a plugin folder as tuios would. Print each problem and warning, and exit 1 when the plugin cannot load. Runs nothing, needs no daemon |
+| `tuios plugins dev PATH` | Install a folder in place and reload it each time a file changes, until Ctrl-C. Asks once at the start. Refused inside a pane |
 | `tuios plugins install [--yes]` | With no `SOURCE`: install each plugin in `plugins.lock` at its pinned commit. It does not enable them. `--yes` trusts the author of `plugins.lock` |
 | `tuios plugins list [--json]` | List the plugins tuios finds, with the state of each and the reason: `on`, `off`, `error`, `waiting for approval` or `denied`. An installed plugin shows `managed` and its source and commit. Reads the files only. It runs no plugin code |
 | `tuios plugins info ID [--json]` | Show a plugin's build and startup commands, actions, panes, event hooks and link handlers |
@@ -4455,6 +4458,7 @@ Some commands also answer to a short name: `attach` to `a`, `new` to `n`,
 | `tuios plugins build ID` | Run the plugin's `[[build]]` commands in its folder. Each command is shown before it runs. Refused inside a pane |
 | `tuios plugins run ID ACTION [--wait]` | Run an action of an enabled plugin. `--wait` waits for it to end and prints its output |
 | `tuios plugins open ID PANE [--placement P]` | Open a pane of an enabled plugin. `P` is `overlay`, `popup`, `split`, `tab` or `zoomed` |
+| `tuios plugins stats [--json]` | Show each plugin's processes and memory now, and its runs and run time since the daemon started. No memory on macOS. Needs the daemon |
 | `tuios plugins log [ID] [--limit N] [--json]` | Show the last runs of plugin commands, with their exit codes and output |
 
 An enabled plugin runs with your rights. Grants are not a sandbox. See
@@ -5424,11 +5428,17 @@ A Markdown file gives each of its `mermaid` code blocks.
 | `text` | Any other terminal. Box-drawing characters draw the diagram, and the labels are text |
 | `svg` | The output is not a terminal |
 
-`text` draws flowcharts, sequence diagrams, state diagrams, class diagrams, ER
-diagrams, pie charts, mindmaps, gantt charts, timelines, XY charts, quadrant
-charts, user journeys, kanban boards, git graphs, sankey diagrams, block
-diagrams, architecture diagrams and requirement diagrams. Another type is
-written as its source, with a note on stderr. A drawing wider than the terminal
+tuios draws eight diagram types itself: flowcharts, sequence diagrams, state
+diagrams, class diagrams, ER diagrams, gantt charts, pie charts and mindmaps.
+The sketch plugin draws the other types, such as timelines, git graphs and
+sankey diagrams. Install it with `tuios plugins install sketch`. Then
+`tuios mermaid` runs the plugin for such a diagram, with `--format`, `--out`,
+`--cols`, `--diagram` and `--theme`. Without the plugin, the command says what
+to run and exits 3. `--watch` and `--demo` draw the eight types only. A TML
+panel shows the source of another type, and a notice says what to run.
+
+`text` draws every type of the eight. Another type is written as its source,
+with a note on stderr. A drawing wider than the terminal
 is written at its full width, with a note on stderr.
 
 The text of a `kitty` picture has the size of the terminal's text, so the

@@ -1940,6 +1940,10 @@ func (m *OS) handleMsg(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 		m.setPluginAsks(msg.Asks)
 		return m, nil
 
+	case missingDiagramMsg:
+		m.noteMissingDiagram(msg.typ)
+		return m, nil
+
 	case PluginUIMsg:
 		m.handlePluginUI(msg.Payload)
 		return m, listenClientEventsUntil(m.stopSignal(), m.ClientEventChan)

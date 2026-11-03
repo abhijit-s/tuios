@@ -28,12 +28,25 @@ Reading the list runs no plugin code, and it works from a pane.
 ```sh
 tuios plugins list --json
 tuios plugins info me.commits --json
+tuios plugins stats --json
 ```
+
+`stats` shows what each plugin costs: processes and memory now, and runs since
+the daemon started. It needs `admin` from a pane.
 
 Each record has `plugin_id` and `enabled`. A plugin that cannot run also has `error`,
 with `code` and `message`.
 
 ## Write one
+
+`tuios plugins new NAME` makes a folder that works. `tuios plugins check PATH`
+says what is wrong with a folder, and runs nothing. The person runs
+`tuios plugins dev PATH` to try it, since only the person installs a plugin.
+
+```sh
+tuios plugins new weather
+tuios plugins check weather
+```
 
 ```toml
 api = 1
@@ -49,8 +62,9 @@ placement = "popup"
 command = ["./show.sh"]
 ```
 
-`run` is `action`, `pane` or `startup`. An action or a pane costs nothing until
-the person uses it. A `startup` process stays in memory. Use an action or a pane
+`run` is `action`, `pane`, `event` or `startup`. An action, a pane or an event
+costs nothing until the person uses it or the event happens. An event process
+names its events in `on`, such as `on = ["pane.focused"]`. A `startup` process stays in memory. Use an action or a pane
 when you can.
 
 `[permissions] grants` is `read`, `write`, `fan`, `ui` or `admin`. Ask for the least

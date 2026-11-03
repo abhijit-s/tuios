@@ -13701,3 +13701,146 @@ control against the branch head with one change:
 | A cell must be in the manifest | the manifest check cut | "other with the ui grant" | **caught** |
 | A notice arrives after a cell | the client listener not armed again | "the notice did not show" | **caught** |
 
+## A Claude Code notification prompt clears when the prompt goes
+
+`TestClaudeNotificationPromptClearsWhenThePromptGoes` runs Claude Code's real hook against a pane that draws Claude Code's screens, with the hooks in the order Claude Code sends them: `PermissionRequest`, the menu, then a `permission_prompt` notification the daemon refuses, since the pane is on `needs_input` already. The pane has to hold while the menu is drawn again, and end once the menu is replaced by the empty prompt box, as Esc leaves it. Then an `agent_needs_input` notification, a background agent's question, has to end the same way once the pane draws the empty prompt box. Claude Code sends nothing when either prompt goes without a tool running. The steps and the pane's state after each go to `claude-notification-stale.log` in the test's artifact directory.
+
+`TestClaudePromptKeepsItsWordsThroughARedraw` draws the menu after `PermissionRequest`, so a screen rule takes the prompt over, then a frame no rule reads, until the screen gives the prompt back and for a second after. The pane has to be on `needs_input` from the report, an approval with the hook's words, and still end once the prompt box shows. Its log is `claude-prompt-redraw.log`.
+
+`TestClaudePromptHoldsThroughABlankFrame` draws Claude Code's `✳` title on every frame, as Claude Code shows it at a menu too. A blank frame is the first thing the pane writes after the notification and stands 4s, past the startup grace, then the menu comes back, and the same again under the screen rule's loan. The pane has to stay on `needs_input` with one Inbox item throughout, and end once the prompt box shows. Its log is `claude-prompt-blank.log`.
+
+`TestClaudeURLFormHoldsWithoutARule` reports an `elicitation_url_dialog` over a form no rule reads, under the `✳` title, redraws the form and needs the pane on `needs_input` for 6s, until `ElicitationResult` moves it on. Its log is `claude-url-form.log`.
+
+`TestClaudePromptHoldsUnderAWorkingLook` reports `PermissionRequest`, then draws a form no rule reads under a `⠋` title for 3s, then the same form under a `✻ Thinking…` line for 3s. The pane has to stay on `needs_input` with its one Inbox item, and end once the prompt box shows. Its log is `claude-prompt-working-look.log`.
+
+`TestClaudePromptHoldsThroughASpinnerBeforeTheMenu` reports `PermissionRequest`, draws a spinner frame (`⠋` title, `✻ Running…` line) for 2s, then the menu. The pane has to stay on `needs_input`, the screen has to take the prompt when the menu shows, and the Inbox has to keep its one item. Its log is `claude-prompt-spinner-first.log`.
+
+`TestClaudePromptEndsAtOnceOnYes` draws the menu, then a spinner frame, and runs `PostToolUse`: the pane has to read `working` as soon as the hook returns, and the Inbox item has to close. Then a second prompt with its hooks lost: the menu, then the turn's spinner and `Thinking…` line for 2s, which the pane holds on `needs_input`, then the empty prompt box, which ends it. Its log is `claude-prompt-yes.log`.
+
+`TestClaudeFormOptionIsNoPromptBox` reports an `elicitation_dialog` over a form framed by Claude Code's rules, whose focused option starts with the `❯` the prompt box starts with (`❯ us-east`, then `  eu-west`), under the `✳` title. The idle rule reads that option as the box, so the pane has to hold `needs_input` with its one Inbox item for 6s, past the idle confirmation, and end once the empty prompt box shows. Claude Code 2.1.316 draws its form's focused field, option and button with that `❯` (the pointer of its elicitation dialog). Its log is `claude-form-option.log`.
+
+Run on 2026-11-02 on macOS arm64, on the branch at `b2394291f` plus the empty-box gate. The eleven `^TestClaude` tests pass together. One build for the control:
+
+| Control: what was cut | Where it fails | Verdict |
+| --- | --- | --- |
+| `applyIdleVerdict` takes the idle rule's word for the empty prompt box, without `promptBoxEmpty`, as at `b2394291f` | `TestClaudeFormOptionIsNoPromptBox`: "the form with ❯ on its option, for 6s: the pane is idle, want it to stay needs_input", 5.6s into the test | **caught** |
+
+Run on 2026-11-02 on macOS arm64, on the branch at `680fc3ee9` plus the working-look gate, on a machine also running another e2e suite (load average about 11). The seven tests in `claude_notification_stale_test.go` pass 3 runs of 3 together. One build per control:
+
+| Control: what was cut | Where it fails | Verdict |
+| --- | --- | --- |
+| `hookPromptHolds` returns false, so a working look, a desktop notification or the transcript may replace a hook's event prompt once the pane wrote, as at `680fc3ee9` | `TestClaudePromptHoldsUnderAWorkingLook`: "a form no rule reads under a ⠋ title, for 3s: the pane is working, want it to stay needs_input". `TestClaudePromptHoldsThroughASpinnerBeforeTheMenu`: "a spinner frame before the menu, for 2s: the pane is working, want it to stay needs_input". `TestClaudePromptEndsAtOnceOnYes`: "the menu drawn again: the pane's state is from \"osc\", want \"screen\"" | **caught** |
+| `applyIdleVerdict` publishes the confirmed empty prompt box without `promptGone`, so the gate refuses it too | `TestClaudeNotificationPromptClearsWhenThePromptGoes`: "Esc: the menu gone, the prompt box empty: the pane is still needs_input (\"approval: Do you want to proceed?\") with the prompt gone from its screen". The three new tests fail the same way at their last step | **caught** |
+
+The earlier runs, before the working-look gate:
+
+Run on 2026-11-01 on macOS arm64, on `upstream/main` at `4c95caa50` plus the branch, on a machine also running another e2e suite (load average 10 to 17). The fixed build passes 3 runs of 3 of the four tests together, but for one run in which the frame no rule reads drew and no look followed it for 10s, a settle look lost to the load; that test then passed 5 runs of 5 on its own. One build per control:
+
+| Control: what was cut | Where it fails | Verdict |
+| --- | --- | --- |
+| The hook sends no `notification` on any event, so no report's claim is an event | `TestClaudeNotificationPromptClearsWhenThePromptGoes`: "Esc: the menu gone, the prompt box empty: the pane is still needs_input (\"approve Bash: go test ./...\") with the prompt gone from its screen". `TestClaudePromptHoldsThroughABlankFrame`: "Esc: ... still needs_input (\"Claude needs your permission to use Bash\")". `TestClaudePromptKeepsItsWordsThroughARedraw` fails too | **caught** |
+| `applyIdleVerdict` refuses an idle look under any stronger claim, as before, so only a non-idle look could replace a written-over event claim | `TestClaudeNotificationPromptClearsWhenThePromptGoes`: "the background agent's question answered: the pane is still needs_input (\"production-setup needs your input\")". The permission cases pass, because the menu's own look had already taken the claim | **caught** |
+| `PermissionRequest` sends no `notification`, as the Notification alone did | `TestClaudeNotificationPromptClearsWhenThePromptGoes`: "Esc: the menu gone, the prompt box empty: the pane is still needs_input (\"approve Bash: go test ./...\") with the prompt gone from its screen". `TestClaudePromptKeepsItsWordsThroughARedraw`: "the menu drawn: the screen reads it: the pane's state is from \"report\", want \"screen\"" | **caught** |
+| `releaseAgentBlockerOverride` clears the message and kind and drops the event mark, as before | `TestClaudePromptKeepsItsWordsThroughARedraw`: "after the frame the pane says {State:needs_input Message: Source:report ... BlockedBy: ...}, want the hook's approval back: blocked_by approval, message \"approve Bash: go test ./...\"" | **caught** |
+| `applyIdleVerdict` takes a hook's event prompt as any other claim: any idle look, the title's included, ends it at once once the pane wrote | `TestClaudePromptHoldsThroughABlankFrame`: "the menu, then a blank frame for 4s: the pane is idle, want it to stay needs_input". `TestClaudeURLFormHoldsWithoutARule` passes, since that report is not an event | **caught** |
+| `elicitation_url_dialog` sends `notification` as the other questions do | `TestClaudeURLFormHoldsWithoutARule` passes: the idle gate above holds the form on its own. The fixture test catches it: `TestTranslateFixtures/claude-code/Notification_elicitation_url_dialog` in `internal/integration` | not caught by e2e, caught by the fixture |
+| Both of the last two | `TestClaudeURLFormHoldsWithoutARule`: "the form drawn again, for 6s: the pane is idle, want it to stay needs_input" | **caught** |
+
+## plugins/pr-status
+
+`TestPluginPRStatus` runs the shipped folder against a fake `gh`. Control, run on 2026-11-02: the saved text is never reused. It fails with "gh ran 2 times for two focuses in a minute". **caught**
+## The host title follows the focused pane (#1064)
+
+`TestHostTitleFollowsFocusedPane` sets `appearance.host_title` on an attached
+client and reads every OSC 2 the client writes to the host. It moves the focus,
+has the focused pane retitle itself, renames the pane to a name holding an
+OSC 2, `cd`s the pane into a directory whose name holds one, changes the
+template live, and switches to an empty workspace. The titles written are kept
+in `osc2.txt` under the test's artifact folder.
+
+Run on 2026-11-01 on macOS. Each control is one change to a build of this
+branch.
+
+| Control: what was cut | Where it fails | Verdict |
+| --- | --- | --- |
+| `View` does not call `hostTitle` | "after attach: the host title never became \"home\"; titles written: []" | caught |
+| `hostTitle` does not pass the expanded template through `notifyPlainText` | "a working directory holding an OSC 2: the OSC 2 inside the title reached the host" | caught |
+
+The pane-name step passes with the second control, because `paneName` already
+cleans a name through `printableTitle`. `{cwd}` is read from the shell's process
+and cleaned by nothing else, which is why the test also takes that path.
+
+A code review found four more cases. Each test below was written first and seen
+to fail on the build before its fix, on 2026-11-01 on macOS:
+
+| Before the fix | Test | Where it fails | Verdict |
+| --- | --- | --- | --- |
+| `{session}` is the session's own name, not the one the rail shows | `TestHostTitleFollowsFocusedPane` | "a session with a display name: the host title never became \"demo:1\"", the last title written being `home:1` | caught |
+| `{workspace}` is `CurrentWorkspace`, which a scratch group sets to its own number | `TestHostTitleFollowsFocusedPane` | "the scratch group shown: the host title is not \"demo:1\"", the last title written being `demo:1000` | caught |
+| The standalone TUI has no session name to fall back to | `TestHostTitleWithoutADaemon` | "a fresh shell with no session: the host title never became \"tuios\"; titles written: []" | caught |
+| `{cwd}` reads the pane's pid on this machine for a session attached from another | `TestHostTitleNeverReadsARemoteShellLocally`, a kept unit test: the suite cannot attach to another machine | "attached to another machine, {cwd} read a local process" | caught |
+| `View` puts the host title before a title a tool set (`ClientTitle`) | `TestHostTitleFollowsFocusedPane` | "a tool set the title: the host title never became \"from a tool\"" | caught |
+
+The plain `cd` step guards a stale `{cwd}` the review suspected. It passed on the
+build before any of these fixes, twice, so it records that the title follows a
+`cd` and claims no fix.
+
+## Plugins from the release
+
+`TestPluginsFromRelease` installs `pr-status` from a fake GitHub API that serves
+the archive `scripts/plugin-assets.sh` makes, with builds stamped as releases.
+Run on 2026-11-02, each control against the branch head with one change:
+
+| Claim | Control | Where it fails | Verdict |
+|---|---|---|---|
+| A wrong checksum installs nothing | the `Verify` call cut | "install with a wrong checksum" | **caught** |
+| Another machine gets the pinned files or nothing | the pin check cut | "install from plugins.lock after the asset changed" | **caught** |
+| The same release is up to date | the tag check cut | "update with the same tuios" | **caught** |
+
+
+## The sketch plugin
+
+`TestSketchPlugin` draws a timeline, which tuios no longer draws itself, with no
+plugin, in a TML panel, and with a fake plugin program. Run on 2026-11-02,
+each control against the branch head with one change:
+
+| Claim | Control | Where it fails | Verdict |
+|---|---|---|---|
+| The person hears once per type | the check of the told types cut | "a second panel of the same type told the person again" | **caught** |
+| tuios mermaid says what to run, and runs the plugin | `notBuiltIn` returns "" | "a timeline with no plugin" | **caught** |
+| A panel shows what to do | the `MissingDiagram` call cut | "no notice for the timeline" | **caught** |
+
+## Native event hooks
+
+`TestPluginPRStatus` now runs `plugins/pr-status` with one manifest, its hook a
+`run = "event"` process. `TestPluginsFlowSaysWhatToDo` refuses an unknown event.
+Run on 2026-11-02, each control against the branch head with one change:
+
+| Claim | Control | Where it fails | Verdict |
+|---|---|---|---|
+| A plugin enabled while the daemon runs gets its hooks, now that the event follower starts with the first plugin | the start of the follower cut from `apply` | "the hook did not set the cell" | **caught** |
+| An unknown event is refused | the name check cut | "a newer event loaded" | **caught** |
+
+## Author tools
+
+`TestPluginsAuthorTools` checks `plugins/template`, makes a plugin with `new`,
+breaks it for `check`, and runs `dev` in a terminal. Run on 2026-11-02, each
+control against the branch head with one change:
+
+| Claim | Control | Where it fails | Verdict |
+|---|---|---|---|
+| check finds a missing script | the script check cut | "check of a missing script" | **caught** |
+| dev reloads a changed folder | the install in the loop cut | "the new action after a reload" | **caught** |
+| new writes the workflow | `all:` cut from the embed | "new made no .github/workflows/plugin.yml" | **caught** |
+
+
+## Plugin stats
+
+`TestPluginsInstallFromGit` reads `tuios plugins stats` for a plugin with a
+resident startup command, and `TestPluginPRStatus` for a hook plugin. Run on
+2026-11-03, each control against the branch head with one change:
+
+| Claim | Control | Where it fails | Verdict |
+|---|---|---|---|
+| stats counts runs | the count cut from `Start` | "plugins stats does not show the startup's processes, memory and runs" | **caught** |
+| stats counts the processes in the plugin's sessions | the loop over the session members cut | the same message | **caught** |
