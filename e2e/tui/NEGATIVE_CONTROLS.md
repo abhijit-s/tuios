@@ -13844,3 +13844,11 @@ resident startup command, and `TestPluginPRStatus` for a hook plugin. Run on
 |---|---|---|---|
 | stats counts runs | the count cut from `Start` | "plugins stats does not show the startup's processes, memory and runs" | **caught** |
 | stats counts the processes in the plugin's sessions | the loop over the session members cut | the same message | **caught** |
+## Clients follow a live upgrade
+
+`TestAttachedClientFollowsDaemonUpgrade` attaches a client to a shell, upgrades the daemon to a copy of the same build, and types at the client afterwards: the client must still run, say "The daemon was upgraded. tuios reattached.", show the pane as it was, and its typed line must reach the shell, whose pid the upgrade kept. `TestAttachedClientIsToldToReattach` upgrades to a build of this tree with the wire protocol one ahead and the oldest it serves moved up with it (a `go build -overlay` of `internal/session/protocol_version.go`): the client must exit 0 within 8 seconds with "The daemon is being upgraded to", well inside the 15-second wait. Run on 2026-11-03 on macOS arm64, each control against the branch head with one change:
+
+| Claim | Control | Where it fails | Verdict |
+|---|---|---|---|
+| A local client waits for the new image and attaches again | the early `return nil` for an upgraded client put back in `beginDaemonReconnect` | `TestAttachedClientFollowsDaemonUpgrade`: "the client exited (code 0) after the upgrade instead of following the daemon" | **caught** |
+| A client the new image cannot serve stops at the handshake's refusal | `session.ProtocolRefused(msg.err)` cut from `handleDaemonReconnectResult` | `TestAttachedClientIsToldToReattach`: "the client took 15.06s to exit after the upgrade: it waited for a daemon it cannot talk to instead of stopping at its answer" | **caught** |
