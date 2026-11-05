@@ -1,9 +1,8 @@
 package app
 
 import (
-	"encoding/json"
-	"fmt"
-
+	"github.com/Gaurav-Gosain/tuios/internal/errfmt"
+	"github.com/Gaurav-Gosain/tuios/internal/jsonx"
 	"github.com/Gaurav-Gosain/tuios/internal/session"
 )
 
@@ -62,8 +61,8 @@ func createSessionVerb(dial agentMailDial, params map[string]any) (string, error
 	var res struct {
 		Session string `json:"session"`
 	}
-	if err := json.Unmarshal(raw, &res); err != nil || res.Session == "" {
-		return "", fmt.Errorf("the daemon did not name the new session: %s", raw)
+	if err := jsonx.Unmarshal(raw, &res); err != nil || res.Session == "" {
+		return "", errfmt.Errorf("the daemon did not name the new session: %s", raw)
 	}
 	return res.Session, nil
 }

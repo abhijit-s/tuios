@@ -1,12 +1,12 @@
 package app
 
 import (
-	"encoding/json"
 	"slices"
 	"strconv"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/Gaurav-Gosain/tuios/internal/jsonx"
 	"github.com/Gaurav-Gosain/tuios/internal/session"
 	"github.com/Gaurav-Gosain/tuios/internal/sessiontree"
 	"github.com/Gaurav-Gosain/tuios/internal/terminal"
@@ -253,7 +253,7 @@ func (m *OS) MoveToWorkspace(ws int) tea.Cmd {
 		var res struct {
 			Workspace int `json:"workspace"`
 		}
-		msg.Err = json.Unmarshal(raw, &res)
+		msg.Err = jsonx.Unmarshal(raw, &res)
 		msg.Workspace = res.Workspace
 		return msg
 	}

@@ -557,7 +557,7 @@ func (m *Manager) DeleteSessionByID(id string) (string, error) {
 	session, exists := m.byID[id]
 	if !exists {
 		m.mu.Unlock()
-		return "", fmt.Errorf("session %s not found", id)
+		return "", errfmt.Errorf("session %s not found", id)
 	}
 	name := session.Name()
 	return name, m.deleteLocked(session, name)

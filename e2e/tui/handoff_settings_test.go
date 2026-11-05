@@ -332,7 +332,7 @@ func TestSelfExecKeepsPluginPane(t *testing.T) {
 	focusBefore := herdrCall(t, base, "plugin.pane.focus", map[string]any{"pane_id": paneID})
 
 	handOver(t, base, map[string]any{})
-	focusAfter := herdrTry(t, base, "plugin.pane.focus", map[string]any{"pane_id": paneID})
+	focusAfter := handoffHerdrTry(t, base, "plugin.pane.focus", map[string]any{"pane_id": paneID})
 	listed := windowListed(t, base, sess, win)
 	pid := panePIDs(t, base, sess)[win]
 	if pid > 0 {
@@ -358,9 +358,9 @@ func TestSelfExecKeepsPluginPane(t *testing.T) {
 	}
 }
 
-// herdrTry is herdrCall that returns herdr's error as the answer rather than
+// handoffHerdrTry is herdrCall that returns herdr's error as the answer rather than
 // failing the test.
-func herdrTry(t *testing.T, base, method string, params any) map[string]any {
+func handoffHerdrTry(t *testing.T, base, method string, params any) map[string]any {
 	t.Helper()
 	conn, err := net.Dial("unix", herdrSocket(base))
 	if err != nil {

@@ -1,13 +1,13 @@
 package app
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
 
+	"github.com/Gaurav-Gosain/tuios/internal/jsonx"
 	"github.com/Gaurav-Gosain/tuios/internal/session"
 	"github.com/Gaurav-Gosain/tuios/internal/sessiontree"
 )
@@ -67,7 +67,7 @@ func (m *OS) switchToSpaceCmd(space string) tea.Cmd {
 		var res struct {
 			Session string `json:"session"`
 		}
-		if err := json.Unmarshal(raw, &res); err != nil || res.Session == "" {
+		if err := jsonx.Unmarshal(raw, &res); err != nil || res.Session == "" {
 			done.err = errors.New("pick-space answered with no session")
 			return done
 		}

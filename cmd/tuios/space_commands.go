@@ -1,10 +1,11 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"strings"
 
+	"github.com/Gaurav-Gosain/tuios/internal/errfmt"
+	"github.com/Gaurav-Gosain/tuios/internal/jsonx"
 	"github.com/Gaurav-Gosain/tuios/internal/plural"
 	"github.com/spf13/cobra"
 )
@@ -27,13 +28,13 @@ func callSpaceVerb(verb string, params map[string]any, jsonOut bool, out any) (p
 	}
 	if jsonOut {
 		var pretty any
-		if err := json.Unmarshal(raw, &pretty); err != nil {
-			return false, fmt.Errorf("failed to parse response: %w", err)
+		if err := jsonx.Unmarshal(raw, &pretty); err != nil {
+			return false, errfmt.Errorf("failed to parse response: %w", err)
 		}
 		return true, printJSON(pretty)
 	}
-	if err := json.Unmarshal(raw, out); err != nil {
-		return false, fmt.Errorf("failed to parse response: %w", err)
+	if err := jsonx.Unmarshal(raw, out); err != nil {
+		return false, errfmt.Errorf("failed to parse response: %w", err)
 	}
 	return false, nil
 }
@@ -172,9 +173,9 @@ The client to switch is chosen as switch-session chooses it:
 		Args: func(_ *cobra.Command, args []string) error {
 			switch {
 			case none && len(args) > 0:
-				return fmt.Errorf("--none switches to the sessions in no space, so it takes no space name (got %q)", args[0])
+				return errfmt.Errorf("--none switches to the sessions in no space, so it takes no space name (got %q)", args[0])
 			case !none && len(args) != 1:
-				return fmt.Errorf("name one space, or pass --none for the sessions in no space")
+				return errfmt.Errorf("name one space, or pass --none for the sessions in no space")
 			}
 			return nil
 		},

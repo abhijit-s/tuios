@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/Gaurav-Gosain/tuios/internal/jsonx"
 	"github.com/Gaurav-Gosain/tuios/internal/plural"
 )
 
@@ -299,7 +300,7 @@ func (d *Daemon) verbSwitchSpace(cs *connState, params json.RawMessage) (any, *v
 		return nil, verr
 	}
 
-	raw, err := json.Marshal(switchSessionParams{Name: target.Name(), Session: p.Session, Client: p.Client})
+	raw, err := jsonx.Marshal(switchSessionParams{Name: target.Name(), Session: p.Session, Client: p.Client})
 	if err != nil {
 		return nil, newVerbError(ErrVerbInternal, err.Error())
 	}

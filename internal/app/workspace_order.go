@@ -277,7 +277,7 @@ func compactWorkspacesCmd(dial agentMailDial, sessionName string) tea.Cmd {
 		var res struct {
 			Renumbered map[string]int `json:"renumbered"`
 		}
-		_ = json.Unmarshal(raw, &res)
+		_ = jsonx.Unmarshal(raw, &res)
 		return WorkspaceRenumberedMsg{Compact: true, Moved: len(res.Renumbered) > 0}
 	}
 }

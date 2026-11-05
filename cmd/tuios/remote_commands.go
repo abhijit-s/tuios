@@ -651,8 +651,8 @@ func runCompactWorkspaces(sessionName string, jsonOutput bool) error {
 	var res struct {
 		Renumbered map[string]int `json:"renumbered"`
 	}
-	if err := json.Unmarshal(raw, &res); err != nil {
-		return fmt.Errorf("failed to parse response: %w", err)
+	if err := jsonx.Unmarshal(raw, &res); err != nil {
+		return errfmt.Errorf("failed to parse response: %w", err)
 	}
 	if len(res.Renumbered) == 0 {
 		fmt.Println("nothing to compact")
@@ -662,7 +662,7 @@ func runCompactWorkspaces(sessionName string, jsonOutput bool) error {
 	for from, to := range res.Renumbered {
 		n, err := strconv.Atoi(from)
 		if err != nil {
-			return fmt.Errorf("failed to parse response: workspace %q is not a number", from)
+			return errfmt.Errorf("failed to parse response: workspace %q is not a number", from)
 		}
 		moved = append(moved, [2]int{n, to})
 	}

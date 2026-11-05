@@ -449,13 +449,6 @@ func TestHostsSyncRestartWithYes(t *testing.T) {
 	}
 }
 
-// sameFile reports whether two paths name one file, through any links.
-func sameFile(a, b string) bool {
-	ra, errA := filepath.EvalSymlinks(a)
-	rb, errB := filepath.EvalSymlinks(b)
-	return errA == nil && errB == nil && ra == rb
-}
-
 // TestRestartServerMovesTheDaemonToTheNewBuild is `tuios restart-server` on
 // this machine: a daemon of the old build holds a session with a pane that
 // runs a program, and the new build restarts it.
@@ -642,4 +635,11 @@ func TestRestartServerFromAPaneLeavesADaemon(t *testing.T) {
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
+}
+
+// sameFile reports whether two paths name one file, through any links.
+func sameFile(a, b string) bool {
+	ra, errA := filepath.EvalSymlinks(a)
+	rb, errB := filepath.EvalSymlinks(b)
+	return errA == nil && errB == nil && ra == rb
 }

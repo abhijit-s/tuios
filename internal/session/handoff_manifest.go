@@ -9,9 +9,9 @@ import (
 	"io"
 	"sync/atomic"
 
-	"github.com/Gaurav-Gosain/tuios/internal/pastebuf"
 	"github.com/Gaurav-Gosain/tuios/internal/errfmt"
 	"github.com/Gaurav-Gosain/tuios/internal/jsonx"
+	"github.com/Gaurav-Gosain/tuios/internal/pastebuf"
 )
 
 // The handoff manifest: what one daemon image writes down for the image it

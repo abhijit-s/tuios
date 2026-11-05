@@ -1595,12 +1595,14 @@ tuios daemon upgrade [flags]
 **Flags:**
 - `--binary <path>`: The tuios binary to run the daemon as (default: the tuios running the command)
 - `--json`: Print the outcome as one JSON object
+- `--or-restart`: When the daemon cannot be upgraded live, restart it with the binary instead, which ends running programs. With no daemon running, start one
 
 **Examples:**
 ```bash
 tuios daemon upgrade
 tuios daemon upgrade --binary ~/bin/tuios-next
 tuios --server test daemon upgrade --binary ./tuios   # upgrades only the daemon named test
+tuios daemon upgrade --binary ~/.local/bin/tuios --or-restart   # live where it can, else a restart
 ```
 
 **Output:**
@@ -1611,7 +1613,7 @@ Starting v0.10.1 in place (pid 8615 kept)...
 Upgraded in 0.06 s. 4 panes and their programs kept.
 ```
 
-With attached clients the last line adds how many were told to attach again, such as ` 2 attached clients were told to attach again.` `--json` prints one object with `pid`, `from`, `to`, `binary`, `panes`, `clients`, `seconds`, `fallback`, `recovered`, `instance` and `handoff`, the measurements of the handoff in the shape of `hello`'s `upgrade` field (see [protocol.md](protocol.md#hello)).
+With attached clients the last line adds how many were told to attach again, such as ` 2 attached clients were told to attach again.` `--json` prints one object with `action`, `pid`, `from`, `to`, `binary`, `panes`, `clients`, `seconds`, `fallback`, `recovered`, `instance` and `handoff`, the measurements of the handoff in the shape of `hello`'s `upgrade` field (see [protocol.md](protocol.md#hello)). `action` is what happened: `upgraded` live, `restarted` or `started` by `--or-restart`, `fallback` to the old binary (also after a recovery by the keeper), `refused` with nothing changed, or `failed`. `reason` says why the daemon was not upgraded live, and `unconfirmed` is set when that was the person not answering Yes in the dialog. `error` holds the failure when the command fails. The object is printed on a failure too, and the error goes to stderr.
 
 **How it runs:**
 1. The binary is run once as `<binary> daemon handoff-accepts`, before anything pauses. A binary that does not run, or reads another handoff version, is refused and nothing changes. A tuios from before live upgrades fails this check. Before that run, the command and the daemon refuse a binary owned by neither you nor root, or one its group or others can write. The daemon runs and execs the very file it checked, so renaming a folder on the path afterwards cannot put another file in its place. On Linux it runs the open file. On macOS and other systems it runs a private copy of the file in its own state folder. A script, such as a wrapper, still runs by its path. A binary you cannot read, only run, runs by its path on macOS. For these two, keep the binary in folders no other user can write.
@@ -1627,6 +1629,8 @@ With attached clients the last line adds how many were told to attach again, suc
 - A pane's `close_on_exit` is not carried: after the upgrade, a window whose program exits with no client attached stays open.
 
 **Refusals:** the command exits 1 with `upgrade_refused` and nothing changes when the daemon runs on Windows, is embedded in another program (`tuios-web`, the SSH server), holds panes hosted here for another machine or a window whose process runs on another machine, is running a `tuios fan verify` check, or is running a popup with `capture_stdout`. A second upgrade while one runs is refused as `busy`. Run from inside a pane, the upgrade waits for the person: every attached client shows a dialog with the binary's full path, its version, and the pane that asked by its title, id and session. No is the default, and only a key pressed at a client answers it: Down or Right moves to Yes, any other key, Tab included, moves back to No, and Enter chooses. The first answer closes the dialog on the other clients. No, Esc, 60 seconds without an answer, no client attached that shows the dialog (a view-only client, a `gui-bridge` renderer and a client too old for the dialog do not), or the agent features turned off refuses it with `forbidden` and `daemon-upgrade is for the person`, followed by which of these it was and what to do, and nothing changes. A plugin is refused the same way without a dialog. A daemon from before live upgrades answers `unknown_verb`, and the command says to restart it with `tuios restart-server`, which stops every program in every pane. On Windows, `tuios restart-server` is the way to move to another build.
+
+**With `--or-restart`:** an upgrade that cannot start is a restart instead. That covers a daemon from before live upgrades, a refusal, a binary that fails the preflight, a daemon that speaks another control protocol, and Windows. The command prints `Not upgraded live: <reason>.`, then runs `<binary> kill-server`, which saves every session, and `<binary> start-server`, which restores them with their layout and new shells. Both run on the server the command runs on. Before it stops anything it checks that the binary runs at all, so a binary that is not a tuios stops nothing. It runs the binary by its path three times, and before each run it checks that the path still names the file it checked, so a file put there in between is never run. It reports `restarted` or `started` only once a daemon answers after `start-server`, and for a restart only when that daemon is not the old one; otherwise the command fails and says which. With no daemon running, it starts one with the binary and reports `started`. A daemon that went back to its old binary (below) is never restarted: every program in it still runs, and the command fails so the reason can be read in `tuios logs`. Nor is a binary owned by neither you nor root, or one its group or others can write: the command checks that before it runs the file at all, reports `refused`, and neither restarts a daemon nor starts one. Nor is a running daemon when the command runs in a pane (`TUIOS_PANE_ID` is set), whatever stopped the live upgrade: the restart's `kill-server` would end that pane and the command in it before `start-server` ran, and leave no daemon. The command reports `refused`, says the daemon was not restarted, and exits 1. When the refusal was the dialog's, because no Yes came, `unconfirmed` is set too. `scripts/install.sh`, `tuios hosts sync --restart` and `just restart` move the daemon this way.
 
 **Fallback:** at start the daemon keeps the binary it runs at `<state>/handoff/tuios.prev` (a hard link, or a copy across file systems; one per server). If the new binary starts and cannot take the panes over (an error, a panic, or a 30 second watchdog), the daemon execs `tuios.prev`, which takes them back. The command then says the new binary could not take the panes over and the daemon went back to the old version, that every program is still running, to see `tuios logs`, and exits 1.
 
@@ -6477,9 +6481,7 @@ at all: both are downloaded and verified before either is put in place.
 A file that does not match is discarded, nothing is installed, and the old
 binary is untouched.
 
-**The running daemon** keeps the old build, and update leaves it alone. Sessions you have open go on working. On macOS and Linux, `tuios daemon upgrade` moves the running daemon to the installed build with every pane's program still running; see [`tuios daemon upgrade`](#tuios-daemon-upgrade). It says why when the daemon cannot be upgraded live, and then [`tuios restart-server`](#tuios-restart-server) moves it: panes are restored, and the programs that were running in them are not. update prints both commands, with `--server NAME` on a named server.
-
-On macOS and Linux, `tuios daemon upgrade` moves the running daemon to the installed build instead, with every pane's program still running. See [`tuios daemon upgrade`](#tuios-daemon-upgrade).
+**The running daemon** keeps the old build, and update leaves it alone. Sessions you have open go on working. On macOS and Linux, `tuios daemon upgrade` moves the running daemon to the installed build with every pane's program still running; see [`tuios daemon upgrade`](#tuios-daemon-upgrade). It says why when the daemon cannot be upgraded live, and then `tuios restart-server`, or "Restart the daemon" in the command palette, moves it: panes are restored, and the programs that were running in them are not. update prints both commands, with `--server NAME` on a named server.
 
 Set `GITHUB_TOKEN` or `GH_TOKEN` to raise the release lookup's rate limit. It is
 never required and no token is created for you.

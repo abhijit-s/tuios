@@ -749,7 +749,7 @@ func forEachBounded(n, workers int, fn func(i int) error) error {
 	run := func(i int) (err error) {
 		defer func() {
 			if r := recover(); r != nil {
-				err = fmt.Errorf("panic: %v\n%s", r, debug.Stack())
+				err = errfmt.Errorf("panic: %v\n%s", r, debug.Stack())
 			}
 		}()
 		return fn(i)
