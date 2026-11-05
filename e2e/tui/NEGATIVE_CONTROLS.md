@@ -14907,3 +14907,16 @@ Run on 2026-11-05 on Linux. The fixed build passes in about 60 s.
 
 Repeat from `e2e/tui` with
 `TUIOS_E2E=1 TUIOS_E2E_BIN=/path/to/tuios go test -count=1 -run '^TestMachineOfferOnSSHLogin$' -v .`.
+
+## A live upgrade says its clients reattach by themselves
+
+`TestAttachedClientFollowsDaemonUpgrade` and `TestAttachedClientIsToldToReattach` hold `tuios daemon upgrade` to saying an attached client was dropped and that tuios clients on this machine reattach by themselves, such as ` 1 attached client was dropped; tuios clients on this machine reattach by themselves.` The old line said the client was told to attach again, which read as work left for the person.
+
+Run on 2026-11-06 on macOS (darwin/arm64). The fixed build passes both in about 16 s.
+
+| Control | Where it fails | Verdict |
+| --- | --- | --- |
+| A build that prints the old line (integ-2026-11-05a, `034aa1cff`) | "the upgrade did not count the attached client", in both tests | **caught** |
+
+Repeat from `e2e/tui` with
+`TUIOS_E2E=1 TUIOS_E2E_BIN=/path/to/tuios go test -count=1 -run '^(TestAttachedClientFollowsDaemonUpgrade|TestAttachedClientIsToldToReattach)$' -v .`.
