@@ -12,7 +12,9 @@ import (
 
 	"charm.land/lipgloss/v2"
 	"charm.land/lipgloss/v2/table"
+	"github.com/Gaurav-Gosain/tuios/internal/errfmt"
 	"github.com/Gaurav-Gosain/tuios/internal/invisible"
+	"github.com/Gaurav-Gosain/tuios/internal/jsonx"
 	"github.com/Gaurav-Gosain/tuios/internal/plural"
 	"github.com/Gaurav-Gosain/tuios/internal/session"
 )
@@ -140,8 +142,8 @@ func printAgentList(w io.Writer, raw json.RawMessage, all bool, on string) error
 		Select      string     `json:"select"`
 		Confirm     string     `json:"confirm"`
 	}
-	if err := json.Unmarshal(raw, &res); err != nil {
-		return fmt.Errorf("failed to parse response: %w", err)
+	if err := jsonx.Unmarshal(raw, &res); err != nil {
+		return errfmt.Errorf("failed to parse response: %w", err)
 	}
 	if len(res.Agents) == 0 && res.Select != "" {
 		fmt.Fprintf(w, "No pane matches the selector %q.\n", plainLine(res.Select))
@@ -300,8 +302,8 @@ func runSendAgentMessage(sessionName, to, from, subject, text string, replyTo ui
 		ThreadID       uint64 `json:"thread_id"`
 		ReplyToMissing bool   `json:"reply_to_missing"`
 	}
-	if err := json.Unmarshal(raw, &res); err != nil {
-		return fmt.Errorf("failed to parse response: %w", err)
+	if err := jsonx.Unmarshal(raw, &res); err != nil {
+		return errfmt.Errorf("failed to parse response: %w", err)
 	}
 	// The thread is worth printing only when it is not the message itself, which
 	// is every reply and no first message.
@@ -337,7 +339,7 @@ func hostUnreachable(err error) bool {
 // machine that cannot be asked is not known here.
 func queueAgentMessage(host, sess, window, from, subject, text string, replyTo uint64, attachments []string, jsonOutput bool) error {
 	if sess == "" {
-		return fmt.Errorf("the link to %s is down, so a message can only wait for it with the session named: -s %s:SESSION", host, host)
+		return errfmt.Errorf("the link to %s is down, so a message can only wait for it with the session named: -s %s:SESSION", host, host)
 	}
 	client, err := dialVerb()
 	if err != nil {
@@ -372,8 +374,8 @@ func queueAgentMessage(host, sess, window, from, subject, text string, replyTo u
 		MessageID uint64 `json:"message_id"`
 		Waiting   int    `json:"waiting"`
 	}
-	if err := json.Unmarshal(raw, &res); err != nil {
-		return fmt.Errorf("failed to parse response: %w", err)
+	if err := jsonx.Unmarshal(raw, &res); err != nil {
+		return errfmt.Errorf("failed to parse response: %w", err)
 	}
 	if !res.Queued {
 		// The link came back between the two calls and the message went.
@@ -458,20 +460,28 @@ func runReadAgentMessages(sessionName, to string, unread, notices, peek bool, th
 // first thing a reader needs to decide what to make of it.
 func printAgentMessages(w io.Writer, raw json.RawMessage, on string) error {
 	var res struct {
-		Messages []agentMessageRow `json:"messages"`
-		Total    int               `json:"total"`
-		Evicted  uint64            `json:"evicted"`
-		Thread   uint64            `json:"thread"`
+		Messages      []agentMessageRow `json:"messages"`
+		Total         int               `json:"total"`
+		Evicted       uint64            `json:"evicted"`
+		EvictedUnread uint64            `json:"evicted_unread"`
+		Inbox         string            `json:"inbox"`
+		Thread        uint64            `json:"thread"`
 	}
-	if err := json.Unmarshal(raw, &res); err != nil {
-		return fmt.Errorf("failed to parse response: %w", err)
+	if err := jsonx.Unmarshal(raw, &res); err != nil {
+		return errfmt.Errorf("failed to parse response: %w", err)
 	}
+	dropped := droppedLine(res.Inbox, res.Evicted, res.EvictedUnread)
 	if len(res.Messages) == 0 {
 		if res.Thread != 0 {
 			fmt.Fprintf(w, "No messages in thread %d. The ring may have dropped them, or nothing was ever sent there.\n", res.Thread)
-			return nil
+		} else {
+			fmt.Fprintln(w, "No messages.")
 		}
-		fmt.Fprintln(w, "No messages.")
+		// An inbox whose only unread mail was dropped reads empty, and that
+		// is the read that most needs to say why.
+		if dropped != "" {
+			fmt.Fprintln(w, dropped)
+		}
 		return nil
 	}
 
@@ -524,10 +534,32 @@ func printAgentMessages(w io.Writer, raw json.RawMessage, on string) error {
 	} else {
 		fmt.Fprintf(w, "\n%s%s, %s.\n", plural.Count(res.Total, "message"), where, mailStateSummary(res.Messages))
 	}
-	if res.Evicted > 0 {
-		fmt.Fprintf(w, "%s %s dropped: the ring was full, and %s never read.\n", plural.Count(res.Evicted, "older message"), plural.Word(res.Evicted, "was", "were"), plural.Word(res.Evicted, "it was", "they were"))
+	if dropped != "" {
+		fmt.Fprintln(w, dropped)
 	}
 	return nil
+}
+
+// droppedLine says what a full ring cost the reader, or "" when it cost
+// nothing. An inbox read hears only about its own mail that went unread. The
+// ring is the session's, and most of what it drops was read long ago by
+// someone else, so a count of that in every inbox is an alarm nobody can act
+// on. A read of the whole session hears about everything.
+func droppedLine(inbox string, evicted, evictedUnread uint64) string {
+	if inbox != "" {
+		if evictedUnread == 0 {
+			return ""
+		}
+		return fmt.Sprintf("%s to this inbox %s dropped before %s read: the ring was full.", plural.Count(evictedUnread, "message"), plural.Word(evictedUnread, "was", "were"), plural.Word(evictedUnread, "it was", "they were"))
+	}
+	if evicted == 0 {
+		return ""
+	}
+	line := fmt.Sprintf("The ring was full and dropped %s", plural.CountAs(evicted, "older entry", "older entries"))
+	if evictedUnread == 0 {
+		return line + ", none of them unread mail."
+	}
+	return line + fmt.Sprintf(". %d of them %s unread mail.", evictedUnread, plural.Word(evictedUnread, "was", "were"))
 }
 
 // mailStateSummary says what state the returned messages are in after the
@@ -678,8 +710,8 @@ func printAskReply(w io.Writer, raw json.RawMessage, host string) error {
 		QueuedBehind int   `json:"queued_behind"`
 		WaitedTurnMS int64 `json:"waited_turn_ms"`
 	}
-	if err := json.Unmarshal(raw, &res); err != nil {
-		return fmt.Errorf("failed to parse response: %w", err)
+	if err := jsonx.Unmarshal(raw, &res); err != nil {
+		return errfmt.Errorf("failed to parse response: %w", err)
 	}
 
 	who := fmt.Sprintf("%s (%s)", orNone(plainLine(res.Name)), shortWindowID(res.Window))

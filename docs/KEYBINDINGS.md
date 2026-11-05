@@ -201,6 +201,20 @@ not text. The binding is `file_edit` in `[keybindings.sidebar_files]`.
 of a folder has a Copy path row that does the same. The binding is
 `file_copy_path` in `[keybindings.sidebar_files]`.
 
+`o` opens the selected file or folder with the system opener. On Linux this is
+`xdg-open`. On macOS it is `open`. Under WSL it is `wslview`, and on Windows
+it is the program for the file type. A `[[files.open]]` rule can name another
+program for a pattern. See
+[CONFIGURATION.md](CONFIGURATION.md#open-files-from-the-sidebar). The context
+menu of a row has an Open with system row that does the same. The binding is
+`file_open_system` in `[keybindings.sidebar_files]`. On a row that is not a
+file, `o` keeps its sidebar action, which sorts the agents.
+
+`o` opens only files on the machine that runs the client. For a listing of
+another machine, tuios does not open the file. Press `Space` to preview it, or
+`S` to send it here. A remote client (`tuios ssh`, `tuios-web`) also does not
+open the file.
+
 `I` pastes the path of the selected file or folder into the focused pane. The
 context menu of a row has a Paste path in pane row that does the same. The
 binding is `file_insert_path` in `[keybindings.sidebar_files]`.
@@ -220,9 +234,13 @@ the sidebar, and release the button over a pane. The pane gets the path.
 
 After the drop, the pane has the focus and the mode does not change.
 
-tuios quotes the path for the program in the pane. It knows sh, bash, zsh,
-dash, ksh, fish, nu, csh, PowerShell, elvish and cmd. Other programs get POSIX
-single quotes. A folder path ends in `/`. A space follows the path, so you can
+tuios quotes the path for the program in the pane. It knows sh, bash, rbash,
+zsh, dash, ksh, ksh93, mksh, lksh, oksh, loksh, pdksh, posh, yash, ash, hush,
+fish, nu, csh, PowerShell, elvish and cmd. Other programs get POSIX single
+quotes, except a name with a backslash before a quote or another backslash, or
+ending in a backslash, which gets its quotes and backslashes written outside
+the single quotes, so fish behind tmux or script reads it as a POSIX shell
+does. A folder path ends in `/`. A space follows the path, so you can
 type the next word. Hold `Alt` when you release a folder to type a cd to it.
 The path goes in as a paste. A program that turned on bracketed paste gets it
 as one paste.
@@ -1971,6 +1989,7 @@ Inside it:
 | Keys | What it does |
 |---|---|
 | `j` `k`, arrows | Move between agents. The focus area shows the selected one |
+| `g` `G` | Go to the first or last agent. When the thread is scrolled up, `G` first shows its newest lines and follows it again |
 | `enter` | Go to the agent's pane and close the view. On mail, open the thread |
 | `a` `A` `r` `R` | On a held approval: allow once, always allow, reject, reject and say why. `1` `2` `3` still work |
 | `r`, `i`, `tab` | With no approval waiting: write a reply to the agent, or to the mail |
@@ -1978,7 +1997,10 @@ Inside it:
 | `n` | Open the New agent sheet. See below |
 | `c` | On an attempt of a fan: compare the attempts. See below |
 | `b` | Show the task board, the cards grouped by stage, or the agents again |
-| `t` | On a card: take it for the pane behind the agents view. `n` on a card opens the New agent sheet on it |
+| `t` | On a card: take it for the pane behind the agents view. `n` on a card in the board's list opens the New agent sheet on it |
+| `H` `L`, `shift+left` `shift+right` | On a card: move it to the stage before or after |
+| `B` | Show the task board as columns or as a list |
+| `\` | Show the agents as a column beside the focus, or as a strip of chips above it. tuios keeps the choice. See `view_list` in [CONFIGURATION.md](CONFIGURATION.md#the-agent-list) |
 | `o` | Open what the agent has shown, such as a TML form, on its Artifacts tab, and use it. `esc` goes back to the list |
 | `f` | Show only what needs you, then each kind of item, then every agent |
 | `s` | Step the order inside each group |
@@ -1991,6 +2013,7 @@ Inside it:
 | `y` with marks | Resume every marked Resume row. `*` then `y` resumes them all |
 | `[` `]` | Switch the focus tabs: Card on the board, Thread, Changes, Artifacts, Checkpoints and Pane |
 | `J` `K` | Scroll the thread, or a long plan waiting for a yes. On the Artifacts tab, move between the artifacts |
+| `{` `}` | Show the thread's previous or next prompt at the top. The ruler at the right of the thread marks each prompt |
 | `e` | Show every line of every card in the thread |
 | `F` | Fold or open the group of the row under the cursor. On a folded heading, `enter` also opens it |
 | `v` | Review the agent's changes |
@@ -1998,6 +2021,10 @@ Inside it:
 | `l` `h`, `right` `left` | On a narrow screen, open the focus and go back to the list |
 | `?` | All keys |
 | `esc` `q` | Close. On a narrow screen, go back from the focus to the list first |
+
+On the board's columns, `h` `l` go between the columns, `j` `k` between the
+cards, `n` adds a card, and `enter` on a free card opens the New agent sheet
+on it. See [AGENT_STATE.md](AGENT_STATE.md#the-agents-view).
 
 A bulk key acts only on the marked agents the list shows. An agent in a
 folded group, or one a search hides, is left out, and closing the view clears
@@ -2107,8 +2134,9 @@ These keys are in three sections of their own, rebindable like any other:
 `inbox_write`, `inbox_sort`, `inbox_view_pane`, `inbox_new_agent`,
 `inbox_allow`, `inbox_allow_always`, `inbox_open`, `inbox_back`,
 `inbox_help`, `inbox_mark`, `inbox_mark_all`, `inbox_tab_prev`,
-`inbox_tab_next`, `inbox_expand`, `inbox_fold`, `inbox_compare`, `inbox_artifact`,
-`inbox_board`, `inbox_take`),
+`inbox_tab_next`, `inbox_expand`, `inbox_fold`, `inbox_prompt_prev`,
+`inbox_prompt_next`, `inbox_compare`, `inbox_artifact`, `inbox_board`,
+`inbox_board_layout`, `inbox_view_list`, `inbox_take`, `inbox_stage_prev`, `inbox_stage_next`),
 `[keybindings.inbox_peek]` (the prompt: `peek_approve`, `peek_approve_always`,
 `peek_deny`, `peek_type`, `peek_read_again`, `peek_go`, `peek_back`) and
 `[keybindings.mail]` (the mailbox: `mail_down`, `mail_up`, `mail_page_down`,
@@ -2260,7 +2288,7 @@ except the hunk and file motions and the stage keys, which are in
 | `A` / `D` | Stage or unstage the whole file (`review_stage_file`, `review_unstage_file`) |
 | `z` | Undo the last stage or unstage (`review_undo_stage`) |
 | `s` | One column, or the old and new sides next to each other where the diff column is wide enough (about 120 columns of screen) |
-| `h` / `l`, `left` / `right` | Scroll the code sideways |
+| `h` / `l`, `left` / `right` | Scroll the focused panel sideways. In the diff, scroll the code. In the file list, scroll the paths to show the start of a long path |
 | `tab` | Focus the file list or the diff. A review opens on the diff, or on the list with `[review] focus = "files"` (see [CONFIGURATION.md](CONFIGURATION.md#where-a-review-opens)) |
 | `enter` | In the file list: open that file |
 | `c` | A note on the line under the cursor |

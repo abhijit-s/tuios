@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Gaurav-Gosain/tuios/internal/gitstate"
+	"github.com/Gaurav-Gosain/tuios/internal/jsonx"
 )
 
 // herdr's records of tuios's objects: the shapes of herdr's
@@ -151,23 +152,32 @@ type herdrSnapshot struct {
 	Agents             []herdrAgentInfo `json:"agents"`
 }
 
-// herdrStatus is herdr's AgentStatus for a tuios agent state:
+// herdrStatus is herdr's AgentStatus for a tuios agent state. unread says
+// the pane finished a turn nobody has looked at (Session.finishedUnread).
 //
-//	working       working
-//	needs_input   blocked
-//	idle          idle
-//	done          done
-//	errored       done: the agent stopped, and the person should look
-//	unknown, none unknown
-func herdrStatus(s AgentState) string {
+//	working            working
+//	needs_input        blocked
+//	idle, done unread  done
+//	idle, done seen    idle
+//	errored            done: the agent stopped, and the person should look
+//	unknown, none      unknown
+//
+// herdr has no done state of its own: its done is an idle pane not yet seen,
+// and the pane turns idle once someone looks at it (pane_agent_status in
+// herdr's src/app/api_helpers.rs). tuios keeps done for good and tracks the
+// looking apart, so the two are put back together here.
+func herdrStatus(s AgentState, unread bool) string {
 	switch s {
 	case AgentStateWorking:
 		return "working"
 	case AgentStateNeedsInput:
 		return "blocked"
-	case AgentStateIdle:
+	case AgentStateIdle, AgentStateDone:
+		if unread {
+			return "done"
+		}
 		return "idle"
-	case AgentStateDone, AgentStateErrored:
+	case AgentStateErrored:
 		return "done"
 	}
 	return "unknown"
@@ -259,7 +269,7 @@ func (d *Daemon) herdrSessions(cs *connState) []*Session {
 
 // herdrSessionParams names a session for a verb call.
 func herdrSessionParams(sess *Session) json.RawMessage {
-	raw, _ := json.Marshal(map[string]string{"session": sess.Name()})
+	raw, _ := jsonx.Marshal(map[string]string{"session": sess.Name()})
 	return raw
 }
 
@@ -454,7 +464,7 @@ func (d *Daemon) herdrPaneRecord(sess *Session, st *SessionState, win *WindowSta
 	}
 	if win.AgentHarness != "" && win.AgentState != AgentStateNone {
 		p.Agent = herdrAgentLabel(win.AgentHarness)
-		p.AgentStatus = herdrStatus(win.AgentState)
+		p.AgentStatus = herdrStatus(win.AgentState, sess.finishedUnread(win))
 	}
 	if len(win.AgentMeta) > 0 {
 		p.Tokens = make(map[string]string, len(win.AgentMeta))

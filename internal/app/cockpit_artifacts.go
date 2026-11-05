@@ -12,6 +12,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/Gaurav-Gosain/tuios/internal/config"
+	"github.com/Gaurav-Gosain/tuios/internal/jsonx"
 	"github.com/Gaurav-Gosain/tuios/internal/overlay"
 	"github.com/Gaurav-Gosain/tuios/internal/session"
 	"github.com/Gaurav-Gosain/tuios/internal/terminal"
@@ -152,7 +153,7 @@ func (m *OS) CockpitArtifactsWanted() tea.Cmd {
 			var res struct {
 				Artifacts []ckArtifact `json:"artifacts"`
 			}
-			msg.err = json.Unmarshal(raw, &res)
+			msg.err = jsonx.Unmarshal(raw, &res)
 			msg.items = res.Artifacts
 		}
 		return msg
@@ -687,7 +688,7 @@ func (m *OS) drawArtifacts(c *ckCanvas, l ckLook, e sidebarAgentEntry, x, y, w, 
 			return
 		}
 		art.box = ckArtBox{x: x, y: top + y, w: w, h: bh, id: a.ID}
-		for i, line := range strings.Split(s.Render(w, bh).Render(), "\n") {
+		for i, line := range strings.Split(m.renderSurface(s, w, bh).Render(), "\n") {
 			if i >= bh {
 				break
 			}
@@ -731,7 +732,9 @@ func (m *OS) ckArtRenderLive(v *tmlView, w, h int) string {
 		}
 		sh = max(h-strings.Count(confirm, "\n")-1, 1)
 	}
-	out := v.surface.Render(w, sh).Render()
+	m.tmlMotion(v)
+	out := m.renderSurface(v.surface, w, sh).Render()
+	m.tmlArmFrame(v)
 	// The window's last frame was at its own size: it draws again.
 	v.content = ""
 	if confirm != "" {

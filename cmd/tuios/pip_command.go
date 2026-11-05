@@ -1,9 +1,10 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 
+	"github.com/Gaurav-Gosain/tuios/internal/errfmt"
+	"github.com/Gaurav-Gosain/tuios/internal/jsonx"
 	"github.com/spf13/cobra"
 )
 
@@ -38,7 +39,7 @@ With [pip] enabled = false the command refuses to pin, and --off still works.`,
 				window = args[0]
 			}
 			if off && window != "" {
-				return fmt.Errorf("--off unpins whatever is pinned, so it takes no window")
+				return errfmt.Errorf("--off unpins whatever is pinned, so it takes no window")
 			}
 			return runPiP(session, window, off, jsonOutput)
 		},
@@ -76,8 +77,8 @@ func runPiP(sessionName, window string, off, jsonOutput bool) error {
 		Pinned   bool   `json:"pinned"`
 		WindowID string `json:"window_id"`
 	}
-	if err := json.Unmarshal(raw, &res); err != nil {
-		return fmt.Errorf("failed to parse response: %w", err)
+	if err := jsonx.Unmarshal(raw, &res); err != nil {
+		return errfmt.Errorf("failed to parse response: %w", err)
 	}
 	if !res.Pinned {
 		fmt.Println("No pane is pinned.")

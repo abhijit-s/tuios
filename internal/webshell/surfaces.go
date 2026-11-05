@@ -14,6 +14,7 @@ import (
 	"tuios.dev/loom"
 	"tuios.dev/tml"
 
+	"github.com/Gaurav-Gosain/tuios/internal/jsonx"
 	"github.com/Gaurav-Gosain/tuios/internal/theme"
 	"github.com/Gaurav-Gosain/tuios/internal/tmldraw"
 )
@@ -271,7 +272,7 @@ func tmlShow(s *shell, in []string) int {
 	}
 	if !a.has("wait") {
 		if a.has("json") {
-			raw, _ := json.Marshal(map[string]any{
+			raw, _ := jsonx.Marshal(map[string]any{
 				"type": "tml_opened", "surface": opened.Surface, "window_id": opened.WindowID,
 				"target": opened.Target, "workspace": opened.Workspace,
 			})
@@ -300,7 +301,7 @@ func tmlShow(s *shell, in []string) int {
 		value = json.RawMessage("null")
 	}
 	if a.has("json") {
-		raw, _ := json.Marshal(map[string]any{
+		raw, _ := jsonx.Marshal(map[string]any{
 			"type": "tml_result", "surface": opened.Surface, "window_id": opened.WindowID,
 			"reason": res.Reason, "value": value,
 		})
@@ -373,7 +374,7 @@ func tmlRender(s *shell, in []string) int {
 	}
 	if st := a.flags["state"]; st != "" {
 		var probe map[string]any
-		if json.Unmarshal([]byte(st), &probe) != nil || probe == nil {
+		if jsonx.Unmarshal([]byte(st), &probe) != nil || probe == nil {
 			return s.fail("tuios tml render: --state is not a JSON object: " + st)
 		}
 		opts.State = json.RawMessage(st)
@@ -468,7 +469,7 @@ func cmdTML(s *shell, in []string, _ string) int {
 		if width > 0 {
 			w = width
 		}
-		lines := strings.Split(sf.Render(w, height).Render(), "\n")
+		lines := strings.Split(tmldraw.Render(sf, w, height, tmldraw.Hooks{}).Render(), "\n")
 		lines = trimBlankTail(lines)
 		if !a.has("print") {
 			lines = append(lines, wrapTokens([]string{dim + "To", "open", "it", "in", "tuios:" + reset, bold + "tuios tml show " + name + reset}, cols)...)

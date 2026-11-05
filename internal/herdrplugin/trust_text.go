@@ -2,6 +2,7 @@ package herdrplugin
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 	"unicode"
 )
@@ -49,15 +50,28 @@ func ShownName(name string) string {
 	return name
 }
 
+// SketchID is the id of the sketch plugin. tuios runs the bin/sketch of the
+// plugin with this id for the diagrams it does not draw itself.
+const SketchID = "tuios.sketch"
+
 // RunsLines lists what p runs on its own once it is allowed: its startup
-// commands, then its hooks, actions, panes and link handlers by name.
-// Nothing is an empty list.
+// commands, the sketch program, then its hooks, actions, panes and link
+// handlers by name. Nothing is an empty list.
 func RunsLines(p *Plugin) []string {
 	var out []string
 	for _, s := range p.Startup {
 		out = append(out, "startup  "+ShownArgv(s.Command...))
 	}
-	var hooks, actions, panes, links, cells []string
+	if p.PluginID == SketchID {
+		out = append(out, "mermaid  bin/sketch, for the diagrams tuios does not draw, in tuios mermaid and in TML panels")
+	}
+	var hooks, actions, panes, links, cells, themes, savers []string
+	for _, s := range p.Savers {
+		savers = append(savers, s.ID)
+	}
+	for _, t := range p.Themes {
+		themes = append(themes, strings.TrimSuffix(filepath.Base(t), filepath.Ext(t)))
+	}
 	for _, c := range p.Cells {
 		cells = append(cells, c.ID)
 	}
@@ -73,9 +87,9 @@ func RunsLines(p *Plugin) []string {
 	for _, h := range p.LinkHandlers {
 		links = append(links, h.ID)
 	}
-	for i, list := range [][]string{hooks, actions, panes, links, cells} {
+	for i, list := range [][]string{hooks, actions, panes, links, cells, themes, savers} {
 		if len(list) > 0 {
-			out = append(out, fmt.Sprintf("%-8s %s (%d)", [...]string{"hooks", "actions", "panes", "links", "cells"}[i], ShownArgv(strings.Join(list, ", ")), len(list)))
+			out = append(out, fmt.Sprintf("%-8s %s (%d)", [...]string{"hooks", "actions", "panes", "links", "cells", "themes", "savers"}[i], ShownArgv(strings.Join(list, ", ")), len(list)))
 		}
 	}
 	return out

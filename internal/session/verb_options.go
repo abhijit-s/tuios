@@ -7,7 +7,6 @@ import (
 
 	"github.com/Gaurav-Gosain/tuios/internal/config"
 	"github.com/Gaurav-Gosain/tuios/internal/theme"
-	"github.com/google/uuid"
 )
 
 // optionDaemonLogLevel is the one option path that describes the daemon process
@@ -165,13 +164,14 @@ func resolveOptionPath(key string) (config.Option, string, bool) {
 // never have an effect fails saying why instead of being recorded and reported
 // as set. Deliberately still permissive in one direction: a path the registry
 // does not know is refused, but the recorded value is kept for the paths it
-// does, because the record is what get-option reads and what a client picks up
-// when it attaches later.
+// does, because the record is what get-option reads. A value set with no
+// client attached also waits for the next client, which applies it.
 func (d *Daemon) verbSetOption(cs *connState, params json.RawMessage) (any, *verbError) {
 	var p struct {
 		Session string `json:"session"`
 		Key     string `json:"key"`
 		Value   string `json:"value"`
+		NoSave  bool   `json:"no_save"`
 	}
 	if verr := decodeParams(params, &p); verr != nil {
 		return nil, verr
@@ -206,6 +206,13 @@ func (d *Daemon) verbSetOption(cs *connState, params json.RawMessage) (any, *ver
 			Param:  "key",
 			Detail: "Nothing was changed. The person sets it on the settings page or in config.toml.",
 		})
+	}
+
+	// The daemon reads the agent switch from the config file, so a value
+	// the file does not hold would leave the daemon and the client
+	// disagreeing about it.
+	if path == optionAgentsEnabled && p.NoSave {
+		return nil, invalidParam("no_save", "agents.enabled is always saved, because the daemon reads it from the config file. Nothing was changed")
 	}
 
 	// Validate by attempting the set against a throwaway config. Doing it this
@@ -250,12 +257,24 @@ func (d *Daemon) verbSetOption(cs *connState, params json.RawMessage) (any, *ver
 			"scope":    "daemon",
 			"previous": previous.String(),
 			"reason":   "the log level applies to the daemon at once. It is not saved to the config file",
+			"no_save":  p.NoSave,
 		}, nil
 	}
 
 	sess, verr := d.resolveVerbSession(cs, p.Session)
 	if verr != nil {
 		return nil, verr
+	}
+
+	// A client older than no_save ignores the field and saves the value, so
+	// the call is refused before anything changes.
+	if p.NoSave && path != optionWindowSize {
+		if tui := d.findTUIClient(sess.ID); tui != nil && !tui.holdsOptions() {
+			return nil, hintedVerbError(ErrVerbInvalidParams, "the attached client is too old to apply a value without saving it. Nothing was changed", &VerbHint{
+				Param:  "no_save",
+				Detail: "Restart the client with the tuios version of the daemon, then set the value again.",
+			})
+		}
 	}
 
 	// Record the option in daemon-owned state so get-option can read it back.
@@ -272,6 +291,7 @@ func (d *Daemon) verbSetOption(cs *connState, params json.RawMessage) (any, *ver
 			"applied": true,
 			"scope":   "session",
 			"reason":  "the session uses this size policy at once. It is not saved to the config file",
+			"no_save": p.NoSave,
 		}
 		if eff := sess.WindowSizePolicy(); eff != "" && eff != windowSizePolicy(p.Value) && d.getSessionClientCount(sess.ID) > 0 {
 			out["in_force"] = eff
@@ -282,43 +302,41 @@ func (d *Daemon) verbSetOption(cs *connState, params json.RawMessage) (any, *ver
 
 	// When a TUI is attached, also route the change so the live renderer applies
 	// it. A routing failure is not fatal: the option is still recorded, so
-	// applied reflects only whether the live apply succeeded.
+	// applied reflects only whether the live apply succeeded. With no client
+	// the value waits, and the next client that attaches applies it. See
+	// option_pending.go.
 	applied := false
 	var reason string
+	sess.optionApplyMu.Lock()
 	if tui := d.findTUIClient(sess.ID); tui != nil {
-		res, err := d.routeToTUISync(tui, uuid.New().String(), &RemoteCommandPayload{
-			CommandType: "set_config",
-			ConfigPath:  path,
-			ConfigValue: p.Value,
-		}, routedVerbTimeout)
-		applied = err == nil && res != nil && res.Success
-		switch {
-		case applied:
-		case err != nil:
-			reason = "the attached client did not answer: " + err.Error()
-		case res != nil && res.Message != "":
-			reason = res.Message
-		default:
-			reason = "the attached client refused the change"
-		}
+		// A value sent to a client supersedes one still waiting, whether or
+		// not the client applies it.
+		sess.dropWaitingOption(path)
+		applied, reason = d.routeOption(tui, path, p.Value, p.NoSave)
 	} else {
+		sess.waitOption(path, p.Value, p.NoSave)
 		// A caller has to tell "nobody was attached" from "that key means
 		// nothing" to act on applied false. The key is validated above, and
-		// this says which of the two remaining cases it is.
-		// The file is only ever written by an attached client, because the
-		// client is what holds the config the writer marshals. So say that
-		// here: without the second sentence a caller reads "recorded" as
-		// "saved" and finds the value gone after a restart.
+		// this says which of the two remaining cases it is. The file is only
+		// ever written by a client, because the client holds the config the
+		// writer marshals, so the reason says when that happens.
 		reason = "no client is attached, so nothing is drawing it yet. " +
-			"The value is recorded for this session and is not saved to the config file. " +
-			"It applies when a client attaches"
+			"The next client that attaches applies it and saves it to the config file"
+		if p.NoSave {
+			reason = "no client is attached, so nothing is drawing it yet. " +
+				"The next client that attaches applies it and does not save it"
+		}
 	}
+	sess.optionApplyMu.Unlock()
 
 	out := map[string]any{
 		"type":    "option_set",
 		"key":     path,
 		"value":   p.Value,
 		"applied": applied,
+		// Echoed so a caller can tell this daemon from an older one, which
+		// ignores no_save and saves the value.
+		"no_save": p.NoSave,
 	}
 	if reason != "" {
 		out["reason"] = reason

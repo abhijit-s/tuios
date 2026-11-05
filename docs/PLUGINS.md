@@ -59,6 +59,81 @@ again. Run `tuios plugins install .` to answer.
 To remove the plugin, run `tuios plugins uninstall me.commits`. tuios keeps your
 folder.
 
+## Themes
+
+A plugin can bring themes. Name each file in the manifest:
+
+```toml
+[[theme]]
+file = "themes/dusk.json"
+```
+
+A theme file has the format of `docs/THEMES.md`. When the plugin is enabled, its
+themes load with your own, and the theme picker and `[appearance] theme` take
+them. A theme file of your own in `~/.config/tuios/themes/` with the same id
+wins over a plugin's.
+
+A plugin of files only runs no program and asks for no grant. It needs no
+approval beyond the install. `tuios plugins install themes` installs the themes
+that ship with tuios.
+
+## Screen savers
+
+A plugin can bring a screen saver as a frames file: text frames with times and
+colours. tuios plays it, and no program runs, so a plugin of savers needs no
+approval beyond the install. A tool, such as an editor for ASCII art, can write
+the file.
+
+```toml
+[[saver]]
+id = "blink"
+file = "savers/blink.txt"
+```
+
+Choose it with `effect = "plugin/ID/SAVER"` in `[screensaver]`, such as
+`plugin/you.faces/blink`. `tuios plugins check` reads each frames file and
+names the line that is wrong.
+
+### The frames file
+
+```text
+tuios-saver 1
+size 7 3
+fps 4
+color e #5fd7ff
+color m bright_red
+
+frame
+ o   o
+   ^
+ \___/
+colors
+ e   e
+
+ mmmmm
+
+frame 300
+ -   -
+   ^
+ \___/
+```
+
+- The first line is `tuios-saver 1`.
+- `size COLS ROWS` comes once, before the first frame: at most 400 by 200.
+- `fps N` sets the time of each frame after it, from 1 to 50. The default is 10.
+- `color LETTER COLOUR` names a colour: `#rrggbb`, or an ANSI name from `black`
+  to `bright_white`, which follows the theme.
+- `frame` starts a frame of ROWS lines. `frame MS` shows it for MS milliseconds.
+- `colors` after a frame gives a letter per cell, in ROWS lines. A space keeps
+  the default colour.
+- A line that starts with `#` outside a frame is a comment.
+- A file has at most 2,000 frames and 4 MB. The drawn frames can have at most
+  16 MB. Each colour change adds about 20 bytes.
+- The file must be in the plugin folder. A link to a file outside the folder
+  stops the plugin from loading.
+- tuios centres the frames on the screen and loops them until a key or the
+  mouse.
+
 ## Publish a plugin
 
 A plugin is a git repository. People install it with
@@ -113,6 +188,7 @@ does not know, so a typo fails at once.
 | `[permissions] grants` | no | The grants the plugin asks for. Leave it out for none. |
 | `[[build]] command` | no | A command that `install` runs in the plugin folder. |
 | `[[process]]` | no | A program that tuios runs. See below. |
+| `[[theme]] file` | no | A theme file in the plugin folder, such as `themes/dusk.json`. See below. |
 | `[herdr] manifest` | no | Take the commands from a `herdr-plugin.toml`. |
 
 A `[[process]]` has `id`, `run` and `command`. `run` says when it runs:
@@ -258,10 +334,12 @@ a plugin does nothing. `tuios --skill tml` has the components.
 |---|---|---|
 | next | New: `tuios plugins update`. | Nothing. |
 | next | New: `tuios plugins stats`. | Nothing. |
+| next | New: `[[theme]]`. A plugin of files only needs no approval. | Nothing. |
+| next | New: `[[saver]]` and the frames file. | Nothing. |
 | next | New: `tuios plugins new`, `check` and `dev`. `check` warns on an old key such as `schema`. | Run `tuios plugins check` in your CI. |
 | next | New: `run = "event"` with `on`, `TUIOS_PLUGIN_EVENT` and `TUIOS_PLUGIN_EVENT_JSON`. | Move hooks out of a `herdr-plugin.toml`. |
 | next | New: `tuios plugins install NAME` for the plugins of the tuios release. | Nothing. |
-| next | tuios draws eight Mermaid types itself. `tuios plugins install sketch` brings the rest to `tuios mermaid`. | Nothing. |
+| next | tuios draws eight Mermaid types itself. `tuios plugins install sketch` brings the rest to `tuios mermaid` and to TML panels. | Nothing. |
 | next | New: the `ui` grant, `[[cell]]`, `tuios plugin-cell` and `tuios plugin-notify`. | A plugin that uses them sets `min_tuios`. A plugin that held `write` only to open a panel can ask for `ui`. |
 | next | `api` replaces `schema`. `schema = 1` still works and `tuios plugins info` warns. | Write `api = 1`. |
 | next | New variables: `TUIOS_BIN`, `TUIOS_PLUGIN_ROOT`, `TUIOS_PLUGIN_CONFIG_DIR`, `TUIOS_PLUGIN_STATE_DIR`, `TUIOS_PLUGIN_ENTRY`, `TUIOS_PLUGIN_SESSION`, `TUIOS_PLUGIN_PANE`, `TUIOS_PLUGIN_CWD`, `TUIOS_PLUGIN_CONTEXT_JSON`. | Use these instead of `HERDR_PLUGIN_*` in a tuios plugin. |
@@ -276,43 +354,6 @@ until a release has them. A manifest that uses one is refused today.
 |---|---|---|
 | A timer | `run = "interval"`, `every = "60s"` | Runs a command on a timer that exists only while the plugin is enabled. |
 | Suggested keys | `[[key]]` | Offers a key. It is off until you accept it. |
-| Files only | `[[theme]]`, `[[saver]]` | A plugin that runs nothing needs no typed approval. |
-
-### Draft: the saver file
-
-A screensaver plugin can draw with a process or with a file. A file runs no
-program, so it needs no approval beyond a files-only plugin. A tool can write it,
-such as a keyframe editor or an ASCII movie maker. tuios plays it. This is a draft
-until the screensaver plugin kind lands.
-
-```text
-tuios-saver 1
-size 20 3
-fps 10
-color a #ff5f87
-color b accent
-
-frame
-  o   o
-    ^
-  \___/
-colors
-  a   a
-    b
-  aaaaa
-
-frame 500
-  -   -
-    ^
-  \___/
-```
-
-The header says the format version, the size in cells and the speed. A `color`
-line gives a letter a colour: `#rrggbb` or a theme role. A `frame` line starts a
-frame. A number after it holds that frame for that many milliseconds. The frame
-has as many lines as `size` says. The optional `colors` block has the same shape,
-with a letter per cell. A space keeps the default colour. Lines after a `#` in the
-header are comments.
 
 ## Reference
 
@@ -357,7 +398,9 @@ Each tuios release carries its own plugins. `tuios plugins install pr-status`
 takes the plugin from the release of the tuios that runs, and needs no git and
 no build. tuios checks each file against the `checksums.txt` of the release, and
 `plugins.lock` pins the version and a hash of the files. On another machine,
-`tuios plugins install` gets the same files or nothing.
+`tuios plugins install` gets the same files or nothing. On a release build the
+name means the release plugin, also when a folder of that name is in the folder
+you run it in; give that folder as `./pr-status`.
 
 `tuios plugins update` moves these plugins to the release of the tuios that
 runs. `tuios update` does that after it installs a new tuios. A failure keeps
@@ -377,7 +420,8 @@ refuses these updates.
 
 - What the plugin runs or asks for changes. tuios shows the lines that change.
 - The history of the branch was rewritten.
-- The tag that the plugin follows points to a different commit.
+- The tag that the plugin follows points to a different commit, or the tag is
+  gone and a branch of that name now gives the commit.
 
 A change to code alone does not ask again with `--yes`. Read the commits.
 

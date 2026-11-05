@@ -4,13 +4,14 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"errors"
-	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
+
+	"github.com/Gaurav-Gosain/tuios/internal/errfmt"
 )
 
 // The binary a handoff falls back to.
@@ -149,12 +150,18 @@ func copyExecutable(src, dst string) ([]byte, error) {
 		return nil, err
 	}
 	defer func() { _ = in.Close() }()
+	return copyFrom(in, dst)
+}
+
+// copyFrom writes what src reads to a new file dst, owner only, and returns
+// its SHA-256.
+func copyFrom(src io.Reader, dst string) ([]byte, error) {
 	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o700) //nolint:gosec // an executable, owner only
 	if err != nil {
 		return nil, err
 	}
 	h := sha256.New()
-	if _, err := io.Copy(io.MultiWriter(out, h), in); err != nil {
+	if _, err := io.Copy(io.MultiWriter(out, h), src); err != nil {
 		_ = out.Close()
 		return nil, err
 	}
@@ -191,7 +198,7 @@ func (d *Daemon) checkPrevBinary() (*prevBinary, error) {
 	}
 	now, err := keptBinary(prev.path)
 	if err != nil || !prev.same(now) {
-		return nil, fmt.Errorf("the copy of this daemon's binary kept for a fallback, %s, has changed since the daemon started, so a failed upgrade would have nothing to return to. The upgrade is refused. %s", prev.path, restartAdvice())
+		return nil, errfmt.Errorf("the copy of this daemon's binary kept for a fallback, %s, has changed since the daemon started, so a failed upgrade would have nothing to return to. The upgrade is refused. %s", prev.path, restartAdvice())
 	}
 	if prev.sum != nil {
 		f, err := os.Open(prev.path)
@@ -202,7 +209,7 @@ func (d *Daemon) checkPrevBinary() (*prevBinary, error) {
 		_, err = io.Copy(h, f)
 		_ = f.Close()
 		if err != nil || !bytes.Equal(h.Sum(nil), prev.sum) {
-			return nil, fmt.Errorf("the copy of this daemon's binary kept for a fallback, %s, has changed since the daemon started, so a failed upgrade would have nothing to return to. The upgrade is refused. %s", prev.path, restartAdvice())
+			return nil, errfmt.Errorf("the copy of this daemon's binary kept for a fallback, %s, has changed since the daemon started, so a failed upgrade would have nothing to return to. The upgrade is refused. %s", prev.path, restartAdvice())
 		}
 	}
 	return prev, nil

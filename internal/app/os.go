@@ -13,7 +13,9 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/Gaurav-Gosain/tuios/internal/agentseen"
 	"github.com/Gaurav-Gosain/tuios/internal/config"
+	"github.com/Gaurav-Gosain/tuios/internal/errfmt"
 	"github.com/Gaurav-Gosain/tuios/internal/federation"
 	"github.com/Gaurav-Gosain/tuios/internal/hooks"
 	"github.com/Gaurav-Gosain/tuios/internal/layout"
@@ -110,6 +112,10 @@ type WindowLayout struct {
 type OS struct {
 	// tml holds the TML surfaces this client draws. See tml.go.
 	tml tmlClient
+
+	// switchSeenPending is set by a session switch and consumed once the
+	// message that caused it has been handled. See markSwitchSeen.
+	switchSeenPending bool
 
 	// ClientTitle is the title of the terminal this client runs in, set
 	// through herdr's client.window_title.set. Empty sets none.
@@ -258,6 +264,11 @@ type OS struct {
 	PTYDataChan     chan struct{}     // Signaled by PTY readers when new output arrives (buffered 1, coalescing)
 	StateSyncChan   chan StateSyncMsg // Channel for thread-safe state sync from callbacks
 	ClientEventChan chan ClientEvent  // Channel for thread-safe client join/leave notifications
+	// pluginCellsIn holds the newest push of the plugins' cells. A push
+	// carries every cell, so only the newest matters, and a plugin that
+	// changes its cells often must not crowd resizes, approvals and mail
+	// out of ClientEventChan. See plugin_ui.go.
+	pluginCellsIn chan session.PluginUIPayload
 	// DaemonExitChan carries the two daemon events that end this client: the
 	// session was destroyed, or the connection dropped. See daemon_exit.go.
 	DaemonExitChan chan tea.Msg
@@ -1036,6 +1047,11 @@ type OS struct {
 	// terminal is then a popup, as before. See scratch_legacy.go.
 	sessionScratchWSOff bool
 
+	// daemonLayoutSeen is the newest SessionState.DaemonLayout this client
+	// has applied: the last layout change the daemon made itself that this
+	// client sent its rectangles for.
+	daemonLayoutSeen int
+
 	// applyingPeerSync is set while ApplyStateSync is folding a state that came
 	// from somewhere else into this client. It is what makes a sync loop
 	// impossible rather than unlikely: no push may leave this client while it is
@@ -1284,6 +1300,11 @@ type OS struct {
 	dndPanes map[string]*dndPane
 	dndPress *dndPress
 	dndDrag  *dndDrag
+	dndHost  dndHostState
+	// dndDropGen numbers the drops for their deadline ticks, and
+	// dndDropArmed says this message armed one. See dndDropTimeout.
+	dndDropGen   int
+	dndDropArmed bool
 	// tapeDetect holds the project-tape detection state (trust store, session
 	// memory of handled directories, debounce bookkeeping, and the current
 	// passive indicator). See tape_detect.go.
@@ -1803,6 +1824,13 @@ type OS struct {
 	// agentNoticesDismissed holds the integration notices the person
 	// dismissed, by agentNoticeKey, persisted with the rail's state.
 	agentNoticesDismissed map[string]bool
+	// machineOffersShown holds the machines offered this run, by ssh
+	// target. machineOffersNever is the never list of sidebar.json, and
+	// machineOffersRemoved the targets taken off it this run, which the
+	// merge on save must not bring back. See machine_offer.go.
+	machineOffersShown   map[string]bool
+	machineOffersNever   map[string]bool
+	machineOffersRemoved map[string]bool
 	// settingsAgentsOpen is the Alerts tab's agent group opened or closed by
 	// hand; nil follows agentsSeen.
 	settingsAgentsOpen *bool
@@ -1884,6 +1912,14 @@ type OS struct {
 	// is the moment they looked away: where "while you were away" starts.
 	// Persisted beside SidebarAgentSeenSeq, and per client for the same reason.
 	SidebarAgentSeenAt map[string]int64
+	// SidebarAgentViewed is, by window ID, the agent's state-entry time
+	// (AgentStateAt) when this client's user last had its thread on screen
+	// in the agents view. A row whose agent finished or failed after it draws
+	// the unseen mark. See agent_unseen.go.
+	SidebarAgentViewed map[string]int64
+	// agentAlertRuns is the run each agent last alerted for, and the state a
+	// client first saw it in. See agentseen.AlertLedger.
+	agentAlertRuns agentseen.AlertLedger
 	// sidebarStateSocket is the daemon socket the persisted window-keyed maps
 	// were written against, and the guard on pruning them: window IDs mean
 	// nothing outside the daemon that issued them.
@@ -2226,6 +2262,10 @@ type NotifTarget struct {
 	// the target, so a message drawn with one text is not the same message as
 	// one holding another. See clickVisibleNotification.
 	ClipboardVersion uint64
+	// OfferTarget, OfferDest and OfferMachine are the offer to add a
+	// machine: the ssh target Never stores, the destination Add sets up, and
+	// the name the message shows. See machine_offer.go.
+	OfferTarget, OfferDest, OfferMachine string
 }
 
 // LogMessage represents a log entry with timestamp and level.
@@ -2276,10 +2316,10 @@ func (e *nestedSwitchError) Error() string {
 // that only goes one way.
 func (m *OS) SwitchToSession(targetSession string) error {
 	if m.DaemonClient == nil {
-		return fmt.Errorf("not in daemon mode")
+		return errfmt.Errorf("not in daemon mode")
 	}
 	if targetSession == "" {
-		return fmt.Errorf("session name cannot be empty")
+		return errfmt.Errorf("session name cannot be empty")
 	}
 	// A switch the person made ends a rail click that waits for another
 	// machine. See host_open.go.
@@ -2312,11 +2352,16 @@ func (m *OS) SwitchToSession(targetSession string) error {
 		}
 		// The detach never landed, so nothing was given up: this client is still
 		// on its own session with every pane streaming.
-		return fmt.Errorf("switch to %q failed: %w; still on %q", targetSession, err, m.SessionName)
+		return errfmt.Errorf("switch to %q failed: %w; still on %q", targetSession, err, m.SessionName)
 	}
 	from := lastSession{host: m.attachedMachine(), name: m.SessionName}
 	m.SessionName = m.DaemonClient.SessionName()
 	m.rebuildForSession(state, savedWidth, savedHeight)
+	// The switch puts the session's focused pane in front of the person, which
+	// is a look as a focus is, but it does not go through FocusWindow. A caller
+	// may still focus another pane before the frame, so the mark waits for
+	// the end of the message. See markSwitchSeen.
+	m.switchSeenPending = true
 	m.leftSession(from)
 	// The components tell their commands which session they are drawing for,
 	// and that answer just changed.
@@ -2359,6 +2404,9 @@ func (m *OS) rebuildForSession(state *session.SessionState, savedWidth, savedHei
 
 	m.Windows = nil
 	m.FocusedWindow = -1
+	// Indexes into the windows just closed. RestoreFromState rebuilds this
+	// for a session with windows, and does not run for one without.
+	m.WorkspaceFocus = make(map[int]int)
 	m.WorkspaceTrees = make(map[int]*layout.BSPTree)
 	m.WorkspaceScrollingLayouts = make(map[int]*layout.ScrollingLayout)
 	m.pendingScrollColumns = nil

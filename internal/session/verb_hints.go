@@ -57,13 +57,14 @@ var (
 	EventTypeNames = []string{
 		EventWindowCreated, EventWindowClosed, EventWindowExit, EventWindowRetitled,
 		EventWindowFocused, EventWindowMoved, EventWindowMinimized, EventWindowRestored,
-		EventWorkspaceSwitched, EventWorkspaceRenamed, EventLayoutChanged, EventAgentState, EventAgentMessage,
+		EventWorkspaceSwitched, EventWorkspaceRenamed, EventLayoutChanged, EventAgentState, EventAgentSeen, EventAgentMessage,
 		EventOutput, EventBell, EventNotification, EventModeChanged,
 		EventSessionCreated, EventSessionClosed, EventClientSessionChanged, EventGap, EventAttention,
 		EventHostChanged, EventPrompt, EventCommandStarted, EventCommandFinished,
 		EventAgentActivity, EventTranscript, EventTransfer, EventTransferProgress, EventTransferFile,
 		EventDaemonUpgraded,
 		EventTML, EventTaskClaimed, EventTaskFinished, EventTaskChanged,
+		EventKeepAwake,
 	}
 	// knownEventTypes are the event types a subscribe filter can name.
 	knownEventTypes = EventTypeNames

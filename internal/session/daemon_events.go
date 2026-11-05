@@ -46,6 +46,12 @@ const (
 	// and not kept for replay, since a dragged split raises one per step.
 	EventLayoutChanged = "layout-changed"
 	EventAgentState    = "agent-state" // a window's agent state changed
+	// EventAgentSeen: the person looked at a pane whose agent finished a turn
+	// they had not seen, or marked such a pane unread again. Window names the
+	// pane, and Action is seen or unread. The agent state does not change, so
+	// no agent-state event comes with it. list-agents' finished_unread reads
+	// the same fact.
+	EventAgentSeen = "agent-seen"
 	// EventAgentMessage is one agent leaving a message for another. Window is
 	// the recipient's window id, or empty for a session-wide notice. It carries
 	// nothing else on purpose: a subscriber reads the message back from the ring
@@ -127,13 +133,26 @@ const (
 	EventTaskClaimed  = "task-claimed"
 	EventTaskFinished = "task-finished"
 	EventTaskChanged  = "task-changed"
-	EventSubscribed   = "subscribed" // subscribe ack result type
+	// EventKeepAwake says the daemon took or dropped its hold that keeps the
+	// machine awake, or [daemon] keep_awake changed (keep_awake.go). Mode is
+	// off, on or agents, State is held or released, Working is the number of
+	// working agent panes on this machine, and Reason says why the machine
+	// could not be held awake, when it could not. It names no session.
+	EventKeepAwake  = "keep-awake"
+	EventSubscribed = "subscribed" // subscribe ack result type
 )
 
 // defaultEventQueue bounds a subscriber's per-connection event queue. When it is
 // full the hub drops the event and records the drop as a gap rather than blocking
 // the publisher (and thus the daemon).
 const defaultEventQueue = 256
+
+// maxEventQueue caps the queue a subscriber may ask for. The size comes from
+// the client, and the channel is allocated whole at subscribe: an event is
+// about 400 bytes, so an uncapped queue of 50,000,000 asks for 19 GB. A larger
+// ask gets this size. A reader that falls further behind gets a gap marker
+// and resumes from the ring, which holds defaultEventRing events.
+const maxEventQueue = 4096
 
 // defaultEventRing bounds how many events the hub keeps for replay. Output
 // events are not kept (see eventHub.retain), so this counts lifecycle, agent
@@ -227,6 +246,8 @@ type streamEvent struct {
 	TML *TMLEvent `json:"tml,omitempty"`
 	// Task is a task event's card, as list-tasks gives its row.
 	Task *TaskRow `json:"task,omitempty"`
+	// Working is a keep-awake event's count of working agent panes.
+	Working *int `json:"working,omitempty"`
 
 	// relayed marks an event copied from a linked host's own stream. It is
 	// delivered only to a subscriber that asked for other machines' events,
@@ -313,6 +334,11 @@ type SessionEvent struct {
 // the daemon's sink hands it to the attention queue and never publishes it, and
 // no hook fires on it.
 const eventCompletionSeen = "completion-seen"
+
+// eventCompletionUnseen is raised when the Inbox marks a pane's last finished
+// turn unread again. Like eventCompletionSeen it raises no hook; the daemon's
+// sink publishes both as agent-seen.
+const eventCompletionUnseen = "completion-unseen"
 
 // eventAttentionDetail is raised when a needs_input or errored window keeps its
 // state but what the Inbox shows about it changes: the blocked_by kind, the
@@ -520,7 +546,8 @@ func (e errResumeAhead) Error() string {
 }
 
 // subscribe registers a new subscription with the given filter and queue size
-// (bufSize <= 0 uses the default). The returned sub must be released with
+// (bufSize <= 0 uses the default, and a size above maxEventQueue is
+// lowered to it). The returned sub must be released with
 // unsubscribe.
 func (h *eventHub) subscribe(filter eventFilter, bufSize int) *eventSub {
 	sub, _, _ := h.subscribeFrom(filter, bufSize, nil)
@@ -539,6 +566,7 @@ func (h *eventHub) subscribeFrom(filter eventFilter, bufSize int, from *resumePo
 	if bufSize <= 0 {
 		bufSize = defaultEventQueue
 	}
+	bufSize = min(bufSize, maxEventQueue)
 	sub := &eventSub{
 		ch:     make(chan streamEvent, bufSize),
 		filter: filter,

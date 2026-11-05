@@ -1,6 +1,8 @@
 package federation
 
-import "encoding/json"
+import (
+	"github.com/Gaurav-Gosain/tuios/internal/jsonx"
+)
 
 // StreamOpen is what the hub says about a connection when it opens the stream
 // for it, carried in the open frame's payload. An empty payload decodes to the
@@ -30,6 +32,13 @@ type StreamOpen struct {
 	// reader grants in credit frames. Only a hub that speaks credit frames
 	// sets it. See bulk.go.
 	Bulk bool `json:"bulk,omitempty"`
+	// Window marks an ordinary stream that keeps to a window the same way a
+	// bulk stream does, without the bulk stream's place behind every other
+	// stream. It is what keeps a pane that writes faster than this side reads
+	// from filling the link's shared read loop. A proxy that predates it
+	// ignores it and answers with no credit, and the stream then runs
+	// without a window as before.
+	Window bool `json:"window,omitempty"`
 }
 
 // maxStreamOpenPayload bounds what the accepting side decodes. The frame cap
@@ -42,7 +51,7 @@ func (o StreamOpen) encode() []byte {
 	if o == (StreamOpen{}) {
 		return nil
 	}
-	b, err := json.Marshal(o)
+	b, err := jsonx.Marshal(o)
 	if err != nil {
 		return nil
 	}
@@ -57,7 +66,7 @@ func decodeStreamOpen(payload []byte) StreamOpen {
 	if len(payload) == 0 || len(payload) > maxStreamOpenPayload {
 		return o
 	}
-	if err := json.Unmarshal(payload, &o); err != nil {
+	if err := jsonx.Unmarshal(payload, &o); err != nil {
 		return StreamOpen{}
 	}
 	return o

@@ -1,7 +1,6 @@
 package app
 
 import (
-	"encoding/json"
 	"errors"
 	"os"
 	"sort"
@@ -12,6 +11,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/Gaurav-Gosain/tuios/internal/composer"
 	"github.com/Gaurav-Gosain/tuios/internal/config"
+	"github.com/Gaurav-Gosain/tuios/internal/jsonx"
 	"github.com/Gaurav-Gosain/tuios/internal/session"
 	"github.com/Gaurav-Gosain/tuios/internal/sound"
 	"github.com/Gaurav-Gosain/tuios/internal/terminal"
@@ -44,6 +44,7 @@ const agentMailBottom = 1 << 30
 // AgentMailMsg is one MsgAgentMail push from the daemon.
 type AgentMailMsg struct {
 	Payload session.AgentMailPayload
+	Attach  uint64 // see ClientEvent.Attach
 }
 
 // AgentMailLoadMsg asks Update to read the ring again, after a session switch.
@@ -57,9 +58,10 @@ type AgentMailMarkMsg struct {
 
 // AgentMailLoadedMsg is the ring read back from the daemon.
 type AgentMailLoadedMsg struct {
-	Messages []session.AgentMessage
-	Evicted  uint64
-	Err      error
+	Messages      []session.AgentMessage
+	Evicted       uint64
+	EvictedUnread uint64
+	Err           error
 }
 
 // AgentMailSentMsg is the outcome of a reply or a new message the person
@@ -87,6 +89,8 @@ type AgentMailState struct {
 	// Evicted is how many older messages the daemon's ring has dropped, as the
 	// last read reported it. The list says so when it is not zero.
 	Evicted uint64
+	// EvictedUnread is how many of those were mail nobody had read.
+	EvictedUnread uint64
 	// Gen counts changes to the mirror, so the rail's render cache can tell one
 	// state from the next without comparing them.
 	Gen uint64
@@ -584,13 +588,14 @@ func agentMailLoadCmd(dial agentMailDial, sessionName string) tea.Cmd {
 			return AgentMailLoadedMsg{Err: err}
 		}
 		var res struct {
-			Messages []session.AgentMessage `json:"messages"`
-			Evicted  uint64                 `json:"evicted"`
+			Messages      []session.AgentMessage `json:"messages"`
+			Evicted       uint64                 `json:"evicted"`
+			EvictedUnread uint64                 `json:"evicted_unread"`
 		}
-		if err := json.Unmarshal(raw, &res); err != nil {
+		if err := jsonx.Unmarshal(raw, &res); err != nil {
 			return AgentMailLoadedMsg{Err: err}
 		}
-		return AgentMailLoadedMsg{Messages: res.Messages, Evicted: res.Evicted}
+		return AgentMailLoadedMsg{Messages: res.Messages, Evicted: res.Evicted, EvictedUnread: res.EvictedUnread}
 	}
 }
 
@@ -621,6 +626,7 @@ func (m *OS) applyAgentMailLoaded(msg AgentMailLoadedMsg) {
 	}
 	st.Messages = merged
 	st.Evicted = msg.Evicted
+	st.EvictedUnread = msg.EvictedUnread
 	m.agentMailChanged()
 }
 

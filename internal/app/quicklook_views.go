@@ -14,6 +14,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/Gaurav-Gosain/tuios/internal/jsonx"
 	"github.com/Gaurav-Gosain/tuios/internal/overlay"
 	"github.com/Gaurav-Gosain/tuios/internal/plural"
 	"github.com/Gaurav-Gosain/tuios/internal/session"
@@ -144,6 +145,9 @@ func quickLookHexLines(b []byte) []string {
 	return lines
 }
 
+// quickLookArchiveDepth is the most folder levels of a path drawn as rows; the rest of a deeper path is one row.
+const quickLookArchiveDepth = 64
+
 // quickLookArchiveRows turns a listing into a tree. An archive need not name its
 // folders, so a folder is added the first time something is in it.
 func quickLookArchiveRows(entries []session.PreviewArchiveEntry, ascii bool) (rows []quickLookArchiveRow, unpacked int64) {
@@ -151,7 +155,7 @@ func quickLookArchiveRows(entries []session.PreviewArchiveEntry, ascii bool) (ro
 	slices.SortStableFunc(entries, func(a, b session.PreviewArchiveEntry) int { return strings.Compare(a.Name, b.Name) })
 	for _, e := range entries {
 		parts := strings.Split(strings.Trim(e.Name, "/"), "/")
-		for i := range len(parts) - 1 {
+		for i := range min(len(parts)-1, quickLookArchiveDepth) {
 			dir := strings.Join(parts[:i+1], "/")
 			if !seen[dir] {
 				seen[dir] = true
@@ -159,7 +163,8 @@ func quickLookArchiveRows(entries []session.PreviewArchiveEntry, ascii bool) (ro
 			}
 		}
 		full := strings.Join(parts, "/")
-		name := ckCodeText(parts[len(parts)-1], ascii)
+		depth := min(len(parts)-1, quickLookArchiveDepth)
+		name := ckCodeText(strings.Join(parts[depth:], "/"), ascii)
 		if e.Dir {
 			if seen[full] {
 				continue
@@ -168,7 +173,7 @@ func quickLookArchiveRows(entries []session.PreviewArchiveEntry, ascii bool) (ro
 			name += "/"
 		}
 		unpacked += e.Size
-		rows = append(rows, quickLookArchiveRow{depth: len(parts) - 1, name: name, size: e.Size, dir: e.Dir})
+		rows = append(rows, quickLookArchiveRow{depth: depth, name: name, size: e.Size, dir: e.Dir})
 	}
 	return rows, unpacked
 }
@@ -180,7 +185,7 @@ func (m *OS) quickLookViews() []string {
 	if ql.res != nil && ql.res.table != nil {
 		views = append(views, quickLookViewText)
 	}
-	if d := ql.details; d != nil && d.target == ql.target {
+	if d := ql.details; d != nil && d.target == ql.target && d.failed == "" {
 		if d.words != nil {
 			views = append(views, quickLookViewWords)
 		}
@@ -229,14 +234,21 @@ func (m *OS) QuickLookNextView() tea.Cmd {
 		return nil
 	}
 	ql.prompt, ql.status = quickLookNoPrompt, ""
-	if d := ql.details; (d == nil || d.target != ql.target) && r.table == nil {
+	// The details are read once for each file. A read that failed is kept
+	// too, so the next press goes on to the next view and does not start
+	// the same read again.
+	d := ql.details
+	read := d == nil || d.target != ql.target
+	if read && (r.table == nil || ql.view == quickLookViewText) {
 		if ql.detailsOut {
 			return nil
 		}
 		return m.quickLookReadDetails()
 	}
-	if d := ql.details; (d == nil || d.target != ql.target) && ql.view == quickLookViewText {
-		return m.quickLookReadDetails()
+	if !read && d.failed != "" && r.table == nil {
+		// The file has no other view: say again why.
+		ql.status, ql.statusLine = d.failed, true
+		return nil
 	}
 	views := m.quickLookViews()
 	i := max(slices.Index(views, ql.view), 0)
@@ -277,7 +289,7 @@ func quickLookDecodeDetails(t quickLookTarget, raw json.RawMessage, err error, a
 	switch {
 	case err != nil:
 		d.failed = quickLookErrorText(t, err)
-	case json.Unmarshal(raw, &r) != nil:
+	case jsonx.Unmarshal(raw, &r) != nil:
 		d.failed = "The answer could not be read."
 	case !r.Details:
 		d.failed = "This machine runs an older tuios. It sends no details."
@@ -307,11 +319,11 @@ func (m *OS) applyQuickLookDetails(msg quickLookDetailsMsg) {
 	if !ql.open || d.target != ql.target {
 		return
 	}
+	ql.details = d
 	if d.failed != "" {
 		ql.status, ql.statusLine = d.failed, true
 		return
 	}
-	ql.details = d
 	views := m.quickLookViews()
 	i := max(slices.Index(views, ql.view), 0)
 	ql.view = views[min(i+1, len(views)-1)]

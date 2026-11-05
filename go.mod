@@ -27,9 +27,9 @@ require (
 	github.com/shirou/gopsutil/v4 v4.26.7
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pflag v1.0.10
-	golang.org/x/image v0.45.0
-	golang.org/x/sys v0.48.0
-	golang.org/x/term v0.46.0
+	golang.org/x/image v0.47.0
+	golang.org/x/sys v0.49.0
+	golang.org/x/term v0.47.0
 	rsc.io/qr v0.2.0
 )
 
@@ -76,17 +76,17 @@ require (
 	github.com/tklauser/numcpus v0.12.0 // indirect
 	github.com/xo/terminfo v1.2.0 // indirect
 	github.com/yusufpapurcu/wmi v1.2.4 // indirect
-	golang.org/x/crypto v0.57.0
+	golang.org/x/crypto v0.58.0
 	golang.org/x/exp v0.0.0-20260908205506-85c1c2202aba // indirect
-	golang.org/x/net v0.60.0 // indirect
-	golang.org/x/sync v0.23.0
-	golang.org/x/text v0.42.0
-	tuios.dev/loom v0.2.3-0.20261102100154-bb12b293c9c1
+	golang.org/x/net v0.62.0 // indirect
+	golang.org/x/sync v0.24.0
+	golang.org/x/text v0.43.0
+	tuios.dev/loom v0.2.3-0.20261104015133-7c2e19801778
 	tuios.dev/plot v0.2.3-0.20261101044251-193bbd706cd8
 	tuios.dev/progstatus v0.1.2-0.20261030111253-c0f512aa3148
 	tuios.dev/shot v0.2.2-0.20261030111253-e3068c27991c
-	tuios.dev/sketch v0.4.1-0.20261102100120-a0242ef25e1f
+	tuios.dev/sketch v0.4.1-0.20261104015025-a5461c1d897b
 	tuios.dev/swatch v0.1.2-0.20261030111253-c0f512aa3148
-	tuios.dev/tml v0.1.2-0.20261101044251-193bbd706cd8
-	tuios.dev/vt v0.3.3-0.20261101171432-b7643f25e058
+	tuios.dev/tml v0.1.2-0.20261104012002-e0cf866a6ddb
+	tuios.dev/vt v0.3.3-0.20261104032810-1666590d4575
 )

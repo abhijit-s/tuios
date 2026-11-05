@@ -3,7 +3,6 @@ package session
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log"
 	"maps"
 	"net"
@@ -14,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Gaurav-Gosain/tuios/internal/errfmt"
 	"github.com/Gaurav-Gosain/tuios/internal/ptyspawn"
 	"tuios.dev/vt"
 )
@@ -90,11 +90,16 @@ type handoffRequest struct {
 	// pinned, when set, is the file the person confirmed binary as. A file
 	// put there since is refused, not run.
 	pinned *fileID
-	// holdAfterWrite and inWindow are for tests: a wait after the manifest
-	// is written, and a function run while the descriptors are exposed, whose
-	// error stands for the exec's.
+	// holdAfterWrite, inWindow and afterCheck are for tests: a wait after
+	// the manifest is written, a function run while the descriptors are
+	// exposed, whose error stands for the exec's, and one run between the
+	// preflight's checks and its run.
 	holdAfterWrite time.Duration
 	inWindow       func() error
+	afterCheck     func()
+	// copyRoute runs a private copy of the binary on Linux too, as other
+	// systems do, so a test there covers that route. Only a test sets it.
+	copyRoute bool
 }
 
 // handoffRun is a handoff that has stopped the daemon's parts, holding what it
@@ -225,16 +230,18 @@ func (d *Daemon) prepareHandoff(req handoffRequest) (*handoffRun, error) {
 	}
 	run.prev = prev
 	t0 := time.Now()
-	if run.bin, err = preflightBinary(req.binary); err != nil {
+	if run.bin, err = preflightBinary(req.binary, preflightOpts{afterCheck: req.afterCheck, copy: req.copyRoute}); err != nil {
 		d.handoffMu.Unlock()
 		return nil, err
 	}
 	run.stats.PreflightMS = msSince(t0)
 	if req.pinned != nil && run.bin.file != *req.pinned {
+		run.bin.close()
 		d.handoffMu.Unlock()
 		return nil, errBinaryReplaced(run.bin.path)
 	}
 	if err := run.prepare(); err != nil {
+		run.bin.close()
 		run.putBack()
 		d.handoffMu.Unlock()
 		return nil, err
@@ -263,6 +270,9 @@ func (r *handoffRun) prepare() error {
 	if d.federation != nil {
 		d.federation.Stop()
 	}
+	// The keep awake holder is a child too. The new image takes the hold
+	// again once its panes are in place (serve).
+	d.awake.stop()
 	// A hook that started since the refusal check is waited for here. One
 	// fired later either holds a pipe when the holds shut below, and the
 	// handoff is refused, or waits on them: a put-back starts it, and the
@@ -276,6 +286,7 @@ func (r *handoffRun) prepare() error {
 		}
 		d.fleet.start(d.ctx)
 		d.plugins.restart()
+		d.awake.start(d.ctx)
 	})
 
 	// The reaps first: a reap in progress runs the pane's exit, which may
@@ -345,7 +356,7 @@ func (r *handoffRun) prepare() error {
 				continue
 			}
 			if p.host != "" {
-				return fmt.Errorf("window %s runs on %s, and a pane on another machine cannot be handed over. Close it first", shortID(w.ID), p.host)
+				return errfmt.Errorf("window %s runs on %s, and a pane on another machine cannot be handed over. Close it first", shortID(w.ID), p.host)
 			}
 			refs = append(refs, handoffPaneRef{sess: sess, pty: p, window: w.ID})
 		}
@@ -357,7 +368,7 @@ func (r *handoffRun) prepare() error {
 	// starts before any pane stops, and its start is no part of the pause.
 	f, err := newHandoffFile(handoffDir())
 	if err != nil {
-		return fmt.Errorf("making the handoff manifest: %w", err)
+		return errfmt.Errorf("making the handoff manifest: %w", err)
 	}
 	r.file = f
 	r.undo = append(r.undo, func() { _ = f.Close() })
@@ -366,7 +377,7 @@ func (r *handoffRun) prepare() error {
 	restore := append([]string{bin}, d.handoffArgs(int(f.Fd()))...) //nolint:gosec // a descriptor number
 	k, err := startKeeper(bin, hold, restore)
 	if err != nil {
-		return fmt.Errorf("starting the handoff keeper: %w", err)
+		return errfmt.Errorf("starting the handoff keeper: %w", err)
 	}
 	d.setKeeper(k)
 	r.undo = append(r.undo, d.releaseKeeper)
@@ -386,7 +397,7 @@ func (r *handoffRun) prepare() error {
 	if err := forEachBounded(len(refs), handoffWorkers, func(i int) error {
 		quiesced[i] = refs[i].pty
 		if err := refs[i].pty.Quiesce(ctx); err != nil {
-			return fmt.Errorf("stopping pane %s: %w", shortID(refs[i].window), err)
+			return errfmt.Errorf("stopping pane %s: %w", shortID(refs[i].window), err)
 		}
 		return nil
 	}); err != nil {
@@ -403,7 +414,7 @@ func (r *handoffRun) prepare() error {
 	}
 
 	if err := r.writeManifest(sessions, refs); err != nil {
-		return fmt.Errorf("writing the handoff manifest: %w", err)
+		return errfmt.Errorf("writing the handoff manifest: %w", err)
 	}
 	return nil
 }
@@ -446,7 +457,7 @@ func (r *handoffRun) writeManifest(sessions []*Session, refs []handoffPaneRef) e
 			ref := refs[start+i]
 			rec, ok := ref.pty.handoffRecord(ref.sess, ref.window)
 			if !ok {
-				return fmt.Errorf("pane %s has no terminal device here", shortID(ref.window))
+				return errfmt.Errorf("pane %s has no terminal device here", shortID(ref.window))
 			}
 			rec.State, rec.Live = ref.pty.handoffCapture()
 			var err error
@@ -490,7 +501,7 @@ func (r *handoffRun) writeManifest(sessions []*Session, refs []handoffPaneRef) e
 	for name, l := range d.namedListeners() {
 		var fd int
 		if !listenerFD(l, func(n int) { fd = n }) {
-			return fmt.Errorf("the %s socket has no descriptor to hand over", name)
+			return errfmt.Errorf("the %s socket has no descriptor to hand over", name)
 		}
 		dr.Listeners[name] = fd
 		r.fds = append(r.fds, fd)
@@ -598,14 +609,16 @@ func (r *handoffRun) commit() error {
 	// run: run it again, and pay its first exec here rather than after it.
 	if !r.bin.stillThere() {
 		if r.req.pinned != nil {
+			r.bin.close()
 			r.putBack()
 			d.handoffMu.Unlock()
 			return errBinaryReplaced(r.bin.path)
 		}
-		bin, err := preflightBinary(r.bin.path)
+		bin, err := preflightBinary(r.bin.path, preflightOpts{copy: r.req.copyRoute})
+		r.bin.close()
 		if err != nil {
 			r.fail(HandoffFailedPreflight, err, true)
-			return fmt.Errorf("%s was replaced after it was checked, and the file there now failed the check: %w", r.bin.path, err)
+			return errfmt.Errorf("%s was replaced after it was checked, and the file there now failed the check: %w", r.bin.path, err)
 		}
 		r.bin = bin
 	}
@@ -613,9 +626,14 @@ func (r *handoffRun) commit() error {
 
 	argv := append([]string{r.bin.path}, d.handoffArgs(int(r.file.Fd()))...) //nolint:gosec // a descriptor number
 	log.Printf("Live upgrade: exec %s with %d panes (manifest %d bytes, stopped %s)", r.bin.path, r.panes, r.manifestBytes, time.Since(r.started).Round(time.Millisecond))
-	err := execHandoff(r.bin.path, argv, withoutEnv(os.Environ(), handoffFallbackEnv), r.fds, r.req.inWindow)
+	// A binary runs from the file the preflight ran: on Linux its
+	// descriptor, which stays close-on-exec, and elsewhere its private copy.
+	// A script runs by its path, as its interpreter opens it.
+	path := r.bin.execTarget()
+	err := execHandoff(path, argv, withOldCopies(withoutEnv(os.Environ(), handoffFallbackEnv)), r.fds, r.req.inWindow)
 	LogError("Live upgrade: exec %s failed, the daemon carries on: %v", r.bin.path, err)
-	err = fmt.Errorf("exec %s: %w", r.bin.path, err)
+	err = errfmt.Errorf("exec %s: %w", r.bin.path, err)
+	r.bin.close()
 	r.fail(HandoffFailedExec, err, false)
 	return err
 }
@@ -639,7 +657,8 @@ func (r *handoffRun) abandon() bool {
 	}
 	r.state = 2
 	r.mu.Unlock()
-	r.fail(HandoffFailedAbandoned, fmt.Errorf("the upgrade was not committed within %s", handoffCommitTimeout), true)
+	r.bin.close()
+	r.fail(HandoffFailedAbandoned, errfmt.Errorf("the upgrade was not committed within %s", handoffCommitTimeout), true)
 	return true
 }
 

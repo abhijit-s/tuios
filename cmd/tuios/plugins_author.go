@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Gaurav-Gosain/tuios/internal/app"
+	"github.com/Gaurav-Gosain/tuios/internal/errfmt"
 	"github.com/Gaurav-Gosain/tuios/internal/herdrplugin"
 	"github.com/Gaurav-Gosain/tuios/plugins"
 	"github.com/spf13/cobra"
@@ -33,10 +35,10 @@ func newPluginsNewCommand() *cobra.Command {
 				id = "you." + strings.ToLower(name)
 			}
 			if n, ok := herdrplugin.NormalizeID(id); !ok || n != id {
-				return fmt.Errorf("%q is not a plugin id. Use letters, digits, ., - and _, such as you.%s", id, strings.ToLower(name))
+				return errfmt.Errorf("%q is not a plugin id. Use letters, digits, ., - and _, such as you.%s", id, strings.ToLower(name))
 			}
 			if _, err := os.Stat(args[0]); err == nil {
-				return fmt.Errorf("%s exists. Nothing was changed. Give a new folder", args[0])
+				return errfmt.Errorf("%s exists. Nothing was changed. Give a new folder", args[0])
 			}
 			if err := writeTemplate(args[0], id, name); err != nil {
 				return err
@@ -96,7 +98,7 @@ func newPluginsCheckCommand() *cobra.Command {
 func checkPlugin(out io.Writer, dir string) error {
 	p, perr := herdrplugin.Load(dir)
 	if perr != nil {
-		return &callError{status: 1, err: fmt.Errorf("the plugin cannot load: %s", perr.Msg)}
+		return &callError{status: 1, err: errfmt.Errorf("the plugin cannot load: %s", perr.Msg)}
 	}
 	var problems []string
 	for _, argv := range pluginCommands(p) {
@@ -111,6 +113,20 @@ func checkPlugin(out io.Writer, dir string) error {
 			if _, err := os.Stat(filepath.Join(p.PluginRoot, argv[1])); err != nil {
 				problems = append(problems, fmt.Sprintf("the script %s is not in the folder", argv[1]))
 			}
+		}
+	}
+	for _, t := range p.Themes {
+		if _, err := os.Stat(t); err != nil {
+			problems = append(problems, fmt.Sprintf("the theme file %s is not in the folder", filepath.Base(t)))
+		}
+	}
+	for _, s := range p.Savers {
+		data, err := app.ReadSaverFile(s.File)
+		if err == nil {
+			err = app.CheckSaverFile(data)
+		}
+		if err != nil {
+			problems = append(problems, fmt.Sprintf("the saver %s: %v", s.ID, err))
 		}
 	}
 	fmt.Fprintf(out, "%s %s (%s plugin)\n", p.PluginID, shownArgv(p.Version), p.Format)

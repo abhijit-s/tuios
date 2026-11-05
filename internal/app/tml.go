@@ -14,6 +14,8 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/Gaurav-Gosain/tuios/internal/config"
+	"github.com/Gaurav-Gosain/tuios/internal/jsonx"
 	"github.com/Gaurav-Gosain/tuios/internal/overlay"
 	"github.com/Gaurav-Gosain/tuios/internal/session"
 	"github.com/Gaurav-Gosain/tuios/internal/terminal"
@@ -61,10 +63,17 @@ type tmlClient struct {
 	// shownDirty says a surface on the screen changed since the wake
 	// began. UI goroutine only.
 	shownDirty bool
+	// frameDue is when the frame timer armed last fires, zero when none is.
+	// UI goroutine only. frameFired says it fired; guarded by mu.
+	frameDue   time.Time
+	frameFired bool
 	// local answers the TML verbs in a session with no daemon: Learn mode,
 	// whose host keeps the surfaces in the tab. See learn_tml.go. Set once,
 	// before the program runs.
 	local inboxVerbCall
+	// far carries the TML verbs of a session on another machine. See
+	// tml_host.go.
+	far tmlFar
 }
 
 // TMLClockMsg is the minute tick of the surfaces that call ago().
@@ -96,6 +105,35 @@ func (m *OS) handleTMLClock() tea.Cmd {
 		}
 	}
 	return m.tmlClockCmd()
+}
+
+// tmlMotion gives a surface the motion level before it draws: its enter and
+// exit effects and a skeleton's shimmer play only while appearance.motion
+// allows motion and calm mode is off.
+func (m *OS) tmlMotion(v *tmlView) {
+	v.surface.SetMotion(m.Settings.MotionAllows(config.MotionBasic))
+}
+
+// tmlArmFrame arms one timer for the next frame a surface wants after it
+// drew: the next frame of an effect, or the end of a toast. A surface that
+// is still asks for none, so an idle client has no timer. The timer wakes
+// the TML listener, and handleTMLWake marks the surfaces that want a frame.
+func (m *OS) tmlArmFrame(v *tmlView) {
+	wait, ok := v.surface.NextFrame()
+	if !ok {
+		return
+	}
+	due := time.Now().Add(wait)
+	if d := m.tml.frameDue; !d.IsZero() && !d.After(due) {
+		return
+	}
+	m.tml.frameDue = due
+	time.AfterFunc(wait, func() {
+		m.tml.mu.Lock()
+		m.tml.frameFired = true
+		m.tml.mu.Unlock()
+		m.signalTML()
+	})
 }
 
 // tmlView is one surface as this client draws it.
@@ -202,7 +240,7 @@ func (m *OS) tmlResolve(a tmlPaneAction) (tmlPaneAction, string) {
 // command in one folder in one session, and nothing else.
 func (m *OS) tmlConfirmKey(a tmlPaneAction) string {
 	if a.Verb == "new-window" {
-		raw, _ := json.Marshal(map[string]any{"command": a.Params["command"], "cwd": a.Params["cwd"], "name": a.Params["name"], "session": m.tmlActionSession(a)})
+		raw, _ := jsonx.Marshal(map[string]any{"command": a.Params["command"], "cwd": a.Params["cwd"], "name": a.Params["name"], "session": m.tmlActionSession(a)})
 		return a.Verb + "\x00" + string(raw)
 	}
 	return a.Verb + "\x00" + m.tmlActionSession(a) + "\x00" + tmlParam(a, "window")
@@ -382,10 +420,25 @@ func (m *OS) handleTMLWake() tea.Cmd {
 	m.tml.pending = nil
 	cmds := m.tml.cmds
 	m.tml.cmds = nil
+	fired := m.tml.frameFired
+	m.tml.frameFired = false
 	m.tml.mu.Unlock()
 	changed := false
 	setGen := m.tml.setGen
 	m.tml.shownDirty = false
+	if fired {
+		// A frame of an effect, or a toast whose time ran out.
+		m.tml.frameDue = time.Time{}
+		for id, v := range m.tml.views {
+			if v.surface == nil {
+				continue
+			}
+			if _, ok := v.surface.NextFrame(); ok {
+				m.markTMLDirty(id)
+				changed = true
+			}
+		}
+	}
 	for _, p := range pending {
 		if m.applyTMLSurface(p) {
 			changed = true
@@ -520,19 +573,23 @@ func (m *OS) applyTMLSurface(p *session.TMLSurfacePayload) bool {
 }
 
 // DrawsTML reports whether this client draws w as a TML surface: a window of
-// kind tml, on a client of this machine's daemon or in Learn mode, where the
-// tab holds the surfaces. A client attached through a host shows the
-// window's placeholder line, since what the person does on a surface goes
-// back through this machine's socket.
+// kind tml, in Learn mode, where the tab holds the surfaces, or on a client
+// of a daemon that takes what the person does on it. Through a host that is
+// a far daemon with surfaces over a link. A window of an older one says so
+// instead; see renderTMLHostTooOld.
 func (m *OS) DrawsTML(w *terminal.Window) bool {
 	return w != nil && w.Kind == session.WindowKindTML && (m.tml.local != nil || m.DaemonClient != nil && m.DaemonClient.DrawsTML())
 }
 
 // tmlCaller is how the client half reaches the half that holds the
-// surfaces: Learn mode's host when there is one, else the daemon.
+// surfaces: Learn mode's host when there is one, the far daemon over the
+// link for a session on another machine, else this machine's daemon.
 func (m *OS) tmlCaller() inboxVerbCall {
 	if m.tml.local != nil {
 		return m.tml.local
+	}
+	if m.Inbox.call == nil && m.AttachedHost != "" && m.DaemonClient != nil {
+		return m.tml.far.caller(m.DaemonClient, m.verbDialer())
 	}
 	return m.inboxCaller()
 }
@@ -583,7 +640,7 @@ func (m *OS) tmlRefresh(id string) tea.Cmd {
 			Doc        json.RawMessage `json:"doc"`
 			State      json.RawMessage `json:"state"`
 		}
-		if json.Unmarshal(raw, &res) != nil {
+		if jsonx.Unmarshal(raw, &res) != nil {
 			return nil
 		}
 		m.queueTMLSurface(&session.TMLSurfacePayload{Surface: id, WindowID: res.WindowID, Title: res.Title, Owner: res.Owner,
@@ -669,7 +726,9 @@ func (m *OS) renderTML(window *terminal.Window, dim int) string {
 		}
 		sh = max(ch-strings.Count(confirmText, "\n")-1, 1)
 	}
-	buf := v.surface.Render(cw, sh)
+	m.tmlMotion(v)
+	buf := m.renderSurface(v.surface, cw, sh)
+	m.tmlArmFrame(v)
 	if damage := v.surface.Damage(); len(damage) > 0 || v.content == "" || v.w != cw || v.h != sh {
 		v.content, v.w, v.h = buf.Render(), cw, sh
 	}
@@ -939,7 +998,7 @@ func (m *OS) tmlViewChange(v *tmlView, changed bool) (json.RawMessage, tea.Cmd) 
 	}
 	view := v.surface.View()
 	view.Text, view.Caret = nil, nil
-	raw, err := json.Marshal(view)
+	raw, err := jsonx.Marshal(view)
 	if err != nil || bytes.Equal(raw, v.sentView) {
 		v.viewDue = false
 		return nil, nil
@@ -1017,7 +1076,7 @@ func tmlStateOps(state map[string]any, changed []string) []tml.Op {
 			ops = append(ops, tml.Op{Op: "remove", Path: p})
 			continue
 		}
-		raw, err := json.Marshal(val)
+		raw, err := jsonx.Marshal(val)
 		if err != nil {
 			continue
 		}
@@ -1117,7 +1176,7 @@ func (m *OS) tmlInput(v *tmlView, r tmlInputReq) tea.Cmd {
 	if r.closing {
 		params["close"] = true
 		if r.hasValue {
-			raw, err := json.Marshal(r.value)
+			raw, err := jsonx.Marshal(r.value)
 			if err != nil {
 				raw = []byte("null")
 			}
@@ -1153,7 +1212,7 @@ func (m *OS) tmlInput(v *tmlView, r tmlInputReq) tea.Cmd {
 				Error string `json:"error"`
 			} `json:"actions"`
 		}
-		if json.Unmarshal(raw, &res) == nil {
+		if jsonx.Unmarshal(raw, &res) == nil {
 			for _, a := range res.Actions {
 				if !a.OK {
 					return TMLActionFailedMsg{Text: "The surface could not run " + a.Verb + ": " + a.Error}

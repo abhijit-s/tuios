@@ -13,6 +13,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Gaurav-Gosain/tuios/internal/errfmt"
 	"github.com/Gaurav-Gosain/tuios/internal/sound"
 	"github.com/adrg/xdg"
 )
@@ -84,6 +85,22 @@ func isolateXDG() (dir string, check func() error) {
 	// would otherwise land on that server.
 	if err := os.Unsetenv("TUIOS_SERVER"); err != nil {
 		panic(fmt.Sprintf("testutil: unset TUIOS_SERVER: %v", err))
+	}
+	// tuios follows the Omarchy theme it finds when no theme is configured,
+	// and Omarchy keeps that theme under $HOME/.local/state and its themes
+	// under /usr/share as well, which no XDG variable moves. An empty
+	// SWATCH_OMARCHY_DIR is the one current directory swatch reads, and with
+	// it set the installed themes are not listed either. Without this a
+	// developer on Omarchy ran the tests in their own theme (#1492).
+	noOmarchy := filepath.Join(tmp, "omarchy-current")
+	if err := os.MkdirAll(noOmarchy, 0o755); err != nil {
+		panic(fmt.Sprintf("testutil: create %s: %v", noOmarchy, err))
+	}
+	if err := os.Setenv("SWATCH_OMARCHY_DIR", noOmarchy); err != nil {
+		panic(fmt.Sprintf("testutil: set SWATCH_OMARCHY_DIR: %v", err))
+	}
+	if err := os.Unsetenv("OMARCHY_PATH"); err != nil {
+		panic(fmt.Sprintf("testutil: unset OMARCHY_PATH: %v", err))
 	}
 	xdg.Reload()
 
@@ -162,7 +179,7 @@ func stillRedirected(tmp string) error {
 		return nil
 	}
 	sort.Strings(escaped)
-	return fmt.Errorf("the run left these pointing outside its own tree %s, so the tests after it reached the developer's files:\n%s",
+	return errfmt.Errorf("the run left these pointing outside its own tree %s, so the tests after it reached the developer's files:\n%s",
 		tmp, strings.Join(escaped, "\n"))
 }
 
@@ -259,5 +276,5 @@ func diffDirs(before, after map[string]string) error {
 		return nil
 	}
 	sort.Strings(lines)
-	return fmt.Errorf("%s", strings.Join(lines, "\n"))
+	return errfmt.Errorf("%s", strings.Join(lines, "\n"))
 }

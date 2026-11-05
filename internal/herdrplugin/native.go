@@ -71,10 +71,82 @@ type rawNative struct {
 	Build   []rawCommand `toml:"build"`
 	Process []rawProcess `toml:"process"`
 	Cell    []rawCell    `toml:"cell"`
+	Theme   []rawTheme   `toml:"theme"`
+	Saver   []rawSaver   `toml:"saver"`
 	Wasm    []any        `toml:"wasm"`
 	Herdr   *struct {
 		Manifest string `toml:"manifest"`
 	} `toml:"herdr"`
+}
+
+// rawSaver is one [[saver]]: a screen saver as a frames file.
+type rawSaver struct {
+	ID   *string `toml:"id"`
+	File *string `toml:"file"`
+}
+
+// parseSavers checks the [[saver]] entries.
+func parseSavers(raw []rawSaver, root string) ([]Saver, *Error) {
+	var out []Saver
+	for _, s := range raw {
+		if s.ID == nil {
+			return nil, missingField("id")
+		}
+		id, ok := NormalizeLocalID(*s.ID)
+		if !ok {
+			return nil, errf("plugin_manifest_parse_failed", "invalid [[saver]] id %q", *s.ID)
+		}
+		if s.File == nil || strings.TrimSpace(*s.File) == "" {
+			return nil, missingField("file")
+		}
+		rel := filepath.FromSlash(strings.TrimSpace(*s.File))
+		if !filepath.IsLocal(rel) || !confined(filepath.Join(root, rel), root) {
+			return nil, errf("plugin_manifest_parse_failed", "[[saver]] file must be in the plugin folder, not %q", *s.File)
+		}
+		if slices.ContainsFunc(out, func(x Saver) bool { return x.ID == id }) {
+			return nil, errf("plugin_manifest_parse_failed", "two [[saver]] entries have the id %s", id)
+		}
+		out = append(out, Saver{ID: id, File: filepath.Join(root, rel)})
+	}
+	return out, nil
+}
+
+// confined reports whether path, a file a manifest names in root, stays in
+// root once its links are resolved. IsLocal alone passes a link that git
+// checked out, such as theme.json -> /dev/zero or -> ~/.ssh/id_ed25519.
+// A file that is not there is confined: reading it fails, and tuios plugins
+// check says it is missing. A link that does not resolve is not.
+func confined(path, root string) bool {
+	if _, err := os.Lstat(path); err != nil {
+		return true
+	}
+	if _, err := filepath.EvalSymlinks(path); err != nil {
+		return false
+	}
+	return Inside(path, root)
+}
+
+// rawTheme is one [[theme]]: a theme file the plugin brings.
+type rawTheme struct {
+	File *string `toml:"file"`
+}
+
+// parseThemes checks the [[theme]] entries: each a .json file in the plugin
+// folder.
+func parseThemes(raw []rawTheme, root string) ([]string, *Error) {
+	var out []string
+	for _, t := range raw {
+		if t.File == nil || strings.TrimSpace(*t.File) == "" {
+			return nil, missingField("file")
+		}
+		rel := filepath.FromSlash(strings.TrimSpace(*t.File))
+		path := filepath.Join(root, rel)
+		if !filepath.IsLocal(rel) || !strings.EqualFold(filepath.Ext(rel), ".json") || !confined(path, root) {
+			return nil, errf("plugin_manifest_parse_failed", "[[theme]] file must be a .json file in the plugin folder, not %q", *t.File)
+		}
+		out = append(out, path)
+	}
+	return out, nil
 }
 
 // rawCell is one [[cell]]: a dock cell the plugin may set.
@@ -209,6 +281,12 @@ func parseNative(data []byte, root string) (*Plugin, *Error) {
 		return nil, perr
 	}
 	p.Cells = cells
+	if p.Themes, perr = parseThemes(n.Theme, root); perr != nil {
+		return nil, perr
+	}
+	if p.Savers, perr = parseSavers(n.Saver, root); perr != nil {
+		return nil, perr
+	}
 	p.Warnings = append(append(p.Warnings, warnings...), warn...)
 	if n.MinTuios != nil {
 		p.MinTuios = strings.TrimSpace(*n.MinTuios)

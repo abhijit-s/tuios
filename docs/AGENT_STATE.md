@@ -634,9 +634,22 @@ Agent state maps onto herdr's `agent_status`:
 | --- | --- |
 | `working` | `working` |
 | `needs_input` | `blocked` |
-| `idle` | `idle` |
-| `done`, `errored` | `done` |
+| `idle` or `done`, with a finished turn nobody has looked at | `done` |
+| `idle` or `done`, looked at | `idle` |
+| `errored` | `done` |
 | `unknown`, none | `unknown` |
+
+herdr's `done` is not a state of its own: it is an idle agent that nobody has
+seen yet, and the pane turns `idle` once someone looks at it (herdr's
+[socket API](https://github.com/herdrdev/herdr/blob/2ecf19a92fc3a7fff75b6ce3655ef04f4625ec01/docs/next/website/src/content/docs/socket-api.mdx#L421-L422),
+[agent automation](https://github.com/herdrdev/herdr/blob/2ecf19a92fc3a7fff75b6ce3655ef04f4625ec01/docs/next/website/src/content/docs/agent-automation.mdx#L78)
+and [`pane_agent_status`](https://github.com/herdrdev/herdr/blob/2ecf19a92fc3a7fff75b6ce3655ef04f4625ec01/src/app/api_helpers.rs#L96-L107), at v0.9.5).
+tuios keeps `done` for good and tracks the looking apart, as `list-agents`'
+`finished_unread` does, so the two are put back together here. A pane counts
+as looked at once an attached client shows it focused, the Inbox item for it
+is dismissed, or a herdr client calls `pane.focus` or `agent.focus` on it. The
+Inbox's "mark unread" makes it `done` again. Each of those raises
+`pane.agent_status_changed`.
 
 A pane's `agent` is herdr's name for the harness: `claude` for Claude Code,
 `gemini` for Gemini CLI, `cursor` for Cursor Agent, `agy` for Antigravity,
@@ -690,19 +703,19 @@ A refused call answers error `forbidden`, and nothing changes.
 | `pane.send_keys`, `agent.send_keys` | `send-keys` | herdr's key names. tuios also takes `PageUp`, `PageDown`, `Home`, `End`, `Insert` and `Delete`. `cmd`, `super` and `hyper` fail with `invalid_key` |
 | `pane.send_input` | `send-text` with `paste`, `send-keys` | the text is a paste, as for `pane.send_text` |
 | `pane.rename` | `set-window` | `label: null` clears the name |
-| `pane.focus`, `agent.focus` | `focus-window` | |
-| `pane.split` | `split-window`, else `new-window` | without an attached client, or with `cwd`, the new pane is a window on the same workspace |
+| `pane.focus`, `agent.focus` | `focus-window`, then the attached client | the pane's session becomes the one the client shows, as herdr makes the pane's workspace the active one. The client is chosen as for `workspace.focus`. Without a client the pane is focused in its session all the same. Marks the pane seen, as herdr does, so a `done` pane answers `idle` |
+| `pane.split` | `split-window` | the new pane goes right of or below the target, with or without an attached client. Without a target, the calling pane is split, else the focused one |
 | `pane.close` | `close-window` | |
 | `pane.wait_for_output` | `wait-for window-output` | |
 | `pane.process_info` | `list-windows` | the pane's shell, and the processes in its foreground process group: pid and name. argv, the command line and the directory are given to you, to the pane itself, and to a pane that holds `write` on the pane's session or `admin`. A pane with `read` only gets the pid and the name, because arguments can carry secrets that never show on the screen. `tty` is not given |
 | `pane.neighbor`, `pane.edges` | `list-windows` | from the pane rectangles of the tab's layout. See [Where tuios differs from herdr](#where-tuios-differs-from-herdr) |
 | `pane.focus_direction` | `focus-window` | the pane that `pane.neighbor` names. With none, `changed` is false and `reason` is `no_neighbor` |
-| `pane.swap` | `set-layout` grant, then the attached client | by direction or by `source_pane_id` and `target_pane_id`. The source keeps the focus. A swap that cannot happen answers `reason` `no_neighbor`, `same_pane`, `not_found` or `cross_tab`. Without an attached client it fails with `no_client` |
-| `pane.zoom` | `focus-window`, `run-command ToggleZoom` | `mode` `toggle`, `on` or `off`. The pane is focused first. `reason` is `single_pane`, `already_zoomed` or `already_unzoomed` when nothing changes |
-| `pane.resize` | `set-layout` grant, then the attached client | moves one border of the pane by `amount`, a share of the tab (0.05 when not given, 0.5 at most, one cell at least). `right` and `down` move a border right or down, `left` and `up` move it left or up. The border is the one on that side of the pane, or the other one when the pane is at the edge of the tab there. `changed` is false and `reason` is `unchanged` when nothing moves, as in a floating or scrolling layout. Without an attached client it fails with `no_client` |
-| `pane.move` | `move-window` | to a tab of any workspace, or to a new tab there. A tab of another workspace moves the pane to that tuios session with its program running (`to_session`), and its pane id changes with the workspace. tuios places the pane in the tab's layout itself, so `target_pane_id`, `split` and `ratio` are not followed. `new_workspace` fails with `unsupported`, and so does a popup, a scratch pane, a TML pane or a pane on another machine sent to another workspace. `reason` is `same_tab` or `zoomed_tab` when nothing moves |
+| `pane.swap` | `swap-window` | by direction or by `source_pane_id` and `target_pane_id`. The source keeps the focus. A swap that cannot happen answers `reason` `no_neighbor`, `same_pane`, `not_found` or `cross_tab`. Works without an attached client |
+| `pane.zoom` | `focus-window`, `zoom-window` | `mode` `toggle`, `on` or `off`. The pane is focused first. `reason` is `single_pane`, `already_zoomed` or `already_unzoomed` when nothing changes. Works without an attached client |
+| `pane.resize` | `resize-window` | moves one border of the pane by `amount`, a share of the tab (0.05 when not given, 0.5 at most, one cell at least). `right` and `down` move a border right or down, `left` and `up` move it left or up. The border is the one on that side of the pane, or the other one when the pane is at the edge of the tab there. `changed` is false and `reason` is `unchanged` when nothing moves, as in a floating layout. This is `resize-window`, and works without an attached client |
+| `pane.move` | `move-window` | to a tab of any workspace, or to a new tab there. A tab of another workspace moves the pane to that tuios session with its program running (`to_session`), and its pane id changes with the workspace. In the same workspace, `target_pane_id` and `split` put the pane beside that pane (`move-window` with `beside`). Otherwise tuios places the pane in the tab's layout itself. `ratio` is not followed. `new_workspace` fails with `unsupported`, and so does a popup, a scratch pane, a TML pane or a pane on another machine sent to another workspace. `reason` is `same_tab` or `zoomed_tab` when nothing moves |
 | `agent.list`, `agent.get` | `list-windows` | a target is a pane id, a terminal id, or one agent's label or name |
-| `agent.wait` | `wait-for agent-state` | |
+| `agent.wait` | `wait-for agent-state` | matches herdr's status, so `idle` and `done` follow whether the pane was seen |
 | `agent.start` | `start-agent` grant, then `send-text` and `send-keys` | needs `fan` on the session (what `start-agent` needs) and `write` for the typing. Types the agent's command at the shell prompt of a pane, and names the pane after the agent. See below |
 | `agent.prompt` | `send-text` with `submit` | types the prompt as `ask-agent` does. As in herdr, a working agent gets the prompt, and its harness queues it for the next turn. An agent that waits on a prompt fails with `agent_blocked`, and nothing is typed. `tuios ask-agent` still refuses a working agent |
 | `agent.rename` | `set-window` | names the pane that holds the agent. No `name` clears it. `agent.get` and the other agent methods then find the agent by the new name |
@@ -718,7 +731,7 @@ A refused call answers error `forbidden`, and nothing changes.
 | `worktree.open` | `new-session` in the checkout | a checkout that a session shows answers `already_open: true` |
 | `worktree.remove` | `remove-worktree` | |
 | `events.subscribe` | `subscribe` | see below |
-| `events.wait` | `wait-for agent-state` | answers only a `pane_agent_status_changed` match, as herdr does |
+| `events.wait` | `wait-for agent-state` | answers only a `pane_agent_status_changed` match, as herdr does, on herdr's status as `agent.wait` does |
 | the pane reports | `set-agent-state` and the rest | see [herdr's pane state protocol](#herdrs-pane-state-protocol) |
 
 The `plugin.*` methods and `popup.close` are answered by the plugin host. See
@@ -923,10 +936,12 @@ event is `{"event":"pane.agent_status_changed","data":{...}}`.
 | `window-closed` | `pane_closed`, and `tab_closed` for a tab that is gone |
 | `window-exit` | `pane_exited` |
 | `window-retitled` | `pane_updated` |
-| `window-focused` | `pane_focused` |
+| `window-focused` | `pane_focused`, unless clients are attached and none shows the window's session: herdr sends no focus event for a workspace that is not the active one |
 | `window-moved` | `pane_moved` |
 | `workspace-switched` | `tab_focused` |
+| `client-session-changed` | `workspace_focused`, `tab_focused` and `pane_focused` when a client moves from one session to another, for the new session, its tab and its focused pane. A first attach sends none |
 | `agent-state` | `pane_agent_detected` when an agent comes or goes, and `pane.agent_status_changed` when its status changes |
+| `agent-seen` | `pane.agent_status_changed` from `done` to `idle` when the pane is looked at, and back when it is marked unread |
 
 `pane.agent_status_changed` needs a `pane_id`. `pane.scroll_changed` and
 `pane.output_matched` fail with `unsupported`: use `pane.wait_for_output`. A
@@ -2406,8 +2421,43 @@ group longer than 8 rows shows its first 8 and `+N more`, which a click or
 `right` opens. Needs you never folds.
 
 `b`, or the `Board` word in the header, turns the list into the task board:
-every session's task cards grouped by stage, in the fixed stage order. A
-stage with no card has no head, and Done starts folded.
+every session's task cards grouped by stage, in the fixed stage order. The
+board shows one column for each stage, side by side, with the count of cards
+in its head.
+
+```
+Todo  1                      Plan  0     Doing  3                    Verify  1                  3›
+──────────────────────────── ─────────── ─────────────────────────── ───────────────────────────
+▌ write the changelog                      port the cache to lru       draft the rollout notes
+▌ × Blocked waits o… t6  3s                ● api-2           t2  8s    √ docs-1          t4  8s
+
+                                           wire the retry jitter
+                                           » api-1          t1  10s
+```
+
+A card shows its title, then its holder's mark and name, or `Blocked` and
+why, or `free`, with its id and how long it has been in the stage. A column
+with no card, and a folded column, take only the width of their head. When
+the columns do not fit, the board shows the columns round the cursor, and
+the head row counts the columns past each edge.
+
+| Keys | What it does |
+|---|---|
+| `h` `l`, `left` `right` | Go to the column before or after |
+| `j` `k`, `up` `down` | Go to the card above or below |
+| `H` `L`, `shift+left` `shift+right` | Move the card to the stage before or after |
+| `enter` | Go to the holder's pane. On a free card, open the New agent sheet on it |
+| `n` | Add a card to the column under the cursor. Type the title, then press `enter` |
+| `t` | Take the card for the pane behind the agents view |
+| `F` | Fold or open the column. Done starts folded |
+| `B` | Show the board as a list, or as columns again |
+
+Drag a card with the mouse onto another column to move it to that stage. A
+click on a card selects it, and a click on a head folds or opens its column.
+A new card goes to the session you are attached to. Under 80 columns of
+screen, and after `B`, the board is a list: the stages one under the other.
+A stage with no card has no head there, and Done starts folded. tuios keeps
+your choice of list or columns.
 
 ```
 Todo  2 ──────────────────────────────    split the auth middleware
@@ -2425,7 +2475,8 @@ you, then the oldest. A held card wears its holder's mark and the holder's
 second line; a free card is `free`. The Card tab shows the card's prompt and
 history; on a held card the holder's tabs follow it. `enter` goes to the
 holder's pane. `t` takes the card for the pane behind the agents view, when
-the card is in that pane's session. `n` opens the New agent sheet with the
+the card is in that pane's session. `H` and `L` move the card a stage, as on
+the columns. In the list, `n` opens the New agent sheet with the
 card's prompt as the task, or its title until the prompt has been read; a
 Start in this folder claims the card for the new pane as it opens, and a
 Start in new worktrees stamps the card with the fan, so its checks and pull
@@ -2503,7 +2554,16 @@ conversation, read from its transcript and drawn as cards:
 
 The newest card is at the bottom. The wheel over the thread, or `J` and `K`,
 scrolls it. `[` and `]` switch between the Thread and Changes tabs: Changes
-shows every edit of the last turn whole. tuios follows the transcript of the
+shows every edit of the last turn whole.
+
+The thread follows the newest card while it shows the bottom. A new prompt
+goes to the top of the thread, and the reply fills the space under it. When
+you scroll up, the thread stays where it is. A line at the bottom counts the
+entries that arrived, such as `3 new entries ↓`. `G`, a click on that line,
+or a scroll back to the bottom shows them and follows again. Each agent keeps
+its place when you select another agent and come back. When the thread is
+longer than the space, a ruler at its right edge shows where you are and
+marks each prompt. `{` and `}` show the previous and next prompt at the top. tuios follows the transcript of the
 selected agent only, and the thread grows as the agent works. For other
 agents it is the recap of their turns, their last message, and the last mail
 between them and other agents.

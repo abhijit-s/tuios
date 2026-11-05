@@ -11,6 +11,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/Gaurav-Gosain/tuios/internal/config"
+	"github.com/Gaurav-Gosain/tuios/internal/errfmt"
 	"github.com/Gaurav-Gosain/tuios/internal/federation"
 	"github.com/Gaurav-Gosain/tuios/internal/hooks"
 	"github.com/Gaurav-Gosain/tuios/internal/plural"
@@ -163,6 +164,7 @@ type RemoteCommandMsg struct {
 	WindowTarget string   // For send_keys (target window by name or ID)
 	ConfigPath   string   // For set_config
 	ConfigValue  string   // For set_config
+	ConfigNoSave bool     // For set_config: apply without saving (set-config --no-save)
 	RequestID    string   // For response tracking
 }
 
@@ -205,12 +207,14 @@ type ClientJoinedMsg struct {
 	ClientCount int
 	Width       int
 	Height      int
+	Attach      uint64 // see ClientEvent.Attach
 }
 
 // ClientLeftMsg is sent when another client leaves the session.
 type ClientLeftMsg struct {
 	ClientID    string
 	ClientCount int
+	Attach      uint64 // see ClientEvent.Attach
 }
 
 // PasteRefusedMsg says a paste did not reach its pane. Message is one of the
@@ -240,6 +244,10 @@ type ClientEvent struct {
 	PluginAsks []session.PluginApprovalAsk
 	// PluginUI is the push behind a "plugin-ui" event.
 	PluginUI session.PluginUIPayload
+	// Attach is the client's attach generation when a session's own event
+	// arrived: "joined", "left", "resize" and "agent-mail". Zero is an event
+	// with no stamp. See TUIClient.AttachGeneration and staleAttach.
+	Attach uint64
 }
 
 // SessionResizeMsg is sent when the effective session size changes (min of all clients).
@@ -254,6 +262,9 @@ type SessionResizeMsg struct {
 	// Generation numbers the daemon's answer, newer answers higher. Zero is
 	// a daemon that does not number them. See session/layout_gen.go.
 	Generation uint64
+	// Attach is the attach generation the answer arrived under. See
+	// ClientEvent.Attach.
+	Attach uint64
 }
 
 // ForceRefreshMsg is sent to force all clients to re-render.
@@ -468,6 +479,11 @@ func (m *OS) Init() tea.Cmd {
 	// See tml.go.
 	cmds = append(cmds, m.listenForTML())
 
+	// The plugins' cells, which keep a slot of their own. See plugin_ui.go.
+	if m.pluginCellsIn != nil {
+		cmds = append(cmds, m.listenPluginCells())
+	}
+
 	// The session's mail so far, read once. Everything after this arrives as
 	// a push, so an idle client never asks again.
 	if cmd := m.agentMailLoad(); cmd != nil {
@@ -578,6 +594,7 @@ func clientEventMsg(event ClientEvent) tea.Msg {
 			ClientCount: event.ClientCount,
 			Width:       event.Width,
 			Height:      event.Height,
+			Attach:      event.Attach,
 		}
 	case "resize":
 		return SessionResizeMsg{
@@ -586,11 +603,12 @@ func clientEventMsg(event ClientEvent) tea.Msg {
 			ClientCount: event.ClientCount,
 			Reserve:     event.Reserve,
 			Generation:  event.Generation,
+			Attach:      event.Attach,
 		}
 	case "refresh":
 		return ForceRefreshMsg{Reason: event.Reason}
 	case "agent-mail":
-		return AgentMailMsg{Payload: event.Mail}
+		return AgentMailMsg{Payload: event.Mail, Attach: event.Attach}
 	case "agent-mail-load":
 		return AgentMailLoadMsg{}
 	case "hosts-changed":
@@ -617,6 +635,7 @@ func clientEventMsg(event ClientEvent) tea.Msg {
 		return ClientLeftMsg{
 			ClientID:    event.ClientID,
 			ClientCount: event.ClientCount,
+			Attach:      event.Attach,
 		}
 	}
 }
@@ -968,6 +987,15 @@ func (m *OS) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if hc := m.hostProgramStatusAfter(); hc != nil {
 		cmd = tea.Batch(cmd, hc)
 	}
+	// The drag and drop bridge follows its switches, and what it has for the
+	// terminal goes out, whichever message put it there. See dnd_host.go.
+	m.dndHostSync()
+	if hc := m.dndHostFlush(); hc != nil {
+		cmd = tea.Batch(cmd, hc)
+	}
+	if dc := m.dndDropDeadline(); dc != nil {
+		cmd = tea.Batch(cmd, dc)
+	}
 	// The View after this message may compose a frame, or move the cursor
 	// for input; flushCmd brings the write back once that frame is stored.
 	if m.frameRate.program != nil && (!m.renderSkipped || isPersonInput(msg) || m.flushWhileIdle(msg)) {
@@ -1011,6 +1039,9 @@ func (m *OS) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// Focus reports for every path that moved the focus without FocusWindow.
 	m.reportFocusChange()
 	m.reconcilePrevFocus()
+	// A session switch does not land in FocusWindow. By now a switch-then-focus
+	// route has focused its pane, so only the pane left in front is marked.
+	m.markSwitchSeen()
 	m.noteGotoPlace()
 	m.recordScrollAnchors()
 	// Asked again after the handler, not only before it, because the handler
@@ -1158,6 +1189,10 @@ func (m *OS) handleMsg(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 	if c, ok := m.handleHostProgramStatusMsg(msg); ok {
 		return m, c
 	}
+	// The terminal's drag and drop messages. See dnd_host.go.
+	if m.handleHostDnD(msg) {
+		return m, nil
+	}
 
 	switch msg := msg.(type) {
 	case sidebarSessionNotice:
@@ -1279,6 +1314,9 @@ func (m *OS) handleMsg(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 		return m, nil
 	case ckTakeMsg:
 		m.applyTake(msg)
+		return m, nil
+	case ckCardMsg:
+		m.applyCardReply(msg)
 		return m, nil
 	case ckCompareMsg:
 		return m, m.applyCompare(msg)
@@ -1670,6 +1708,16 @@ func (m *OS) handleMsg(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 	case linkOpenFailedMsg:
 		return m, m.handleLinkOpenFailed(msg)
 
+	case fileOpenSystemMsg:
+		cmd := m.handleFileOpenSystem(msg)
+		m.renderSkipped = false
+		return m, cmd
+
+	case fileOpenFailedMsg:
+		m.handleFileOpenFailed(msg)
+		m.renderSkipped = false
+		return m, nil
+
 	case NotificationMsg:
 		// Guest desktop notification or bell delivered off the PTY goroutine;
 		// apply it here on the Bubble Tea goroutine where notification state is
@@ -1718,6 +1766,18 @@ func (m *OS) handleMsg(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 	case NvimNavigationMsg:
 		m.onNvimNavigation(msg)
 		return m, listenNvimNavigationUntil(m.stopSignal(), m.PendingNvimNavigation)
+	case dndDropTimeoutMsg:
+		// A drop that has not moved for a while ends. See dnd_drag.go.
+		live := m.dndDrag
+		cmd := m.onDnDDropTimeout(msg)
+		m.renderSkipped = m.dndDrag == live
+		return m, cmd
+	case dndHostWrittenMsg:
+		// The last write to the terminal for the bridge is done; Update's
+		// tail sends the next. See dnd_host.go.
+		m.dndHost.writing = false
+		m.renderSkipped = true
+		return m, nil
 	case dndWakeMsg:
 		// A pane's program sent drag and drop messages. See dnd.go.
 		m.handleDnDWake()
@@ -1940,15 +2000,33 @@ func (m *OS) handleMsg(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 
 	case PluginApprovalsMsg:
 		m.setPluginAsks(msg.Asks)
-		return m, nil
+		// It came off the client event channel, which is read one event at
+		// a time, so the listener is armed again here.
+		return m, listenClientEventsUntil(m.stopSignal(), m.ClientEventChan)
 
 	case missingDiagramMsg:
 		m.noteMissingDiagram(msg.typ)
 		return m, nil
 
+	case sketchDrawnMsg:
+		// A surface's diagram came in from the sketch plugin: draw the
+		// surfaces again, which take it from loom's cache.
+		for id, v := range m.tml.views {
+			if v.surface != nil {
+				v.surface.Invalidate()
+				m.markTMLDirty(id)
+			}
+		}
+		m.MarkAllDirty()
+		return m, nil
+
 	case PluginUIMsg:
 		m.handlePluginUI(msg.Payload)
 		return m, listenClientEventsUntil(m.stopSignal(), m.ClientEventChan)
+
+	case pluginCellsMsg:
+		m.handlePluginUI(msg.Payload)
+		return m, m.listenPluginCells()
 
 	case pluginApprovalDoneMsg:
 		m.pluginApprovalDone(msg)
@@ -2043,6 +2121,7 @@ func (m *OS) handleMsg(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 			m.notePointerEvent(time.Now())
 		case tea.MouseClickMsg:
 			m.notePointerEvent(time.Now())
+			m.dndHostMouseSeen()
 			m.pointerDown = true
 			// A button is down, so a gesture may be starting and the sizes it
 			// passes through are none of the guest's business until it ends.
@@ -2053,9 +2132,11 @@ func (m *OS) handleMsg(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 			m.holdGestureAnnouncements()
 		case tea.MouseReleaseMsg:
 			m.notePointerEvent(time.Now())
+			m.dndHostMouseSeen()
 			m.pointerDown = false
 		case tea.MouseMotionMsg:
 			m.notePointerEvent(time.Now())
+			m.dndHostMouseSeen()
 			// Motion names the buttons still held, so it is the most current
 			// answer to whether one is, and it corrects a press whose own event
 			// never arrived.
@@ -2384,6 +2465,11 @@ func (m *OS) handleMsg(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 
 	// Multi-client daemon messages
 	case StateSyncMsg:
+		// A state of the session this client has left describes none of
+		// the panes it now shows. Applied, it replaced them.
+		if m.staleAttach(msg.Attach) {
+			return m, listenStateSyncUntil(m.stopSignal(), m.StateSyncChan)
+		}
 		// Another client updated state: apply incrementally
 		if msg.State != nil {
 			// Track what changed for notifications
@@ -2516,6 +2602,9 @@ func (m *OS) handleMsg(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 		return m, nil
 
 	case ClientJoinedMsg:
+		if m.staleAttach(msg.Attach) {
+			return m, listenClientEventsUntil(m.stopSignal(), m.ClientEventChan)
+		}
 		// Another client joined the session
 		m.sessionClients = msg.ClientCount
 		m.ShowNotification(fmt.Sprintf("Client joined (%d connected)", msg.ClientCount), "info", 2*time.Second)
@@ -2523,6 +2612,11 @@ func (m *OS) handleMsg(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 		return m, listenClientEventsUntil(m.stopSignal(), m.ClientEventChan)
 
 	case AgentMailMsg:
+		// The mailbox is the session's, and this one's was read afresh at
+		// the switch.
+		if m.staleAttach(msg.Attach) {
+			return m, listenClientEventsUntil(m.stopSignal(), m.ClientEventChan)
+		}
 		// A message an agent left, or a receipt for one an agent read. Applied
 		// here and nowhere else, so the mirror is only ever touched on this
 		// goroutine.
@@ -2585,6 +2679,9 @@ func (m *OS) handleMsg(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 	case InboxAlertDueMsg:
 		m.applyInboxAlertDue(msg)
 		return m, nil
+
+	case inboxTypingReleaseMsg:
+		return m, m.applyInboxTypingRelease(msg)
 
 	case InboxDismissedMsg:
 		m.applyInboxDismissed(msg)
@@ -2710,6 +2807,9 @@ func (m *OS) handleMsg(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 		return m, nil
 
 	case ClientLeftMsg:
+		if m.staleAttach(msg.Attach) {
+			return m, listenClientEventsUntil(m.stopSignal(), m.ClientEventChan)
+		}
 		// Another client left the session
 		m.sessionClients = msg.ClientCount
 		m.ShowNotification(fmt.Sprintf("Client left (%d connected)", msg.ClientCount), "info", 2*time.Second)
@@ -2717,6 +2817,13 @@ func (m *OS) handleMsg(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 		return m, listenClientEventsUntil(m.stopSignal(), m.ClientEventChan)
 
 	case SessionResizeMsg:
+		// An answer about the session this client has left. Applied, it
+		// laid this session's panes out in the other's box, and raised the
+		// generation past this session's own count, so the daemon took
+		// this client's layouts for current when they were not.
+		if m.staleAttach(msg.Attach) {
+			return m, listenClientEventsUntil(m.stopSignal(), m.ClientEventChan)
+		}
 		// The box the panes are laid out in from here on is this answer's,
 		// so the next push says so. See session/layout_gen.go.
 		m.layoutGenApplied = max(m.layoutGenApplied, msg.Generation)
@@ -3147,17 +3254,30 @@ func (m *OS) handleMsg(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 			// Show what config is being changed
 			notificationMsg = fmt.Sprintf("Remote: set %s=%s", msg.ConfigPath, msg.ConfigValue)
 
-			err = m.SetConfig(msg.ConfigPath, msg.ConfigValue)
-			// Write it down, the way the settings panel does. Without this the
-			// routed path changed the running session and nothing else, so
-			// set-config reported success, get-config read the value back from
-			// memory, and the file never grew the section. Every value set this
-			// way was lost on the next restart, in every section, which is why
-			// this reuses persistSettings rather than fixing one of them: it
-			// carries the read-only gating for remote clients and the
-			// stale-write sequencing with it.
-			if err == nil {
-				persistCmd = m.persistSettings()
+			if msg.ConfigNoSave {
+				// set-config --no-save: the value applies here and every
+				// later save leaves its keys alone, so a hook can change the
+				// display without touching the config files. See
+				// config/hold.go.
+				notificationMsg += " (not saved)"
+				err = m.UserConfig.HoldOption(msg.ConfigPath, func() error {
+					return m.SetConfig(msg.ConfigPath, msg.ConfigValue)
+				})
+			} else {
+				// A set that saves ends a hold on the same option.
+				m.UserConfig.ReleaseOption(msg.ConfigPath)
+				err = m.SetConfig(msg.ConfigPath, msg.ConfigValue)
+				// Write it down, the way the settings panel does. Without this the
+				// routed path changed the running session and nothing else, so
+				// set-config reported success, get-config read the value back from
+				// memory, and the file never grew the section. Every value set this
+				// way was lost on the next restart, in every section, which is why
+				// this reuses persistSettings rather than fixing one of them: it
+				// carries the read-only gating for remote clients and the
+				// stale-write sequencing with it.
+				if err == nil {
+					persistCmd = m.persistSettings()
+				}
 			}
 			// Retile if in tiling mode after config change
 			if m.AutoTiling {
@@ -3223,14 +3343,14 @@ func (m *OS) handleMsg(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 			// herdr's pane.swap: the daemon names the pair. TapeArgs are the
 			// source and the target window ids.
 			if len(msg.TapeArgs) != 2 {
-				err = fmt.Errorf("swap_windows needs two window ids")
+				err = errfmt.Errorf("swap_windows needs two window ids")
 			} else {
 				err = m.SwapWindowsByID(msg.TapeArgs[0], msg.TapeArgs[1])
 			}
 		case "zoom_window":
 			// herdr's pane.zoom: TapeArgs are the window id and on or off.
 			if len(msg.TapeArgs) != 2 {
-				err = fmt.Errorf("zoom_window needs a window id and on or off")
+				err = errfmt.Errorf("zoom_window needs a window id and on or off")
 			} else {
 				err = m.ZoomWindowByID(msg.TapeArgs[0], msg.TapeArgs[1] == "on")
 			}
@@ -3239,12 +3359,12 @@ func (m *OS) handleMsg(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 			// border moves, and the share of the pane region it moves by.
 			// The answer says whether the pane changed.
 			if len(msg.TapeArgs) != 3 {
-				err = fmt.Errorf("resize_window needs a window id, a direction and an amount")
+				err = errfmt.Errorf("resize_window needs a window id, a direction and an amount")
 				break
 			}
 			amount, perr := strconv.ParseFloat(msg.TapeArgs[2], 64)
 			if perr != nil {
-				err = fmt.Errorf("resize_window: bad amount %q", msg.TapeArgs[2])
+				err = errfmt.Errorf("resize_window: bad amount %q", msg.TapeArgs[2])
 				break
 			}
 			var changed bool
@@ -3266,7 +3386,7 @@ func (m *OS) handleMsg(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 			// another machine the host, "create" or "", and the directory
 			// of a session create makes there.
 			if len(msg.TapeArgs) < 1 || msg.TapeArgs[0] == "" {
-				err = fmt.Errorf("switch_session needs a session name")
+				err = errfmt.Errorf("switch_session needs a session name")
 				break
 			}
 			name := msg.TapeArgs[0]
@@ -3329,7 +3449,7 @@ func (m *OS) handleMsg(msg tea.Msg) (model tea.Model, cmd tea.Cmd) {
 				return m, tea.Batch(cmd, relisten)
 			}
 		default:
-			err = fmt.Errorf("unknown remote command type: %s", msg.CommandType)
+			err = errfmt.Errorf("unknown remote command type: %s", msg.CommandType)
 		}
 
 		m.MarkAllDirty()

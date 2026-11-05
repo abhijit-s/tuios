@@ -2,7 +2,6 @@ package herdrplugin
 
 import (
 	"bytes"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -13,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/Gaurav-Gosain/tuios/internal/jsonx"
 	"github.com/Gaurav-Gosain/tuios/internal/winpath"
 	"github.com/pelletier/go-toml/v2"
 
@@ -91,7 +91,7 @@ type Size string
 // UnmarshalJSON reads a number of cells or a percentage string.
 func (s *Size) UnmarshalJSON(b []byte) error {
 	var v any
-	if err := json.Unmarshal(b, &v); err != nil {
+	if err := jsonx.Unmarshal(b, &v); err != nil {
 		return err
 	}
 	out, err := sizeOf(v)
@@ -105,9 +105,9 @@ func (s *Size) UnmarshalJSON(b []byte) error {
 // MarshalJSON writes cells as a number and a share as a string.
 func (s Size) MarshalJSON() ([]byte, error) {
 	if n, err := strconv.Atoi(string(s)); err == nil {
-		return json.Marshal(n)
+		return jsonx.Marshal(n)
 	}
-	return json.Marshal(string(s))
+	return jsonx.Marshal(string(s))
 }
 
 // ParseSize reads a size as herdr's CLI does: "120" is cells, "80%" a share
@@ -157,6 +157,19 @@ func sizeOf(v any) (Size, error) {
 type Command struct {
 	Platforms []string `json:"platforms,omitempty"`
 	Command   []string `json:"command"`
+}
+
+// RunsNothing reports whether p runs no program and asks for no grant: a
+// plugin of files only, such as themes. It needs no approval to load.
+func (p *Plugin) RunsNothing() bool {
+	return len(p.Build) == 0 && len(p.Startup) == 0 && len(p.Actions) == 0 && len(p.Panes) == 0 &&
+		len(p.Events) == 0 && len(p.LinkHandlers) == 0 && len(p.Grants) == 0
+}
+
+// Saver is one [[saver]] entry: a frames file tuios plays as a screen saver.
+type Saver struct {
+	ID   string `json:"id"`
+	File string `json:"file"`
 }
 
 // Cell is one [[cell]] entry of a native manifest: a dock cell the plugin's
@@ -237,6 +250,11 @@ type Plugin struct {
 	Source          Source        `json:"source"`
 	Warnings        []string      `json:"warnings,omitempty"`
 	Cells           []Cell        `json:"cells,omitempty"`
+	// Themes are the theme files of a native plugin, absolute paths in its
+	// folder.
+	Themes []string `json:"themes,omitempty"`
+	// Savers are the screen savers of a native plugin, as frames files.
+	Savers []Saver `json:"savers,omitempty"`
 	// Format is FormatTuios for a tuios-plugin.toml and "" for a herdr
 	// manifest.
 	Format string `json:"format,omitempty"`

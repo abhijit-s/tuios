@@ -16,6 +16,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Gaurav-Gosain/tuios/internal/errfmt"
+	"github.com/Gaurav-Gosain/tuios/internal/jsonx"
 	"github.com/Gaurav-Gosain/tuios/internal/serverscope"
 	"github.com/Gaurav-Gosain/tuios/internal/session"
 	"github.com/spf13/cobra"
@@ -85,7 +87,7 @@ func handoffAcceptsCommand() *cobra.Command {
 		Hidden: true,
 		Args:   cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			data, err := json.Marshal(session.LocalHandoffAccepts(version))
+			data, err := jsonx.Marshal(session.LocalHandoffAccepts(version))
 			if err != nil {
 				return err
 			}
@@ -319,6 +321,16 @@ func upgradeLive(say func(string, ...any), binary string) (upgradeOutcome, error
 	_ = json.Unmarshal(raw, &before)
 	o.From = before.Version
 
+	// The daemon's owner and mode check, made before the run below, so this
+	// command never runs a file the daemon would refuse.
+	if err := session.CheckUpgradeBinary(binary); err != nil {
+		_ = client.Close()
+		return &diagnosticError{
+			What:  err.Error() + ".",
+			Cause: "another user could have put it there, so the daemon would refuse it too.",
+			Fix:   "run this command again once the file is fixed.",
+		}
+	}
 	// The same run the daemon makes, made here first: it says what the
 	// binary is, and it pays a new file's first exec before the daemon
 	// pauses anything.
@@ -382,7 +394,7 @@ func upgradeLive(say func(string, ...any), binary string) (upgradeOutcome, error
 		To            string `json:"to"`
 		From          string `json:"from"`
 	}
-	_ = json.Unmarshal(raw, &accepted)
+	_ = jsonx.Unmarshal(raw, &accepted)
 	say("ok\n")
 	say("Paused %d %s, saved their screens (%s).\n", accepted.Panes, pluralize(accepted.Panes, "pane", "panes"), humanBytes(accepted.ManifestBytes))
 	say("Starting %s in place (pid %d kept)...\n", accepted.To, before.PID)
@@ -532,7 +544,7 @@ func awaitUpgradedDaemon(old string, wait time.Duration) (upgradedDaemon, error)
 			_ = client.Close()
 			if err == nil {
 				var h upgradedDaemon
-				if err = json.Unmarshal(raw, &h); err == nil {
+				if err = jsonx.Unmarshal(raw, &h); err == nil {
 					if h.Instance != old {
 						return h, nil
 					}
@@ -602,9 +614,9 @@ func handoffAcceptsOf(binary string, writes int) (session.HandoffAccepts, error)
 	cmd := exec.CommandContext(ctx, binary, "daemon", "handoff-accepts")
 	cmd.Stdout = &stdout
 	if err := cmd.Run(); err != nil {
-		return acc, fmt.Errorf("it did not answer handoff-accepts (%w)", err)
+		return acc, errfmt.Errorf("it did not answer handoff-accepts (%w)", err)
 	}
-	if err := json.Unmarshal(bytes.TrimSpace(stdout.Bytes()), &acc); err != nil {
+	if err := jsonx.Unmarshal(bytes.TrimSpace(stdout.Bytes()), &acc); err != nil {
 		return acc, errors.New("it answered handoff-accepts with something that is not its answer")
 	}
 	if writes > 0 && (writes < acc.Handoff[0] || writes > acc.Handoff[1]) {

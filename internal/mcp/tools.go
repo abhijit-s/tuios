@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/Gaurav-Gosain/tuios/internal/jsonx"
 )
 
 // VerbDoc is one verb as list-verbs describes it. The json tags match the
@@ -369,7 +371,7 @@ const (
 var EventTypes = []string{
 	"window-created", "window-closed", "window-exit", "window-retitled",
 	"window-focused", "window-moved", "window-minimized", "window-restored",
-	"workspace-switched", "workspace-renamed", "layout-changed", "agent-state", "agent-message",
+	"workspace-switched", "workspace-renamed", "layout-changed", "agent-state", "agent-seen", "agent-message",
 	"output", "bell", "notification", "mode-changed",
 	"session-created", "session-closed", "client-session-changed", "gap", "attention",
 	"host-changed", "prompt", "command-started", "command-finished",
@@ -382,6 +384,8 @@ var EventTypes = []string{
 	"tml-event",
 	// A session's task cards.
 	"task-claimed", "task-finished", "task-changed",
+	// The daemon took or dropped its hold that keeps the machine awake.
+	"keep-awake",
 }
 
 // defaultEventTypes are the types a call that names none gets: what an agent
@@ -475,7 +479,7 @@ func runEvents(s *Server, c Conn, in map[string]any) map[string]any {
 		// daemon did not say.
 		Replayed *int `json:"replayed"`
 	}
-	_ = json.Unmarshal(raw, &ack)
+	_ = jsonx.Unmarshal(raw, &ack)
 	boot := ack.BootID
 
 	// The stream is at the ack's baseline once the replay is drained. The
@@ -516,7 +520,7 @@ func runEvents(s *Server, c Conn, in map[string]any) map[string]any {
 			Seq    uint64 `json:"seq"`
 			BootID string `json:"boot_id"`
 		}
-		if json.Unmarshal(line, &ev) != nil {
+		if jsonx.Unmarshal(line, &ev) != nil {
 			continue
 		}
 		if ev.Seq > seen {
@@ -540,7 +544,7 @@ func runEvents(s *Server, c Conn, in map[string]any) map[string]any {
 	if drained {
 		last = max(ack.Seq, seen)
 	}
-	out, _ := json.Marshal(map[string]any{
+	out, _ := jsonx.Marshal(map[string]any{
 		"type":      "events",
 		"events":    events,
 		"total":     len(events),

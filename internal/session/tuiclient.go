@@ -13,6 +13,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/Gaurav-Gosain/tuios/internal/errfmt"
 )
 
 // RemoteCommandHandler is a callback for handling remote commands from the CLI.
@@ -195,6 +197,13 @@ type TUIClient struct {
 	// Remote command handler, called when a remote command is received
 	remoteCommandHandler RemoteCommandHandler
 	remoteCommandMu      sync.RWMutex
+	// remoteCommandsEarly holds the routed commands that arrived before a
+	// handler was registered, oldest first, for OnRemoteCommand to hand over.
+	// The daemon routes to a client the moment its attach reply goes, and the
+	// handler is registered only once the program is built. The options set
+	// while no client was attached are routed in exactly that window. Bounded
+	// by remoteCommandsEarlyMax. Guarded by remoteCommandMu.
+	remoteCommandsEarly []*RemoteCommandPayload
 
 	// Multi-client handlers
 	stateSyncHandler     StateSyncHandler
@@ -284,6 +293,8 @@ type TUIClient struct {
 	// dirWatchSupported says the daemon's welcome offered MsgWatchDir. See
 	// WatchDir.
 	dirWatchSupported bool
+	// tmlLink says the daemon's welcome set TMLLink. See DrawsTML.
+	tmlLink bool
 	// emptyWorkspacePanes says the daemon's welcome set EmptyWorkspacePanes.
 	emptyWorkspacePanes atomic.Bool
 	// dirChangedHandler takes the daemon's MsgDirChanged push. Guarded by
@@ -425,7 +436,7 @@ func (c *TUIClient) Connect(version string, width, height int) error {
 func (c *TUIClient) ConnectWithCapabilities(version string, width, height int, caps *ClientCapabilities) error {
 	socketPath, err := GetSocketPath()
 	if err != nil {
-		return fmt.Errorf("failed to get socket path: %w", err)
+		return errfmt.Errorf("failed to get socket path: %w", err)
 	}
 
 	dialWait := 5 * time.Second
@@ -434,7 +445,7 @@ func (c *TUIClient) ConnectWithCapabilities(version string, width, height int, c
 	}
 	conn, err := net.DialTimeout("unix", socketPath, dialWait)
 	if err != nil {
-		return fmt.Errorf("failed to connect to daemon: %w", err)
+		return errfmt.Errorf("failed to connect to daemon: %w", err)
 	}
 	c.conn = conn
 	c.br = nil
@@ -475,11 +486,12 @@ func (c *TUIClient) handshake(version string, width, height int, caps *ClientCap
 		// See daemon_goodbye.go.
 		Goodbye: true,
 	}
-	// A client draws TML surfaces of this machine's daemon only: what the
-	// person does on one goes back through this machine's socket, which
-	// holds no surface of a session on another machine. Through a host the
-	// window shows its placeholder line instead. See tml_surface.go.
-	hello.TMLSurfaces = c.viaHost == ""
+	// A client draws the TML surfaces of the daemon it attached to. Through
+	// a host, what the person does on one goes to that machine's daemon
+	// over the link, which a far daemon takes only when its welcome sets
+	// TMLLink. An older one still pushes its surfaces, and DrawsTML drops
+	// them. See tml_surface.go, "Surfaces over a link".
+	hello.TMLSurfaces = true
 	// Plugins run on this machine's daemon, and only the person here
 	// answers for them. See plugin_approval.go.
 	hello.PluginApprovals = c.viaHost == ""
@@ -506,6 +518,7 @@ func (c *TUIClient) handshake(version string, width, height int, caps *ClientCap
 	}
 	hello.LayoutTreeOps = true
 	hello.ScratchWorkspaces = true
+	hello.HoldOptions = true
 	hello.WindowSize = !legacyWindowSize()
 	hello.ViewChrome = hello.WindowSize && !legacyViewChrome()
 	c.viewChrome = hello.ViewChrome
@@ -547,7 +560,7 @@ func (c *TUIClient) handshake(version string, width, height int, caps *ClientCap
 
 	var welcome WelcomePayload
 	if err := resp.ParsePayload(&welcome); err != nil {
-		return fmt.Errorf("failed to parse welcome: %w", err)
+		return errfmt.Errorf("failed to parse welcome: %w", err)
 	}
 
 	// Refuse before anything else is exchanged. Proceeding on a protocol the
@@ -578,6 +591,7 @@ func (c *TUIClient) handshake(version string, width, height int, caps *ClientCap
 	c.windowSize = welcome.WindowSize && hello.WindowSize
 	c.daemonDetachOthers = welcome.DetachOthers
 	c.dirWatchSupported = welcome.DirWatch
+	c.tmlLink = welcome.TMLLink
 	c.emptyWorkspacePanes.Store(welcome.EmptyWorkspacePanes)
 	c.daemonRefusesAnimation.Store(welcome.KittyAnimationRefusal)
 	c.requestIDs.Store(welcome.RequestIDs)
@@ -675,7 +689,7 @@ func (c *TUIClient) AttachSession(name string, createNew bool, width, height int
 		return nil, refusalOf(errPayload)
 
 	default:
-		return nil, fmt.Errorf("unexpected response: %d", resp.Type)
+		return nil, errfmt.Errorf("unexpected response: %d", resp.Type)
 	}
 }
 
@@ -696,10 +710,15 @@ func (c *TUIClient) takeAttachReply(resp *Message) (*SessionState, error) {
 	c.sessionID = payload.SessionID
 	c.setSessionName(payload.SessionName)
 	c.humanNonce.Store(&payload.HumanNonce)
+	// With the read loop running, routeReply counted this attach as it read
+	// the reply. See AttachGeneration.
+	if !c.readLoopRunning {
+		c.attachGen.Add(1)
+	}
 	c.startPushes()
 	c.appliedSeq.Store(stateSeq(payload.State))
 	if err := validateSessionState(payload.State); err != nil {
-		return nil, fmt.Errorf("attach: the session state the daemon sent was refused: %w", err)
+		return nil, errfmt.Errorf("attach: the session state the daemon sent was refused: %w", err)
 	}
 	c.NoteSession(payload.SessionName)
 	// The attach reply starts the session's numbering over: a switch to
@@ -819,38 +838,20 @@ func (c *TUIClient) SwitchSession(targetName string, width, height int) (*Sessio
 	// the new one's, so input is reported meanwhile.
 	c.noteSizePolicy("")
 
-	// 1. Detach (fire-and-forget, daemon sends MsgDetached back)
-	detachMsg, err := NewMessage(MsgDetach, nil)
-	if err != nil {
-		return nil, fmt.Errorf("detach encode: %w", err)
+	// 1. Detach. The daemon answers MsgDetached, or an untagged MsgError with
+	// ErrCodeNotAttached when this connection holds no session, which happens
+	// after a switch whose return attach failed. Either way the connection is
+	// free to attach.
+	if err := c.detachForSwitch(); err != nil {
+		if errors.Is(err, errDetachUnconfirmed) {
+			// The detach may still land after the wait, so the connection may
+			// hold no session. Saying it is still on prevName would leave the
+			// person looking at panes that no longer stream.
+			return nil, &SwitchRollback{Target: targetName, Prev: prevName, Err: err,
+				Recovery: errors.New("the daemon did not confirm the detach in time, so the client may hold no session")}
+		}
+		return nil, err
 	}
-
-	// Register for detach response before sending
-	detachResp := make(chan *Message, 1)
-	c.pendingResponsesMu.Lock()
-	c.pendingResponses[MsgDetached] = &pendingReply{ch: detachResp}
-	c.pendingResponsesMu.Unlock()
-
-	if err := c.send(detachMsg); err != nil {
-		return nil, fmt.Errorf("detach send: %w", err)
-	}
-
-	debugLog("[SWITCH] Detach sent, waiting for confirmation...")
-
-	// Wait for detach confirmation
-	select {
-	case <-detachResp:
-		debugLog("[SWITCH] Detach confirmed")
-	case <-time.After(5 * time.Second):
-		return nil, fmt.Errorf("detach timeout")
-	case <-c.done:
-		return nil, fmt.Errorf("client closed")
-	}
-
-	// Clean up pending response registration
-	c.pendingResponsesMu.Lock()
-	delete(c.pendingResponses, MsgDetached)
-	c.pendingResponsesMu.Unlock()
 
 	// 2. Attach to new session using sendAndWaitResponse
 	debugLog("[SWITCH] Attaching to session %q (%dx%d)", targetName, width, height)
@@ -890,6 +891,65 @@ func (c *TUIClient) SwitchSession(targetName string, width, height int) (*Sessio
 	return nil, rollback
 }
 
+// errDetachUnconfirmed is a detach the daemon did not answer in time. The
+// daemon may still take it later.
+var errDetachUnconfirmed = errors.New("detach timeout")
+
+// detachForSwitch sends the detach of a session switch and waits for the
+// daemon to take it. The detach goes untagged, so the answer is routed by
+// type. roundTripMu keeps another round trip from taking the MsgError slot
+// meanwhile.
+func (c *TUIClient) detachForSwitch() error {
+	detachMsg, err := NewMessage(MsgDetach, nil)
+	if err != nil {
+		return errfmt.Errorf("detach encode: %w", err)
+	}
+
+	c.roundTripMu.Lock()
+	defer c.roundTripMu.Unlock()
+
+	resp := make(chan *Message, 1)
+	p := &pendingReply{ch: resp, accept: func(m *Message) bool {
+		if m.Type != MsgError {
+			return true
+		}
+		var e ErrorPayload
+		return m.ParsePayload(&e) == nil && e.Code == ErrCodeNotAttached
+	}}
+	c.pendingResponsesMu.Lock()
+	c.pendingResponses[MsgDetached] = p
+	c.pendingResponses[MsgError] = p
+	c.pendingResponsesMu.Unlock()
+	defer func() {
+		c.pendingResponsesMu.Lock()
+		for _, t := range []MessageType{MsgDetached, MsgError} {
+			if c.pendingResponses[t] == p {
+				delete(c.pendingResponses, t)
+			}
+		}
+		c.pendingResponsesMu.Unlock()
+	}()
+
+	if err := c.send(detachMsg); err != nil {
+		return errfmt.Errorf("detach send: %w", err)
+	}
+	debugLog("[SWITCH] Detach sent, waiting for confirmation...")
+
+	select {
+	case m := <-resp:
+		if m.Type == MsgError {
+			debugLog("[SWITCH] Not attached to any session, nothing to detach")
+		} else {
+			debugLog("[SWITCH] Detach confirmed")
+		}
+		return nil
+	case <-time.After(5 * time.Second):
+		return errDetachUnconfirmed
+	case <-c.done:
+		return errfmt.Errorf("client closed")
+	}
+}
+
 // attachWhileReading performs the attach round trip through the read loop, for
 // the paths that run with the read loop already started.
 func (c *TUIClient) attachWhileReading(name string, createNew bool, width, height int) (*SessionState, error) {
@@ -908,12 +968,12 @@ func (c *TUIClient) attachWhileReading(name string, createNew bool, width, heigh
 		Passive:       c.Passive,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("attach encode: %w", err)
+		return nil, errfmt.Errorf("attach encode: %w", err)
 	}
 
 	resp, err := c.sendAndWaitResponse(msg, MsgAttached, MsgError)
 	if err != nil {
-		return nil, fmt.Errorf("attach: %w", err)
+		return nil, errfmt.Errorf("attach: %w", err)
 	}
 
 	switch resp.Type {
@@ -926,7 +986,7 @@ func (c *TUIClient) attachWhileReading(name string, createNew bool, width, heigh
 		return nil, refusalOf(errPayload)
 
 	default:
-		return nil, fmt.Errorf("unexpected response: %d", resp.Type)
+		return nil, errfmt.Errorf("unexpected response: %d", resp.Type)
 	}
 }
 
@@ -959,10 +1019,10 @@ func (c *TUIClient) CreatePTY(title, windowID string, width, height int) (string
 	case MsgError:
 		var errPayload ErrorPayload
 		_ = resp.ParsePayload(&errPayload)
-		return "", fmt.Errorf("create PTY failed: %s", errPayload.Message)
+		return "", errfmt.Errorf("create PTY failed: %s", errPayload.Message)
 
 	default:
-		return "", fmt.Errorf("unexpected response: %d", resp.Type)
+		return "", errfmt.Errorf("unexpected response: %d", resp.Type)
 	}
 }
 
@@ -1001,10 +1061,10 @@ func (c *TUIClient) ReadDir(windowID, dir string, max int, pinned bool) (*DirLis
 	case MsgError:
 		var errPayload ErrorPayload
 		_ = resp.ParsePayload(&errPayload)
-		return nil, fmt.Errorf("read dir failed: %s", errPayload.Message)
+		return nil, errfmt.Errorf("read dir failed: %s", errPayload.Message)
 
 	default:
-		return nil, fmt.Errorf("unexpected response: %d", resp.Type)
+		return nil, errfmt.Errorf("unexpected response: %d", resp.Type)
 	}
 }
 
@@ -1089,12 +1149,28 @@ func (c *TUIClient) OnPTYClosed(ptyID string, handler func()) {
 // so the oldest entries go.
 const ptyClosedEarlyMax = 32
 
+// remoteCommandsEarlyMax bounds remoteCommandsEarly. Past it the oldest
+// command goes, and its caller times out as it did before commands were kept.
+const remoteCommandsEarlyMax = 32
+
 // OnRemoteCommand registers a handler for remote commands from the CLI.
 // The handler should execute the command and return an error if it fails.
+// The commands that arrived before any handler was registered are handed to
+// it here, in the order they came.
 func (c *TUIClient) OnRemoteCommand(handler RemoteCommandHandler) {
 	c.remoteCommandMu.Lock()
 	c.remoteCommandHandler = handler
+	var early []*RemoteCommandPayload
+	if handler != nil {
+		early = c.remoteCommandsEarly
+		c.remoteCommandsEarly = nil
+	}
 	c.remoteCommandMu.Unlock()
+	for _, payload := range early {
+		if err := handler(payload); err != nil {
+			_ = c.SendCommandResult(payload.RequestID, false, err.Error())
+		}
+	}
 }
 
 // OnStateSync registers a handler for state sync messages from other clients.
@@ -1288,9 +1364,15 @@ func (c *TUIClient) OnPluginApprovals(handler func(PluginApprovalsPayload)) {
 	}
 }
 
-// DrawsTML reports whether this client draws TML surfaces: only a client of
-// this machine's daemon does. See the hello.
-func (c *TUIClient) DrawsTML() bool { return c.viaHost == "" }
+// DrawsTML reports whether this client draws TML surfaces: a client of this
+// machine's daemon, or one through a host whose daemon takes what the person
+// does on a surface over the link. See the hello.
+func (c *TUIClient) DrawsTML() bool { return c.viaHost == "" || c.tmlLink }
+
+// TMLHostTooOld reports whether this client is attached through a host whose
+// daemon does not serve TML surfaces over a link. Its TML windows say so in
+// place of the surface.
+func (c *TUIClient) TMLHostTooOld() bool { return c.viaHost != "" && !c.tmlLink }
 
 // OnTMLSurface registers the handler for MsgTMLSurface, the daemon's push of
 // a TML surface when it opens, changes or closes, and of every open one when
@@ -1658,13 +1740,19 @@ func (c *TUIClient) startPushes() {
 	defer c.pushMu.Unlock()
 	c.pushOrigin.Store(&origin)
 	c.pushSeq.Store(0)
-	c.attachGen.Add(1)
 }
 
 // AttachGeneration counts this client's attaches. SnapshotSeq numbers are the
 // attached session's own and start over in another session or after a daemon
 // restart, both of which take a new attach, so two snapshots are comparable by
 // SnapshotSeq only when they arrived under the same generation.
+//
+// A handler reads it on the read loop to stamp what it hands on, and the model
+// drops a stamp that is not current: it came from the session the client left.
+// So the count moves on the read loop, at the moment the attach reply is read,
+// and not later on the goroutine that waits for the reply. Counted there, the
+// first messages of the new session, read before that goroutine woke, carried
+// the old count and were dropped as the old session's.
 func (c *TUIClient) AttachGeneration() uint64 {
 	if c == nil {
 		return 0
@@ -1750,7 +1838,7 @@ func (c *TUIClient) KillSession() error {
 // rather than the phantom success the old fire-and-forget send always reported.
 func (c *TUIClient) KillSessionByName(name string) error {
 	if name == "" {
-		return fmt.Errorf("session name cannot be empty")
+		return errfmt.Errorf("session name cannot be empty")
 	}
 	msg, err := NewMessage(MsgKill, &KillPayload{
 		SessionName: name,
@@ -1766,7 +1854,7 @@ func (c *TUIClient) KillSessionByName(name string) error {
 	if resp.Type == MsgError {
 		var errPayload ErrorPayload
 		_ = resp.ParsePayload(&errPayload)
-		return fmt.Errorf("kill session: %s", errPayload.Message)
+		return errfmt.Errorf("kill session: %s", errPayload.Message)
 	}
 	var payload SessionListPayload
 	if err := resp.ParsePayload(&payload); err != nil {
@@ -1835,23 +1923,23 @@ func (c *TUIClient) GetTerminalState(ptyID string, maxScrollback, have int) (*Te
 		if payload.PTYID != ptyID {
 			// A tagged reply is the answer to this request, so this is a
 			// daemon fault, and the state is not applied to the wrong pane.
-			return nil, fmt.Errorf("get terminal state: the daemon answered for pane %s, not %s", shortID(payload.PTYID), shortID(ptyID))
+			return nil, errfmt.Errorf("get terminal state: the daemon answered for pane %s, not %s", shortID(payload.PTYID), shortID(ptyID))
 		}
 		// The cells were asked for packed and stay packed: ApplyTerminalState
 		// reads them in that form. They are checked here, so a malformed
 		// snapshot fails the request rather than being half applied.
 		if err := payload.State.CheckPacked(); err != nil {
-			return nil, fmt.Errorf("get terminal state: %w", err)
+			return nil, errfmt.Errorf("get terminal state: %w", err)
 		}
 		return payload.State, nil
 
 	case MsgError:
 		var errPayload ErrorPayload
 		_ = resp.ParsePayload(&errPayload)
-		return nil, fmt.Errorf("get terminal state failed: %s", errPayload.Message)
+		return nil, errfmt.Errorf("get terminal state failed: %s", errPayload.Message)
 
 	default:
-		return nil, fmt.Errorf("unexpected response: %d", resp.Type)
+		return nil, errfmt.Errorf("unexpected response: %d", resp.Type)
 	}
 }
 
@@ -2115,6 +2203,11 @@ func (c *TUIClient) handleMessage(msg *Message) {
 		}
 
 	case MsgTMLSurface:
+		// A far daemon that predates TMLLink pushes its surfaces to any
+		// client whose hello asks, but takes nothing back over the link.
+		if !c.DrawsTML() {
+			return
+		}
 		var payload TMLSurfacePayload
 		if msg.ParsePayload(&payload) != nil {
 			return
@@ -2164,9 +2257,19 @@ func (c *TUIClient) handleMessage(msg *Message) {
 			return
 		}
 
-		c.remoteCommandMu.RLock()
+		// Handler read and retention under one lock, so a registration
+		// cannot slip between the two and leave a command kept with a
+		// handler present.
+		c.remoteCommandMu.Lock()
 		handler := c.remoteCommandHandler
-		c.remoteCommandMu.RUnlock()
+		if handler == nil {
+			if len(c.remoteCommandsEarly) >= remoteCommandsEarlyMax {
+				c.remoteCommandsEarly = c.remoteCommandsEarly[1:]
+			}
+			retained := payload
+			c.remoteCommandsEarly = append(c.remoteCommandsEarly, &retained)
+		}
+		c.remoteCommandMu.Unlock()
 
 		if handler != nil {
 			debugLog("[REMOTE] Executing command with handler")
@@ -2178,7 +2281,7 @@ func (c *TUIClient) handleMessage(msg *Message) {
 			}
 			// Don't send success result here. Let update.go send it with the actual data
 		} else {
-			debugLog("[REMOTE] No handler registered for remote commands")
+			debugLog("[REMOTE] No handler registered yet, kept the command for it")
 		}
 
 	case MsgStateSync:
@@ -2551,7 +2654,7 @@ func (c *TUIClient) createSession(name string, width, height int, global bool) e
 	if resp.Type == MsgError {
 		var errPayload ErrorPayload
 		_ = resp.ParsePayload(&errPayload)
-		return fmt.Errorf("create session: %s", errPayload.Message)
+		return errfmt.Errorf("create session: %s", errPayload.Message)
 	}
 	var payload SessionListPayload
 	if err := resp.ParsePayload(&payload); err != nil {
@@ -2577,7 +2680,7 @@ func (c *TUIClient) RefreshSessionList() ([]SessionInfo, error) {
 	if resp.Type == MsgError {
 		var errPayload ErrorPayload
 		_ = resp.ParsePayload(&errPayload)
-		return nil, fmt.Errorf("list sessions: %s", errPayload.Message)
+		return nil, errfmt.Errorf("list sessions: %s", errPayload.Message)
 	}
 	var payload SessionListPayload
 	if err := resp.ParsePayload(&payload); err != nil {
@@ -2828,6 +2931,11 @@ func (c *TUIClient) routeReply(msg *Message) replyRoute {
 		}
 		delete(c.pendingResponses, msg.Type)
 	}
+	// Every message read after this one belongs to the session it attaches
+	// to. See AttachGeneration.
+	if msg.Type == MsgAttached {
+		c.attachGen.Add(1)
+	}
 	select {
 	case p.ch <- msg:
 	default:
@@ -2921,9 +3029,9 @@ func (c *TUIClient) sendAndWaitMatching(msg *Message, accept func(*Message) bool
 	case resp := <-respChan:
 		return resp, nil
 	case <-time.After(roundTripTimeout):
-		return nil, fmt.Errorf("timeout waiting for response")
+		return nil, errfmt.Errorf("timeout waiting for response")
 	case <-c.done:
-		return nil, fmt.Errorf("client closed")
+		return nil, errfmt.Errorf("client closed")
 	}
 }
 

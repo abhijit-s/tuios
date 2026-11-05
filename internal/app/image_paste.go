@@ -11,6 +11,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/Gaurav-Gosain/tuios/internal/composer"
+	"github.com/Gaurav-Gosain/tuios/internal/jsonx"
 
 	"github.com/Gaurav-Gosain/tuios/internal/session"
 )
@@ -336,7 +337,7 @@ func (m *OS) deliverImageCmd(window string, data []byte) tea.Cmd {
 			Path string `json:"path"`
 			Host string `json:"host"`
 		}
-		if err := json.Unmarshal(raw, &res); err != nil {
+		if err := jsonx.Unmarshal(raw, &res); err != nil {
 			return ImagePastedMsg{Window: window, Err: err}
 		}
 		if res.Path == "" {
@@ -395,8 +396,7 @@ func (m *OS) applyImagePasted(msg ImagePastedMsg) {
 // path is for can be another one than this, so the shape of the path decides,
 // not the platform tuios runs on.
 func pastePathText(path string) string {
-	windows := len(path) >= 3 && path[1] == ':' && (path[2] == '\\' || path[2] == '/') &&
-		(path[0] >= 'a' && path[0] <= 'z' || path[0] >= 'A' && path[0] <= 'Z')
+	windows := pastePathIsWindows(path)
 	extra := "/._-+:@%,="
 	if windows {
 		extra += "\\"
@@ -411,6 +411,12 @@ func pastePathText(path string) string {
 		return "'" + strings.ReplaceAll(path, "'", `'\''`) + "'"
 	}
 	return path
+}
+
+// pastePathIsWindows reports whether path starts with a drive letter.
+func pastePathIsWindows(path string) bool {
+	return len(path) >= 3 && path[1] == ':' && (path[2] == '\\' || path[2] == '/') &&
+		(path[0] >= 'a' && path[0] <= 'z' || path[0] >= 'A' && path[0] <= 'Z')
 }
 
 // imagePasteRefusal is the message for a paste the pane's machine refused by

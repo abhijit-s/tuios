@@ -59,7 +59,7 @@ Make it look good:
 Each line gives a component, its attributes and what it holds.
 `*` marks a required attribute. `a|b` lists the accepted values.
 `=path` marks a data attribute. It takes a state path such as `state.rows`, with no braces.
-Every component also takes as each grow h id if key max-h max-w min-h min-w pad show w.
+Every component also takes as each enter exit grow h id if key max-h max-w min-h min-w pad show skeleton stagger w.
 A field is a component with `name*`. Every field also takes bind=path disabled label on-change required value.
 
 Root:
@@ -146,6 +146,40 @@ Containers:
 Sizes: `w` and `h` take cells, `50%`, `fill` or `fill:2`. A row of buttons
 wraps when it does not fit.
 
+## Motion
+
+```xml
+<tml version="1" title="Jobs">
+  <state>{"loading": true, "jobs": [{"name": "build"}, {"name": "test"}], "saved": "Saved", "cpu": "12%"}</state>
+  <col pad="1" gap="1" stagger="60ms">
+    <card each="state.jobs" key="{item.name}" title="{item.name}" enter="slide-up" exit="fade">
+      <text>Running</text>
+    </card>
+    <card title="Host" skeleton="{state.loading}" h="4">
+      <text>CPU {state.cpu}</text>
+    </card>
+    <toast role="success" ttl="4s">{state.saved}</toast>
+  </col>
+</tml>
+```
+
+- `enter` plays when the node shows: `fade`, `slide-up`, `slide-down`,
+  `slide-left`, `slide-right`, `iris` or `decode`. A surface that opens plays
+  the enter of each node in it.
+- `exit` plays when the node goes away: its `if` turns false, its element
+  leaves an `each`, or a modal closes. A node that leaves with its parent,
+  such as the content of a closed tab, plays no exit.
+- `stagger` on a container starts the enter of each child that much after
+  the child before it.
+- `skeleton` draws placeholder bars in the node's space while it is true. The
+  content fades in when it turns false. Give the node an `h`, so the space
+  does not change.
+- A toast with `ttl` goes away at the end of its time. A new text shows it
+  again.
+- With `appearance.motion = "none"` or calm mode, nodes show at once. A
+  toast still goes away at the end of its `ttl`. `tml render` draws the
+  last frame.
+
 ## Show it and get an answer
 
 ```xml
@@ -229,8 +263,8 @@ op that no longer matches is refused: read with `tml get`, then patch again.
 - The person may move it between a popup and a pane. Each surface you show is also listed in the agents view, on your Artifacts tab, where the person can answer it.
 - 100 patches a second per surface; past that, `rate_limited`. Put many
   operations in one patch.
-- A client attached through another machine shows a placeholder line, not the
-  surface.
+- A person attached to your session from another machine sees and answers your
+  surfaces as a person here does. Their events reach you the same way.
 
 ## Common errors
 

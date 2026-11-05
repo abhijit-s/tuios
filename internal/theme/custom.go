@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/Gaurav-Gosain/tuios/internal/errfmt"
 	"github.com/adrg/xdg"
 	tint "github.com/lrstanley/bubbletint/v2"
 )
@@ -19,10 +20,15 @@ func GetThemesDir() (string, error) {
 	// Use xdg.ConfigFile to get the path and ensure parent dirs exist
 	keepFile, err := xdg.ConfigFile("tuios/themes/.keep")
 	if err != nil {
-		return "", fmt.Errorf("failed to get themes directory: %w", err)
+		return "", errfmt.Errorf("failed to get themes directory: %w", err)
 	}
 	return filepath.Dir(keepFile), nil
 }
+
+// ExtraFiles, when set, lists the theme files of the enabled plugins. They
+// load with the person's own themes, which win on the same id. The binary
+// sets it, since this package does not read plugins.
+var ExtraFiles func() []string
 
 // LoadCustomThemes reads all *.json files from the themes directory,
 // loads each as a custom theme, and registers them with bubbletint.
@@ -47,13 +53,28 @@ func LoadCustomThemes(themesDir string) ([]string, error) {
 func readCustomThemes(themesDir string) (loaded, problems []string, err error) {
 	entries, err := os.ReadDir(themesDir)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to read themes directory: %w", err)
+		return nil, nil, errfmt.Errorf("failed to read themes directory: %w", err)
 	}
 
 	// Every file is read before any is registered, so a file's base can be
 	// another file whatever order the directory lists them in.
 	files := make(map[string]*themeFile)
 	names := make(map[string]string)
+	// The themes of plugins first, so a file of the person's own with the
+	// same id wins.
+	if ExtraFiles != nil {
+		for _, path := range ExtraFiles() {
+			data, err := os.ReadFile(path) //nolint:gosec // a theme file of a plugin the person installed
+			if err == nil {
+				var f *themeFile
+				if f, err = readThemeFile(path, data); err == nil {
+					files[f.ID], names[f.ID] = f, filepath.Base(path)
+					continue
+				}
+			}
+			problems = append(problems, fmt.Sprintf("skipping the plugin theme %s: %v", path, err))
+		}
+	}
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(strings.ToLower(entry.Name()), ".json") {
 			continue
@@ -140,7 +161,7 @@ func LoadCustomThemeFile(path string) (*tint.Tint, error) {
 	// #nosec G304 - path is from user's config directory, reading custom themes is intentional
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read theme file: %w", err)
+		return nil, errfmt.Errorf("failed to read theme file: %w", err)
 	}
 	f, err := readThemeFile(path, data)
 	if err != nil {

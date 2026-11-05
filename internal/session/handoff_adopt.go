@@ -3,17 +3,18 @@ package session
 import (
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"maps"
 	"net"
 	"os"
+	"path/filepath"
 	"runtime"
 	"runtime/debug"
 	"runtime/metrics"
 	"slices"
 	"time"
 
+	"github.com/Gaurav-Gosain/tuios/internal/errfmt"
 	"github.com/Gaurav-Gosain/tuios/internal/memtrim"
 	"tuios.dev/vt"
 )
@@ -51,7 +52,7 @@ func (d *Daemon) RunAdopted(fd int) error {
 	}
 	if err != nil {
 		LogError("Live upgrade: %v", err)
-		return fmt.Errorf("live upgrade: %w", err)
+		return errfmt.Errorf("live upgrade: %w", err)
 	}
 	fb := &adoptFallback{manifestFD: fd, stopped: func() bool { return d.ctx.Err() != nil }}
 	stopWatch := fb.watch(adoptWatchdogTimeout())
@@ -69,7 +70,7 @@ func (d *Daemon) RunAdopted(fd int) error {
 		if d.ctx.Err() != nil {
 			d.releaseKeeper()
 		}
-		return fmt.Errorf("live upgrade: adopting the panes: %w", err)
+		return errfmt.Errorf("live upgrade: adopting the panes: %w", err)
 	}
 	<-d.ctx.Done()
 	return d.shutdown()
@@ -81,7 +82,7 @@ func (d *Daemon) RunAdopted(fd int) error {
 func (d *Daemon) adoptGuarded(fd int, fb *adoptFallback, kept map[int]int) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
-			err = fmt.Errorf("panic: %v\n%s", r, debug.Stack())
+			err = errfmt.Errorf("panic: %v\n%s", r, debug.Stack())
 		}
 	}()
 	return d.adopt(fd, fb, kept)
@@ -99,7 +100,7 @@ func (d *Daemon) adopt(fd int, fb *adoptFallback, kept map[int]int) error {
 	}
 	fb.keep(mf)
 	if _, err := mf.Seek(0, io.SeekStart); err != nil {
-		return fmt.Errorf("rewinding the manifest: %w", err)
+		return errfmt.Errorf("rewinding the manifest: %w", err)
 	}
 	m, err := readHandoffManifest(mf)
 	if err != nil {
@@ -144,7 +145,7 @@ func (d *Daemon) adopt(fd int, fb *adoptFallback, kept map[int]int) error {
 		fb.keep(f)
 		l, err := net.FileListener(f)
 		if err != nil {
-			return fmt.Errorf("the %s socket: %w", name, err)
+			return errfmt.Errorf("the %s socket: %w", name, err)
 		}
 		inherited = append(inherited, f)
 		if ul, ok := l.(*net.UnixListener); ok {
@@ -213,7 +214,7 @@ func (d *Daemon) adopt(fd int, fb *adoptFallback, kept map[int]int) error {
 		ptys, after, err := d.adoptSession(rec, bySession[rec.ID], fb)
 		if err != nil {
 			d.adopting.Store(false)
-			return fmt.Errorf("session %q: %w", rec.State.Name, err)
+			return errfmt.Errorf("session %q: %w", rec.State.Name, err)
 		}
 		started = append(started, ptys...)
 		later = append(later, after...)
@@ -227,6 +228,10 @@ func (d *Daemon) adopt(fd int, fb *adoptFallback, kept map[int]int) error {
 	if !fb.disarm() {
 		select {}
 	}
+	// Run through /proc/self/fd/N, this image is named N: name it before
+	// it starts the panes and serves its main socket, so ps and pidof find
+	// the daemon from the first reply there.
+	setProcessName(filepath.Base(os.Args[0]))
 	for _, p := range started {
 		p.startPTY()
 	}
@@ -271,6 +276,8 @@ func (d *Daemon) adopt(fd int, fb *adoptFallback, kept map[int]int) error {
 	}
 	// This image is the one a later handoff falls back to.
 	d.keepPrevBinaryLocked()
+	// The copies the images before this one ran from are no longer needed.
+	removeOldCopies()
 	LogBasic("Live upgrade: adopted %d sessions and %d panes from %s (paused %.0f ms, apply %.0f ms, peak heap in use %d MB)",
 		len(m.Sessions), len(m.Panes), stats.From, stats.PausedMS, stats.ApplyMS, stats.ApplyPeakHeapInuse>>20)
 	return nil
@@ -386,10 +393,10 @@ func checkAdoptable(m *handoffManifest) error {
 	}
 	for _, p := range m.Panes {
 		if !sessions[p.Session] {
-			return fmt.Errorf("pane %s names a session the manifest does not hold", shortID(p.ID))
+			return errfmt.Errorf("pane %s names a session the manifest does not hold", shortID(p.ID))
 		}
 		if p.FD < 0 || p.Width <= 0 || p.Height <= 0 {
-			return fmt.Errorf("pane %s has no descriptor or size", shortID(p.ID))
+			return errfmt.Errorf("pane %s has no descriptor or size", shortID(p.ID))
 		}
 	}
 	return nil
@@ -479,7 +486,7 @@ func (d *Daemon) adoptSession(rec handoffSession, panes []adoptedPane, fb *adopt
 		}
 		pty, err := sess.adoptPTY(p, w, onExit, ap.terminal)
 		if err != nil {
-			return nil, nil, fmt.Errorf("pane %s: %w", shortID(p.ID), err)
+			return nil, nil, errfmt.Errorf("pane %s: %w", shortID(p.ID), err)
 		}
 		fb.keep(pty.pty)
 		out = append(out, pty)

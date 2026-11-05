@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/Gaurav-Gosain/tuios/internal/errfmt"
 	"github.com/Gaurav-Gosain/tuios/internal/hints"
 	"github.com/Gaurav-Gosain/tuios/internal/overlay"
 	"github.com/Gaurav-Gosain/tuios/internal/sortx"
@@ -1125,6 +1126,12 @@ var optionSpecs = []Option{
 		Description: "Fold the Working group of the agents view. F folds or opens a group, and the view keeps that choice.",
 		Default:     "false",
 	},
+	{
+		Path: "agents.view_list", Type: OptionString, Section: "agents",
+		Description: "How the agents view shows its list on a wide screen: a column beside the focus, a strip of chips above it, or a strip for two agents or fewer. The \\ key switches it, and the view keeps that choice.",
+		Accepted:    AgentsViewLists,
+		Default:     AgentsViewListColumn,
+	},
 
 	// [tasks]. The daemon reads it when it starts and when the file changes.
 	{
@@ -1156,6 +1163,11 @@ var optionSpecs = []Option{
 		Path: "daemon.agent_detect_seconds", Type: OptionInt, Section: "daemon",
 		Description: "Seconds between checks. 0 uses 2. A negative number turns checks off.",
 		Default:     "0",
+	},
+	{
+		Path: "daemon.keep_awake", Type: OptionString, Section: "daemon",
+		Description: "Keep the machine from sleeping: while an agent works on this machine, while the daemon runs, or never. The display can still lock.",
+		Accepted:    KeepAwakeModes, Default: KeepAwakeOff,
 	},
 	{
 		Path: "daemon.resume_agents", Type: OptionString, Section: "daemon",
@@ -1217,6 +1229,11 @@ var optionSpecs = []Option{
 	{
 		Path: "notifications.log_hidden", Type: OptionBool, Section: "notifications",
 		Description: "Put messages below notifications.level in the log viewer. When off, they go nowhere. Warnings and errors always go to the log",
+		Default:     "true",
+	},
+	{
+		Path: "notifications.machine_offer", Type: OptionBool, Section: "notifications",
+		Description: "Offer to add a machine when a pane logs in to it with ssh or mosh and no [hosts] entry reaches it",
 		Default:     "true",
 	},
 
@@ -1604,6 +1621,11 @@ var optionSpecs = []Option{
 		Description: "Drag and drop between panes over the kitty drag and drop protocol (OSC 72)",
 		Default:     "false",
 	},
+	{
+		Path: "panes.drag_and_drop_desktop", Type: OptionBool, Section: "panes",
+		Description: "Bridge drags to and from the desktop through a terminal that speaks the protocol (kitty)",
+		Default:     "false",
+	},
 
 	// [scratch]. Read each time toggle_scratch creates or shows the scratch
 	// terminal. A show resizes the popup to the size in force.
@@ -1660,6 +1682,12 @@ var optionSpecs = []Option{
 		Description: "Which side of the review overlay has the keys when a review opens: the diff or the file list",
 		Accepted:    ReviewFocuses,
 		Default:     ReviewOpenOnDiff,
+	},
+	{
+		Path: "review.scope", Type: OptionString, Section: "review",
+		Description: "What a review shows when it opens: the changes since the base, or only the uncommitted changes. u switches between them",
+		Accepted:    ReviewScopes,
+		Default:     ReviewScopeBase,
 	},
 	// Read by the client on each switch, so a change applies at once.
 	{
@@ -1719,37 +1747,37 @@ func (o Option) checkValue(value string) error {
 		if value == "" || slices.Contains(o.Accepted, value) || theme.IsColor(value) {
 			return nil
 		}
-		return fmt.Errorf("%s: %s. Use an empty value to unset it", o.Path, ColourProblem(value, o.Accepted...))
+		return errfmt.Errorf("%s: %s. Use an empty value to unset it", o.Path, ColourProblem(value, o.Accepted...))
 	}
 	if o.Theme && !theme.Exists(value) {
 		// Exists re-reads the custom themes directory before it says no, so a
 		// theme file written a moment ago resolves here rather than on the next
 		// restart.
-		return fmt.Errorf("%s: no theme named %q; call list-themes for the ones there are, "+
+		return errfmt.Errorf("%s: no theme named %q; call list-themes for the ones there are, "+
 			"or write %s.json in the themes directory first", o.Path, value, value)
 	}
 	if o.GlyphSet && !theme.GlyphSetExists(value) {
 		// GlyphSetExists re-reads the glyphs directory before it says no, for
 		// the reason Exists does: a set written a moment ago has to resolve on
 		// this call rather than on the next restart.
-		return fmt.Errorf("%s: no glyph set named %q; call list-glyphs for the ones there are, "+
+		return errfmt.Errorf("%s: no glyph set named %q; call list-glyphs for the ones there are, "+
 			"or write %s.json in the glyphs directory first", o.Path, value, value)
 	}
 	if o.Icon && value != o.Default && !DockModeIconUsable(value) {
-		return fmt.Errorf("%s: %q is not a usable icon; use at most %d cells and no control characters",
+		return errfmt.Errorf("%s: %q is not a usable icon; use at most %d cells and no control characters",
 			o.Path, value, DockModeIconMaxWidth)
 	}
 	if o.BoxSize && strings.TrimSpace(value) != "" {
 		if _, _, err := ParseBoxSize(value); err != nil {
-			return fmt.Errorf("%s: %w", o.Path, err)
+			return errfmt.Errorf("%s: %w", o.Path, err)
 		}
 	}
 	if len(o.Accepted) > 0 && !slices.Contains(o.Accepted, value) {
-		return fmt.Errorf("%s: %q is not one of %s", o.Path, value, strings.Join(o.Accepted, ", "))
+		return errfmt.Errorf("%s: %q is not one of %s", o.Path, value, strings.Join(o.Accepted, ", "))
 	}
 	if o.Check != nil {
 		if err := o.Check(value); err != nil {
-			return fmt.Errorf("%s: %w", o.Path, err)
+			return errfmt.Errorf("%s: %w", o.Path, err)
 		}
 	}
 	return nil
@@ -1763,14 +1791,14 @@ func SetOptionValue(cfg *UserConfig, path, value string) error {
 		if msg, retired := RetiredOption(path); retired {
 			return errors.New(msg)
 		}
-		return fmt.Errorf("unknown config option %q", path)
+		return errfmt.Errorf("unknown config option %q", path)
 	}
 	if err := opt.checkValue(value); err != nil {
 		return err
 	}
 	field, ok := resolveOptionField(cfg, path)
 	if !ok {
-		return fmt.Errorf("unknown config option %q", path)
+		return errfmt.Errorf("unknown config option %q", path)
 	}
 	// An option that follows another clears on the empty string, back to
 	// following it.
@@ -1789,16 +1817,16 @@ func SetOptionValue(cfg *UserConfig, path, value string) error {
 	case OptionBool:
 		parsed, err := parseOptionBool(value)
 		if err != nil {
-			return fmt.Errorf("%s: %w", path, err)
+			return errfmt.Errorf("%s: %w", path, err)
 		}
 		if optionKind(field) != reflect.Bool {
-			return fmt.Errorf("%s: registry says bool, config field is %s", path, optionKind(field))
+			return errfmt.Errorf("%s: registry says bool, config field is %s", path, optionKind(field))
 		}
 		optionTarget(field).SetBool(parsed)
 	case OptionInt:
 		if opt.Auto && strings.EqualFold(strings.TrimSpace(value), FPSAuto) {
 			if optionKind(field) != reflect.String {
-				return fmt.Errorf("%s: registry says int or auto, config field is %s", path, optionKind(field))
+				return errfmt.Errorf("%s: registry says int or auto, config field is %s", path, optionKind(field))
 			}
 			optionTarget(field).SetString(FPSAuto)
 			return nil
@@ -1806,12 +1834,12 @@ func SetOptionValue(cfg *UserConfig, path, value string) error {
 		parsed, err := strconv.Atoi(strings.TrimSpace(value))
 		if err != nil {
 			if opt.Auto {
-				return fmt.Errorf("%s: %q is not a whole number or auto", path, value)
+				return errfmt.Errorf("%s: %q is not a whole number or auto", path, value)
 			}
-			return fmt.Errorf("%s: %q is not a whole number", path, value)
+			return errfmt.Errorf("%s: %q is not a whole number", path, value)
 		}
 		if opt.Max > 0 && (parsed < opt.Min || parsed > opt.Max) {
-			return fmt.Errorf("%s: %d is outside %d..%d", path, parsed, opt.Min, opt.Max)
+			return errfmt.Errorf("%s: %d is outside %d..%d", path, parsed, opt.Min, opt.Max)
 		}
 		if opt.Auto && optionKind(field) == reflect.String {
 			// 0 is stored as the empty value, the one spelling a reload gives.
@@ -1823,16 +1851,16 @@ func SetOptionValue(cfg *UserConfig, path, value string) error {
 			return nil
 		}
 		if optionKind(field) != reflect.Int {
-			return fmt.Errorf("%s: registry says int, config field is %s", path, optionKind(field))
+			return errfmt.Errorf("%s: registry says int, config field is %s", path, optionKind(field))
 		}
 		optionTarget(field).SetInt(int64(parsed))
 	case OptionString:
 		if optionKind(field) != reflect.String {
-			return fmt.Errorf("%s: registry says string, config field is %s", path, optionKind(field))
+			return errfmt.Errorf("%s: registry says string, config field is %s", path, optionKind(field))
 		}
 		optionTarget(field).SetString(value)
 	default:
-		return fmt.Errorf("%s: registry carries no type", path)
+		return errfmt.Errorf("%s: registry carries no type", path)
 	}
 	return nil
 }
@@ -1952,7 +1980,7 @@ var optionBoolWords = map[string]bool{
 func parseOptionBool(value string) (bool, error) {
 	parsed, ok := optionBoolWords[strings.ToLower(strings.TrimSpace(value))]
 	if !ok {
-		return false, fmt.Errorf("%q is not a true or false value", value)
+		return false, errfmt.Errorf("%q is not a true or false value", value)
 	}
 	return parsed, nil
 }
